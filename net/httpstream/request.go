@@ -38,30 +38,23 @@ type Request struct {
 	// handler decides what a segment means is how two layers route one
 	// request differently. The one other form is "*", on an OPTIONS request
 	// only (RFC 9110 §7.1: the server as a whole, not a resource on it).
+	//
+	// What two layers could read differently is refused with a 400 on every
+	// protocol: a control byte or a space, a "#" (origin-form carries no
+	// fragment), a "%" not followed by two hex digits. Any other byte —
+	// one outside RFC 3986's pchar such as "|", or raw UTF-8 — has one
+	// reading and is passed on as it came; it is the handler's to refuse.
+	// Dot segments ("." and "..") and a leading "//" are delivered as sent,
+	// not normalised (docs/design/adr/0010).
 	Target []byte
 
 	// Headers is the request's field section, in the order the client sent
 	// it.
 	Headers []Header
 
-	// Trailers is the request's trailer section, in the order the client
-	// sent it, or nil when it sent none: the fields after the body of a
-	// chunked HTTP/1.1 request, or of a trailing HEADERS on HTTP/2 and
-	// HTTP/3. Under [BodyWhole] the whole request is read before the
-	// handler is called, so they are here as soon as the body is; a
-	// streamed body's trailers arrive after the handler was given the
-	// request and are checked against the header bounds without being
-	// kept, so this is nil for it ([Request.Stream]). They are held to the bounds the
-	// headers are held to, separately: a trailer section of its own up to
-	// [Config.MaxHeaders] fields and [Config.MaxHeaderBytes] bytes.
-	//
-	// They are kept apart from Headers on purpose and nothing in them is
-	// interpreted. RFC 9110 §6.5 has a trailer stored separately and never
-	// merged into the header section unless the field's own definition
-	// allows it: a Content-Length or Authorization arriving after the body
-	// came too late to frame, route or authorise this request, and a
-	// handler that reads one from here takes that on knowingly.
-	Trailers []Header
+	// trailers is a whole body's trailer section, read through
+	// [Request.Trailers]; a streamed body keeps its own.
+	trailers []Header
 
 	// Body is the request's content, exactly the bytes the client sent once
 	// the transfer coding is undone: a chunked body arrives joined, and
@@ -176,7 +169,12 @@ var hostFieldName = []byte("host")
 // A request carrying both must have them agree (RFC 9113 §8.3.1, RFC 9114
 // §4.3.1): two hops reading a different authority out of one request is the
 // routing half of the smuggling family, and the disagreement is refused here
-// rather than resolved in favour of either.
+// rather than resolved in favour of either. They agree when they differ in
+// ASCII case only: the host and the "%" triplets are case-insensitive (RFC
+// 3986 §3.2.2, §2.1), and a conformant intermediary that lowercases one of
+// them must not get the request refused. A port on one side and none on the
+// other stays a disagreement (docs/design/adr/0009). The value is delivered
+// as received, case and port included.
 func withAuthority(regular []Header, authority []byte, protocolErr error) ([]Header, error) {
 	if authority == nil {
 		return regular, nil
@@ -185,7 +183,7 @@ func withAuthority(regular []Header, authority []byte, protocolErr error) ([]Hea
 		if !equalFold(h.Name, "host") {
 			continue
 		}
-		if !bytes.Equal(h.Value, authority) {
+		if !bytes.EqualFold(h.Value, authority) {
 			return nil, fmt.Errorf("%w: host %q and :authority %q name different hosts",
 				protocolErr, h.Value, authority)
 		}
@@ -194,17 +192,6 @@ func withAuthority(regular []Header, authority []byte, protocolErr error) ([]Hea
 	return append(regular, Header{Name: hostFieldName, Value: authority}), nil
 }
 
-// buildRequest turns the decoded field section of an HTTP/2 or HTTP/3 request
-// into a [Request], applying the rules RFC 9113 §8.3 and RFC 9114 §4.3 state
-// — one function for both, because the two sections are the same rules and
-// the two protocols once held their own copies, which had drifted: a request
-// one refused and the other delivered to the handler. The rules exist because
-// a request that reaches an HTTP/1.1 hop unchecked is how a smuggled request
-// is written.
-//
-// Errors wrap protocolErr; the caller maps them to its own stream error. The
-// regular fields are returned in fields' own storage, the pseudo-headers
-// dropped; declared is the content-length the head stated, or -1.
 // connectionSpecific reports whether name — lowercase, as HTTP/2 and HTTP/3
 // put it on the wire — is one of the fields RFC 9113 §8.2.2 and RFC 9114 §4.2
 // forbid in any message of theirs: Connection, and the fields RFC 9110
@@ -251,6 +238,17 @@ func checkRequestTrailer(h Header, protocolErr error) error {
 	return nil
 }
 
+// buildRequest turns the decoded field section of an HTTP/2 or HTTP/3 request
+// into a [Request], applying the rules RFC 9113 §8.3 and RFC 9114 §4.3 state
+// — one function for both, because the two sections are the same rules and
+// the two protocols once held their own copies, which had drifted: a request
+// one refused and the other delivered to the handler. The rules exist because
+// a request that reaches an HTTP/1.1 hop unchecked is how a smuggled request
+// is written.
+//
+// Errors wrap protocolErr; the caller maps them to its own stream error. The
+// regular fields are returned in fields' own storage, the pseudo-headers
+// dropped; declared is the content-length the head stated, or -1.
 func buildRequest(fields []Header, protocolErr error) (req Request, declared int, err error) {
 	var method, path, scheme, authority []byte
 	regular := fields[:0]
@@ -353,9 +351,10 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 		// RFC 9113 §8.5, RFC 9114 §4.4: a CONNECT carries :method and
 		// :authority and omits :scheme and :path; one that does not is
 		// malformed. Well formed, it is a request for a tunnel, which is
-		// answered 501 like the router answers it (see errConnect) — until
-		// 2026-10-20 the rule below reset it as a request without :path,
-		// and a CONNECT with :path and :scheme reached the handler.
+		// answered 501 like the router answers it (see errConnect). The
+		// check comes before the rule below, which would reset it as a
+		// request without :path, and it keeps a CONNECT with :path and
+		// :scheme from reaching the handler.
 		if scheme != nil || path != nil {
 			return req, 0, fmt.Errorf("%w: a CONNECT with :scheme or :path", protocolErr)
 		}
@@ -374,8 +373,8 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 	if !isToken(method) {
 		return req, 0, fmt.Errorf("%w: :method is not a token", protocolErr)
 	}
-	if !isToken(scheme) {
-		return req, 0, fmt.Errorf("%w: :scheme is not a token", protocolErr)
+	if !isScheme(scheme) {
+		return req, 0, fmt.Errorf("%w: :scheme is not a URI scheme", protocolErr)
 	}
 	if err := checkTarget(method, path, protocolErr); err != nil {
 		return req, 0, err
@@ -422,9 +421,21 @@ func checkTarget(method, target []byte, protocolErr error) error {
 	if len(target) == 0 || target[0] != '/' {
 		return fmt.Errorf("%w: the target is neither origin-form nor absolute-form", protocolErr)
 	}
-	for _, c := range target {
-		if c <= 0x20 || c == 0x7f {
+	for i := 0; i < len(target); i++ {
+		switch c := target[i]; {
+		case c <= 0x20 || c == 0x7f:
 			return fmt.Errorf("%w: the target holds a control character", protocolErr)
+		case c == '#':
+			// Origin-form has no fragment (RFC 9112 §3.2.1): a router that
+			// cuts at "#" and one that does not would serve two paths.
+			return fmt.Errorf("%w: the target holds a fragment", protocolErr)
+		case c == '%':
+			// RFC 3986 §2.1: a "%" begins two hex digits. A lone one is
+			// decoded one way by one layer and left alone by the next.
+			if i+2 >= len(target) || !isHex(target[i+1]) || !isHex(target[i+2]) {
+				return fmt.Errorf("%w: a malformed percent-encoding in the target", protocolErr)
+			}
+			i += 2
 		}
 	}
 	return nil
@@ -538,6 +549,11 @@ func validAuthority(b []byte) bool {
 	}
 	for i := 0; i < len(host); i++ {
 		switch c := host[i]; {
+		case c == ':' && i == 0 && b[0] != '[':
+			// An empty reg-name before the port: RFC 9110 §4.2.1 has an
+			// "http" URI with an empty host identifier rejected as
+			// invalid, and ":80" names no host a handler could serve.
+			return false
 		case c == ':':
 			for _, d := range host[i+1:] {
 				if d < '0' || d > '9' {
@@ -605,6 +621,24 @@ var tchar = func() (t [256]bool) {
 	}
 	return t
 }()
+
+// isScheme reports whether b is a URI scheme as RFC 3986 §3.1 writes it:
+// scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ). A token is wider
+// ("a_b", "1x" pass it), and :scheme is a scheme, not a token (RFC 9113
+// §8.3.1, RFC 9114 §4.3.1).
+func isScheme(b []byte) bool {
+	if len(b) == 0 || !isAlpha(b[0]) {
+		return false
+	}
+	for _, c := range b[1:] {
+		if !isAlpha(c) && (c < '0' || c > '9') && c != '+' && c != '-' && c != '.' {
+			return false
+		}
+	}
+	return true
+}
+
+func isAlpha(c byte) bool { return c|0x20 >= 'a' && c|0x20 <= 'z' }
 
 func isToken(b []byte) bool {
 	if len(b) == 0 {
@@ -767,7 +801,7 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 		// handler appending to Headers cannot write over the trailers.
 		req.Headers = out[start:headersEnd:headersEnd]
 		if len(out) > headersEnd {
-			req.Trailers = out[headersEnd:]
+			req.trailers = out[headersEnd:]
 		}
 		return req, consumed + n, out, nil
 	}
@@ -881,8 +915,8 @@ func splitRequestLine(line []byte) (method, target, version, authority []byte, e
 	if string(method) == "CONNECT" {
 		// The authority-form target is CONNECT's alone (RFC 9112 §3.2.3) and
 		// a tunnel is what it asks for: 501 whatever the target, as on
-		// HTTP/2 and HTTP/3 (errConnect), where this was 400 "neither
-		// origin-form nor absolute-form" until 2026-10-20. The target is not
+		// HTTP/2 and HTTP/3 (errConnect), not 400 "neither origin-form nor
+		// absolute-form". The target is not
 		// parsed: an empty or invalid port is rejected with the rest
 		// (RFC 9110 §9.3.6 asks for the rejection, not the status).
 		return nil, nil, nil, nil, fmt.Errorf("%w: a tunnel to %q", errConnect, target)
@@ -1095,6 +1129,112 @@ type chunkProgress struct {
 	// interim 100 the head asked for.
 	need   int
 	expect bool
+}
+
+// headScan is how far a head short of its blank line has been looked at
+// (headPending). The reader keeps one for the request at the front of its
+// buffer, out of chunkProgress, which every request clears and parseRequest
+// reads; consume ends it by setting n to zero.
+type headScan struct {
+	// n is how many bytes from the front are known to hold no blank line
+	// ending the head; zero when no scan is under way.
+	n int
+	// start is where the field lines begin, zero until the parse has
+	// checked the request line; next is the first field line not checked
+	// yet, and fields how many have been.
+	start, next, fields int
+	// scratch is what checking the field lines appends to, kept from one
+	// read to the next.
+	scratch []Header
+}
+
+// headStillShort reports whether the head at the front of buf, which an
+// earlier read left short of its blank line (noteShortHead), still is: then
+// the reader waits for more without parsing it again.
+func headStillShort(buf []byte, cfg *Config, scan *headScan) bool {
+	return scan.n > 0 && headPending(buf, cfg, scan, false)
+}
+
+// noteShortHead records, for buf holding one request that a parse has just
+// left short of its end, how far its head is known to hold no blank line,
+// for headStillShort. A request whose head was parsed whole and whose body
+// is short (need or headersEnd set) has no head to scan: chunkProgress
+// resumes its body.
+func noteShortHead(buf []byte, cfg *Config, progress *chunkProgress, scan *headScan) {
+	if progress.need > 0 || progress.headersEnd > 0 {
+		scan.n = 0
+		return
+	}
+	if scan.n == 0 {
+		scan.start, scan.next, scan.fields = 0, 0, 0
+	}
+	if !headPending(buf, cfg, scan, true) {
+		scan.n = 0 // the next read parses
+	}
+}
+
+// headPending reports whether buf, the front of a request whose head has
+// not been parsed whole, is still short of the blank line that ends the
+// head, with nothing in it the parse would refuse yet. scan records how far
+// it looked, so a head delivered a byte per read is looked at once in all.
+// Without it, every read parsed the request line and every field line
+// received so far again: work in the square of the head's length, for one
+// byte of the peer's. Only CRLF ends a line
+// (cutCRLF), so the scan looks for CRLF CRLF.
+//
+// What the parse would refuse is refused at the same byte: false hands buf
+// to it. The request line goes to it as soon as its CRLF is in (parsed is
+// whether the parse has just run on buf), and each field line, once whole,
+// goes through parseHeaders itself with what the lines before it took from
+// MaxHeaderBytes and MaxHeaders: there is no second parser of field lines.
+// Near the bounds the parse decides on every read; past them it refuses.
+func headPending(buf []byte, cfg *Config, scan *headScan, parsed bool) bool {
+	lead := 0
+	if len(buf) >= 2 && buf[0] == '\r' && buf[1] == '\n' {
+		lead = 2 // RFC 9112 §2.2's empty line before the request line
+	}
+	from := max(scan.n-3, lead)
+	if from < len(buf) && bytes.Contains(buf[from:], []byte("\r\n\r\n")) {
+		return false
+	}
+	// Only what arrived since the last look can end a line: one CR may
+	// have waited for its LF.
+	seen := max(scan.n-1, scan.next)
+	if scan.start == 0 {
+		at := max(scan.n-1, lead)
+		i := bytes.Index(buf[at:], []byte("\r\n"))
+		if i < 0 {
+			if len(buf)-lead > cfg.MaxRequestLineBytes+1 {
+				return false // the parse refuses the request line now
+			}
+			scan.n = len(buf)
+			return true
+		}
+		if !parsed {
+			return false // the request line is whole: the parse checks it
+		}
+		scan.start = at + i + 2
+		scan.next, seen = scan.start, scan.start
+	}
+	if len(buf)-scan.start > cfg.MaxHeaderBytes-2 {
+		return false
+	}
+	if k := bytes.LastIndex(buf[seen:], []byte("\r\n")); k >= 0 {
+		end := seen + k + 2
+		left := *cfg
+		left.MaxHeaderBytes -= scan.next - scan.start
+		left.MaxHeaders -= scan.fields
+		lines, _, err := parseHeaders(scan.scratch[:0], buf[scan.next:end], left)
+		clear(lines) // they point into buf, which a later read may replace
+		scan.scratch = lines[:0]
+		if !errors.Is(err, errIncomplete) {
+			return false // a line the parse refuses, or the bound: it says which
+		}
+		scan.fields += len(lines)
+		scan.next = end
+	}
+	scan.n = len(buf)
+	return true
 }
 
 // decodeChunked decodes a chunked request body (RFC 9112 §7.1) in place at

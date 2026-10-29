@@ -2,6 +2,7 @@ package quic
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
 	"sync"
 	"testing"
@@ -209,5 +210,89 @@ func TestCoalescedPacketUnderAnotherDCIDIsIgnored(t *testing.T) {
 	}
 	if n := discardedCount(c); n != 1 {
 		t.Errorf("discarded = %d, want 1: the second packet counted as a rejection", n)
+	}
+}
+
+// A burst of 0-RTT writes coalesces while another writer is counted in
+// (writersIn above one): the writes gather their packets into full
+// datagrams, and the writer that brings the count back to zero sends what
+// gathered. The overlap is set by hand — a writer counted in, as
+// Stream.write counts itself before it takes mu — so the property holds
+// whatever the scheduler does; the interop test that measures the burst on
+// a simulated path depends on goroutines overlapping and cannot.
+func TestZeroRTTWritesCoalesceWhileAnotherWriterIsCounted(t *testing.T) {
+	tap := newTap(&fuzzSink{addr: "zrtt:self"})
+	dcid, scid := []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}
+	c := assembleConn(tap, fakeFuzzAddr("zrtt:peer"), dcid, scid, true, DefaultParameters())
+	t.Cleanup(func() { _ = c.Close() })
+	c.initialDCID = dcid
+	c.remembered = TransportParameters{
+		InitialMaxData:          1 << 20,
+		InitialMaxStreamDataUni: 1 << 16,
+		InitialMaxStreamsUni:    64,
+		ActiveConnIDLimit:       4,
+	}
+	if err := c.installEarlySealer(tls.TLS_AES_128_GCM_SHA256, make([]byte, 32)); err != nil {
+		t.Fatalf("early sealer: %v", err)
+	}
+	srv := DefaultParameters()
+	srv.initialSourceCID = dcid
+	srv.originalDCID = dcid
+	if err := c.handlePeerParameters(appendParameters(nil, srv)); err != nil {
+		t.Fatalf("server parameters: %v", err)
+	}
+
+	// The interop runner's shape, smaller: a request of 250 bytes per
+	// stream and the end of the stream in a second call, as an HTTP/3
+	// client writes them.
+	const streams, request = 10, 250
+	c.writersIn.Add(1)
+	for i := range streams {
+		s, err := c.OpenUniStream(context.Background())
+		if err != nil {
+			t.Fatalf("OpenUniStream: %v", err)
+		}
+		if _, err := s.Write(make([]byte, request)); err != nil {
+			t.Fatalf("writing in 0-RTT: %v", err)
+		}
+		if i == streams-1 {
+			// The other writer leaves: this last call is the one that
+			// brings the count to zero.
+			c.writersIn.Add(-1)
+		}
+		if _, err := s.WriteFinal(nil); err != nil {
+			t.Fatalf("closing in 0-RTT: %v", err)
+		}
+	}
+
+	sent := tap.recorded()
+	total := 0
+	for _, w := range sent {
+		total += len(w.data)
+		for _, ty := range packetTypes(t, w.data) {
+			if ty != packetZeroRTT {
+				t.Fatalf("a datagram carried packet type %#x, want 0-RTT only", ty)
+			}
+		}
+	}
+	if total < streams*request {
+		t.Fatalf("%d bytes left in %d datagrams, under the %d-byte request: the gathered datagram was not sent", total, len(sent), streams*request)
+	}
+	// Twenty writes, coalesced: every datagram is filled to within one
+	// packet of the datagram size, except the last two — the one the last
+	// counted writer's packets gathered, which the final call flushes, and
+	// that call's own packet, sent alone because no other writer is
+	// counted any more. One datagram per write is twenty.
+	c.mu.Lock()
+	room := c.maxDatagram - (request + 64)
+	c.mu.Unlock()
+	for i, w := range sent[:max(len(sent)-2, 0)] {
+		if len(w.data) < room {
+			t.Errorf("datagram %d of %d carries %d bytes, under the %d a coalesced one reaches: 0-RTT packets no longer coalesce while another writer is counted",
+				i+1, len(sent), len(w.data), room)
+		}
+	}
+	if len(sent) >= 2*streams {
+		t.Errorf("%d writes left in %d datagrams: one each, nothing coalesced", 2*streams, len(sent))
 	}
 }

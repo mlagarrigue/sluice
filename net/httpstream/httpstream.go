@@ -1,5 +1,7 @@
 // Package httpstream serves HTTP/1.1, /2 and /3 where the transport is a
-// stream stage rather than a thing that calls you.
+// stream stage rather than a thing that calls you. A connection keeps, from
+// one batch of requests to the next, only what its protocol carries across
+// them — header tables and stream states — within the bounds of Config.
 //
 // # Read this before using it
 //
@@ -9,8 +11,8 @@
 // input is how CVEs are manufactured" — and that judgement is not revised
 // here: [web] over net/http leaves that parsing to the standard library.
 //
-// net/httpstream is supported — out of the experimental label since
-// 2026-10-10 and under the compatibility promise — and fuzzed in CI without
+// net/httpstream is supported — outside the experimental label and
+// under the compatibility promise — and fuzzed in CI without
 // a public corpus; it has neither run in production nor had an outside
 // security review. It has faced curl, h2spec, h2load, h3spec, aioquic,
 // quic-go's HTTP/3 client, and nginx, HAProxy and Envoy in front of it, in
@@ -30,7 +32,7 @@
 // server owns the read loop, parses one request, and calls a handler — so the
 // pipeline begins at Request, one element at a time, and the all-batch model
 // meets its worst case at the boundary it was supposed to own. Measured, that
-// costs ×133 against the same six steps written by hand
+// costs ×141 against the same six steps written by hand
 // (BenchmarkWebBatchOne), which is 0.14% of what the transport itself costs
 // and therefore affordable — but the model does not apply there.
 //
@@ -146,7 +148,8 @@
 // consumes DATA, bounds concurrent streams, counts RST_STREAM against the
 // rapid-reset bound (CVE-2023-44487), and tracks a header block across
 // CONTINUATION with the count and total bounded (CVE-2024-27316). Trailers
-// are delivered in [Request.Trailers]; on a stream already ended or reset
+// are delivered in [Request.Trailers], whichever way the body is, behind a
+// body that has ended; on a stream already ended or reset
 // they are decoded then discarded rather than refused, because HPACK's
 // shared table means an undecoded block corrupts every one after it.
 //
@@ -184,16 +187,19 @@
 // guessing:
 //
 //   - **Transfer-Encoding, except "chunked" alone.** A chunked body with no
-//     Content-Length beside it is decoded — bounded by [Config.MaxBodyBytes],
-//     chunk extensions ignored, trailers delivered in [Request.Trailers]. A
+//     Content-Length beside it is decoded — bounded like any body, by
+//     [Config.MaxBodyBytes] or, streamed, [Config.MaxStreamedBodyBytes];
+//     chunk extensions ignored, trailers delivered in [Request.Trailers]
+//     once the body has ended. A
 //     coding this server does not implement is answered 501;
 //     Transfer-Encoding beside Content-Length — the request-smuggling pair
 //     in its entirety — or on an HTTP/1.0 request is answered 400.
 //   - **A repeated or non-numeric Content-Length**, answered 400.
 //   - **Authority-form targets** — origin-form, a target starting with "/",
-//     is what the handler sees; an absolute-form target is accepted as RFC
-//     9112 §3.2.2 requires, its authority replacing the Host and its path
-//     delivered as origin-form. The authority-form is CONNECT's, and a
+//     is what the handler sees, or the asterisk "*" of an OPTIONS request
+//     (§3.2.4); an absolute-form target is accepted as RFC 9112 §3.2.2
+//     requires, its authority replacing the Host and its path delivered as
+//     origin-form. The authority-form is CONNECT's, and a
 //     CONNECT is answered 501 on every protocol: this server opens no
 //     tunnel, and the handler never sees the request.
 //   - **A missing or repeated Host**, answered 400, as HTTP/1.1 requires.
@@ -208,12 +214,14 @@
 //     this package: the server takes a [net.Listener], and [crypto/tls]
 //     wraps one.
 //
-// Request bodies stay bounded and are not streamed, deliberately: the handler
-// takes a batch of complete requests, and an element that is not complete is
-// not an element. Every limit is a number the caller sets in [Config]; none
-// of them has a value that suits every deployment, so none has a default
-// that pretends otherwise beyond the modest ones a zero field takes, each
-// named in the field's own documentation.
+// Request bodies stay bounded whether they stream or arrive whole. A body
+// streams by default ([Config.BodyDelivery]): the handler's batch holds
+// requests whose head is complete, a body already whole within
+// [Config.MaxBodyBytes] in [Request.Body], any other read through
+// [Request.Stream] as it arrives. Every limit is a number the caller sets in
+// [Config]; none of them has a value that suits every deployment, so none
+// has a default that pretends otherwise beyond the modest ones a zero field
+// takes, each named in the field's own documentation.
 package httpstream
 
 import (
@@ -284,7 +292,7 @@ var errIncomplete = errors.New("httpstream: incomplete request")
 // errIdleTimeout is internal: the read timeout fired while the connection
 // held no part of a request, between one pipelined batch and the next client
 // that may never come. Distinct from a timeout mid-request (conn.go's
-// reader.fill, [Config.ReadTimeout]) so the two are not answered the same
+// h1Conn.fill, [Config.ReadTimeout]) so the two are not answered the same
 // way — see statusFor in serve.go. The HTTP/2 frame reader returns it too,
 // for the same silence between requests, which ServeH2Conn ends with
 // GOAWAY(NO_ERROR) rather than as a failure.
@@ -301,11 +309,12 @@ var errExpectContinue = fmt.Errorf("httpstream: awaiting a 100-continue body: %w
 // (docs/design/adr/0009, article 4). The zero value streams it: a body is
 // handed over as it arrives, so a server holds a stream window rather than
 // a whole upload, and a handler can answer before the last byte. A server
-// that wants the older contract — every body complete and in memory before
-// its handler runs — asks for [BodyWhole].
+// that wants every body complete and in memory before its handler runs asks
+// for [BodyWhole].
 //
-// It is what a body arrives as, not what is accepted: the accepted size is
-// [Config.MaxBodyBytes] and [Config.MaxStreamedBodyBytes] either way.
+// It is what a body arrives as, and what bounds it: [Config.MaxBodyBytes]
+// for a body held whole, raised by [Config.MaxStreamedBodyBytes] for one
+// that streams.
 type BodyDelivery int
 
 const (
@@ -383,7 +392,8 @@ type Config struct {
 	// MaxStreamedBodyBytes bounds a streamed body. Zero means MaxBodyBytes;
 	// a negative value is refused. It is read when BodyDelivery streams, and
 	// raises what is accepted above MaxBodyBytes for a body that arrives as
-	// a stream.
+	// a stream; under [BodyWhole] it takes MaxBodyBytes's value, whatever it
+	// was set to.
 	//
 	// When bodies stream, a body already whole in the read that brought
 	// the request's headers — over HTTP/2, in the frames read with them;
@@ -395,9 +405,10 @@ type Config struct {
 	// 413 before any of the body is read, and before the 100 Continue a
 	// client may be waiting for, which goes out when the handler first waits
 	// for the body; a body of unannounced length that grows past it ends its
-	// stream with ErrTooLarge. Each read that waits for body bytes has
-	// ReadTimeout; there is no deadline on the whole body, so a large upload
-	// that keeps moving is not cut, and a client that stops is.
+	// stream with ErrTooLarge. The body must move by ReadProgressBytes within
+	// each ReadTimeout of waiting; there is no deadline on the whole body, so
+	// a large upload that keeps moving is not cut, and a client that stops,
+	// or drips, is.
 	//
 	// Over HTTP/2 and HTTP/3 a streamed body's window is granted back as the
 	// handler consumes it, so what it holds is bounded by the stream window —
@@ -494,8 +505,20 @@ type Config struct {
 	// protocol. This is the bound that answers slowloris: a client that
 	// sends a header byte a minute is disconnected by the clock rather than
 	// tolerated; over HTTP/2 and HTTP/3 it is the stream still assembling
-	// that is reset, not the connection.
+	// that is reset, not the connection. A streamed body ([Request.Stream])
+	// has it as WriteTimeout has its writes: ReadTimeout of waiting to
+	// deliver [Config.ReadProgressBytes], given back whole each time it
+	// has, so an upload that keeps moving is read to the end and one that
+	// drips a byte at a time is cut.
 	ReadTimeout time.Duration
+
+	// ReadProgressBytes is the progress that moves [Config.ReadTimeout] on a
+	// streamed body: how much of it must arrive for the wait to start
+	// again. Only waiting for the peer counts, not the handler's own time
+	// between two reads; a body shorter than this has ReadTimeout to arrive
+	// whole. Zero means 4 KiB — 400 bytes a second at the default timeout,
+	// as for [Config.WriteProgressBytes]. Every protocol.
+	ReadProgressBytes int
 
 	// WriteTimeout is how long a response may go without progress: a write
 	// that has not put [Config.WriteProgressBytes] on the wire by the time it
@@ -508,7 +531,9 @@ type Config struct {
 	// socket, which ends the connection. Over HTTP/3 it is each write of a
 	// response — its head, then each batch of a streamed body — on the
 	// stream's flow control, and the stream is reset with
-	// H3_REQUEST_CANCELLED. A peer that drips one byte of credit per timeout
+	// H3_REQUEST_CANCELLED; it is also each write on the control stream
+	// (SETTINGS, the GOAWAYs of a drain), and giving up there ends the
+	// connection. A peer that drips one byte of credit per timeout
 	// is therefore cut at the second timeout rather than kept (data dribble,
 	// CVE-2019-9511). Zero means 10s. Every protocol.
 	//
@@ -608,8 +633,12 @@ type Config struct {
 	// of connections a forced stop cut with requests in flight, and the
 	// error that ended a connection [Serve] or [Server] accepted when it is
 	// not an ordinary end (the peer's close, a deadline, a reset): a peer
-	// that broke the protocol, a transport that failed. Nil means
-	// [slog.Default]. Every protocol.
+	// that broke the protocol, a transport that failed. That last line is one
+	// per connection and within any client's reach, and its text may quote,
+	// escaped, bytes the peer sent: a client that opens connections only to
+	// break them sets its rate. A Logger that must hold a
+	// budget rate-limits what it receives. Nil means [slog.Default]. Every
+	// protocol.
 	Logger *slog.Logger
 
 	// LingerTimeout is how long a closing HTTP/1.1 connection, its write side
@@ -783,6 +812,7 @@ func (c Config) resolve() (Config, error) {
 		orDefault("Config.ReadTimeout", &c.ReadTimeout, defaultReadTimeout),
 		orDefault("Config.WriteTimeout", &c.WriteTimeout, defaultWriteTimeout),
 		orDefault("Config.WriteProgressBytes", &c.WriteProgressBytes, defaultMaxFrameSize/4),
+		orDefault("Config.ReadProgressBytes", &c.ReadProgressBytes, defaultMaxFrameSize/4),
 		orDefault("Config.ShutdownGrace", &c.ShutdownGrace, 5*time.Second),
 		orDefault("Config.MaxFramesPerBatch", &c.MaxFramesPerBatch, 64),
 		orDefault("Config.MaxContinuationFrames", &c.MaxContinuationFrames, 16),
@@ -834,7 +864,12 @@ func (c Config) resolve() (Config, error) {
 	}
 	// After MaxBodyBytes has its own default: the two are read together,
 	// and a streamed body's bound is the whole one unless it is raised.
-	if c.MaxStreamedBodyBytes == 0 {
+	// Under BodyWhole nothing streams and the field is not read: every
+	// protocol holds a declared length to the larger of the two, so left
+	// raised it would let a request declaring between them pass its head
+	// and get the 100 Continue it asked for, only to be refused 413 once its
+	// body crossed MaxBodyBytes.
+	if c.MaxStreamedBodyBytes == 0 || c.BodyDelivery == BodyWhole {
 		c.MaxStreamedBodyBytes = c.MaxBodyBytes
 	}
 	return c, nil

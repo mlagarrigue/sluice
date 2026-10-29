@@ -53,7 +53,7 @@ func sentSince(t *testing.T, srv *fakeServer, n int) []byte {
 // is fetched in batches, Flush then Sync — the second round trip.
 func TestFetchAutoReadsAKnownSmallStatementInOneWrite(t *testing.T) {
 	srv := &fakeServer{responses: slices.Concat(oneRow(), oneRowWhole())}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	if err := drain(t, conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 8})); err != nil {
 		t.Fatal(err)
@@ -105,7 +105,7 @@ func TestFetchAutoFollowsTheLastResult(t *testing.T) {
 			oneRowCached(),
 			oneRowWhole(),
 		)}
-		conn := NewConn(srv)
+		conn := NewConn(srv, Config{})
 		cfg := QueryConfig{BatchRows: 2}
 
 		if err := drain(t, conn.Query(t.Context(), "SELECT id", nil, cfg)); err != nil {
@@ -143,7 +143,7 @@ func TestFetchAutoForgetsTheCountOfAFailedExecution(t *testing.T) {
 	failed = append(failed, beReadyForQuery()...)
 
 	srv := &fakeServer{responses: slices.Concat(oneRow(), [][]byte{failed}, oneRowCached())}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	cfg := QueryConfig{BatchRows: 8}
 
 	if err := drain(t, conn.Query(t.Context(), "SELECT id", nil, cfg)); err != nil {
@@ -164,7 +164,7 @@ func TestFetchAutoForgetsTheCountOfAFailedExecution(t *testing.T) {
 // FetchBatches is never asked for whole, whatever the cache knows.
 func TestFetchBatchesIsNeverWhole(t *testing.T) {
 	srv := &fakeServer{responses: slices.Concat(oneRow(), oneRowCached())}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	cfg := QueryConfig{BatchRows: 8, Fetch: FetchBatches}
 
 	if err := drain(t, conn.Query(t.Context(), "SELECT id", nil, cfg)); err != nil {
@@ -183,7 +183,7 @@ func TestFetchBatchesIsNeverWhole(t *testing.T) {
 // read as one of them.
 func TestFetchOutOfRangeIsRefused(t *testing.T) {
 	srv := &fakeServer{}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	if err := drain(t, conn.Query(t.Context(), "SELECT id", nil, QueryConfig{Fetch: FetchBatches + 1})); err == nil {
 		t.Error("an unknown Fetch was accepted")
 	}
@@ -205,7 +205,7 @@ func TestOutOfRangeBatchBoundsAreRefused(t *testing.T) {
 		{"BatchBytes", QueryConfig{BatchBytes: maxBatchBytes + 1}},
 	} {
 		srv := &fakeServer{}
-		err := drain(t, NewConn(srv).Query(t.Context(), "SELECT id", nil, tc.cfg))
+		err := drain(t, NewConn(srv, Config{}).Query(t.Context(), "SELECT id", nil, tc.cfg))
 		if err == nil || !strings.Contains(err.Error(), "QueryConfig."+tc.field) {
 			t.Errorf("Query with %+v returned %v, want an error naming %s", tc.cfg, err, tc.field)
 		}
@@ -214,7 +214,7 @@ func TestOutOfRangeBatchBoundsAreRefused(t *testing.T) {
 		}
 
 		srv = &fakeServer{}
-		tx := &Tx{conn: NewConn(srv)}
+		tx := &Tx{conn: NewConn(srv, Config{})}
 		err = tx.Pipeline(t.Context(), []Part{{SQL: "SELECT 1"}}, tc.cfg,
 			func(int, sluice.Batch[Row]) bool { return true })
 		if err == nil || !strings.Contains(err.Error(), "QueryConfig."+tc.field) {

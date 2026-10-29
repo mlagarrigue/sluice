@@ -22,9 +22,11 @@ place.
   COPY, transactions, generated hydrators.
 - [Web](guide/web.md) — the supported path over `net/http`, the gateway,
   diagnostics and remedies.
-- [Experimental](guide/experimental.md) — QUIC and the native request path
-  as stream stages; `net/httpstream` and `pushdown`, now supported.
-  What is promised, and what is not.
+- [Native HTTP](guide/httpstream.md) — `net/httpstream`, HTTP/1.1, 2 and 3
+  read as batches of requests, and `pushdown`, a reader telling its source
+  what it no longer needs. Both supported.
+- [Experimental](guide/experimental.md) — QUIC and the request stages of
+  `web/stream`: what is promised, and what is not.
 
 ## I want to…
 
@@ -61,8 +63,8 @@ place.
 
 - [CHANGELOG](../CHANGELOG.md) — each release: what it adds, fixes or
   breaks.
-- [Migrating from v0.2.2](migration.md) — what to change in code written
-  against the last release.
+- [Migrating to main](migration.md) — what to change in code written
+  against v0.3.0 or v0.2.2.
 
 ## Something is wrong
 
@@ -109,6 +111,9 @@ An integration is requested with the "Integration request" issue template.
 
 - [CONTRIBUTING](../CONTRIBUTING.md) — rules, checks, commit format, releases.
 - [SECURITY](../SECURITY.md) — reporting a vulnerability, privately.
+- [Code of conduct](../CODE_OF_CONDUCT.md) — what everyone here keeps to.
+- A question about using the library, or feedback after trying it: the
+  "Question or feedback" issue template.
 
 ## Reference
 

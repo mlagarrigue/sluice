@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -832,6 +834,435 @@ func TestClientRefusesAPreferredAddressUnderAnEmptyServerCID(t *testing.T) {
 	for _, e := range c.peerCIDs {
 		if e.seq == 1 {
 			t.Errorf("the refused offer's identifier %q was pooled as sequence 1", e.cid)
+		}
+	}
+}
+
+// RFC 9000 §9.5: "an endpoint MUST NOT reuse a connection ID when sending
+// to more than one destination address". The probe of the server's preferred address leaves under the
+// identifier the server offered with it (sequence 1): from that packet on,
+// the identifier is the preferred path's. A Rebind while the probe is in
+// flight takes a fresh identifier for the address in use, and with only
+// sequence 1 beside the one in use there is none — it is refused, rather
+// than sending from the new socket to the original address under the
+// identifier an observer just saw toward the preferred one.
+func TestRebindDuringThePreferredProbeRefusesTheOfferedIdentifier(t *testing.T) {
+	first := &recordingPC{addr: fakeFuzzAddr("pref13:first")}
+	c := newConn(first, fakeFuzzAddr("pref13:peer"), []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+	defer c.Close()
+	installAppSealer(t, c)
+	c.mu.Lock()
+	c.handshakeConfirmed = true
+	c.peerCIDs = append(c.peerCIDs, peerCID{seq: 1, cid: []byte("peercid1")})
+	c.preferred = fakeFuzzAddr("pref13:preferred")
+	c.probePreferredAddressLocked(time.Now())
+	probing := c.pathProbe.target != nil
+	c.mu.Unlock()
+	if !probing {
+		t.Fatal("no probe of the preferred address in flight; the case under test is not reached")
+	}
+	if err := c.Rebind(&recordingPC{addr: fakeFuzzAddr("pref13:second")}); !errors.Is(err, ErrNoFreshConnectionID) {
+		t.Fatalf("Rebind during the probe returned %v, want ErrNoFreshConnectionID: sequence 1 already left toward the preferred address", err)
+	}
+}
+
+// RFC 9000 §9.6.3: "a client that migrates before it has moved to the
+// preferred address SHOULD perform path validation to both the original
+// and preferred server address from the client's new address
+// concurrently", and "if path validation of the server's preferred address
+// succeeds, the client MUST abandon validation of the original address and
+// migrate to using the server's preferred address". A Rebind while the
+// preferred address is probed challenges both from the new socket, each
+// under an identifier never used (§9.5: sequence 1 already left from the
+// old socket), and the preferred address's answer moves the client there.
+// A Rebind used to drop the preferred probe and challenge the original
+// address alone.
+func TestRebindDuringThePreferredProbeValidatesBothAddresses(t *testing.T) {
+	first := &recordingPC{addr: fakeFuzzAddr("pref14:first")}
+	original, preferred := fakeFuzzAddr("pref14:peer"), fakeFuzzAddr("pref14:preferred")
+	c := newConn(first, original, []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+	defer c.Close()
+	installAppSealer(t, c)
+	c.mu.Lock()
+	c.handshakeConfirmed = true
+	for i := 1; i <= 3; i++ {
+		c.peerCIDs = append(c.peerCIDs, peerCID{seq: uint64(i), cid: []byte("peercid" + string(rune('0'+i)))})
+	}
+	c.preferred = preferred
+	c.probePreferredAddressLocked(time.Now())
+	c.mu.Unlock()
+
+	second := &recordingPC{addr: fakeFuzzAddr("pref14:second")}
+	if err := c.Rebind(second); err != nil {
+		t.Fatal(err)
+	}
+	// What left the new socket, by destination: the identifier and the
+	// challenge each datagram carries.
+	sec, err := initialSecrets([]byte("appkeys0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opener, err := newPacketOpener(sec.Client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cids, challenges := map[string]string{}, map[string][]byte{}
+	for _, w := range second.recorded() {
+		h, err := parseShortHeader(append([]byte(nil), w.data...), 8)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload, _, err := opener.Open(h.Raw, h.PNOffset, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		frames, err := parseFrames(nil, payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range frames {
+			if f.Type == framePathChallenge {
+				cids[w.to.String()], challenges[w.to.String()] = string(h.DCID), f.Data
+			}
+		}
+	}
+	toOriginal, toPreferred := cids[original.String()], cids[preferred.String()]
+	if toOriginal == "" || toPreferred == "" {
+		t.Fatalf("challenges from the new socket went to %v; want both %v and %v", cids, original, preferred)
+	}
+	if toOriginal == toPreferred || toPreferred == "peercid1" || toOriginal == "peercid0" {
+		t.Fatalf("challenges under %q (original) and %q (preferred); want two identifiers never used before", toOriginal, toPreferred)
+	}
+
+	// The preferred address answers.
+	response := append(varint.Append(nil, framePathResponse), challenges[preferred.String()]...)
+	if err := c.frames(spaceApplication, response, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !sameAddr(c.peer, preferred) || string(c.dcid) != toPreferred || c.pathProbe.pending {
+		t.Fatalf("after the preferred address answered: peer %v under %q, original still probed %v; want %v under %q, the original's validation abandoned",
+			c.peer, c.dcid, c.pathProbe.pending, preferred, toPreferred)
+	}
+}
+
+// RFC 9000 §21.5.6: "Endpoints SHOULD NOT allow connections or migration to
+// a loopback address if the same service was provided by a service at a
+// non-loopback address." A server's preferred_address is probed by the
+// client with a 1200-byte PATH_CHALLENGE, so an offer of loopback reached
+// from elsewhere, of the unspecified address, of a multicast group or of
+// port 0 — nothing a server can be reached at — is not taken: the client
+// stays where it is. The offered identifier stays in the pool (§5.1.1).
+func TestAnUnusablePreferredAddressIsNotTaken(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		offer *net.UDPAddr
+		taken bool
+	}{
+		{"loopback from a non-loopback server", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 4433}, false},
+		{"the unspecified address", &net.UDPAddr{IP: net.IPv4zero, Port: 4433}, false},
+		{"a multicast group", &net.UDPAddr{IP: net.IPv4(224, 0, 0, 1), Port: 4433}, false},
+		{"port 0", &net.UDPAddr{IP: net.IPv4(198, 51, 100, 7), Port: 0}, false},
+		{"an ordinary address", &net.UDPAddr{IP: net.IPv4(198, 51, 100, 7), Port: 4433}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dcid, scid := []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}
+			peer := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 443}
+			c := assembleConn(&fuzzSink{addr: "pa:self"}, peer, dcid, scid, true, DefaultParameters())
+			t.Cleanup(func() { _ = c.Close() })
+			c.initialDCID = dcid
+			c.peerSCID = dcid // the server's own identifier, not zero-length
+			srv := DefaultParameters()
+			srv.initialSourceCID = dcid
+			srv.originalDCID = dcid
+			srv.preferredAddress = &preferredAddress{ipv4: tc.offer, cid: []byte{9, 9, 9, 9}}
+			if err := c.handlePeerParameters(appendParameters(nil, srv)); err != nil {
+				t.Fatalf("server parameters: %v", err)
+			}
+			c.mu.Lock()
+			taken := c.preferred != nil
+			pooled := slices.ContainsFunc(c.peerCIDs, func(e peerCID) bool { return e.seq == 1 })
+			c.mu.Unlock()
+			if taken != tc.taken {
+				t.Errorf("the offer of %v was taken = %v, want %v", tc.offer, taken, tc.taken)
+			}
+			if !pooled {
+				t.Error("the identifier offered with the address is not pooled as sequence 1")
+			}
+		})
+	}
+}
+
+// RFC 9000 §9.3.2: a migrated path that does not validate falls back to the
+// last validated one. A server that had just followed its client to B, and
+// then received the client's challenge on its preferred socket from B,
+// replaced the migration's probe with one from that socket (§9.6.2); when
+// that one went unanswered, its abandonment cleared the probe and nothing
+// else — the server stayed on B, held to three times what B sent, with no
+// probe left to validate it. The abandonment now reverts as the
+// migration's own would have.
+func TestAbandonedPreferredProbeDoesNotStrandAnUnvalidatedMigration(t *testing.T) {
+	c, _ := newMigratableServer(t, "strand22")
+	pref := &recordingPC{addr: fakeFuzzAddr("strand22:preferred")}
+	tok := make([]byte, 16)
+	for seq, cid := range []string{"cli-cid1", "cli-cid2"} {
+		if err := c.frames(spaceApplication, ncidFrame(uint64(seq+1), 0, []byte(cid), tok), time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, b := fakeFuzzAddr("strand22:peerA"), fakeFuzzAddr("strand22:peerB")
+
+	now := time.Now()
+	rxFromNewAddress(c, b, 1200, true)
+	c.maybeMigrate([]Frame{{Type: framePing}}, now)
+	c.mu.Lock()
+	moved, unvalidated := sameAddr(c.peer, b), c.amplActive
+	c.rxFrom, c.rxVia, c.rxDatagramLen, c.rxHighest = b, pref, 1200, true
+	c.mu.Unlock()
+	if !moved || !unvalidated {
+		t.Fatalf("after B's packet: on B %v, unvalidated %v; want both", moved, unvalidated)
+	}
+	challenge := append(varint.Append(nil, framePathChallenge), 1, 2, 3, 4, 5, 6, 7, 8)
+	if err := c.frames(spaceApplication, challenge, now); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	via := c.pathProbe.via
+	c.mu.Unlock()
+	if via != net.PacketConn(pref) {
+		t.Fatal("the challenge on the preferred socket did not start the server's probe from it")
+	}
+
+	for range pathProbeMaxRetransmits + 2 {
+		c.mu.Lock()
+		now = now.Add(time.Hour)
+		c.pathProbeDeadlineLocked(now)
+		c.mu.Unlock()
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.amplActive && !sameAddr(c.peer, a) {
+		t.Errorf("after the preferred probe was given up: on %v, still under the amplification limit, no probe pending %v; want the validated path %v", c.peer, !c.pathProbe.pending, a)
+	}
+}
+
+// The server's side of the next test: its probe from the preferred socket
+// (§9.6.2) holds an identifier of its own, and a Retire Prior To that
+// takes it with no fresh one left in the pool must stop the probe (§5.1.2)
+// the way its timer stops it — abandoned, and an unvalidated migration
+// reverted to the last validated path (§9.3.2). Clearing only the pending
+// flag left the probe's socket armed and the server held on B, under the
+// amplification limit, with nothing left to validate B.
+func TestRetirePriorToAbandonsTheServerProbeWithNoFreshIdentifier(t *testing.T) {
+	c, _ := newMigratableServer(t, "rpt-via")
+	pref := &recordingPC{addr: fakeFuzzAddr("rpt-via:preferred")}
+	tok := make([]byte, 16)
+	// A runs under sequence 5, so that the Retire Prior To below can take
+	// the probe's identifier and leave the validated path's: the probe is
+	// then given up and the revert has an identifier to return under.
+	for _, f := range []struct {
+		seq uint64
+		cid string
+	}{{5, "cli-cid5"}, {1, "cli-cid1"}, {2, "cli-cid2"}} {
+		if err := c.frames(spaceApplication, ncidFrame(f.seq, 1, []byte(f.cid), tok), time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, b := fakeFuzzAddr("rpt-via:peerA"), fakeFuzzAddr("rpt-via:peerB")
+	c.mu.Lock()
+	onA := string(c.dcid)
+	c.mu.Unlock()
+	if onA != "cli-cid5" {
+		t.Fatalf("A runs under %q; want cli-cid5, the state under test cannot be reached", onA)
+	}
+
+	// The client moves to B, then challenges the preferred socket from B:
+	// the migration takes one fresh identifier, the server's probe from
+	// pref the other.
+	now := time.Now()
+	rxFromNewAddress(c, b, 1200, true)
+	c.maybeMigrate([]Frame{{Type: framePing}}, now)
+	c.mu.Lock()
+	c.rxFrom, c.rxVia, c.rxDatagramLen, c.rxHighest = b, pref, 1200, true
+	c.mu.Unlock()
+	challenge := append(varint.Append(nil, framePathChallenge), 1, 2, 3, 4, 5, 6, 7, 8)
+	if err := c.frames(spaceApplication, challenge, now); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	via, probeCID, unvalidated := c.pathProbe.via, string(c.pathProbe.targetCID), c.amplActive
+	c.mu.Unlock()
+	if via != net.PacketConn(pref) || probeCID == "" || !unvalidated {
+		t.Fatalf("probe from pref %v under %q, unvalidated %v; the state under test cannot be reached", via == net.PacketConn(pref), probeCID, unvalidated)
+	}
+
+	// Sequences 1 and 2 retired: the migration's identifier is replaced by
+	// the one this frame brings, and the probe has no fresh one to move to;
+	// A's sequence 5 stays.
+	if err := c.frames(spaceApplication, ncidFrame(6, 3, []byte("cli-cid6"), tok), now); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.pathProbe.via != nil || c.pathProbe.pending || len(c.pathProbe.targetCID) > 0 {
+		t.Errorf("after Retire Prior To 3: probe from pref %v, pending %v, under %q; want the probe abandoned",
+			c.pathProbe.via != nil, c.pathProbe.pending, c.pathProbe.targetCID)
+	}
+	if !sameAddr(c.peer, a) || c.amplActive || string(c.dcid) != "cli-cid5" {
+		t.Errorf("after the probe was given up: on %v under %q, under the amplification limit %v; want the validated path %v under cli-cid5",
+			c.peer, c.dcid, c.amplActive, a)
+	}
+}
+
+// RFC 9000 §5.1.2: "Upon receipt of an increased Retire Prior To field, the
+// peer MUST stop using the corresponding connection IDs." A probe of the
+// server's preferred address holds an identifier of its own, beside the one
+// in use; a Retire Prior To that takes it moves the probe onto a fresh
+// identifier, or, with none in the pool, gives it up. Until 2026-10-29
+// only the identifier in use was moved: the resends went under the retired
+// one, and the answer moved the client to the preferred address under the
+// identifier the original path had switched to — two addresses under one
+// identifier (§9.5).
+func TestRetirePriorToMovesThePreferredProbeOffTheRetiredIdentifier(t *testing.T) {
+	for _, fresh := range []bool{true, false} {
+		pref := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 2).To4(), Port: 4433}
+		c, pc := newPreferredClient(t, fmt.Sprint("rpt-pref-", fresh), pref)
+		c.mu.Lock()
+		if fresh {
+			c.peerCIDs = append(c.peerCIDs, peerCID{seq: 2, cid: []byte("srv-cid2")}, peerCID{seq: 3, cid: []byte("srv-cid3")})
+		}
+		c.confirmLocked() // the probe leaves for pref under "pref-cid" (sequence 1)
+		c.mu.Unlock()
+
+		// Sequences 0 and 1 retired: the path in use and the probe both lose theirs.
+		seq := uint64(2)
+		if fresh {
+			seq = 4
+		}
+		if err := c.frames(spaceApplication, ncidFrame(seq, 2, fmt.Appendf(nil, "srv-cid%d", seq), make([]byte, 16)), time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		c.mu.Lock()
+		inUse := string(c.dcid)
+		n := len(pc.recorded())
+		c.sendPathChallengeLocked() // what the probe timer does on a resend
+		data := c.pathProbe.data
+		c.mu.Unlock()
+		toPref := ""
+		for _, w := range pc.recorded()[n:] {
+			if sameAddr(w.to, pref) {
+				toPref = string(w.data[1:9])
+			}
+		}
+		switch {
+		case toPref == "pref-cid":
+			t.Errorf("fresh %v: the resend toward the preferred address names \"pref-cid\", retired by Retire Prior To 2", fresh)
+		case fresh && (toPref == "" || toPref == inUse):
+			t.Errorf("fresh %v: the resend went to the preferred address under %q, with %q in use; want an identifier never used", fresh, toPref, inUse)
+		case !fresh && toPref != "":
+			t.Errorf("fresh %v: the probe went on under %q with no fresh identifier; want it given up", fresh, toPref)
+		}
+
+		// The preferred address answers the latest challenge.
+		c.mu.Lock()
+		c.rxFrom = pref
+		c.mu.Unlock()
+		if err := c.frames(spaceApplication, append(varint.Append(nil, framePathResponse), data[:]...), time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		c.mu.Lock()
+		moved, dcid := sameAddr(c.peer, pref), string(c.dcid)
+		c.mu.Unlock()
+		if fresh && (!moved || dcid != toPref) {
+			t.Errorf("fresh %v: after the answer, at the preferred address %v under %q; want it under %q", fresh, moved, dcid, toPref)
+		}
+		if !fresh && moved {
+			t.Errorf("fresh %v: moved to the preferred address under %q, the identifier the original address sends under", fresh, dcid)
+		}
+	}
+}
+
+// The same for §9.6.3's preferred candidate, probed from a Rebind's new
+// socket under its own identifier: a Retire Prior To that takes it moves
+// the candidate onto a fresh one.
+func TestRetirePriorToMovesThePreferredCandidateOffTheRetiredIdentifier(t *testing.T) {
+	first := &recordingPC{addr: fakeFuzzAddr("rpt-cand:first")}
+	original, preferred := fakeFuzzAddr("rpt-cand:peer"), fakeFuzzAddr("rpt-cand:preferred")
+	c := newConn(first, original, []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+	defer c.Close()
+	installAppSealer(t, c)
+	c.mu.Lock()
+	c.handshakeConfirmed = true
+	for i := 1; i <= 5; i++ {
+		c.peerCIDs = append(c.peerCIDs, peerCID{seq: uint64(i), cid: fmt.Appendf(nil, "peercid%d", i)})
+	}
+	c.preferred = preferred
+	c.probePreferredAddressLocked(time.Now())
+	c.mu.Unlock()
+	if err := c.Rebind(&recordingPC{addr: fakeFuzzAddr("rpt-cand:second")}); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	before := string(c.preferredCandidate.cid)
+	c.mu.Unlock()
+	if before == "" {
+		t.Fatal("the Rebind started no preferred candidate; the case under test is not reached")
+	}
+	if err := c.frames(spaceApplication, ncidFrame(6, 4, []byte("peercid6"), make([]byte, 16)), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	after := string(c.preferredCandidate.cid)
+	if !c.preferredCandidate.pending || after == "" {
+		t.Fatalf("the candidate was given up with peercid5 fresh in the pool (it held %q)", before)
+	}
+	pooled := false
+	for _, e := range c.peerCIDs {
+		pooled = pooled || string(e.cid) == after
+	}
+	if !pooled || after == string(c.dcid) {
+		t.Errorf("the candidate probes under %q after Retire Prior To 4, with %q in use; want a pooled identifier never used", after, c.dcid)
+	}
+}
+
+// The peer's transport parameters arm the idle clock at the smaller of the
+// two announced timeouts (RFC 9000 §10.1), and leave it disarmed when
+// neither end announced one: a deadline of "now" there would end a
+// connection that asked never to idle out.
+func TestPeerParametersArmTheIdleClockOnlyWithATimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		local, peer time.Duration
+		want        time.Duration // zero: no deadline
+	}{
+		{"both announce one", 30 * time.Second, 10 * time.Second, 10 * time.Second},
+		{"neither announces one", 0, 0, 0},
+	} {
+		c := newConn(&recordingPC{addr: fakeFuzzAddr("idle:self")}, fakeFuzzAddr("idle:peer"),
+			[]byte("srv-cid0"), []byte("cli-cid0"), true, DefaultParameters())
+		c.initialDCID = []byte("srv-cid0")
+		c.pinPeerSCID([]byte("srv-cid0"))
+		p := DefaultParameters()
+		p.MaxIdleTimeout = tc.peer
+		p.initialSourceCID, p.originalDCID = []byte("srv-cid0"), []byte("srv-cid0")
+		c.mu.Lock()
+		c.idleTimeout, c.idleDeadline = tc.local, time.Time{}
+		c.mu.Unlock()
+		before := time.Now()
+		if err := c.handlePeerParameters(appendParameters(nil, p)); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		c.mu.Lock()
+		deadline := c.idleDeadline
+		c.mu.Unlock()
+		_ = c.Close()
+		switch {
+		case tc.want == 0 && !deadline.IsZero():
+			t.Errorf("%s: idle deadline armed at %v with no timeout announced", tc.name, deadline.Sub(before))
+		case tc.want != 0 && (deadline.Before(before.Add(tc.want)) || deadline.After(time.Now().Add(tc.want))):
+			t.Errorf("%s: idle deadline %v after the parameters, want %v", tc.name, deadline.Sub(before), tc.want)
 		}
 	}
 }

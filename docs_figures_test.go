@@ -187,27 +187,65 @@ func nanos(m []string) float64 {
 	return v * map[string]float64{"ns": 1, "µs": 1e3, "ms": 1e6}[m[2]]
 }
 
-// Every duration a guide or the README quotes is a measurement found in
-// docs/benchmarks.md, within the README's tolerance and whatever the unit it
-// is written in. A figure quoted from memory, or from a session whose table
-// has since been regenerated, has no source: it is either brought to the
-// current measurement or left to the page that holds it.
-func TestGuideFiguresHaveASource(t *testing.T) {
-	page, err := os.ReadFile("docs/benchmarks.md")
-	if err != nil {
-		t.Fatal(err)
+// sections cuts a Markdown page at its headings: each heading's slug, as
+// headingSlugs computes it, holds the text from that heading to the next one
+// of the same or a higher level, its subsections included.
+func sections(page string) map[string]string {
+	type open struct {
+		slug  string
+		level int
+		start int
 	}
+	lines := strings.Split(page, "\n")
+	out := map[string]string{}
+	seen := map[string]int{}
+	var stack []open
+	closeTo := func(level, end int) {
+		for len(stack) > 0 && stack[len(stack)-1].level >= level {
+			o := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			out[o.slug] = strings.Join(lines[o.start:end], "\n")
+		}
+	}
+	inFence := false
+	for i, line := range lines {
+		if strings.HasPrefix(line, "```") {
+			inFence = !inFence
+			continue
+		}
+		text := strings.TrimLeft(line, "#")
+		level := len(line) - len(text)
+		if inFence || level == 0 || !strings.HasPrefix(text, " ") {
+			continue
+		}
+		closeTo(level, i)
+		s := slugOf(text)
+		if n := seen[s]; n > 0 {
+			seen[s] = n + 1
+			s = s + "-" + string(rune('0'+n))
+		} else {
+			seen[s] = 1
+		}
+		stack = append(stack, open{s, level, i})
+	}
+	closeTo(1, len(lines))
+	return out
+}
+
+// measuredIn is every duration a stretch of docs/benchmarks.md states, in
+// nanoseconds: written with its unit, or bare in a table column whose header
+// names the unit once ("ns per call").
+func measuredIn(text string) []float64 {
 	var measured []float64
-	for _, m := range duration.FindAllStringSubmatch(string(page), -1) {
+	for _, m := range duration.FindAllStringSubmatch(text, -1) {
 		measured = append(measured, nanos(m))
 	}
-	// A table may name its unit once, in the header ("ns per call"), and
-	// write bare numbers below it. The unit is bounded by a space rather than
-	// \b, which is ASCII-only and so never matches before "µs".
+	// The unit is bounded by a space rather than \b, which is ASCII-only and
+	// so never matches before "µs".
 	unit := regexp.MustCompile(`(?:^|\s)(ns|µs|ms)\b`)
 	bare := regexp.MustCompile(`^\s*(\d[\d,]*(?:\.\d+)?)\s*$`)
 	var header []string
-	lines := strings.Split(string(page), "\n")
+	lines := strings.Split(text, "\n")
 	for i, line := range lines {
 		if !strings.HasPrefix(line, "|") {
 			header = nil
@@ -228,6 +266,75 @@ func TestGuideFiguresHaveASource(t *testing.T) {
 			}
 		}
 	}
+	return measured
+}
+
+// paragraphs cuts the prose of a Markdown document into the stretches a link
+// is read with: lines up to a blank one, a quote's bare ">" counting as blank,
+// and each list item on its own. Each comes with the number of its first
+// line. Code blocks and tables are left out: in a guide they hold settings
+// and defaults, not measurements.
+func paragraphs(doc string) (starts []int, texts []string) {
+	var cur []string
+	flush := func() {
+		if len(cur) > 0 {
+			texts = append(texts, strings.Join(cur, "\n"))
+			cur = nil
+		}
+	}
+	item := regexp.MustCompile(`^(?:> ?)*\s*(?:[-*]|\d+\.) `)
+	inFence := false
+	for i, line := range strings.Split(doc, "\n") {
+		bare := strings.Trim(line, "> \t")
+		if strings.HasPrefix(bare, "```") {
+			inFence = !inFence
+			flush()
+			continue
+		}
+		if inFence || bare == "" || strings.HasPrefix(bare, "|") {
+			flush()
+			continue
+		}
+		if item.MatchString(line) {
+			flush()
+		}
+		if len(cur) == 0 {
+			starts = append(starts, i+1)
+		}
+		cur = append(cur, line)
+	}
+	flush()
+	return starts, texts
+}
+
+// cited is a link from a document into a section of docs/benchmarks.md.
+var cited = regexp.MustCompile(`benchmarks\.md#([\w-]+)\)`)
+
+// settings are the durations the documents' prose quotes that are conditions
+// or bounds rather than measurements, keyed by file and figure, each with
+// what it is. Anything else written in ns, µs or ms needs its section.
+var settings = map[string]string{
+	"docs/guide/deployments.md 100 ms": "a round-trip time the window arithmetic is worked for, and the delay of the proxy the upload was measured through",
+	"docs/guide/experimental.md 80 ms": "the round-trip time of an emulated path profile",
+	"docs/guide/limits.md 14 ms":       "2^14 ms, the largest max_ack_delay RFC 9000 allows",
+}
+
+// Every duration a guide, the architecture or the README quotes is a
+// measurement of the section of docs/benchmarks.md its paragraph links to,
+// within the README's tolerance and whatever the unit it is written in. A
+// figure quoted from memory, or from a session whose table has since been
+// regenerated, has no source; and one that matches some number elsewhere on
+// the page is no better, which is why the paragraph names where it was read.
+// transferable is what lets a reader use a duration measured on another
+// machine: a ratio, or the date the measurement was taken.
+var transferable = regexp.MustCompile(`×\d|\b20\d\d-\d\d-\d\d\b`)
+
+func TestGuideFiguresHaveASource(t *testing.T) {
+	page, err := os.ReadFile("docs/benchmarks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bySection := sections(string(page))
 	guides, err := filepath.Glob("docs/guide/*.md")
 	if err != nil {
 		t.Fatal(err)
@@ -237,11 +344,149 @@ func TestGuideFiguresHaveASource(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for i, line := range strings.Split(string(b), "\n") {
-			for _, m := range duration.FindAllStringSubmatch(line, -1) {
+		starts, texts := paragraphs(string(b))
+		for p, text := range texts {
+			figures := slices.DeleteFunc(duration.FindAllStringSubmatch(text, -1), func(m []string) bool {
+				_, ok := settings[f+" "+m[0]]
+				return ok
+			})
+			if len(figures) == 0 {
+				continue
+			}
+			var measured []float64
+			links := cited.FindAllStringSubmatch(text, -1)
+			for _, l := range links {
+				s, ok := bySection[l[1]]
+				if !ok {
+					t.Errorf("%s:%d: links to #%s, no section of docs/benchmarks.md", f, starts[p], l[1])
+				}
+				measured = append(measured, measuredIn(s)...)
+			}
+			if len(links) == 0 {
+				t.Errorf("%s:%d: quotes %s and links to no section of docs/benchmarks.md", f, starts[p], figures[0][0])
+				continue
+			}
+			// A duration is this machine's: in the README and a guide it
+			// comes with what transfers — a ratio against the ceiling or the
+			// same bench's reference — or with the day it was measured.
+			if f != "docs/design/architecture.md" && !transferable.MatchString(text) {
+				t.Errorf("%s:%d: quotes %s with no ratio (×N) and no date of measurement beside it", f, starts[p], figures[0][0])
+			}
+			for _, m := range figures {
 				v := nanos(m)
 				if !slices.ContainsFunc(measured, func(w float64) bool { return relative(v, w) <= figureTolerance }) {
-					t.Errorf("%s:%d: %s is in no table or sentence of docs/benchmarks.md", f, i+1, m[0])
+					t.Errorf("%s:%d: %s is in no table or sentence of the section it links to", f, starts[p], m[0])
+				}
+			}
+		}
+	}
+}
+
+// ratio is a multiple as the documents write it: "×6.9", "×11.9". A space
+// after the sign ("× 1200") is arithmetic in a comment, not a measurement.
+var ratio = regexp.MustCompile(`×(\d+(?:\.\d+)?)\b`)
+
+// unsourcedRatios are the multiples the documents quote that are not in
+// docs/benchmarks.md, keyed by file and figure, each with where it comes
+// from instead. Anything else written "×N" needs its row there.
+var unsourcedRatios = map[string]string{
+	"docs/design/architecture.md ×22":                              "DataFusion's published gain, the reference pushdown is compared with",
+	"pushdown/demand.go ×22":                                       "DataFusion's published gain, the reference pushdown is compared with",
+	"docs/design/adr/0018-zero-values-and-mandatory-bounds.md ×11": "a test's measurement, not a benchmark: h2rtt_test.go, 0.48 against 5.5 MB/s, quoted beside Config.InitialWindowSize",
+}
+
+// Every multiple a design document, a decision record, a guide, the README or
+// a godoc of the root module quotes as "×N" is in docs/benchmarks.md —
+// written there as a multiple, or in a column whose header says ratio —
+// within the figures' tolerance. TestGuideFiguresHaveASource holds the
+// durations; a ratio escaped it, and the gateway's gain stayed quoted as ×6.9
+// in five places after the table that re-measured it said 11.9.
+func TestRatiosHaveASource(t *testing.T) {
+	page, err := os.ReadFile("docs/benchmarks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var measured []float64
+	add := func(s string) {
+		if v, err := strconv.ParseFloat(strings.ReplaceAll(s, ",", ""), 64); err == nil {
+			measured = append(measured, v)
+		}
+	}
+	for _, m := range regexp.MustCompile(`× ?(\d[\d,]*(?:\.\d+)?)`).FindAllStringSubmatch(string(page), -1) {
+		add(m[1])
+	}
+	var header []string
+	lines := strings.Split(string(page), "\n")
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "|") {
+			header = nil
+			continue
+		}
+		cells := strings.Split(strings.Trim(line, "|"), "|")
+		if i+1 < len(lines) && strings.HasPrefix(lines[i+1], "|---") {
+			header = cells
+			continue
+		}
+		for c, cell := range cells {
+			if c < len(header) && strings.Contains(strings.ToLower(header[c]), "ratio") {
+				add(strings.TrimSpace(cell))
+			}
+		}
+	}
+
+	files := []string{"README.md"}
+	for _, root := range []string{"docs/design", "docs/guide"} {
+		err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+			if err == nil && !d.IsDir() && strings.HasSuffix(p, ".md") {
+				files = append(files, p)
+			}
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	err = filepath.WalkDir(".", func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if p == "." {
+				return nil
+			}
+			if strings.HasPrefix(d.Name(), ".") || d.Name() == "testdata" {
+				return filepath.SkipDir
+			}
+			if _, err := os.Stat(filepath.Join(p, "go.mod")); err == nil {
+				return filepath.SkipDir // a nested module, outside the promise of the docs
+			}
+			return nil
+		}
+		if strings.HasSuffix(p, ".go") && !strings.HasSuffix(p, "_test.go") {
+			files = append(files, p)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, f := range files {
+		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(b), "\n") {
+			for _, m := range ratio.FindAllStringSubmatch(line, -1) {
+				if _, ok := unsourcedRatios[f+" "+m[0]]; ok {
+					continue
+				}
+				v, err := strconv.ParseFloat(m[1], 64)
+				if err != nil {
+					continue
+				}
+				if !slices.ContainsFunc(measured, func(w float64) bool { return relative(v, w) <= figureTolerance }) {
+					t.Errorf("%s:%d: %s is in no multiple or ratio column of docs/benchmarks.md", f, i+1, m[0])
 				}
 			}
 		}

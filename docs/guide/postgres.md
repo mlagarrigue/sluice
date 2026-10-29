@@ -1,5 +1,7 @@
 # PostgreSQL
 
+A word you do not know is likely in the [glossary](../glossary.md).
+
 ## What this is about
 
 PostgreSQL is a server: your program talks to it over a network
@@ -46,7 +48,7 @@ encrypted. The context bounds the dial and the handshake, nothing else:
 once `Connect` has returned, nothing of it stays on the connection, and a
 query run an hour later is bounded by its own context alone.
 
-> **In plain terms: the recipe.** `Connect` does not take a socket but a
+> **In plain words: the recipe.** `Connect` does not take a socket but a
 > function that knows how to open one. That is because it needs one more
 > than once: cancelling a running query goes through a second connection to
 > the same server, opened the same way.
@@ -65,7 +67,7 @@ Demanding more of the server — that it ask for a password, that the proof
 be bound to its certificate — is set further down, in
 [Demanding more of authentication](#demanding-more-of-authentication).
 
-> **In plain terms: no pool.** A *pool* is a reserve of open connections
+> **In plain words: no pool.** A *pool* is a reserve of open connections
 > shared by everyone. There is none here, because batching calls
 > (`gateway`, see [Web](web.md)) does with **one** connection what a pool
 > does with sixty-four, and how many connections to open is a decision for
@@ -149,7 +151,7 @@ program's memory is bounded by the size of the batch, not of the result:
 that is what makes a ten-million-row result readable. The price: one round
 trip per batch.
 
-> **In plain terms: one round trip for a small read.** A read that fits in
+> **In plain words: one round trip for a small read.** A read that fits in
 > one batch (a row by its identifier) costs a single round trip from its
 > second execution on, with nothing to set. The connection keeps the
 > queries it has seen (up to 512, prepared on the server;
@@ -157,8 +159,9 @@ trip per batch.
 > the cache off) and remembers how
 > many rows the last execution returned: if they fit in one batch, the
 > query asks for everything at once. The first execution, or a query that
-> returned more than a batch, is read batch by batch. What this gives up,
-> once: a query that is usually small but, for this particular parameter,
+> returned more than a batch, is read batch by batch.
+>
+> What this gives up, once: a query that is usually small but, for this particular parameter,
 > returns millions of rows, and that you stop reading midway. The server
 > was told to produce everything; on a connection opened by `Connect`,
 > outside a transaction, a query that starts with `SELECT`, `VALUES` or
@@ -168,14 +171,28 @@ trip per batch.
 > is read to the end before the connection can be used again, because
 > cancelling it would undo what it wrote, or the whole transaction. A
 > `SELECT` that calls a function which writes loses those writes on the
-> stop: read it with `FetchBatches`. `QueryConfig.Fetch`
-> forces the choice: `FetchAll` asks for everything from the first
+> stop: read it with `FetchBatches`.
+>
+> `QueryConfig.Fetch` forces the choice: `FetchAll` asks for everything from the first
 > execution, `FetchBatches` always reads batch by batch.
 
 > **A round-trip trap.** If you expect one row and ask for `BatchRows: 1`,
 > the server sends the row then waits, because it cannot know there is no
 > other; your program asks again, and pays a round trip to learn there is
 > nothing. Ask for one more than you expect.
+
+### Query settings
+
+`QueryConfig`, the last argument of `Query`:
+
+| Field | Zero | Bounds | What it sets |
+|---|---|---|---|
+| `BatchRows` | `sluice.DefaultBatchSize` | ≥ 0 | rows per batch, and rows asked of the server at a time |
+| `BatchBytes` | 64 MiB | 0 to 1 GiB | bytes of values per batch; a wider row travels alone |
+| `Fetch` | `FetchAuto` | | everything at once when the statement fits one batch, in batches otherwise |
+| `Demand` | none | exclusive of `FetchAll` | what the consumer no longer needs (a limit, a lower bound) |
+| `KeyParam` | the bound is not pushed down | 1-based | the parameter the demand's lower bound replaces |
+| `Tag` | nothing copied | | receives the command tag, read once the source is consumed |
 
 ## Decoding
 
@@ -226,6 +243,19 @@ missing is listed in [Limits](limits.md), not discovered at use.
 | `macaddr`, `macaddr8` | `[6]byte`, `[8]byte` | `Macaddr`, `Macaddr8` | — | — | — |
 | `bit`, `varbit` | `Bits` | `Bits` | — | — | — |
 
+Each type's OID — the number the server names it by — is `OIDX` in `pgtype`,
+and `OIDXArray` for its array, after the same X; the types that share an
+X have one each — `OIDVarchar`, `OIDBPChar` (char(n)) and `OIDName` beside
+`OIDText`, `OIDBit` and `OIDVarbit` for `Bits`. A few values are
+special. A timestamp, timestamptz or date of `infinity` or `-infinity`
+decodes to `pgtype.InfinityTime()` or `NegInfinityTime()`, and those two
+encode back to it; compare them with `Equal`. A `Numeric` carries a
+`NumericSign`: `NumericPositive`, `NumericNegative`, or one of the
+non-numbers `NumericNaN`, `NumericPosInf`, `NumericNegInf`. `TimeOfDayFrom`
+builds a `TimeOfDay` from a `time.Time`, dropping the date and the zone and
+truncating to the server's microsecond. And `JSONBVersion` is the version
+byte a binary `jsonb` starts with; any other is refused.
+
 **NULL has one form in the connector: `pgtype.Null[T]`** — the value beside a
 `Valid` bit, no pointer, so no allocation. The nullable arrays carry
 `[]Null[T]`, and a generated hydrator (next section) fills a
@@ -234,7 +264,7 @@ zero; `ScanNulls` gives the mask of a column that may hold one. In your own
 structs, `*T` is accepted too, because the struct is yours; it costs the
 allocation `Null[T]` does not.
 
-> **In plain terms: `numeric`.** A `numeric(12,2)` column is chosen
+> **In plain words: `numeric`.** A `numeric(12,2)` column is chosen
 > precisely when a floating-point number would lose something (cents).
 > Sluice.go keeps those values **exact**, and every lossy conversion is
 > named: `n.Float64()` says what it does; `n.String()` renders `10.00`, not
@@ -288,11 +318,11 @@ position, and checks the **types**: if a migration changed a column from
 when the result opens, not in the middle of a batch as plausible, wrong
 values. `HydrateOrder` then fills a slice from each batch.
 
-> **In plain terms.** The generated file is committed with your code, and a
+> **In plain words.** The generated file is committed with your code, and a
 > test regenerates it and compares: if someone changes the struct without
 > rerunning the generator, the build fails instead of leaving a silent
 > difference. Measured: 54 ns per row for six columns
-> ([the row](../benchmarks.md#joins-and-hydration-in-isolation)). A `*T` field costs
+> ([the row](../benchmarks.md#joins-and-hydration-in-isolation), 2026-10-23, one laptop under WSL2). A `*T` field costs
 > one allocation per row (the pointer); a `pgtype.Null[T]` field costs
 > none, which is why it is the form to prefer when rows are many.
 
@@ -329,11 +359,18 @@ from cleaning up in the **whole** database while it lasts — your other
 applications slow down without knowing why. By writing `RowsPerTx:
 100_000`, you say every how many rows the database commits.
 
-> **In plain terms: at-least-once.** If the load is interrupted after its
+> **In plain words: at-least-once.** If the load is interrupted after its
 > third transaction, the first three are in the database and nothing says
 > where it stopped. It is up to you to make reloading harmless (with a
 > unique key, for instance). And index the table **after** the COPY, not
 > during: about twice as fast.
+
+`CopyConfig`:
+
+| Field | Zero | Bounds | What it sets |
+|---|---|---|---|
+| `RowsPerTx` | — (required) | > 0 | rows per transaction, at least (a floor, not a cap) |
+| `ChunkBytes` | 64 KiB | ≥ 0 | bytes gathered into one CopyData message |
 
 ### Retail: transactions
 
@@ -367,6 +404,14 @@ connection is the worst outcome. A stream obtained from `tx.Query` is read
 **before** the `Commit`; afterwards it refuses to run rather than running
 outside the transaction under nobody's identity.
 
+`TxConfig`, the argument of `Begin`:
+
+| Field | Zero | Bounds | What it sets |
+|---|---|---|---|
+| `Isolation` | the server's default (`IsolationDefault`) | `IsolationReadCommitted`, `IsolationRepeatableRead`, `IsolationSerializable` | the isolation level |
+| `ReadOnly` | read-write | | opens the transaction READ ONLY |
+| `Timeout` | no bound | > 0 to bound | statement_timeout for the transaction's lifetime |
+
 ## Securing and controlling the connection
 
 What follows is for the day you need it: a server that must prove more than
@@ -392,7 +437,7 @@ whose certificate is signed by an algorithm with no hash, Ed25519, for
 which the binding is undefined (RFC 5929 §4.1). The default refuses that
 server rather than fall back without saying so.
 
-> **In plain terms: channel binding.** With SCRAM alone, the server proves
+> **In plain words: channel binding.** With SCRAM alone, the server proves
 > it knows your password and you prove you know it too, but neither side
 > proves *which* connection the proof was made on. An attacker who
 > terminates TLS between you and the server can relay the exchange. Channel
@@ -452,7 +497,7 @@ PostgreSQL. A server at 16 or older does not understand this form and fails
 the handshake: it only fits when you know which server is on the other
 side; otherwise, `DialTLS`.
 
-> **In plain terms: ALPN.** A label the client slips into the TLS handshake
+> **In plain words: ALPN.** A label the client slips into the TLS handshake
 > to say which protocol it will speak next (`h2` for HTTP/2, `postgresql`
 > here). Without it, a server that accepts TLS directly could be fooled by a
 > client that believes it is talking to something else; the label closes
@@ -536,7 +581,9 @@ the part in progress fails, the following ones do not run, and `Pipeline`
 returns the context's error next to `ErrPipelineAborted`, the transaction
 aborted as after any failure of a part.
 
-**When nothing confirms.** `Config.CancelTimeout` (5 seconds by default)
+#### When nothing confirms
+
+`Config.CancelTimeout` (5 seconds by default)
 bounds the three steps together. If the recipe fails, or if the server does
 not close in time, the package no longer knows where the request is: lost,
 or still on its way to the server, where it would cancel the statement
@@ -546,6 +593,17 @@ the context's error with `ErrConnBroken`: the connection is no longer good,
 open another. `Config.Logger` (`slog.Default()` if nil) receives a warning
 that says why.
 
+#### When the confirmation is not enough
+
+The close of the second
+connection says the signal reached the server, not that the statement is
+over: the server interrupts it at its next check, then answers on the main
+connection. If it never answers — a server that goes silent after
+confirming — nothing bounded your call any more. So the statement still
+has `CancelTimeout` after the confirmation to end; past that, the main
+connection is closed and the call returns what it does above: the
+context's error with `ErrConnBroken`, and the warning.
+
 One case stands apart: the statement finished just before the close
 reached it. The call then returns its real result (`nil`, the rows
 delivered) and it is the next call that finds `ErrConnBroken`. The warning,
@@ -553,7 +611,9 @@ with `statement_completed=true`, is the only trace of the failed
 cancellation. The reason: an `INSERT` reported as failed after being
 committed would be replayed by the caller, and the row would exist twice.
 
-**The recipe does the cancelling.** Since cancellation goes through the
+#### The recipe does the cancelling
+
+Since cancellation goes through the
 recipe, it has the recipe's properties. With `DialTCP`, the cancellation
 secret crosses the network in cleartext; anyone who reads it can cancel
 this session's queries until it closes. That is harmless on a loopback:
@@ -606,7 +666,7 @@ A `Conn` built by `NewConn` has no recipe, so no automatic cancellation:
 it is up to you to open the second connection and call `CancelRequest` with
 `conn.CancelKey()`.
 
-> **In plain terms: an advisory cancellation.** The CancelRequest is a
+> **In plain words: an advisory cancellation.** The CancelRequest is a
 > request, not an order. The server looks at it at moments of its choosing
 > (checkpoints scattered through its code, between two rows read for
 > instance) and a statement that was finishing finishes: the answer may then
@@ -650,7 +710,7 @@ for b := range src.Stream() {
 return src.Err()
 ```
 
-> **In plain terms: acknowledging.** The server keeps every change until you
+> **In plain words: acknowledging.** The server keeps every change until you
 > call `Ack` with a position past it. Acknowledge after the work is done, not
 > before: a reader that stops in between gets the unacknowledged changes again
 > when it starts over, which is safe; a reader that acknowledged first would
@@ -658,10 +718,25 @@ return src.Err()
 > log growing, so drop a slot you no longer use
 > (`SELECT pg_drop_replication_slot('orders_slot')`).
 
+A position is an `LSN`; `postgres.ParseLSN` reads one as PostgreSQL writes
+it (`0/16B3748`, the `confirmed_flush_lsn` column of `pg_replication_slots`),
+for a `ReplicationConfig.Start` taken from somewhere else than the slot.
+
 A transaction arrives as a `Begin`, its row changes and a `Commit`, and
 nothing of it before the server has committed it. The values are binary and
 decode with `pgtype`, like a query's; a `NULL` has `Status` `ValueNull`. The
 design is in [ADR 0023](../design/adr/0023-logical-replication.md).
+
+`ReplicationConfig`, the argument of `Replicate`:
+
+| Field | Zero | Bounds | What it sets |
+|---|---|---|---|
+| `Slot` | — (required) | ≤ 63 bytes | the logical slot, created with pgoutput |
+| `Publications` | — (required) | ≤ 63 bytes each | the publications whose tables are streamed |
+| `Start` | the slot's `confirmed_flush_lsn` | | the position to stream from |
+| `BatchChanges` | `sluice.DefaultBatchSize` | ≥ 0 | changes per batch |
+| `BatchBytes` | 64 MiB | 0 to 1 GiB | bytes of messages per batch |
+| `StatusInterval` | 10 s | ≥ 0 | how often, at most, the acknowledged position is reported |
 
 ### Signals: LISTEN and NOTIFY
 
@@ -687,7 +762,7 @@ for b := range src.Stream() {
 return src.Err()
 ```
 
-> **In plain terms: a signal, not a log.** A notification sent while nobody
+> **In plain words: a signal, not a log.** A notification sent while nobody
 > listens is gone, and nothing is replayed after a restart: use it to say
 > "look at the table", and read what changed from the table (or from
 > logical replication, above). And keep reading: the server queues what
@@ -695,6 +770,13 @@ return src.Err()
 > is full it is the *senders'* transactions that fail.
 
 The design is in [ADR 0024](../design/adr/0024-listen-notify.md).
+
+`ListenConfig`, the argument of `Listen`:
+
+| Field | Zero | Bounds | What it sets |
+|---|---|---|---|
+| `Channels` | — (required) | ≤ 63 bytes each | the channels listened to, case included |
+| `BatchNotifications` | `sluice.DefaultBatchSize` | ≥ 0 | notifications per batch |
 
 ## What is not there
 
@@ -717,7 +799,8 @@ server), 348 µs against 363 for a thousand keys in `= ANY` with
 `FetchAll`, a wide scan 4% slower (9.8 ms against 9.4) but in 23
 allocations against 280,008, and a faster COPY (7.3 ms against 8.3). The
 last three figures are those of the table re-measured on 2026-10-19; the
-rows and the method: [Measurements](../benchmarks.md).
+rows and the method:
+[Measurements](../benchmarks.md#connector-against-pgx--libpq--databasesql).
 
 ## You can now
 

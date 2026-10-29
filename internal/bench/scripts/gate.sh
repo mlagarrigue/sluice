@@ -215,8 +215,29 @@ if ! grep -qE "(faster|SLOWER|noise)" <<<"$out"; then
   echo "either the base ref predates the gated set, or the harness is not running — check before trusting a clean run"
   exit 1
 fi
+# A SLOWER name is measured again with both binaries rebuilt at another
+# function alignment, which moves every address in them, and fails the gate
+# only if it is SLOWER there too. A regression costs the same work whatever
+# the layout; what the layout alone does, a second layout does not repeat.
+# Two binaries that differ only where the code changed still place the
+# unchanged code elsewhere: d4a8182, whose diff touched Split alone, read
+# JoinTail 5.9% slower on the runner against 1e71d85 with the sign test
+# unanimous, where the same pair read 3.5% faster on a laptop. A replayed
+# run (GATE_INPUT) has no binaries to rebuild and fails on the first pass.
 if grep -q "SLOWER" <<<"$out"; then
-  echo "regression gate: at least one benchmark is SLOWER than $BASE (sign test)"
-  exit 1
+  if [ -n "$REPLAY" ]; then
+    echo "regression gate: at least one benchmark is SLOWER than $BASE (sign test)"
+    exit 1
+  fi
+  slower="$(grep "SLOWER" <<<"$out" | awk '{ print $1 }' | sed -E 's|/.*||; s/-[0-9]+$//' | sort -u | sed 's/$/$/' | paste -sd'|')"
+  echo "measuring again under another layout (-funcalign=128): $slower"
+  again="$(FUNCALIGN=128 "$ROOT/internal/bench/scripts/compare.sh" "$slower" "$ROUNDS" "$BASE")"
+  echo "$again"
+  if grep -q "SLOWER" <<<"$again"; then
+    echo "regression gate: at least one benchmark is SLOWER than $BASE under two layouts (sign test)"
+    exit 1
+  fi
+  echo "regression gate: what read SLOWER under one layout did not under the other — the layout, not the code"
+  exit 0
 fi
 echo "regression gate: no benchmark slower than $BASE"

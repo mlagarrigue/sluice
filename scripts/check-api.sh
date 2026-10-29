@@ -95,6 +95,10 @@ stable_breaks() {
     # A stable package's own experimental symbols (ADR 0021), listed with the
     # check that holds the list to their documentation.
     grep -v '^#' scripts/api-experimental.txt | grep -qxF "$symbol" && continue
+    # A listed type takes its fields and methods with it: apidiff names them
+    # pkg.T.F, pkg.(*T).M and, for a generic type, pkg.(*T[P, Q]).M.
+    owner=$(echo "$symbol" | sed -E -e 's/^(.*)\.\(\*?([A-Za-z0-9_]+)(\[[^]]*\])?\)\.[A-Za-z0-9_]+$/\1.\2/' -e t -e 's/^(.*\.[A-Za-z0-9_]+)\.[A-Za-z0-9_]+$/\1/')
+    [ "$owner" != "$symbol" ] && grep -v '^#' scripts/api-experimental.txt | grep -qxF "$owner" && continue
     echo "$line"
   done
 }

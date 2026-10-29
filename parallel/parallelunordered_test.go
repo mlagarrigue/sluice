@@ -8,6 +8,7 @@ import (
 	"testing/synctest"
 
 	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/internal/streamtest"
 )
 
 func TestParallelUnordered(t *testing.T) {
@@ -57,8 +58,8 @@ func TestParallelUnorderedOneIsInlineAndOrdered(t *testing.T) {
 	}
 }
 
-// The S14 composition: unordered fan-out downstream of a buffer-reusing
-// upstream must be race-free and sum correctly.
+// The architecture's S14 composition: unordered fan-out downstream of a
+// buffer-reusing upstream must be race-free and sum correctly.
 func TestParallelUnorderedCopiesInputBatch(t *testing.T) {
 	const n = 1 << 14
 	src := make([]int64, n)
@@ -199,7 +200,7 @@ func TestParallelUnorderedStopDuringTailDrain(t *testing.T) {
 			if panics {
 				want = "in flight"
 			}
-			if recovered != want {
+			if recovered := streamtest.Relayed(recovered); recovered != want {
 				t.Errorf("recovered %v, want %v", recovered, want)
 			}
 			if n := live.Load(); n != 0 {

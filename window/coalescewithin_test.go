@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/internal/streamtest"
 )
 
 // Full batches are emitted on size, exactly like sluice.Coalesce, whatever the
@@ -151,8 +152,8 @@ func TestCoalesceWithinSplitsLargeBatches(t *testing.T) {
 	}
 }
 
-// S14: composed downstream of a buffer-reusing operator, every element must
-// arrive intact — the producer copies at the hand-off.
+// The architecture's S14: composed downstream of a buffer-reusing operator,
+// every element must arrive intact — the producer copies at the hand-off.
 func TestCoalesceWithinCopiesInputBatch(t *testing.T) {
 	const n = 1 << 13
 	src := make([]int64, n)
@@ -214,7 +215,7 @@ func TestCoalesceWithinPropagatesSourcePanic(t *testing.T) {
 
 		func() {
 			defer func() {
-				if r := recover(); r != "source boom" {
+				if r := streamtest.Relayed(recover()); r != "source boom" {
 					t.Errorf("recovered %v, want the source's panic", r)
 				}
 			}()
@@ -337,7 +338,7 @@ func TestCoalesceWithinEarlyStopStillRaisesSourcePanic(t *testing.T) {
 					if panics {
 						want = "source boom"
 					}
-					if recovered != want {
+					if recovered := streamtest.Relayed(recovered); recovered != want {
 						t.Errorf("recovered %v, want %v", recovered, want)
 					}
 				})

@@ -3,8 +3,12 @@
 #
 #   scripts/check.sh
 #
-# Stops at the first failure and prints that step's output only; a passing
-# step prints its name. The tools are the pinned versions CI uses; the
+# Stops at the first failure of the root module's steps and prints that
+# step's output only; a passing step prints its name. The nested modules and
+# the hygiene check are independent of each other, so they all run whatever
+# one of them gives, each failure printed, and the script fails at the end:
+# a red that belongs to the machine (a load generator's test under a loaded
+# host) must not hide whether the audit or the hygiene check passes. The tools are the pinned versions CI uses; the
 # devcontainer installs them, `go install` does elsewhere (see
 # CONTRIBUTING.md).
 set -eu
@@ -13,8 +17,16 @@ cd "$(dirname "$0")/.."
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
 
-# step <name> <command...>: run quietly, show the output on failure.
+# step <name> <command...>: run quietly, show the output on failure and
+# stop there.
 step() {
+  check "$@"
+  [ "$failed" -eq 0 ] || exit 1
+}
+
+# check <name> <command...>: as step, but the steps after it still run.
+failed=0
+check() {
   name=$1
   shift
   printf '## %s' "$name"
@@ -23,7 +35,7 @@ step() {
   else
     echo " FAILED"
     cat "$log" >&2
-    exit 1
+    failed=1
   fi
 }
 
@@ -75,7 +87,8 @@ step format format
 step lint golangci-lint run ./...
 step test go test -race -shuffle=on ./...
 for m in interop benchmarks comparison/sluice comparison/loadgen audit; do
-  step "nested $m" nested "$m"
+  check "nested $m" nested "$m"
 done
-step hygiene scripts/check-hygiene.sh
+check hygiene scripts/check-hygiene.sh
+[ "$failed" -eq 0 ] || exit 1
 echo "ok"

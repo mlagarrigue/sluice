@@ -7,9 +7,6 @@ import (
 	"time"
 )
 
-// OIDInterval is PostgreSQL's interval.
-const OIDInterval uint32 = 1186
-
 // intervalSize is microseconds, days, months — in that order on the wire.
 const intervalSize = 16
 
@@ -48,7 +45,8 @@ type Interval struct {
 	Micros int64
 }
 
-// AddTo returns t advanced by the interval, in t's own location.
+// AddTo returns t advanced by the interval, in t's own location, as the
+// server computes timestamp + interval.
 //
 // The order is the one PostgreSQL uses: months, then days, then the
 // microseconds. It matters — adding a month to 31 January and then a day is 1
@@ -56,11 +54,28 @@ type Interval struct {
 // this arithmetic by hand has to pick an order too, and picking a different
 // one from the server is a difference that appears only on month ends.
 //
-// Calendar arithmetic is [time.Time.AddDate]'s, so a daylight-saving change in
-// t's location is handled by the standard library rather than by a constant
-// here.
+// The months move the calendar month and keep the day of the month, cut to
+// the last day of the month reached: 31 January plus one month is 29 February
+// in a leap year and 28 February otherwise, 31 March plus one month is 30
+// April — the server's rule, not [time.Time.AddDate]'s, which carries the
+// surplus into the next month (2 March). The days then move the date on the
+// calendar, keeping the wall-clock time, so a daylight-saving change in t's
+// location is handled by the standard library rather than by a constant here.
 func (iv Interval) AddTo(t time.Time) time.Time {
-	t = t.AddDate(0, int(iv.Months), int(iv.Days))
+	if iv.Months != 0 {
+		y, m, d := t.Date()
+		months := y*12 + int(m) - 1 + int(iv.Months)
+		y, m = months/12, time.Month(months%12)
+		if m < 0 {
+			y, m = y-1, m+12
+		}
+		m++
+		// Day 0 of the next month is the last day of this one.
+		d = min(d, time.Date(y, m+1, 0, 0, 0, 0, 0, time.UTC).Day())
+		hh, mm, ss := t.Clock()
+		t = time.Date(y, m, d, hh, mm, ss, t.Nanosecond(), t.Location())
+	}
+	t = t.AddDate(0, 0, int(iv.Days))
 
 	// The microseconds are added through Unix seconds rather than as a
 	// [time.Duration], which counts nanoseconds in an int64 and therefore
@@ -105,8 +120,10 @@ func (iv Interval) Duration() (d time.Duration, ok bool) {
 	return time.Duration(sum), true
 }
 
-// String renders the interval the way PostgreSQL's default IntervalStyle does,
-// which is what makes a failing test readable.
+// String renders the interval's three fields as they are stored — months,
+// days, microseconds, as in "14mon 3d 14706789000us" — which is what makes a
+// failing test readable. It is not PostgreSQL's IntervalStyle output
+// ("1 year 2 mons 3 days 04:05:06.789") for the same value.
 func (iv Interval) String() string {
 	return fmt.Sprintf("%dmon %dd %dus", iv.Months, iv.Days, iv.Micros)
 }

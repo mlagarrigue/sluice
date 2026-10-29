@@ -57,7 +57,9 @@ import (
 //   - **The target is raw and origin-form.** It begins with "/", the query is
 //     still attached, and nothing has been percent-decoded — decoding before
 //     the handler decides what a segment means is how two layers route one
-//     request differently. Other target forms are refused at the parser.
+//     request differently. The one other form is the asterisk "*", on an
+//     OPTIONS request only (RFC 9112 §3.2.4: the server as a whole, not a
+//     resource on it); every other target form is refused at the parser.
 //   - **Header names keep the case the protocol sent.** HTTP/1.1 preserves
 //     what the client wrote; HTTP/2 and HTTP/3 enforce lowercase on the wire.
 //     A handler therefore matches names case-insensitively, which is what
@@ -423,7 +425,7 @@ func serveConn(ctx context.Context, c *prefixConn, st *connState, cfg Config, ha
 		res, err := apply(call, handle, b, cfg.EarlyData)
 		call.returned()
 		if body != nil {
-			body.closed = true
+			body.closed.Store(true)
 			if !body.done {
 				// The body was left unread, or broke: the next request is
 				// behind it, so this response is the connection's last.
@@ -1045,7 +1047,10 @@ func (k *streamCalls[K]) release(x *batchCtx, ids []K) {
 // the wake-up of an idle thread the watch's goroutine needs, 24 µs on a
 // GitHub Linux runner (serial: 46 µs watched, 23 plain). Starting it later
 // — a timer, so that only slow handlers pay — was measured and costs more:
-// arming a timer wakes the network poller. The read is [watchPeer]'s, whose
+// arming a timer wakes the network poller. Keeping one reader for the
+// connection's life was measured too, and costs more again: every request,
+// watched or not, then pays the wake-up one at a time (15.5 to 98.4 µs
+// serial, ADR 0008). The read is [watchPeer]'s, whose
 // bytes are put back for the request reader, and it ends when the handler
 // returns: a streamed response has its own watch.
 //
@@ -1307,6 +1312,14 @@ func streamedIn(res []Response) bool {
 // no such repair: a 500 appended to a half-written body would be read as
 // body bytes, so a mid-stream write failure closes the connection with
 // nothing more said.
+//
+// writeStreamedBatch runs in this order: prepare the keep-alive field and the
+// 500 that answers a refused response; then each response of the batch —
+// checked; a buffered one appended to buf; a streamed one has the buffered
+// responses before it flushed with its own header, then its producer pulled at
+// the socket's pace, chunk by chunk or delimited by the close, a panic in it
+// closing the connection; and last, the buffered responses after the last
+// streamed one, in one write.
 func writeStreamedBatch(c *prefixConn, st *connState, cfg Config, requests []Request, res []Response, buf []byte) (_ []byte, closed bool, _ error) {
 	var field [keepAliveFieldMax]byte
 	keepAlive := appendKeepAlive(field[:0], cfg.IdleTimeout)

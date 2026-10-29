@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"fmt"
 	"net"
+	"slices"
 	"time"
 
 	"github.com/mlagarrigue/sluice/internal/varint"
@@ -48,7 +49,7 @@ const defaultRetryTokenTTL = 10 * time.Second
 // The same register records the 0-RTT tickets an [earlyGate] admitted, with
 // failClosed set: there a full register refuses the next entry instead of
 // forgetting the oldest, since a 0-RTT refused costs the client a round
-// trip and a replay accepted breaks RFC 8446 §8. That one is called with
+// trip and a replay accepted breaks RFC 9846 §8. That one is called with
 // the gate's own mu held.
 type spentTokens struct {
 	byID       map[string]time.Time // identifier → when it may be forgotten
@@ -65,11 +66,19 @@ type spentTokens struct {
 // takes that many Retry tokens consumed by connections within one TTL.
 const defaultMaxSpentRetryTokens = 1 << 14
 
-// consume records newSCID's token as spent until expiry and reports whether
-// it was still unspent — false is a replay, or a full failClosed register. now is the caller's clock, so
-// expiries stay in insertion order and the sweep below stops at the first
-// live one.
+// consume records newSCID's token as spent for ttl from now and reports
+// whether it was still unspent — false is a replay, or a full failClosed
+// register. now is the caller's clock, so expiries stay in insertion order
+// and the sweep below stops at the first live one.
 func (s *spentTokens) consume(newSCID []byte, now time.Time) bool {
+	return s.consumeUntil(newSCID, now, now.Add(s.ttl))
+}
+
+// consumeUntil is consume with the expiry given: an earlyGate entry
+// expires with its ticket, on the ticket's clock (earlyGate.eligible). Such
+// expiries are not in insertion order, so an expired entry may wait behind
+// a live one for the sweep — kept longer, never shorter, and within max.
+func (s *spentTokens) consumeUntil(newSCID []byte, now, expiry time.Time) bool {
 	if s.byID == nil {
 		s.byID = make(map[string]time.Time)
 	}
@@ -88,17 +97,33 @@ func (s *spentTokens) consume(newSCID []byte, now time.Time) bool {
 		delete(s.byID, s.order[0])
 		s.order = s.order[1:]
 	}
-	s.byID[id] = now.Add(s.ttl)
+	s.byID[id] = expiry
 	s.order = append(s.order, id)
 	return true
 }
 
-// AppendRetryPacket writes a Retry packet (RFC 9000 §17.2.5): dcid is the
+// forget drops an entry consume recorded, freeing its identifier and its
+// slot: an admission that was reserved and not used (earlyGate.release).
+// Linear in the register, which is bounded by max and walked once per
+// release — a resumption that offered no 0-RTT, a handshake that failed —
+// never per packet.
+func (s *spentTokens) forget(id []byte) {
+	k := string(id)
+	if _, ok := s.byID[k]; !ok {
+		return
+	}
+	delete(s.byID, k)
+	if i := slices.Index(s.order, k); i >= 0 {
+		s.order = slices.Delete(s.order, i, i+1)
+	}
+}
+
+// appendRetryPacket writes a Retry packet (RFC 9000 §17.2.5): dcid is the
 // identifier to address it to (the client's own SCID from the Initial it
 // answers), newSCID is the identifier the client should use as its DCID
 // from here on, odcid is that Initial's destination identifier (needed only
 // for the integrity tag, RFC 9001 §5.8 — it does not appear in the packet
-// itself), and token is what AppendRetryToken produced.
+// itself), and token is what appendRetryToken produced.
 func appendRetryPacket(dst, dcid, newSCID, odcid, token []byte) []byte {
 	start := len(dst)
 	// Long header, fixed bit set, type 11 (Retry). The four low bits are
@@ -108,7 +133,7 @@ func appendRetryPacket(dst, dcid, newSCID, odcid, token []byte) []byte {
 	// to depend on one value.
 	var unused [1]byte
 	_, _ = rand.Read(unused[:])                                         // never fails since Go 1.24
-	dst = append(dst, 0xf0|unused[0]&0x0f, 0, 0, 0, 1, byte(len(dcid))) //nolint:gosec // G115: a connection ID is at most 20 bytes; Version1
+	dst = append(dst, 0xf0|unused[0]&0x0f, 0, 0, 0, 1, byte(len(dcid))) //nolint:gosec // G115: a connection ID is at most 20 bytes; version1
 	dst = append(dst, dcid...)
 	dst = append(dst, byte(len(newSCID))) //nolint:gosec // G115: a connection ID is at most 20 bytes
 	dst = append(dst, newSCID...)
@@ -125,7 +150,7 @@ func newRetryTokenKey() ([32]byte, error) {
 	return k, err
 }
 
-// AppendRetryToken writes a token binding this Retry to the peer address and
+// appendRetryToken writes a token binding this Retry to the peer address and
 // original destination identifier a later Initial must match, and to the
 // server-chosen identifier (newSCID) that Initial's DCID must equal — the
 // whole point being that verifying the token alone, with no connection
@@ -135,7 +160,7 @@ func appendRetryToken(dst []byte, key [32]byte, peer net.Addr, odcid, newSCID []
 	return appendRetryTokenAt(dst, key, time.Now(), peer, odcid, newSCID)
 }
 
-// appendRetryTokenAt is AppendRetryToken with the issue time explicit, so a
+// appendRetryTokenAt is appendRetryToken with the issue time explicit, so a
 // test can produce a genuinely encoded token that has already expired.
 func appendRetryTokenAt(dst []byte, key [32]byte, issued time.Time, peer net.Addr, odcid, newSCID []byte) []byte {
 	start := len(dst)
@@ -144,7 +169,7 @@ func appendRetryTokenAt(dst []byte, key [32]byte, issued time.Time, peer net.Add
 	// to a second at birth.
 	dst = varint.Append(dst, uint64(issued.UnixMilli())) //nolint:gosec // G115: milliseconds since epoch, nowhere near overflowing a varint
 	addr := []byte(peer.String())
-	dst = append(dst, byte(len(addr))) //nolint:gosec // G115: an IP address and port, at most 18 bytes
+	dst = append(dst, byte(len(addr))) //nolint:gosec // G115: an IP address and port in text, 47 bytes for IPv6 and a zone name past that, far under 256
 	dst = append(dst, addr...)
 	dst = append(dst, byte(len(odcid))) //nolint:gosec // G115: a connection ID is at most 20 bytes
 	dst = append(dst, odcid...)
@@ -155,8 +180,8 @@ func appendRetryTokenAt(dst []byte, key [32]byte, issued time.Time, peer net.Add
 	return mac.Sum(dst)
 }
 
-// retryToken is what AppendRetryToken encoded, recovered by
-// VerifyRetryToken.
+// retryToken is what appendRetryToken encoded, recovered by
+// verifyRetryToken.
 type retryToken struct {
 	odcid, newSCID []byte
 }
@@ -170,7 +195,7 @@ type retryToken struct {
 // this listener provably issued and cannot accept.
 var errForeignToken = fmt.Errorf("%w: a token this listener did not issue", ErrQUIC)
 
-// VerifyRetryToken checks a token a client echoed on its post-Retry Initial:
+// verifyRetryToken checks a token a client echoed on its post-Retry Initial:
 // the HMAC must verify, the token must not have expired, and it must name
 // the peer address it is arriving from. ttl is [ListenerConfig.RetryTokenTTL]. On success it returns the original
 // destination identifier and server-chosen identifier the token bound,
@@ -224,11 +249,4 @@ func tokenField(b []byte) (val, rest []byte, err error) {
 	}
 	n := int(b[0])
 	return bytesN(b[1:], n)
-}
-
-// has reports whether id is recorded as spent and not yet expired at now,
-// recording nothing.
-func (s *spentTokens) has(id []byte, now time.Time) bool {
-	exp, ok := s.byID[string(id)]
-	return ok && now.Before(exp)
 }

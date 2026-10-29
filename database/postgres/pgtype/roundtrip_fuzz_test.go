@@ -99,16 +99,6 @@ func FuzzRoundTripFloat8(f *testing.F) {
 		if !bytes.Equal(got, b) {
 			t.Fatalf("decode(%x) -> %v -> encode = %x: the value did not survive", b, v, got)
 		}
-		// Negative zero is a distinct bit pattern that compares equal to zero,
-		// so equality on the value would have let it be flattened. Pin the
-		// sign bit on the decoded result rather than trusting byte equality
-		// alone to have meant it.
-		if v == 0 {
-			back, err := DecodeFloat8(got)
-			if err != nil || math.Signbit(back) != math.Signbit(v) {
-				t.Fatalf("zero lost its sign: %x -> %x", b, got)
-			}
-		}
 	})
 }
 

@@ -1,7 +1,7 @@
 # ADR 0012 — The gateway takes a transport batch in one submission
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-07 (renumbered), 2026-10-24 (`Config.Eager`)
+- **Revised:** 2026-10-07 (renumbered), 2026-10-24 (`Config.Eager`), 2026-10-28 (gain re-measured)
 - **Theme:** gateway
 
 ## Problem
@@ -29,8 +29,8 @@ the channel its answer returns through, so **a call is never dropped** —
 reject by replying with a rejection; **nothing checks per batch that every
 call was answered**, because returning from a yield means accepted
 downstream, not handled; and **the value is I/O amortisation only**,
-measured ×6.9 against a bounded backend and ×65 slower against an
-unbounded one.
+measured at ×11.9 the throughput of one query per call against a bounded
+backend, and a pure cost with nothing behind it.
 
 **A gateway may also not wait.** `Config.Eager` sends a batch as soon as
 the run loop holds a call, with every call already queued behind it;

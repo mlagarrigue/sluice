@@ -34,7 +34,7 @@ func updateReturningBatched() [][]byte {
 // server wrote, nor the empty completion of the Execute asked ahead, which
 // the resync reads after it.
 func TestQueryTagOfAStreamedUpdate(t *testing.T) {
-	conn := NewConn(&fakeServer{responses: updateReturningBatched()})
+	conn := NewConn(&fakeServer{responses: updateReturningBatched()}, Config{})
 	tag := CommandTag("stale")
 	src := conn.Query(t.Context(), "UPDATE t SET v = v + 1 RETURNING id", nil,
 		QueryConfig{BatchRows: 2, Tag: &tag})
@@ -81,7 +81,7 @@ func TestResultTag(t *testing.T) {
 // the tag the drain reads is not reported, and a tag left by an earlier run
 // is cleared.
 func TestQueryTagEmptyAfterAnEarlyStop(t *testing.T) {
-	conn := NewConn(&fakeServer{responses: updateReturningBatched()})
+	conn := NewConn(&fakeServer{responses: updateReturningBatched()}, Config{})
 	tag := CommandTag("stale")
 	src := conn.Query(t.Context(), "UPDATE t SET v = v + 1 RETURNING id", nil,
 		QueryConfig{BatchRows: 2, Tag: &tag})
@@ -110,7 +110,7 @@ func TestQueryTagEmptyAfterAnError(t *testing.T) {
 	chunk = append(chunk, beCommandComplete("UPDATE 1")...)
 	chunk = append(chunk, beErrorResponse("23503", "deferred foreign key")...)
 	chunk = append(chunk, beReadyForQuery()...)
-	conn := NewConn(&fakeServer{responses: [][]byte{chunk}})
+	conn := NewConn(&fakeServer{responses: [][]byte{chunk}}, Config{})
 	tag := CommandTag("stale")
 
 	err := drain(t, conn.Query(t.Context(), "UPDATE t SET v = v + 1 RETURNING id", nil,
@@ -127,7 +127,7 @@ func TestQueryTagEmptyAfterAnError(t *testing.T) {
 // A transaction's query consumed after the commit fails with ErrTxDone, and
 // reports no tag either.
 func TestQueryTagEmptyAfterTheTransactionEnded(t *testing.T) {
-	conn := NewConn(&fakeServer{responses: [][]byte{cmdCycle("BEGIN"), cmdCycle("COMMIT")}})
+	conn := NewConn(&fakeServer{responses: [][]byte{cmdCycle("BEGIN"), cmdCycle("COMMIT")}}, Config{})
 	tx, err := conn.Begin(t.Context(), TxConfig{})
 	if err != nil {
 		t.Fatal(err)
@@ -169,7 +169,7 @@ func TestQueryTagCostsNothingUnasked(t *testing.T) {
 	var tag CommandTag
 	allocs := func(cfg QueryConfig) float64 {
 		return testing.AllocsPerRun(50, func() {
-			conn := NewConn(&fakeServer{responses: [][]byte{whole}})
+			conn := NewConn(&fakeServer{responses: [][]byte{whole}}, Config{})
 			src := conn.Query(t.Context(), "UPDATE t SET v = 1 RETURNING id", nil, cfg)
 			src.Stream()(func(sluice.Batch[Row]) bool { return true })
 			if err := src.Err(); err != nil {

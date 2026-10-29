@@ -23,6 +23,10 @@ its row.
   - [HTTP/2 and HTTP/3, from a real client](#http2-and-http3-from-a-real-client)
   - [Web pipeline, from a real client](#web-pipeline-from-a-real-client)
   - [Request bodies, whole or streamed](#request-bodies-whole-or-streamed)
+  - [Authentication, in a request](#authentication-in-a-request)
+  - [Two changes read as noise, paired](#two-changes-read-as-noise-paired)
+  - [HTTP/3 without a socket](#http3-without-a-socket)
+  - [HTTP/1.1, watching for a client that leaves](#http11-watching-for-a-client-that-leaves)
   - [Web pipeline, in process](#web-pipeline-in-process)
   - [Web pipeline, over a socket](#web-pipeline-over-a-socket)
   - [The gateway, with a database behind it](#the-gateway-with-a-database-behind-it)
@@ -132,6 +136,17 @@ case shows. A diff that only moves one function within `database/postgres`
 left the four benchmarks that depend on it at noise in two passes of one job
 (2026-10-23, two different runners), and the gate measured no other.
 
+Aligned entries still leave every address moving with the code before it:
+`d4a8182`, whose diff touched `Split` alone, read `JoinTail` 5.9% slower on
+the runner, the sign test unanimous, where the same pair read 3.5% faster
+on a laptop. So a benchmark the gate calls SLOWER is measured again with
+both binaries rebuilt at another alignment (`-funcalign=128`, which moves
+every address), and fails the gate only if it is SLOWER there too: a
+regression costs the same work under either layout. A slowdown injected
+into `Scan` stays SLOWER under both (+50% and +50%, +19% and +15%, on a
+laptop, 2026-10-28). The second pass runs only on the names the first
+called SLOWER.
+
 **Host settings that raise the floor**, none of them required: disabling
 Core Performance Boost in the BIOS, which removes the clock ramp at the cost
 of about 15% absolute speed; `powercfg` with `PROCTHROTTLEMIN 100` on
@@ -191,9 +206,10 @@ cd interop && go test -run xxx -bench 'H2|H3' -benchtime 3s -count 3
 Median of three passes on 2026-10-10, on the same machine as the rest of
 this document (laptop, WSL2, not pinned: a socket bench cannot be pinned),
 after the commit `perf(httpstream): coalesce streamed batches into one
-write` (1ed3551). This session is slower than the one of the morning
-(`plain` over HTTP/2 at 196 µs against 118): only the ratios can be compared
-from one session to the next, which is why the earlier figures are recalled.
+write` (1ed3551). Absolute times move from one session to the next on this
+machine — `plain` over HTTP/2 read 118 µs in the session before 1ed3551, 196
+µs in this one — so only the ratios within a column compare; the last column
+recalls the earlier session's figures.
 
 | benchmark | median | spread | B/op | allocs/op | before 1ed3551 |
 |---|---|---|---|---|---|
@@ -354,8 +370,7 @@ contention on `mu` is no longer an item to treat until a benchmark with
 several writers per connection shows it.
 
 **One datagram per exchange (measured 2026-10-23).** Three commits made a
-small HTTP/3 exchange cost the server one datagram where it used to cost
-several: the response's data and the end of its stream (FIN) leave in one
+small HTTP/3 exchange cost the server one datagram rather than several: the response's data and the end of its stream (FIN) leave in one
 frame (`feat(quic): WriteClose sends data and FIN together`), the
 acknowledgements and the MAX_STREAMS credit ride the packets that carry
 data instead of leaving on their own (`fix(quic): ACKs ride data,
@@ -412,7 +427,7 @@ from `plain` on) are nearly twice those of HTTP/2. A pass of `paced` counts
 only about 160 requests: its p99.9 is the slowest of them.
 
 **Verdict.** The cost per batch is explained and what remains is owned:
-`docs/guide/experimental.md` says it in one sentence for whoever sizes their
+`docs/guide/httpstream.md` says it in one sentence for whoever sizes their
 batches. A bigger batch still divides the cost by as much.
 
 ## Web pipeline, from a real client
@@ -483,7 +498,7 @@ stages'.
 
 **What remains for the exit from experimental.** This measurement was one of
 the two conditions; the other, a first real consumer building its request
-path on these stages, stays open (`docs/guide/limits.md`).
+path on these stages, is met since 0.3.0 (`docs/guide/limits.md`).
 
 ## Request bodies, whole or streamed
 
@@ -520,6 +535,108 @@ What this does not say is what streaming itself costs — a body that does
 not fit in one read. That is paid when it is asked for, and the default
 does not move it.
 
+## Authentication, in a request
+
+What `HMACVerifier.Verify` costs a request, read against the request it is
+paid in rather than against an assumed one. `BenchmarkVerify` is the check
+alone: the byte scan, three base64url decodes, the header and the claims
+parsed as JSON, one HMAC-SHA256. `BenchmarkVerifyRoundTrip` is one GET over
+a loopback connection kept alive, to a `net/http` server whose handler
+answers 204, without authentication (`open`) and through `web.Authenticate`
+(`authenticated`). Six runs of one second, median, 2026-10-28, go1.26.9,
+15 cores, under WSL2, not pinned (`web`).
+
+| benchmark | ns per request | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkVerify` | 3,272 | 3,167–3,598 | 2,073 | 49 |
+| `BenchmarkVerifyRoundTrip/open` | 170,538 | 157,662–188,568 | 4,997 | 56 |
+| `BenchmarkVerifyRoundTrip/authenticated` | 153,804 | 143,346–172,918 | 7,166 | 105 |
+
+The check is 2% of the request it guards (3.27 µs of about 160 µs), less
+than the round trip's own spread from one run to the next: the two
+round-trip rows cannot be told apart, and the authenticated one even came
+out faster. A request that crosses a real network or reaches a database
+makes the share smaller still. The 49 allocations are the JSON decoding of
+the claims; they are where a cheaper check would start, and nothing above
+asks for one.
+
+## Two changes read as noise, paired
+
+Two changes to `net/httpstream` were first judged on unpaired runs: the
+burst's buffers given back when a connection goes idle (`bd2c9fd`), after
+which `BenchmarkH2StreamBody/chunks=64` read 44% slower, and the capacity
+HTTP/3 assembly retains bounded (`9f3a581`), after which
+`BenchmarkH3Assemble` read 1 to 2% slower in five to seven rounds of eight.
+Each is measured here against its parent commit by
+`internal/bench/scripts/ab.sh`: twenty rounds of `-benchtime 300ms` on one
+core under `GOMAXPROCS=1`, the first round dropped, the ratio taken inside
+each round, the verdict from the sign test, which needs 15 rounds of 19 to
+call a side faster. Measured 2026-10-28, go1.26.9.
+
+| benchmark | commit | before, ns per op | after, ns per op | rounds won by after | verdict |
+|---|---|---|---|---|---|
+| `BenchmarkH2StreamBody/chunks=64` | `bd2c9fd` | 58,764 | 55,622 | 11 of 19 | noise |
+| `BenchmarkH3Assemble/depth=1` | `9f3a581` | 461 | 468 | 8 of 19 | noise |
+| `BenchmarkH3Assemble/depth=8` | `9f3a581` | 3,517 | 3,468 | 13 of 19 | noise |
+| `BenchmarkH3Assemble/depth=64` | `9f3a581` | 26,789 | 26,337 | 13 of 19 | noise |
+
+Medians of the rounds. Neither change costs what its first reading said.
+`H2StreamBody/chunks=64` ranges from 50 to 73 µs on either side, a spread
+wider than the 44% that was read into it: the benchmark hands each frame to
+the writer's goroutine, and the scheduler's timing is most of what it
+measures. It does not run the loop `bd2c9fd` changed at all.
+
+## HTTP/3 without a socket
+
+`BenchmarkServeH3` runs `ServeH3Conn`'s whole path over an in-memory
+datagram pair: a QUIC client opens one request stream, or eight at once,
+and reads every response to its end (`net/httpstream`). Client and server
+share the machine's cores, so a figure here is the two ends together.
+Medians of the 19 paired rounds below, `-benchtime 300ms`, unpinned,
+2026-10-28, go1.26.9.
+
+| benchmark | ns per op | ns per request | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkServeH3/depth=1` | 35,235 | 35,235 | 4,902 | 61 |
+| `BenchmarkServeH3/depth=8` | 214,825 | 26,853 | 43,019 | 555 |
+
+The assembler belongs to one lock, taken on each delivery of a packet's
+stream frames, because the timer that expires slow requests reaches it too.
+A CPU profile of `depth=8` never samples that lock, and the paired A/B
+against a build without it (`ab.sh`, twenty rounds, unpinned, the first
+dropped) reads noise: 11 rounds of 19 won by the build without it at both
+depths, 35.2 against 34.3 µs and 215 against 227 µs.
+
+In the same profile the server's whole HTTP/3 delivery, assembly included,
+is about a tenth of its CPU, and the part paid once per delivery whatever
+it carries — starting the batch's goroutine, registering it for
+cancellation, copying its slices — about 4.5%. That is the most that
+grouping several datagrams into one delivery could save at eight requests
+in flight.
+
+## HTTP/1.1, watching for a client that leaves
+
+A handler that asks `ctx.Done` on HTTP/1.1 starts a read of the connection
+that watches for the client leaving, for the batch's duration
+([ADR 0008](design/adr/0008-multiplexed-connection.md#rationale)).
+`BenchmarkServeH1RoundTrip` sends one request at a time on one connection
+(`serial`) or on four per core (`parallel`), over loopback, to a handler
+that does not ask (`plain`) or does (`watched`). The rejected alternative
+is a reader kept for the connection's life, the serving goroutine taking
+its bytes through a channel; it was built for this A/B only. Paired by
+`internal/bench/scripts/ab.sh`, sixteen rounds of `-benchtime 300ms`,
+unpinned, the first dropped, 2026-10-28, go1.26.9, under WSL2.
+
+| benchmark | per-batch watch, ns per op | kept reader, ns per op | rounds won by the kept reader | verdict |
+|---|---|---|---|---|
+| `BenchmarkServeH1RoundTrip/serial/plain` | 15,486 | 98,410 | 0 of 15 | slower, +542% |
+| `BenchmarkServeH1RoundTrip/parallel/plain` | 2,822 | 2,985 | 4 of 15 | noise |
+
+One unpaired run of the per-batch watch beside it: `serial/watched`
+100,501 ns per op and `parallel/watched` 4,059. A kept reader makes every
+request pay, one at a time, what the watch costs only the handlers that
+ask.
+
 ## QUIC, on an emulated path
 
 `net/quic`'s path benchmarks (`net/quic/netem_bench_test.go`) move one
@@ -551,7 +668,7 @@ datagram that arrives late and that the sender took for lost.
 | `BenchmarkTransferLoss1pct` | 20 ms RTT, 1% loss each way | 4 MiB | 4.40 s | 0.95 MB/s | ±4% |
 | `BenchmarkTransferBurstLoss` | 20 ms RTT, 1% loss in bursts of 4 | 4 MiB | 755 ms | 5.55 MB/s | ±1%, one round at +42% |
 | `BenchmarkTransferReorder` | 20 ms RTT, 2% of datagrams up to 2 ms late | 4 MiB | 4.89 s | 0.86 MB/s | ±12%, not gated |
-| `BenchmarkTransferBottleneck` | 20 ms RTT, 50 Mbit/s, 5 ms of buffer | 4 MiB | 865 ms | 4.86 MB/s | ±2%, one round at +23% |
+| `BenchmarkTransferBottleneck` | 20 ms RTT, 50 Mbit/s, 5 ms of buffer | 4 MiB | 840 ms | 4.99 MB/s | −3% to +2% over 80 transfers |
 | `BenchmarkTransferBottleneck16MiB` | the `Bottleneck` link | 16 MiB | 3.33 s | 5.04 MB/s | −1% to +3%, not gated |
 | `BenchmarkTransferDeepBuffer` | 20 ms RTT, 50 Mbit/s, 200 ms of buffer | 4 MiB | 788 ms | 5.33 MB/s, `rtt_x` 5.9 | ±0.2% |
 | `BenchmarkTransferTwoFlows` | 20 ms RTT, 50 Mbit/s, 20 ms of buffer, two flows | 2 × 4 MiB | 1.49 s | 5.63 MB/s, `share` 0.47–0.60 | ±1%, one round at +17% |
@@ -844,26 +961,42 @@ doubled the job. The initial window halved still turns the cubic job red,
 on rows that keep 6% (`Clean` 1.140, `RTT80` 1.077, `BurstLoss` 1.069);
 under CUBIC it moves neither `Bottleneck` (0.957) nor `TwoFlows` (1.038).
 
+Under Reno, `Bottleneck` turned the job red three times in one day (1.149,
+1.153, 1.138 against a bound of 10%), twice on commits that did not touch
+`net/quic`. Eighty interleaved rounds on an identical tree (2026-10-28,
+fifteen cores) showed a bimodal transfer: 86 of 160 between 824 and
+875 ms, 74 between 950 and 1,026 ms, and passes of eight read 0.927 to
+1.159. The row left Reno's gate the same day, and came back once the cause
+was traced: every transfer has one congestion event, in slow start, and
+it halved a window of about 160 kB or about 230 kB depending on which
+round overflowed the five-millisecond buffer. Reno paced its slow start at
+2.5 times the window per round trip; at twice the window
+(`newReno.pacingRate`) the early overflow is gone: 80 transfers of 80
+within 816–856 ms, median 840 ms, so no two medians of eight can differ
+by more than 4.8%, and the row is back under 6%. The same change takes
+Reno's `RTT80Shallow` from 5.4 s to 4.6 s. CUBIC keeps 2.5: at twice it
+lost 15% on `RTT80Shallow` (3.8 s to 4.4 s) and gained nothing on
+`Bottleneck` (0.991 in its path gate).
+
 A second script, `gate-cc.sh`, holds the three controllers other than
 Reno to their own criteria, on one tree and without a base: the median of
 `share` on `TwoFlowsVsReno` is 0.70 at most for all three (measured: CUBIC
 0.51, BBRv1 0.61, BBR 0.50); the median round of `RTT80Shallow` is at
-least 1.3 times faster on CUBIC than on Reno in the same round (measured:
-1.42 to 1.48, median 1.44, 2026-10-21); every round of `DeepBufferECN`
+least 1.15 times faster on CUBIC than on Reno in the same round (measured:
+1.21 to 1.23, median 1.22, 2026-10-28); every round of `DeepBufferECN`
 keeps `rtt_x` at 1.5 at most on BBR (measured: 1.05 to 1.09). Both sides of
-`RTT80Shallow` are bimodal, by where the slow start's exit loss lands —
-CUBIC 3.7 s or 5.1 s, Reno 5.3 s or 8.6 s on 2026-10-21, where Reno read
-8.8 s every round when the bound was set (2026-10-14) — and a round that
-pairs CUBIC's slow mode with Reno's fast one reads 1.03 and says nothing
-about the controller: the worst round, the criterion until then, failed
-three of the sixteen CI runs of 2026-10-21. The median falls
-under the bound only when the slow mode becomes the common case. `gate-path.sh` sees a controller
+`RTT80Shallow` were bimodal, by where the slow start's exit loss lands —
+CUBIC 3.7 s or 5.1 s, Reno 5.3 s or 8.6 s on 2026-10-21 — so the median
+round is judged, not the worst. The bound was 1.3 against the 1.40–1.48
+Reno's early slow-start exit left; once Reno stopped exiting early (Reno
+4.6 s, CUBIC 3.8 s), it moved to 1.15, between the measured gain and the
+injection below. `gate-path.sh` sees a controller
 that gets worse from one commit to the next; `gate-cc.sh` sees one that
 never met its criterion, or drifts from it by less than 6% a commit.
 CUBIC's β brought from 0.7 to 0.5 turns the cubic job red in both scripts
 — `BurstLoss` 1.566 and `Loss1pct` 1.255 in `gate-path.sh`, every round
-of `RTT80Shallow` within 1.09–1.12 in `gate-cc.sh` — and leaves the reno
-job green (0.991 to 1.007).
+of `RTT80Shallow` within 1.06–1.09 in `gate-cc.sh` (2026-10-28; 1.09–1.12
+against the former Reno) — and leaves the reno job green (0.991 to 1.007).
 
 **The CI gate watches the rows of its `GATED` list per controller** —
 eight on each — through a second script,
@@ -894,18 +1027,33 @@ internal/bench/scripts/gate-path.sh main
 
 ## Joins and hydration, in isolation
 
-The figures the guides quote for choosing a join and for the generated
-hydration. Six runs of one second, median, 2026-10-23, go1.26.9, 15 cores,
-under WSL2, not pinned. `JoinMerge` and `JoinHash` join 65,536 rows a side,
-sorted, through `join.Merge` and through the hash table (`internal/bench`);
+The figures the guides and the architecture quote for choosing a join, and
+for the generated hydration.
+
+The four joins are measured in the same runs, so they compare with each
+other: 65,536 rows a side, sorted, joined one to one through `join.Merge`,
+through the hash table, and through the interval join on a zero-width and on
+a ±2 s window (`internal/bench`). Six runs of one second, median,
+2026-10-28, go1.26.9, 15 cores, under WSL2, not pinned.
+
+| benchmark | ns per element | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkJoinMerge` | 19.0 | 18.8–19.5 | 25,464 | 20 |
+| `BenchmarkJoinHash` | 93.2 | 83.8–118.4 | 8,421,987 | 599 |
+| `BenchmarkIntervalJoinNarrow` (zero-width window) | 82.8 | 81.9–83.8 | 24,252 | 56 |
+| `BenchmarkIntervalJoinWide` (±2 s window) | 140 | 139–146 | 92,541 | 105 |
+
+The hash join's spread is the widest of the four on every run of this
+machine: its 8.4 MB table is rebuilt on each run, and the collector's pace
+moves with it. Read the merge join's gap to it as a factor of four to five.
+
 `GeneratedHydrate` decodes 1,024 rows of six columns into a struct through
 the code `sluicegen` writes, a nullable `*string` and a copied string
-included (`database/postgres/internal/entity`).
+included (`database/postgres/internal/entity`). Six runs of one second,
+median, 2026-10-23, same machine.
 
-| benchmark | ns per element or row | spread | B/op | allocs/op |
+| benchmark | ns per row | spread | B/op | allocs/op |
 |---|---|---|---|---|
-| `BenchmarkJoinMerge` | 18.5 | 18.3–19.3 | 25,465 | 20 |
-| `BenchmarkJoinHash` | 83.0 | 81.9–88.7 | 8,422,070 | 600 |
 | `BenchmarkGeneratedHydrate` | 53.8 | 52.8–55.7 | 21,846 | 2,048 |
 
 ## The architecture's figures
@@ -933,17 +1081,12 @@ by `iter.Pull`, one value or one batch of 1024 at a time.
 | `BenchmarkMergeOperatorEight` | 0.349 | 0.319–0.392 | 2,305 | 57 |
 | `BenchmarkWindowWide` | 5.43 | 5.32–5.67 | 8,413,960 | 1,038 |
 
-The joins, 65,536 rows a side. The interval join and the two joins it is
-compared with are measured in the same runs here; the hash join's spread is
-wide on this machine, and the [section above](#joins-and-hydration-in-isolation)
-is the one the guides quote.
+Pulling one value at a time costs ×243 the ceiling (53.3 against 0.219 ns per
+element); pulling a batch of 1024, ×1.4.
 
-| benchmark | ns per element | spread | B/op | allocs/op |
-|---|---|---|---|---|
-| `BenchmarkIntervalJoinNarrow` (zero-width window) | 82.5 | 81.4–83.1 | 24,248 | 56 |
-| `BenchmarkIntervalJoinWide` (±2 s window) | 141 | 139–141 | 92,538 | 105 |
-| `BenchmarkJoinHash` | 93.5 | 76.9–101.6 | 8,421,980 | 599 |
-| `BenchmarkJoinMerge` | 21.8 | 21.0–22.1 | 25,464 | 20 |
+The joins, the interval join among them, are in
+[the section above](#joins-and-hydration-in-isolation), measured in one set
+of runs.
 
 Per row, six columns decoded into a struct (`database/postgres`), over a
 batch of 1,024 rows or of one.
@@ -956,6 +1099,10 @@ batch of 1,024 rows or of one.
 | `BenchmarkHydrateColumnar` | 36.7 | 36.1–36.9 | 15,589 | 1,024 |
 | `BenchmarkHydrateRowMajorBatchOne` | 26.1 | 25.9–26.4 | 8 | 1 |
 | `BenchmarkHydrateColumnarBatchOne` | 40.5 | 39.8–42.0 | 8 | 1 |
+
+Reflection costs ×1.9 the hydration written by hand (56.7 against 29.6 ns per
+row), and ×6.3 when every field is boxed through `reflect.Value.Interface`
+(187.5).
 
 Per call: one request through the six steps of the
 [request path](design/architecture.md#the-request-path), written by hand,
@@ -970,6 +1117,9 @@ past its ceiling.
 | `BenchmarkWebBatchOneReused` | 142 | 140–147 | 128 | 6 |
 | `BenchmarkDiagnosticsFirstAdd` | 553 | 512–584 | 2,048 | 1 |
 | `BenchmarkDiagnosticsOverCeiling` | 1.24 | 1.24–1.25 | 0 | 0 |
+
+A pipeline built per request costs ×141 the same six steps written by hand
+(280 against 1.98 ns per call).
 
 Per run of a whole pipeline. The four `Scan` rows read a simulated table
 through [`pushdown`](design/architecture.md#enriched-stop-signal--pushdown) with no demand, with one
@@ -990,6 +1140,14 @@ about 34 µs of work per batch or only passes its batch through
 | `BenchmarkParallelTrivialSerial` | 16.0 | 15.9–16.1 | 136 | 5 |
 | `BenchmarkParallelTrivialWork` | 56.6 | 55.4–58.0 | 34,247 | 28 |
 
+A consumer that skips ahead runs the scan ×6.9 faster than the same consumer
+decoding what it discards (64.4 against 445 µs).
+
+`parallel.Async` between a producer and a consumer doing equal work overlaps
+them: 3,673 µs per run against 6,766 for the serial chain, ×1.84 of an ideal
+×2 (`BenchmarkAsyncOverlap` against `BenchmarkAsyncOverlapSerial`,
+`internal/bench`, six runs of one second, medians, 2026-10-28).
+
 Where four workers start to pay: `BenchmarkParallelWorkSize` runs the same
 65,536 elements with the work per element doubled from one row to the next,
 one worker against `parallel.Ordered` and `parallel.Unordered` on four
@@ -1004,6 +1162,65 @@ by the parallel one.
 | 256 | 192 | 12,307 | 5,139 | 4,432 | ×2.39 | ×2.78 |
 | 512 | 404 | 25,868 | 9,693 | 8,473 | ×2.67 | ×3.05 |
 | 1024 | 850 | 54,390 | 18,487 | 17,076 | ×2.94 | ×3.19 |
+
+### The designs turned down
+
+Five decisions of the architecture compare the shape kept with one it
+turned down. Each benchmark mirrors the rejected shape in a few lines beside
+the kept one, so the comparison can be run again without the library
+carrying it. Six runs of one second, median, 2026-10-28, go1.26.9, 15
+cores, under WSL2, not pinned.
+
+Per element. `BatchContext` runs four map stages over 1,048,576 `int64` in
+batches of 1024: the batch as it is (`items`), with a `context.Context`
+carried in it (`ctx`, 24 bytes to 40), and with that context checked by each
+stage on each batch (`ctx-checked`). `JoinTableShape` builds a table of
+65,536 distinct keys and probes each once, as a flat value slice with an
+`int32` chain (`chain`, the shape `join` keeps) and as a `map[K][]B`
+(`slice-per-key`). `ParallelInputCopy` is the copy `parallel` makes of each
+input batch, alone, into one reused buffer (`internal/bench`).
+
+| benchmark | ns per element | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkBatchContext/items` | 4.55 | 4.43–4.61 | 328 | 11 |
+| `BenchmarkBatchContext/ctx` | 4.50 | 4.45–4.62 | 472 | 11 |
+| `BenchmarkBatchContext/ctx-checked` | 4.52 | 4.48–4.59 | 472 | 11 |
+| `BenchmarkJoinTableShape/chain` | 86.8 | 82.1–108.1 | 8,415,152 | 583 |
+| `BenchmarkJoinTableShape/slice-per-key` | 128.1 | 121.6–133.7 | 11,016,472 | 66,066 |
+| `BenchmarkParallelInputCopy` | 0.0512 | 0.0509–0.0514 | 0 | 0 |
+
+A context in the batch costs nothing measurable, checked or not: the three
+rows are within 1% of each other and inside each other's spread. A slice per
+key costs ×1.48 the time and ×113 the allocations of the chain. The input
+copy of `parallel` is 3% of the ~1.5 ns per-stage budget.
+
+Per call. `DiagnosticReceiver` builds the example of `NewDiagnostic`'s
+documentation from a template — a message, then an origin — through the
+`With` methods, which take and return the struct by value (`value`), and
+through setters on a pointer to one copy of the template (`pointer`).
+
+| benchmark | ns per call | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkDiagnosticReceiver/value` | 7.70 | 7.65–8.48 | 0 | 0 |
+| `BenchmarkDiagnosticReceiver/pointer` | 4.68 | 4.66–4.79 | 0 | 0 |
+
+The value receiver costs ×1.65 the pointer one: 3 ns per diagnostic built,
+neither allocating.
+
+Per run. `ScanTake` is the core `sluice.Take` of 2,048 rows over the
+[`pushdown`](design/architecture.md#enriched-stop-signal--pushdown)
+benchmarks' scan; `ScanTakePublished` is the same count taken by a `Take`
+that publishes what it still wants to a `Demand` after each batch, over a
+scan that reads it (`pushdown`).
+
+| benchmark | µs per run | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkScanTake` | 9.80 | 9.56–10.29 | 8,192 | 1 |
+| `BenchmarkScanTakePublished` | 10.27 | 9.81–11.06 | 8,256 | 2 |
+
+Publishing the count saves nothing: the scan decodes the same two pages
+either way, and the publishing `Take` came out 5% slower, inside the two
+rows' spreads.
 
 ---
 
@@ -1445,14 +1662,21 @@ benchmark's comment tells why.
 
 ### Statement cache
 
+This table was measured apart from the rest of the page, by the same
+method on the same machine (core 14 pinned, `GOMAXPROCS=1`, 1 s × 3,
+median), on 2026-10-28 with go1.26.9 at a load of 1.6. `PGPrepareOff` runs
+with the cache off since `aa67ba7`; the 783 ns published before measured it
+on, level with `PGPrepareHit`. Off, it pays the parse on every query: 10%
+over the hit (685 against 621 ns over five further passes).
+
 <!-- consolidate: statement-cache -->
 | benchmark | median | spread | B/op | allocs/op |
 |---|---|---|---|---|
-| `BenchmarkPGPrepareHit` | 786 ns | ±0% | — | — |
-| `BenchmarkPGPrepareMissUnbounded` | 1669 ns | ±25% ** | — | — |
-| `BenchmarkPGPrepareOff` | 783 ns | ±1% | — | — |
-| `BenchmarkStmtCacheChurn` | 136 ns | ±2% | 55 B | 3 |
-| `BenchmarkStmtCacheHit` | 16 ns | ±0% | 0 B | 0 |
+| `BenchmarkPGPrepareHit` | 614 ns | ±4% | 80 B | 5 |
+| `BenchmarkPGPrepareMissUnbounded` | 1894 ns | ±19% ** | 1017 B | 9 |
+| `BenchmarkPGPrepareOff` | 702 ns | ±11% | 80 B | 5 |
+| `BenchmarkStmtCacheChurn` | 145 ns | ±2% | 55 B | 3 |
+| `BenchmarkStmtCacheHit` | 16 ns | ±4% | 0 B | 0 |
 <!-- /consolidate -->
 
 ### Paired verdicts
@@ -1461,6 +1685,8 @@ A single run of each contender produces numbers in an order, which invites
 ranking. The sign test says which of those differences survive interleaving.
 
 <!-- consolidate: verdicts -->
+| pair | first | second | verdict | sign test |
+|---|---|---|---|---|
 | `BenchmarkSocketNetHTTP` vs `BenchmarkSocketSluice` | 183857 ns | 183752 ns | noise | 5/12 wins, 10 needed |
 | `BenchmarkSocketGin` vs `BenchmarkSocketSluice` | 177060 ns | 177126 ns | noise | 8/12 wins, 10 needed |
 | `BenchmarkSocketNetHTTP` vs `BenchmarkSocketFiberFasthttp` | 175211 ns | 191202 ns | SLOWER +8.8% | 0/12 wins, 10 needed |

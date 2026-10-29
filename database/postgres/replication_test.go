@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -356,7 +359,7 @@ func TestReplicationStreamScripted(t *testing.T) {
 	script = append(script, frame(pgwire.BackendCommandComplete, "START_REPLICATION\x00")...)
 	script = append(script, frame(pgwire.BackendReadyForQuery, "I")...)
 	rw := &scriptedRW{Reader: bytes.NewReader(script)}
-	r := &Replication{c: NewConn(rw), batch: 100, batchBytes: defaultBatchBytes, interval: time.Hour}
+	r := &Replication{c: NewConn(rw, Config{}), batch: 100, batchBytes: defaultBatchBytes, interval: time.Hour}
 	r.Ack(0x08)
 
 	var batches [][]ChangeKind
@@ -400,7 +403,7 @@ func TestReplicationStreamScripted(t *testing.T) {
 
 // A second call to Changes is refused: one connection streams a slot once.
 func TestReplicationChangesOnce(t *testing.T) {
-	r := &Replication{c: NewConn(&scriptedRW{Reader: bytes.NewReader(nil)}), batch: 1, batchBytes: defaultBatchBytes, interval: time.Hour}
+	r := &Replication{c: NewConn(&scriptedRW{Reader: bytes.NewReader(nil)}, Config{}), batch: 1, batchBytes: defaultBatchBytes, interval: time.Hour}
 	r.started.Store(true)
 	if _, err := r.Changes(t.Context()).Collect(); err == nil {
 		t.Error("a second Changes was accepted")
@@ -448,14 +451,6 @@ func (s *noChangeServer) Read(p []byte) (int, error) {
 func (s *noChangeServer) Write(p []byte) (int, error) { return len(p), nil }
 func (s *noChangeServer) Close() error                { return nil }
 
-// typeMessagePayload is a pgoutput Type message ('Y'), which the decoder
-// drops without counting anything, padded to n bytes.
-func typeMessagePayload(n int) []byte {
-	p := make([]byte, n)
-	p[0] = 'Y'
-	return p
-}
-
 // sameRelationPayload is a valid Relation message ('R') for one fixed OID,
 // made wide by a long relation name. Sent more than once, every message
 // after the first describes an OID the decoder already knows, so the
@@ -480,22 +475,21 @@ func sameRelationPayload(n int) []byte {
 // next message is not already received" — so before ReplicationConfig.
 // BatchBytes existed the read had no stopping condition at all. copyData
 // copies every payload into the batch's arena before asking the decoder what
-// it carries, and three pgoutput messages carry no change: Type, Origin, and
-// a Relation redescribing a relation already known. A server sending an
-// uninterrupted run of them grew the arena at whatever rate it chose, and
-// the batch could never close.
+// it carries, and a Relation redescribing a relation already known carries
+// no change (Type and Origin did too, before they were delivered). A server
+// sending an uninterrupted run of them grew the arena at whatever rate it
+// chose, and the batch could never close. It closes at the bound, empty.
 func TestReplicationBoundsPayloadThatCarriesNoChange(t *testing.T) {
 	for _, c := range []struct {
 		name    string
 		payload []byte
 	}{
-		{"type messages", typeMessagePayload(64 << 10)},
 		{"the same relation redescribed", sameRelationPayload(64 << 10)},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			srv := &noChangeServer{payload: c.payload}
 			r := &Replication{
-				c: NewConn(srv), batch: sluice.DefaultBatchSize,
+				c: NewConn(srv, Config{}), batch: sluice.DefaultBatchSize,
 				batchBytes: defaultBatchBytes, interval: time.Minute,
 			}
 			b, err := r.readBatch()
@@ -507,11 +501,11 @@ func TestReplicationBoundsPayloadThatCarriesNoChange(t *testing.T) {
 				t.Fatalf("readBatch held %d bytes of payload in a batch of %d changes without closing it (arena %d bytes): no bound stops a batch that carries no change",
 					srv.given, len(b.Items), arena)
 			}
-			if !errors.Is(err, ErrProtocol) {
-				t.Fatalf("readBatch returned %v after %d bytes without a change; want ErrProtocol", err, srv.given)
+			if err != nil || len(b.Items) != 0 {
+				t.Fatalf("readBatch returned %d changes and %v after %d bytes without a change; want an empty batch, closed at the bound", len(b.Items), err, srv.given)
 			}
 			if srv.given > defaultBatchBytes+len(c.payload) {
-				t.Errorf("readBatch read %d bytes before giving up, more than the bound of %d plus one message", srv.given, defaultBatchBytes)
+				t.Errorf("readBatch read %d bytes before closing the batch, more than the bound of %d plus one message", srv.given, defaultBatchBytes)
 			}
 		})
 	}
@@ -547,5 +541,227 @@ func TestReplicationGivesBackAnOversizedArena(t *testing.T) {
 	}
 	if n := held(); n > rowsRetainBytes {
 		t.Errorf("the arena still holds %d bytes after %d narrow batches, over the retained %d", n, rowsShrinkAfter+1, rowsRetainBytes)
+	}
+}
+
+// The relation table is bounded in bytes as well as in count: a Relation
+// message is bounded only by Config.MaxMessage, so the count alone let a
+// server keep gigabytes of names in the table for the life of the stream
+// (64 relations with 4 MiB names kept: 256 MiB, measured). A relation past
+// the budget is ErrProtocol; a redescription of a known OID is charged the
+// difference, so a publication whose tables change shape is not charged
+// twice; and a table of ordinary shape decodes as before.
+func TestReplicationBoundsTheRelationTableInBytes(t *testing.T) {
+	t.Run("names past the budget", func(t *testing.T) {
+		var d replDecoder
+		name := strings.Repeat("n", 4<<20)
+		var err error
+		kept := 0
+		for oid := uint32(1); oid <= 64 && err == nil; oid++ {
+			_, _, _, err = d.decode(relMsg(oid, "public", name, "id"), 100, nil, nil, nil)
+			if err == nil {
+				kept++
+			}
+		}
+		if !errors.Is(err, ErrProtocol) {
+			t.Fatalf("64 relations of 4 MiB names: err = %v, %d kept, want ErrProtocol once the budget is passed", err, kept)
+		}
+		if kept > maxReplicationRelationBytes/(4<<20) {
+			t.Errorf("%d relations of 4 MiB kept before the refusal, past the %d-byte budget", kept, maxReplicationRelationBytes)
+		}
+	})
+	t.Run("a redescription is charged the difference", func(t *testing.T) {
+		var d replDecoder
+		name := strings.Repeat("n", maxReplicationRelationBytes*3/4)
+		if _, _, _, err := d.decode(relMsg(1, "public", name, "id"), 100, nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		// Described again under the same OID, a column added: the table
+		// holds one relation, not two, and stays under the budget.
+		if _, _, _, err := d.decode(relMsg(1, "public", name, "id", "name"), 101, nil, nil, nil); err != nil {
+			t.Fatalf("redescribing the relation: %v (charged as a second relation?)", err)
+		}
+		if len(d.relations) != 1 || d.relationBytes > len(name)+len("public")+2*(len("id")+relationColumnCost)+len("name") {
+			t.Errorf("table holds %d relations, %d bytes; want one relation at its own cost", len(d.relations), d.relationBytes)
+		}
+		// A second OID of the same size is the one past the budget.
+		if _, _, _, err := d.decode(relMsg(2, "public", name, "id"), 102, nil, nil, nil); !errors.Is(err, ErrProtocol) {
+			t.Errorf("a second relation of three quarters of the budget: err = %v, want ErrProtocol", err)
+		}
+	})
+	t.Run("an ordinary publication fits", func(t *testing.T) {
+		var d replDecoder
+		cols := make([]string, 100)
+		for i := range cols {
+			cols[i] = fmt.Sprintf("column_%d_of_a_wide_table", i)
+		}
+		for oid := uint32(1); oid <= 1000; oid++ {
+			if _, _, _, err := d.decode(relMsg(oid, "public", fmt.Sprintf("table_%d", oid), cols...), 100, nil, nil, nil); err != nil {
+				t.Fatalf("table %d of a thousand hundred-column tables: %v", oid, err)
+			}
+		}
+		if d.relationBytes > maxReplicationRelationBytes/8 {
+			t.Errorf("a thousand tables of a hundred columns cost %d bytes, more than an eighth of the %d-byte budget", d.relationBytes, maxReplicationRelationBytes)
+		}
+	})
+}
+
+// pgoutput sends a table's Relation inside the transaction, before its first
+// change, and a batch may open on it. A Relation wider than
+// ReplicationConfig.BatchBytes is a conformant message under a small bound:
+// the batch keeps the message that crosses its bound and closes after it,
+// as QueryConfig.BatchBytes keeps the row that crosses its own. It closes
+// empty, and the relation is known for the changes that follow.
+func TestReplicationOpensABatchOnARelationWiderThanBatchBytes(t *testing.T) {
+	rel := relMsg(42, "public", "t", "a", "b")
+	rw := &scriptedRW{Reader: bytes.NewReader(xlog(0x100, rel))}
+	r := &Replication{c: NewConn(rw, Config{}), batch: 100, batchBytes: 8, interval: time.Hour}
+	b, err := r.readBatch()
+	if err != nil {
+		t.Fatalf("a %d-byte Relation under BatchBytes = 8: %v", len(rel), err)
+	}
+	if len(b.Items) != 0 {
+		t.Fatalf("a batch of %d changes from a lone Relation, want none", len(b.Items))
+	}
+	if r.dec.relations[42] == nil {
+		t.Fatal("the Relation that opened the batch is not known afterwards")
+	}
+}
+
+// PostgreSQL 18 §54.9: a Truncate carries "Option bits for TRUNCATE: 1 for
+// CASCADE, 2 for RESTART IDENTITY", and both change what replaying it
+// elsewhere does. They reach the Change.
+func TestReplDecoderKeepsTheTruncateOptions(t *testing.T) {
+	for _, tc := range []struct {
+		bits             byte
+		cascade, restart bool
+	}{{0, false, false}, {1, true, false}, {2, false, true}, {3, true, true}} {
+		truncate := binary.BigEndian.AppendUint32([]byte{'T'}, 1)
+		truncate = binary.BigEndian.AppendUint32(append(truncate, tc.bits), 42)
+		changes, err := decodeAll(t, relMsg(42, "public", "orders", "id"), truncate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(changes) != 1 || changes[0].Kind != ChangeTruncate {
+			t.Fatalf("bits %d: %d changes, want one Truncate", tc.bits, len(changes))
+		}
+		if c := changes[0]; c.Cascade != tc.cascade || c.RestartIdentity != tc.restart {
+			t.Errorf("bits %d: Cascade=%v RestartIdentity=%v, want %v %v", tc.bits, c.Cascade, c.RestartIdentity, tc.cascade, tc.restart)
+		}
+	}
+}
+
+// ReplicationConfig.BatchChanges is the most changes one batch holds, and a
+// Truncate brings a Change per relation it names in one message: a Truncate
+// of 25 tables under a bound of 10 arrives as batches of 10, 10 and 5, every
+// relation once and in order, also when the server leaves copy mode right
+// after it. The count used to be compared between messages only, and the
+// first batch held all 25.
+func TestReplicationSplitsATruncateAtBatchChanges(t *testing.T) {
+	const relations, batch = 25, 10
+	var script []byte
+	truncate := binary.BigEndian.AppendUint32([]byte{'T'}, relations)
+	truncate = append(truncate, 0)
+	for i := range relations {
+		oid := uint32(1000 + i) //nolint:gosec // G115: a small loop index
+		script = append(script, xlog(LSN(0x100+i), relMsg(oid, "s", fmt.Sprintf("t%d", i), "a"))...)
+		truncate = binary.BigEndian.AppendUint32(truncate, oid)
+	}
+	script = append(script, xlog(0x900, truncate)...)
+	script = append(script, frame(pgwire.BackendCopyDone, "")...)
+	script = append(script, frame(pgwire.BackendCommandComplete, "START_REPLICATION\x00")...)
+	script = append(script, frame(pgwire.BackendReadyForQuery, "I")...)
+	r := &Replication{c: NewConn(&scriptedRW{Reader: bytes.NewReader(script)}, Config{}), batch: batch, batchBytes: defaultBatchBytes, interval: time.Hour}
+
+	var sizes []int
+	var names []string
+	src := r.Changes(t.Context())
+	src.Stream()(func(b sluice.Batch[Change]) bool {
+		sizes = append(sizes, b.Len())
+		for _, c := range b.Items {
+			if c.Kind != ChangeTruncate {
+				t.Errorf("a %v change in a stream of one Truncate", c.Kind)
+			}
+			names = append(names, c.Relation.Name)
+		}
+		return true
+	})
+	if err := src.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if want := []int{10, 10, 5}; !slices.Equal(sizes, want) {
+		t.Errorf("batches of %v changes under BatchChanges = %d, want %v", sizes, batch, want)
+	}
+	if len(names) != relations {
+		t.Fatalf("%d relations truncated, want %d", len(names), relations)
+	}
+	for i, n := range names {
+		if want := fmt.Sprintf("t%d", i); n != want {
+			t.Errorf("change %d truncates %s, want %s: a carried change lost its place", i, n, want)
+		}
+	}
+}
+
+// §54.4: XLogData and the primary keepalive each carry "the current end of
+// WAL on the server" — the one figure the stream offers for how far behind
+// the consumer is. Replication.ServerWALEnd returns the latest.
+func TestReplicationReportsTheServersEndOfWAL(t *testing.T) {
+	w := binary.BigEndian.AppendUint64([]byte{'w'}, 0x100)
+	w = binary.BigEndian.AppendUint64(w, 0x9000)
+	w = binary.BigEndian.AppendUint64(w, 0)
+	w = append(w, beginMsg(0x10, 7)...)
+	k := binary.BigEndian.AppendUint64([]byte{'k'}, 0x9500)
+	k = append(binary.BigEndian.AppendUint64(k, 0), 0)
+	r := &Replication{batch: 100, batchBytes: defaultBatchBytes, interval: time.Hour}
+	if got := r.ServerWALEnd(); got != 0 {
+		t.Fatalf("ServerWALEnd before any message = %v, want 0", got)
+	}
+	if err := r.copyData(w); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.ServerWALEnd(); got != 0x9000 {
+		t.Fatalf("ServerWALEnd after an XLogData = %v, want %v", got, LSN(0x9000))
+	}
+	if err := r.copyData(k); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.ServerWALEnd(); got != 0x9500 {
+		t.Fatalf("ServerWALEnd after a keepalive = %v, want %v", got, LSN(0x9500))
+	}
+}
+
+// PostgreSQL 18 §54.9: a Type message names a type that is not built in
+// (OID, namespace, name) and an Origin message the node a transaction came
+// from (its commit LSN there, its name), "multiple Origin messages inside a
+// single transaction" allowed. Both reach the consumer as a Change, the
+// stream's one rule: what is read is delivered. A replica that applies a row
+// of an enum column needs the type's name, since the OID is the publisher's.
+func TestReplicationDeliversTypeAndOrigin(t *testing.T) {
+	typ := binary.BigEndian.AppendUint32([]byte{'Y'}, 16385)
+	typ = append(typ, "public\x00mood\x00"...)
+	origin := binary.BigEndian.AppendUint64([]byte{'O'}, 0x5000)
+	origin = append(origin, "node_b\x00"...)
+	enumRel := relMsg(42, "public", "people", "name")
+	changes, err := decodeAll(t, beginMsg(0x60, 7), origin, typ, enumRel, commitMsg(0x60, 0x68))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kinds []ChangeKind
+	for _, c := range changes {
+		kinds = append(kinds, c.Kind)
+	}
+	if want := []ChangeKind{ChangeBegin, ChangeOrigin, ChangeType, ChangeCommit}; !slices.Equal(kinds, want) {
+		t.Fatalf("kinds = %v, want %v", kinds, want)
+	}
+	if c := changes[1]; c.Origin != "node_b" || c.LSN != 0x5000 {
+		t.Errorf("Origin = %q at %v, want node_b at 0/5000", c.Origin, c.LSN)
+	}
+	if got, want := changes[2].Type, (DataType{OID: 16385, Namespace: "public", Name: "mood"}); got != want {
+		t.Errorf("Type = %+v, want %+v", got, want)
+	}
+
+	// A truncated message is refused, not delivered half-read.
+	if _, err := decodeAll(t, typ[:7]); !errors.Is(err, ErrProtocol) {
+		t.Errorf("a Type message cut after its OID: err = %v, want ErrProtocol", err)
 	}
 }

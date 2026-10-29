@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -711,11 +712,11 @@ func TestListenerSendsStatelessResetForUnknownShortHeader(t *testing.T) {
 	}
 
 	// The budget: within one window, emission stops at the cap.
-	for range 3 * maxResetsPerSecond {
+	for range 3 * defaultResetsPerSecond {
 		l.dispatch(append([]byte(nil), trigger...), from, l.pc, 0)
 	}
-	if got := len(pc.taken()); got > maxResetsPerSecond {
-		t.Errorf("%d resets in one window, over the %d budget", got, maxResetsPerSecond)
+	if got := len(pc.taken()); got > defaultResetsPerSecond {
+		t.Errorf("%d resets in one window, over the %d budget", got, defaultResetsPerSecond)
 	}
 }
 
@@ -734,18 +735,55 @@ func TestStatelessResetBudgetIsPerSource(t *testing.T) {
 	trigger[0] = 0x40
 	copy(trigger[1:], []byte{1, 2, 3, 4, 5, 6, 7, 8})
 
-	for port := range 3 * maxResetsPerSecond {
+	for port := range 3 * defaultResetsPerSecond {
 		from := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 1000 + port}
 		l.dispatch(append([]byte(nil), trigger...), from, l.pc, 0)
 	}
-	if got := len(pc.taken()); got != maxResetsPerSourcePerSecond {
-		t.Errorf("one address drew %d resets in one window, want its share of %d", got, maxResetsPerSourcePerSecond)
+	if got := len(pc.taken()); got != defaultResetsPerAddress {
+		t.Errorf("one address drew %d resets in one window, want its share of %d", got, defaultResetsPerAddress)
 	}
 
 	other := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 2), Port: 443}
 	l.dispatch(append([]byte(nil), trigger...), other, l.pc, 0)
 	if got := len(pc.taken()); got != 1 {
 		t.Errorf("another address drew %d resets after the first one's flood, want 1", got)
+	}
+}
+
+// The budget is the operator's to set: a server restarting in front of
+// many clients raises it to tell them sooner, one behind a NAT raises the
+// per-address share. Here 3 in all and 2 per address — the third datagram
+// from one address goes unanswered, and a second address spends the last.
+func TestStatelessResetBudgetIsConfigured(t *testing.T) {
+	pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
+	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(),
+		ListenerConfig{StatelessResetsPerSecond: 3, StatelessResetsPerAddress: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	trigger := make([]byte, 60)
+	trigger[0] = 0x40
+	copy(trigger[1:], []byte{1, 2, 3, 4, 5, 6, 7, 8})
+
+	for port := range 5 {
+		from := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 1000 + port}
+		l.dispatch(append([]byte(nil), trigger...), from, l.pc, 0)
+	}
+	if got := len(pc.taken()); got != 2 {
+		t.Errorf("one address drew %d resets, want the configured share of 2", got)
+	}
+	for i := range 3 {
+		from := &net.UDPAddr{IP: net.IPv4(192, 0, 2, byte(2+i)), Port: 443}
+		l.dispatch(append([]byte(nil), trigger...), from, l.pc, 0)
+	}
+	if got := len(pc.taken()); got != 1 {
+		t.Errorf("three more addresses drew %d resets, want the 1 left of a budget of 3", got)
+	}
+
+	if _, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13}, DefaultParameters(),
+		ListenerConfig{StatelessResetsPerSecond: -1}); err == nil {
+		t.Error("a negative reset budget was accepted")
 	}
 }
 
@@ -1618,6 +1656,7 @@ func TestListenerRecognisesAPeersStatelessReset(t *testing.T) {
 	c.mu.Unlock()
 	l.mu.Lock()
 	l.routeLocked("srv-cid0", c)
+	l.placePeerLocked(c, c.peer)
 	l.mu.Unlock()
 
 	// A short-header datagram naming an identifier nobody issued, ending in
@@ -1672,6 +1711,7 @@ func TestAStatelessResetIsOnlyLookedForOnItsOwnAddress(t *testing.T) {
 	c.mu.Unlock()
 	l.mu.Lock()
 	l.routeLocked("srv-cid0", c)
+	l.placePeerLocked(c, peer)
 	l.mu.Unlock()
 
 	// A datagram carrying that very token, from an address the connection
@@ -1688,5 +1728,122 @@ func TestAStatelessResetIsOnlyLookedForOnItsOwnAddress(t *testing.T) {
 	// check above from passing for the wrong reason.
 	if got := l.resetFor(reset, peer); got != c {
 		t.Errorf("resetFor returned %v for a datagram from the connection's own address carrying its token, want the connection", got)
+	}
+}
+
+// resetConns is a listener with n live connections, each at its own
+// address reset11:peer-<i> and holding token for an identifier it has used,
+// filed the way the accept path files them; and a datagram ending in token.
+func resetConns(t *testing.T, n int) (*Listener, []*Conn, []byte) {
+	t.Helper()
+	pc := &capturePC{fuzzSink: fuzzSink{addr: "reset11:self"}, stopped: make(chan struct{})}
+	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}},
+		DefaultParameters(), ListenerConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	var token [16]byte
+	for i := range token {
+		token[i] = byte(0xb0 + i)
+	}
+	conns := make([]*Conn, n)
+	for i := range conns {
+		peer := fakeFuzzAddr(fmt.Sprintf("reset11:peer-%d", i))
+		c := newConn(pc, peer, []byte(fmt.Sprintf("cli-c%03d", i)), []byte(fmt.Sprintf("srv-c%03d", i)), false, DefaultParameters())
+		t.Cleanup(func() { _ = c.Close() })
+		c.mu.Lock()
+		c.registrar = l
+		c.peerCIDs = append(c.peerCIDs, peerCID{seq: 1, cid: []byte("cli-cid1"), token: token, used: true})
+		c.mu.Unlock()
+		l.mu.Lock()
+		l.routeLocked(string(c.scid), c)
+		l.placePeerLocked(c, peer)
+		l.mu.Unlock()
+		conns[i] = c
+	}
+	reset := make([]byte, 40)
+	reset[0] = 0x40
+	copy(reset[1:], "made-up0")
+	copy(reset[len(reset)-16:], token[:])
+	return l, conns, reset
+}
+
+// resetForWithin is l.resetFor, failed if it has not returned in time: a
+// call that waits on a connection's lock held by the test never returns.
+func resetForWithin(t *testing.T, l *Listener, reset []byte, from net.Addr) *Conn {
+	t.Helper()
+	got := make(chan *Conn, 1)
+	go func() { got <- l.resetFor(reset, from) }()
+	select {
+	case c := <-got:
+		return c
+	case <-time.After(2 * time.Second):
+		t.Fatalf("resetFor from %v waited on the lock of a connection elsewhere", from)
+		return nil
+	}
+}
+
+// An unroutable datagram is compared with the connections on its own
+// address and takes no other connection's lock. Until 2026-10-28 resetFor
+// walked every live connection and took each one's lock to read its
+// address: a flow of unroutable datagrams from an address without a
+// connection serialised the socket-reading goroutine with every receive
+// loop, a lock per connection per datagram. Every
+// connection's lock is held here, so a walk would wait forever.
+func TestAnUnroutableDatagramTakesNoOtherConnectionsLock(t *testing.T) {
+	l, conns, reset := resetConns(t, 8)
+	held := make([]bool, len(conns))
+	for i, c := range conns {
+		c.mu.Lock()
+		held[i] = true
+	}
+	// Released on the way out too, so a failure frees the call it timed out.
+	defer func() {
+		for i, c := range conns {
+			if held[i] {
+				c.mu.Unlock()
+			}
+		}
+	}()
+	if got := resetForWithin(t, l, reset, fakeFuzzAddr("reset11:elsewhere")); got != nil {
+		t.Errorf("a datagram from an address without a connection was taken as %v's reset", got)
+	}
+	conns[0].mu.Unlock()
+	held[0] = false
+	// From the first connection's address: that connection is compared,
+	// and none of the seven others, whose locks are still held.
+	if got := resetForWithin(t, l, reset, fakeFuzzAddr("reset11:peer-0")); got != conns[0] {
+		t.Errorf("a reset from peer-0 carrying its token returned %v, want peer-0's connection", got)
+	}
+}
+
+// The index follows the peer: after a move, a reset from the new address is
+// the connection's and one from the old address is not; a forgotten
+// connection is not found, and a move after forget does not file it again.
+func TestAStatelessResetFollowsTheMovedPeer(t *testing.T) {
+	l, conns, reset := resetConns(t, 2)
+	c, moved := conns[0], fakeFuzzAddr("reset11:moved")
+	c.mu.Lock()
+	c.setPeerLocked(moved)
+	c.mu.Unlock()
+	if got := resetForWithin(t, l, reset, moved); got != c {
+		t.Errorf("a reset from the address the connection moved to returned %v, want the connection", got)
+	}
+	if got := resetForWithin(t, l, reset, fakeFuzzAddr("reset11:peer-0")); got != nil {
+		t.Errorf("a reset from the address the connection left returned %v, want none", got)
+	}
+	l.forget(c)
+	c.mu.Lock()
+	c.setPeerLocked(fakeFuzzAddr("reset11:peer-0"))
+	c.mu.Unlock()
+	l.mu.Lock()
+	_, filed := l.peerOf[c]
+	l.mu.Unlock()
+	if filed {
+		t.Error("a move after forget filed the connection again")
+	}
+	if got := resetForWithin(t, l, reset, fakeFuzzAddr("reset11:peer-1")); got != conns[1] {
+		t.Errorf("the other connection's reset returned %v, want it", got)
 	}
 }

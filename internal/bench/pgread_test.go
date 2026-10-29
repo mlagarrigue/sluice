@@ -94,7 +94,7 @@ func pgScript(rows int) []byte {
 func BenchmarkPGReadRows(b *testing.B) {
 	const rows = 1000
 	srv := &replayServer{script: pgScript(rows)}
-	conn := postgres.NewConn(srv)
+	conn := postgres.NewConn(srv, postgres.Config{})
 
 	var seen int
 	for b.Loop() {
@@ -118,7 +118,7 @@ func BenchmarkPGReadRows(b *testing.B) {
 func BenchmarkPGReadDecode(b *testing.B) {
 	const rows = 1000
 	srv := &replayServer{script: pgScript(rows)}
-	conn := postgres.NewConn(srv)
+	conn := postgres.NewConn(srv, postgres.Config{})
 
 	var acc int64
 	for b.Loop() {

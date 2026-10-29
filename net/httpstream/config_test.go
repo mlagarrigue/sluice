@@ -3,7 +3,13 @@ package httpstream
 import (
 	"context"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net"
+	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -138,6 +144,57 @@ func TestConfigRefusesAnOutOfRangeValue(t *testing.T) {
 				t.Errorf("ServeH2Conn: %v, want an error naming %q", err, want)
 			}
 		})
+	}
+}
+
+// Every field whose comment says "Zero means N" resolves to N from the zero
+// Config. The defaults are chosen by review, and a review reads the
+// comments: a default changed in resolve alone — MaxHeaders from 64 to 65 —
+// left every other test green, so the value deployed was not the value
+// documented (architecture S3).
+func TestZeroConfigResolvesToTheDefaultsItsCommentsName(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "httpstream.go", nil, parser.ParseComments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved := reflect.ValueOf(Config{}.mustResolve())
+	zeroMeans := regexp.MustCompile(`Zero means ([^.;,]+)`)
+	figure := regexp.MustCompile(`^(\d+)(?: ?(KiB|MiB|s|ms))?$`)
+	words := map[string]time.Duration{"a second": time.Second, "two minutes": 2 * time.Minute}
+	units := map[string]int64{"": 1, "KiB": 1 << 10, "MiB": 1 << 20, "s": int64(time.Second), "ms": int64(time.Millisecond)}
+	checked := map[string]bool{}
+	ast.Inspect(f, func(n ast.Node) bool {
+		ts, ok := n.(*ast.TypeSpec)
+		if !ok || ts.Name.Name != "Config" {
+			return true
+		}
+		for _, field := range ts.Type.(*ast.StructType).Fields.List {
+			m := zeroMeans.FindStringSubmatch(strings.Join(strings.Fields(field.Doc.Text()), " "))
+			if m == nil || len(field.Names) != 1 {
+				continue
+			}
+			name, phrase := field.Names[0].Name, strings.TrimSpace(m[1])
+			var want int64
+			if d, ok := words[phrase]; ok {
+				want = int64(d)
+			} else if v := figure.FindStringSubmatch(phrase); v != nil {
+				n, _ := strconv.ParseInt(v[1], 10, 64)
+				want = n * units[v[2]]
+			} else {
+				continue // "no bound", "MaxBodyBytes", "32 and 64": read by their own tests
+			}
+			if got := resolved.FieldByName(name).Int(); got != want {
+				t.Errorf("Config.%s resolves to %d from zero; its comment says %q", name, got, phrase)
+			}
+			checked[name] = true
+		}
+		return false
+	})
+	for _, name := range []string{"MaxHeaders", "MaxRequestsPerConn", "MaxFramesPerBatch", "MaxBodyBytes", "ReadTimeout"} {
+		if !checked[name] {
+			t.Errorf("Config.%s's default was not read from its comment: the comment changed shape, or the parser did", name)
+		}
 	}
 }
 

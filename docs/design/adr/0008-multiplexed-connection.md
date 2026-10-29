@@ -1,7 +1,7 @@
 # ADR 0008 — A multiplexed connection is a reader, a responder and a writer
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-05 (streamed bodies hold the responder; HTTP/3 per-stream writers), 2026-10-07 (renumbered), 2026-10-16 (the HTTP/2 responder no longer waits for the wire), 2026-10-19 (each HTTP/2, then HTTP/3, handler call on a goroutine of its own), 2026-10-20 (a header block on a closed stream the ring has forgotten is decoded and dropped; the HTTP/3 limit counts the requests in flight, not the transport's streams, and a connection that only cancels is closed), 2026-10-21 (three framing refusals keep the generic error code; a response stays valid until it is written), 2026-10-22 (the HTTP/3 p99 gap measured against the apparatus' floor), 2026-10-23 (what cancellation reaches the handler, per protocol; grouping a burst's datagrams leaves the HTTP/3 p50 where it was)
+- **Revised:** 2026-10-28 (the assembler's lock and grouped reception measured without a socket; the per-batch watch kept against a reader kept for the connection); 9 earlier, from 2026-10-05, in its `git log`
 - **Theme:** httpstream
 
 ## Problem
@@ -120,7 +120,19 @@ protocols; the client's departure on HTTP/1.1, from the handler's first
 call to `ctx.Done` (a watching read of the connection, measured at 1.2 µs
 a batch under load and 24 µs one request at a time on an idle Linux
 runner, where it wakes a sleeping thread; paid only by a handler that
-asks). On HTTP/2 and
+asks).
+
+The criterion is that a request whose handler does not ask pays
+nothing, and it is what keeps the watch per batch. A reader kept for the
+connection's whole life, the serving goroutine taking its bytes through a
+channel, removes the watch's cost under load but hands every request the
+wake-up the watch costs a watched one: in a paired A/B
+([measured](../../benchmarks.md#http11-watching-for-a-client-that-leaves)),
+one request at a time went from 15.5 to 98.4 µs, slower in all fifteen
+rounds, and under load stayed within noise. It would also take the read
+deadlines off the connection, where `ReadTimeout` bounds a slow client.
+
+On HTTP/2 and
 HTTP/3 a batch's context is cancelled once no request of the batch has a
 client left — each `RST_STREAM`, `RESET_STREAM` or `STOP_SENDING` takes
 one away, the connection's close takes them all — and not before: the
@@ -192,6 +204,18 @@ leaves it to the kernel. The HTTP/3 p50 excess over HTTP/1.1 at 64 keys is
 declared the cost of that per-packet path and is not pursued; it reopens if
 a client other than quic-go shows the same excess, or if a measurement
 attributes it to one hop of that path.
+
+Two hops of the receive path are measured without a socket
+(`BenchmarkServeH3`, [HTTP/3 without a socket](../../benchmarks.md#http3-without-a-socket)).
+The lock the assembler is taken under, once per packet delivered, is never
+sampled in a profile, and a build without it is not faster in a paired A/B:
+it stays. The server's HTTP/3 delivery is about a tenth of its CPU at eight
+requests in flight, and what it pays per delivery rather than per frame
+about 4.5%: grouping several datagrams into one delivery could save no
+more, and moving the frames' lifetime across packets in the transport, where
+the input is hostile, is not paid for by that. Grouped reception is not
+built; it reopens if a profile under load puts the per-delivery part above
+the frames themselves.
 
 The HTTP/3 p99 is therefore judged against the trivial server's HTTP/3 p99,
 not against HTTP/1.1. Measured locally on 2026-10-22 and 2026-10-23, the

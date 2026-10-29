@@ -17,16 +17,13 @@ func TestNoResetStreamOnceTheStreamIsAcknowledged(t *testing.T) {
 		name string
 		stop func(t *testing.T, client, server *Stream)
 	}{
-		{"stop_sending", func(t *testing.T, client, _ *Stream) {
+		{"stop_sending", func(t *testing.T, client, server *Stream) {
 			t.Helper()
-			// Injected, not sent by the server: a sluice peer that has read
-			// the FIN sends no STOP_SENDING (nothing is left to stop), so
-			// the late frame is one a peer sent before it read the FIN,
-			// or retransmitted after.
-			payload := appendFrame(nil, FrameStopSending, client.id, 0x10c)
-			if err := client.conn.frames(spaceApplication, payload, time.Now()); err != nil {
-				t.Fatal(err)
-			}
+			// Forged, not asked of the server's stream: a sluice peer that
+			// has read the FIN sends no STOP_SENDING (nothing is left to
+			// stop), so the late frame is one a peer sent before it read
+			// the FIN, or retransmitted after.
+			peerSends(t, server.conn, appendFrame(nil, FrameStopSending, client.id, 0x10c))
 		}},
 		{"reset", func(t *testing.T, client, _ *Stream) {
 			t.Helper()

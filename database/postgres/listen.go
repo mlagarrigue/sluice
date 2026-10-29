@@ -14,7 +14,9 @@ import (
 // ListenConfig says which channels [Listen] subscribes to.
 type ListenConfig struct {
 	// Channels are the channels to LISTEN on. At least one is required. A
-	// name is taken as written, case included.
+	// name is taken as written, case included, and is at most 63 bytes:
+	// PostgreSQL truncates a longer one, and two channels that differ past
+	// that byte would be one subscription.
 	Channels []string
 
 	// BatchNotifications is the most notifications one batch holds. Zero
@@ -57,12 +59,12 @@ type Listener struct {
 // Delivery is the server's: a notification sent while the listener is closed
 // is not kept for it. A consumer that must see every event reads a table, and
 // uses notifications as the signal to look.
-func Listen(ctx context.Context, dial DialFunc, cfg Config, lc ListenConfig) (*Listener, error) {
-	sql, err := listenSQL(lc)
+func Listen(ctx context.Context, dial DialFunc, cfg Config, lcfg ListenConfig) (*Listener, error) {
+	sql, err := listenSQL(lcfg)
 	if err != nil {
 		return nil, err
 	}
-	batch := lc.BatchNotifications
+	batch := lcfg.BatchNotifications
 	if batch == 0 {
 		batch = sluice.DefaultBatchSize
 	}
@@ -97,6 +99,9 @@ func listenSQL(lc ListenConfig) (string, error) {
 		if ch == "" {
 			return "", errors.New("postgres: ListenConfig.Channels holds an empty name")
 		}
+		if err := checkNameLength("ListenConfig.Channels", ch); err != nil {
+			return "", err
+		}
 		b.WriteString("LISTEN " + quoteIdent(ch) + ";")
 	}
 	sql := b.String()
@@ -105,6 +110,27 @@ func listenSQL(lc ListenConfig) (string, error) {
 	}
 	return sql, nil
 }
+
+// maxPendingNotificationBytes bounds what the subscription keeps before the
+// server answers LISTEN, each notification counted as its two strings plus
+// notificationOverhead. PostgreSQL 18 §54.2.7 lets a notification arrive
+// "just before ReadyForQuery" without bounding how many, and a busy server
+// commits some between the LISTEN and its answer; they are kept, and handed
+// over in batches of BatchNotifications by readBatch. The bound is the
+// package's own, not BatchNotifications: that is the size of a batch, and a
+// caller that takes one notification at a time is not saying a server that
+// sends two is hostile. A server that holds its ReadyForQuery back while
+// pouring NotificationResponse is: without a bound the list grew by two
+// strings, up to MaxMessage each, per message. A NOTIFY payload is under
+// 8,000 bytes in a standard installation, so 4 MiB keeps five hundred of
+// the largest, far more than the window between a commit and its answer
+// lets through.
+const maxPendingNotificationBytes = 4 << 20
+
+// notificationOverhead is what one kept Notification costs beyond its two
+// strings — their headers and the PID — so a flood of empty ones is
+// counted too.
+const notificationOverhead = 40
 
 // subscribe runs the LISTEN query and reads its answer itself: Exec discards
 // a notification that lands before ReadyForQuery, and here that would be the
@@ -116,6 +142,7 @@ func (l *Listener) subscribe(sql string) error {
 		return c.breakConn(err)
 	}
 	var failed error
+	kept := 0 // what pending costs, against maxPendingNotificationBytes
 	for {
 		m, err := c.r.Next()
 		if err != nil {
@@ -129,19 +156,11 @@ func (l *Listener) subscribe(sql string) error {
 			if err != nil {
 				return c.breakConn(err)
 			}
-			if len(l.pending) >= l.batch {
-				// Nothing bounded this list, and it is the only unbounded
-				// one in the package: the steady-state loop stops at
-				// l.batch, and a server that holds its ReadyForQuery back
-				// while pouring NotificationResponse grew pending by one
-				// Notification — two strings copied, up to MaxMessage each
-				// — per message, for the life of the subscription. A batch
-				// is as much as a caller asked to hold at once, so a
-				// server that sends more than that before answering the
-				// query at all is not answering it.
+			kept += len(n.Channel) + len(n.Payload) + notificationOverhead
+			if kept > maxPendingNotificationBytes {
 				return c.breakConn(fmt.Errorf(
-					"%w: more than %d notifications before the server answered LISTEN (ListenConfig.BatchNotifications)",
-					ErrProtocol, l.batch))
+					"%w: more than %d bytes of notifications before the server answered LISTEN",
+					ErrProtocol, maxPendingNotificationBytes))
 			}
 			l.pending = append(l.pending, n)
 		case pgwire.BackendErrorResponse:
@@ -150,7 +169,14 @@ func (l *Listener) subscribe(sql string) error {
 				return c.breakConn(perr)
 			}
 			failed = e
-		case pgwire.BackendCommandComplete, pgwire.BackendNoticeResponse, pgwire.BackendParameterStatus:
+		case pgwire.BackendParameterStatus:
+			// Recorded as every read loop here records it: a client_encoding
+			// nobody asked for ends the connection (recordParameter) rather
+			// than have channel names and payloads read as UTF-8.
+			if err := c.recordParameter(m.Body); err != nil {
+				return c.breakConn(err)
+			}
+		case pgwire.BackendCommandComplete, pgwire.BackendNoticeResponse:
 		default:
 			return c.breakConn(fmt.Errorf("%w: message %q answering LISTEN", ErrProtocol, m.Type))
 		}
@@ -208,7 +234,10 @@ func (l *Listener) Notifications(ctx context.Context) sluice.Source[Notification
 	return sluice.NewSource(sluice.Stream[Notification](stream), func() error { return l.err })
 }
 
-// Close closes the connection, which ends its subscriptions.
+// Close closes the connection, which ends its subscriptions. Call it once the
+// stream has ended, from the goroutine that read it: to stop a stream that is
+// waiting for a notification, end the ctx given to [Listener.Notifications],
+// which closes the connection on the stream's own goroutine.
 func (l *Listener) Close() error { return l.c.Close() }
 
 // readBatch returns what the subscription kept, or reads until a batch is
@@ -249,7 +278,13 @@ func (l *Listener) readBatch() (sluice.Batch[Notification], error) {
 				return sluice.Batch[Notification]{}, l.c.breakConn(perr)
 			}
 			return sluice.Batch[Notification]{}, l.c.breakConn(e)
-		case pgwire.BackendNoticeResponse, pgwire.BackendParameterStatus:
+		case pgwire.BackendParameterStatus:
+			// See subscribe: a SET or a pooler may change client_encoding at
+			// any point of a listening session.
+			if err := l.c.recordParameter(m.Body); err != nil {
+				return sluice.Batch[Notification]{}, l.c.breakConn(err)
+			}
+		case pgwire.BackendNoticeResponse:
 		default:
 			return sluice.Batch[Notification]{}, l.c.breakConn(fmt.Errorf("%w: message %q while listening", ErrProtocol, m.Type))
 		}

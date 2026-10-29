@@ -192,9 +192,15 @@ run_h2spec() {
   set -e
   tail -n1 "$work/h2spec-$mode.txt"
 
-  awk -f scripts/interop-h2spec.awk "$work/h2spec-$mode.txt" | sort -u >"$work/failed"
+  awk -f scripts/interop-h2spec.awk "$work/h2spec-$mode.txt" | sort -u >"$work/failed.all"
+  # Entries marked random: are cases whose outcome follows the order in
+  # which two of h2spec's writes reach the server, not the server: either
+  # outcome is accepted, so they are taken out of the red cases and are
+  # neither expected nor stale.
+  sed -n 's/^random://p' "$EXCLUSIONS" | sort -u >"$work/random"
+  comm -23 "$work/failed.all" "$work/random" >"$work/failed"
   # Entries without a mode prefix, plus those of this mode with the prefix
-  # dropped.
+  # dropped; random: is not a mode, and its entries were handled above.
   grep -v '^#' "$EXCLUSIONS" | grep -v '^$' \
     | sed -n -e '/^[a-z]*:/!p' -e "s/^$mode://p" | sort -u >"$work/excluded"
 

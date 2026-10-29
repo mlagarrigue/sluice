@@ -1,7 +1,7 @@
 # ADR 0022 — The PostgreSQL connector's shape: one connection, binary, the codec apart
 
 - **Created:** 2026-10-23
-- **Revised:** —
+- **Revised:** 2026-10-28 (written in the present tense; the statement cache sized once; `NewConn` takes `Config`)
 - **Theme:** postgres
 
 ## Problem
@@ -36,6 +36,10 @@ one reaches the consumer, as many as cover one round trip, between two and
 64. `FetchAuto` reads in one round trip a statement the cache knows fits in
 one batch.
 
+**The statement cache is sized once**, when the connection is built:
+`Config.StatementCacheSize`, which `Connect` and `NewConn` both take (zero:
+512, negative: none). An open connection's cache is not resized.
+
 **COPY is at-least-once**: one transaction every `CopyConfig.RowsPerTx`
 rows, and the idempotence is the caller's.
 
@@ -51,7 +55,7 @@ the `Scan*` functions (they read `*Rows`), the framing of a COPY row
 move is a break (`feat(postgres)!`), in the one grouped breaking release;
 `sluicegen` emits `pgtype.`.
 
-**Five names leave the API** now: `ParseError` and `ParseRowDescription`
+**Five names are not in the API**: `ParseError` and `ParseRowDescription`
 (the message layer is internal: a caller receives an `*Error` through
 `errors.As`, never a message body), and `ReadBufferSize`,
 `MaxServerParameters`, `MaxServerParameterBytes` (internal bounds no
@@ -72,9 +76,18 @@ split costs one update of `sluicegen` today and could not be made after v1.
 The `Scan*` functions stay: moving them would make `pgtype` import
 `postgres`, and the cycle is forbidden.
 
-What is lost: one import for the whole connector, and one more break in the
-breaking release.
+The cache bounds statements prepared *on the server*, so shrinking it on an
+open connection would have to close statements the server holds, mid-session
+and between two queries the caller believes independent; growing it would be
+the one case that costs nothing, and it is not worth a method of its own. `NewConn`
+takes the same `Config` and reads what still applies past the startup —
+the cache, the message bound, the logger — so a transport someone else
+authenticated differs from one `Connect` opens by its defaults, never by
+what it can be set to.
+
+What is lost: one import for the whole connector, one more break in the
+breaking release, resizing an open connection's cache.
 
 Reversal condition: a caller who cannot write their code without importing
-both packages for an operation that needs one, or a need for a pool that
+both packages for an operation that needs one, a need for a pool that
 `gateway` does not cover.

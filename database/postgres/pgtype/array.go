@@ -6,19 +6,6 @@ import (
 	"time"
 )
 
-// Array type OIDs for the element types this file covers.
-const (
-	OIDBoolArray        uint32 = 1000
-	OIDByteaArray       uint32 = 1001
-	OIDInt2Array        uint32 = 1005
-	OIDFloat4Array      uint32 = 1021
-	OIDFloat8Array      uint32 = 1022
-	OIDDateArray        uint32 = 1182
-	OIDTimestampArray   uint32 = 1115
-	OIDTimestampTZArray uint32 = 1185
-	OIDNumericArray     uint32 = 1231
-)
-
 // # Arrays of the remaining scalars
 //
 // The four arrays written by hand elsewhere — int8, int4, text, uuid — exist

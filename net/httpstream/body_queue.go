@@ -18,7 +18,7 @@ import (
 // The two protocols differ in who keeps the window. HTTP/2's is this end's
 // arithmetic (h2 set): a grant never takes window plus held bytes past the
 // stream's initial window, and nothing is granted on arrival while bodies
-// stream (see h2Server.data). HTTP/3's is the QUIC transport's, run on manual
+// stream (see h2Conn.data). HTTP/3's is the QUIC transport's, run on manual
 // credit (release set): every byte delivered is released once at the stream
 // level, here, when the handler is done with it or it is dropped. Either way
 // the peer can send no more than the stream window allows, so the window
@@ -41,10 +41,14 @@ type bodyQueue struct {
 	id      uint64
 	limit   int // the most a body may carry, whole or streamed
 	timeout time.Duration
+	// need is ReadProgressBytes, and progress the clock the handler's
+	// waits run under (readProgress); progress is the handler's alone.
+	need     int
+	progress readProgress
 
 	// h2 is the HTTP/2 connection whose window this is, nil over HTTP/3;
 	// initial is the window it grants, InitialWindowSize.
-	h2      *h2Server
+	h2      *h2Conn
 	initial int32
 	// release gives n bytes of stream-level credit back to the QUIC
 	// transport, nil over HTTP/2.
@@ -77,6 +81,9 @@ type bodyQueue struct {
 	ended   bool  // the body's end arrived: what is held is all there is
 	closed  bool  // the handler returned
 	err     error // the body failed: what the handler reads next
+
+	// trailers is the trailer section, a copy, set before the end.
+	trailers []Header
 }
 
 // bodyMinRing is the ring a streamed body starts with when nothing is
@@ -93,7 +100,7 @@ var errBodyConnClosed = fmt.Errorf("%w: the connection closed mid-body", ErrMalf
 // to stream as its first bytes.
 func newBodyQueue(cfg Config, id uint64, first []byte, declared int, expect bool) *bodyQueue {
 	b := &bodyQueue{
-		id: id, limit: max(cfg.MaxBodyBytes, cfg.MaxStreamedBodyBytes), timeout: cfg.ReadTimeout,
+		id: id, limit: max(cfg.MaxBodyBytes, cfg.MaxStreamedBodyBytes), timeout: cfg.ReadTimeout, need: cfg.ReadProgressBytes,
 		wake: make(chan struct{}, 1), total: len(first), declared: declared, expect: expect,
 	}
 	if len(first) > 0 {
@@ -109,7 +116,7 @@ func newBodyQueue(cfg Config, id uint64, first []byte, declared int, expect bool
 
 // newH2Body turns st, whose head is complete and whose body has not ended,
 // into a streamed body. Called by the reader.
-func (s *h2Server) newH2Body(st *h2Stream) *bodyQueue {
+func (s *h2Conn) newH2Body(st *h2Stream) *bodyQueue {
 	b := newBodyQueue(s.cfg, uint64(st.id), st.body, st.declared, expectsContinue(st.req))
 	b.h2 = s
 	b.initial = int32(s.cfg.InitialWindowSize) //nolint:gosec // G115: capped by resolve
@@ -128,7 +135,7 @@ func (b *bodyQueue) receive(used int32, data []byte, last bool) error {
 	if used > b.window+b.grace {
 		window := b.window
 		b.mu.Unlock()
-		// §6.9.1, as for a stream assembled whole (see h2Server.data).
+		// §6.9.1, as for a stream assembled whole (see h2Conn.data).
 		return streamFail(uint32(b.id), errFlowControlError, //nolint:gosec // G115: an HTTP/2 stream identifier
 			"%w: %w: %d bytes on stream %d against a window of %d",
 			ErrH2Protocol, errFlowControl, used, b.id, window)
@@ -163,8 +170,19 @@ func (b *bodyQueue) add(data []byte) {
 // that take it past its bound, which fails it with ErrTooLarge — the handler
 // reads that and answers, and the stream is stopped after the answer, as any
 // body left unread is.
+//
+// Bytes dropped because the handler returned are still counted in total:
+// the count serves end's framing check (RFC 9113 §8.1.1, RFC 9114 §4.1.2),
+// not retention, and a client that has not yet seen the RST_STREAM(NO_ERROR)
+// sent after the response finishes its body as §8.1 expects it to. Counted
+// short, a well-formed request was found malformed at its END_STREAM and
+// reset PROTOCOL_ERROR, its response lost if it was waiting for credit.
+// Bytes dropped by a failure are not counted: end compares nothing then.
 func (b *bodyQueue) addLocked(data []byte) (dropped int) {
 	if b.overLocked() {
+		if b.err == nil {
+			b.total += len(data)
+		}
 		return len(data)
 	}
 	if b.total+len(data) > b.limit {
@@ -266,6 +284,29 @@ func (b *bodyQueue) end() error {
 	return nil
 }
 
+// setTrailers keeps a copy of the trailer section, which arrives before the
+// end that makes it readable. Called by the reader.
+func (b *bodyQueue) setTrailers(fields []Header) {
+	if len(fields) == 0 {
+		return
+	}
+	kept := appendHeaderCopies(nil, fields...)
+	b.mu.Lock()
+	b.trailers = kept
+	b.mu.Unlock()
+}
+
+// trailerSection is the trailer section once the body has ended without
+// error, nil before. Called by the handler.
+func (b *bodyQueue) trailerSection() []Header {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.ended || b.err != nil {
+		return nil
+	}
+	return b.trailers
+}
+
 // fail ends the body with err, unless it has ended or failed already.
 func (b *bodyQueue) fail(err error) {
 	b.mu.Lock()
@@ -354,6 +395,7 @@ func (b *bodyQueue) next() ([]byte, error) {
 			k := min(b.n, len(b.buf)-b.head)
 			piece := b.buf[b.head : b.head+k : b.head+k]
 			b.viewed = k
+			b.progress.moved(k, b.need)
 			b.mu.Unlock()
 			b.giveBack(freed)
 			return piece, b.sendGrant(inc)
@@ -382,8 +424,8 @@ func (b *bodyQueue) next() ([]byte, error) {
 		if !b.wait() {
 			b.mu.Lock()
 			if b.n == 0 && !b.ended && b.err == nil && !b.closed {
-				b.err = fmt.Errorf("%w: no body bytes on stream %d within the read timeout %v",
-					os.ErrDeadlineExceeded, b.id, b.timeout)
+				b.err = fmt.Errorf("%w: the body of stream %d did not move by %d bytes within the read timeout %v",
+					os.ErrDeadlineExceeded, b.id, b.need, b.timeout)
 			}
 			continue
 		}
@@ -391,14 +433,21 @@ func (b *bodyQueue) next() ([]byte, error) {
 	}
 }
 
-// wait blocks until the reader signals or ReadTimeout passes, and reports
-// which.
+// wait blocks until the reader signals or what is left of ReadTimeout
+// passes (readProgress), and reports which. Called by the handler only, so
+// progress needs no lock.
 func (b *bodyQueue) wait() bool {
-	if b.timer == nil {
-		b.timer = time.NewTimer(b.timeout)
-	} else {
-		b.timer.Reset(b.timeout)
+	left := b.progress.left(b.timeout)
+	if left <= 0 {
+		return false
 	}
+	if b.timer == nil {
+		b.timer = time.NewTimer(left)
+	} else {
+		b.timer.Reset(left)
+	}
+	start := time.Now()
+	defer func() { b.progress.wait(time.Since(start)) }()
 	select {
 	case <-b.wake:
 		b.timer.Stop()

@@ -22,7 +22,7 @@
 // The batch is the unit of transport, never the element. A function that
 // handles N elements efficiently handles 1 without effort; the converse does
 // not hold. Measured in this repository: a batched pipeline is ~2x faster than
-// an element-wise one for identical useful work, and the gap widens to 179x for
+// an element-wise one for identical useful work, and the gap widens to ×180 for
 // operators that must pull from several streams at once. See
 // docs/benchmarks.md.
 //

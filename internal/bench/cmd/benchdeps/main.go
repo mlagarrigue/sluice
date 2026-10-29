@@ -7,15 +7,15 @@
 // The regression gate measures a benchmark only when the diff touches what it
 // measures, because a change anywhere in the test binary moves where every
 // other function lands, and the sign test reads that constant layout effect
-// as a regression. The gate first read the imports of the file declaring the
-// benchmark, and a file that imported nothing of the module was given every
+// as a regression. Reading only the imports of the file declaring the
+// benchmark would give a file that imports nothing of the module every
 // package internal/bench imports: BenchmarkSeqStages, whose stages are
-// helpers of its own file and reach no package of the module, was measured
-// on a diff to database/postgres alone and declared SLOWER (+4.9%, 1 win of
-// 11, 1a71025). This reads the code instead: the benchmark's body, every
-// package-level declaration of its package that body names, theirs in turn,
-// and the methods of every type reached; a selector on an import of the
-// declaring file is a package reached.
+// helpers of its own file and reach no package of the module, would be
+// measured on a diff to database/postgres alone and declared SLOWER (+4.9%,
+// 1 win of 11, measured). This reads the code instead: the benchmark's body,
+// every package-level declaration of its package that body names, theirs in
+// turn, and the methods of every type reached; a selector on an import of
+// the declaring file is a package reached.
 //
 // The walk is by name, without type checking: a local variable that shadows
 // a package-level name pulls that declaration in too. That errs on the side

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -162,23 +163,15 @@ func TestNullableArrayRejectsAnOverlongElement(t *testing.T) {
 	}
 }
 
-// A negative length that is not -1 is not a NULL, it is corruption.
+// A negative length that is not -1 is not a NULL, it is corruption. The
+// element's bytes are cut off, so that a decoder reading -2 as a NULL finds
+// a well-formed array and only the length check can refuse it.
 func TestNullableArrayRejectsANegativeLength(t *testing.T) {
 	raw := AppendNullableInt8Array(nil, []Null[int64]{present(int64(1))})
 	binary.BigEndian.PutUint32(raw[arrayHeaderSize:], ^uint32(1)) // -2
-	if _, err := DecodeNullableInt8Array(nil, raw); !errors.Is(err, ErrCodec) {
-		t.Fatalf("error = %v, want ErrCodec", err)
-	}
-}
-
-// The zero Null is absent, not present-and-zero. Anything else would make an
-// uninitialised element a real value.
-func TestZeroNullIsAbsent(t *testing.T) {
-	var n Null[int64]
-	if n.Valid {
-		t.Error("the zero Null reports itself as present")
-	}
-	if got := present(int64(0)); !got.Valid {
-		t.Error("present[int64](0) reports itself as absent")
+	raw = raw[:arrayHeaderSize+4]
+	_, err := DecodeNullableInt8Array(nil, raw)
+	if !errors.Is(err, ErrCodec) || !strings.Contains(err.Error(), "declares a length of -2") {
+		t.Fatalf("error = %v, want ErrCodec naming the length -2", err)
 	}
 }

@@ -1,7 +1,7 @@
 # ADR 0010 — Routing is a table matched on the raw target
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-04 (a fully covered route is refused), 2026-10-07 (renumbered), 2026-10-09 (a refusal panics)
+- **Revised:** 2026-10-04 (a fully covered route is refused), 2026-10-07 (renumbered), 2026-10-09 (a refusal panics), 2026-10-28 (dot segments and a leading `//` are not normalised)
 - **Theme:** web
 
 ## Problem
@@ -22,6 +22,17 @@ no multi-segment wildcard, no suffix match. **Nothing is percent-decoded**:
 literal segments match byte for byte (`/%68ealth` does not match
 `/health`) and wildcard values are handed over as sent; the query is split
 off before matching and never matched on.
+
+**Nor are dot segments removed**: `.` and `..` are segments like any other, matched byte for byte
+by a literal and handed over as sent by a wildcard, and a target that
+begins with `//` is an absolute path whose first segment is empty. RFC 3986
+§6.2.2.3 advises removing dot segments before comparing; this router does
+not, for the reason it does not decode: two hops that normalise
+differently route differently, and the path the handler sees must be the
+one the client sent. What follows is the handler's: a wildcard value that
+becomes a file name or an upstream target must refuse `.` and `..`, and a
+target copied into a relative reference must guard against the leading
+`//`, which would read there as an authority.
 
 A method mismatch on an existing path is 405 with `Allow`; an unmatched path
 is 404; both are refusals recorded on the exchange. `NewRouter` refuses a

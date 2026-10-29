@@ -10,17 +10,32 @@ import (
 	"github.com/mlagarrigue/sluice/internal/pgwire"
 )
 
-// ErrProtocol reports a backend message this package could not parse. It means
-// the stream is no longer understood, so the connection is finished — there is
-// no way to resynchronise a protocol whose framing has been misread.
+// ErrProtocol reports a backend message stream this package can no longer
+// follow: a message that does not parse, one of a kind that has no place where
+// it arrived, or, before the answer to LISTEN, more notifications than it keeps.
+// The connection is finished — there is no way to resynchronise a protocol
+// whose framing has been misread, or whose server is not answering what was
+// asked.
 var ErrProtocol = errors.New("postgres: malformed backend message")
 
-// ErrMessageTooLarge reports a backend message longer than the reader's
-// limit, and ErrMalformedMessage a length field that cannot be right. Both
-// are raised by the wire layer and surface through a connection's error.
+// The wire layer's errors, which surface through a connection's error.
 var (
-	ErrMessageTooLarge  = pgwire.ErrMessageTooLarge
+	// ErrMessageTooLarge reports a backend message longer than
+	// [Config.MaxMessage]. The connection is finished; raise MaxMessage if
+	// the value is legitimate — a large bytea, a long text.
+	ErrMessageTooLarge = pgwire.ErrMessageTooLarge
+
+	// ErrMalformedMessage reports a length field that cannot be right. The
+	// stream position is no longer known, so the connection is finished:
+	// reconnect, and check what sits between this end and the server.
 	ErrMalformedMessage = pgwire.ErrMalformedMessage
+
+	// ErrOutgoingTooLarge reports a message this end would send past what a
+	// server accepts — 1 GiB less one byte, its MaxAllocSize — typically a
+	// query parameter that large. It is refused before a byte leaves, the
+	// connection stays usable, and no setting moves the bound: split the
+	// value, which PostgreSQL could not store whole anyway.
+	ErrOutgoingTooLarge = pgwire.ErrOutgoingTooLarge
 )
 
 // Error is an ErrorResponse from the server, kept as fields rather than
@@ -210,12 +225,12 @@ func parseRowDescription(dst []Field, body []byte) ([]Field, error) {
 // Rows accumulates decoded DataRow messages for a whole batch.
 //
 // Values are packed end to end in one buffer with a table of offsets beside
-// them, rather than a slice per row or per field. That is §8.6's columnar
-// principle applied to decoding: a thousand-row batch costs a handful of
-// allocations that are then reused for the next batch, where the obvious shape
-// — [][]byte per row — costs a thousand and a half. It is also what lets a
-// generated hydration function walk one column across every row, which is the
-// loop a CPU predicts.
+// them, rather than a slice per row or per field. That is the architecture's
+// "Hydration" — allocate at batch size, reuse between batches — applied to
+// decoding: a thousand-row batch costs a handful of allocations that are then
+// reused for the next batch, where the obvious shape — [][]byte per row —
+// costs a thousand and a half. A generated hydration function walks it row
+// by row, the order that section measured faster than column by column.
 //
 // A Rows is reset and refilled per batch, so the bytes it hands out are valid
 // only until the next batch — the same rule as everything else here.
@@ -251,9 +266,9 @@ type Rows struct {
 	// contract.
 	gen uint32
 
-	// small counts the batches in a row that fitted the retained sizes
-	// while the storage was larger (see Reset).
-	small int
+	// keep decides when storage past the retained sizes goes back (see
+	// reset).
+	keep retention
 }
 
 // What a [Rows] keeps for the life of its connection, and how many batches
@@ -267,6 +282,29 @@ const (
 	rowsShrinkAfter = 256
 )
 
+// retention is that rule, shared by every batch store of this package that
+// outlives its batch: [Rows] and the replication arena.
+type retention struct {
+	small int // batches in a row that fitted the retained size while the storage was larger
+}
+
+// giveBack counts one batch and reports whether its storage goes back now:
+// oversized says the storage is past the retained size, fitted that the
+// batch just ended would have fitted within it. Only a store that met a
+// large batch pays more than this one comparison.
+func (k *retention) giveBack(oversized, fitted bool) bool {
+	if !oversized || !fitted {
+		k.small = 0
+		return false
+	}
+	k.small++
+	if k.small < rowsShrinkAfter {
+		return false
+	}
+	k.small = 0
+	return true
+}
+
 // maxRowBytes is how many bytes of values one batch may hold, bounded by the
 // int32 offsets in [Rows]. A variable rather than a constant so the guard can
 // be exercised without allocating two gigabytes; nothing outside the tests
@@ -274,9 +312,9 @@ const (
 var maxRowBytes = math.MaxInt32
 
 // ErrTooManyRows reports a result larger than the batch bound the caller set.
-// It exists for the same reason [github.com/mlagarrigue/sluice/distinct.By] takes a bound: a query whose
-// result is larger than expected must fail rather than grow until the process
-// dies (S1).
+// It exists for the same reason [github.com/mlagarrigue/sluice/distinct.By]
+// takes a bound: a query whose result is larger than expected must fail rather
+// than grow until the process dies (the architecture's S1).
 var ErrTooManyRows = errors.New("postgres: result exceeds the batch row limit")
 
 // newRows returns an accumulator for results of the given width, holding at
@@ -319,25 +357,16 @@ func (r *Rows) start(desc []Field, maxRows, maxBytes int) {
 }
 
 // reset empties the accumulator, keeping its storage for the next batch —
-// unless that storage outgrew what an ordinary batch needs and
-// rowsShrinkAfter batches in a row have fitted the retained sizes, in which
-// case it is given back and the next batch starts small. Only the
-// connection that met a large batch pays the check's body; the steady state
-// is one comparison.
+// unless [retention] gives it back, in which case the next batch starts
+// small. An empty batch is not counted.
 //
 // The byte buffer is not cleared: every byte it hands out is covered by an
 // offset written when it was filled, so a stale tail is unreachable rather
 // than merely unlikely.
 func (r *Rows) reset() {
-	if r.rows > 0 && (cap(r.buf) > rowsRetainBytes || cap(r.ends) > rowsRetainEnds) {
-		if len(r.buf) <= rowsRetainBytes && len(r.ends) <= rowsRetainEnds {
-			r.small++
-			if r.small >= rowsShrinkAfter {
-				r.buf, r.ends, r.small = nil, nil, 0
-			}
-		} else {
-			r.small = 0
-		}
+	if r.rows > 0 && r.keep.giveBack(cap(r.buf) > rowsRetainBytes || cap(r.ends) > rowsRetainEnds,
+		len(r.buf) <= rowsRetainBytes && len(r.ends) <= rowsRetainEnds) {
+		r.buf, r.ends = nil, nil
 	}
 	r.buf = r.buf[:0]
 	r.ends = r.ends[:0]
@@ -496,14 +525,14 @@ func (r *Rows) Value(row, col int) (b []byte, isNull bool) {
 // instead of parsing a sentence.
 //
 // It also keeps `fmt.Sprintf` out of the body of a function that runs once per
-// field per row, which takes it from cost 137 to 66 against the inliner's
-// budget of 80 — and **that turned out not to matter**: paired against the
-// previous shape it measures as noise, 5 wins out of 14. The bounds check
-// itself is what costs, at −4.2% on BenchmarkPGReadDecode when removed
-// entirely, and it stays: returning a zero value for an index a caller had no
-// business asking for would let a typo in a generated hydration function read
-// as a legitimate NULL, which this project ranks below a crash. The number is
-// written down so nobody measures it twice.
+// field per row, which puts it at cost 66 against the inliner's budget of 80,
+// where a formatted string costs 137 — and **that does not matter**: paired
+// against the formatted string it measures as noise, 5 wins out of 14. The
+// bounds check itself is what costs, at −4.2% on BenchmarkPGReadDecode when
+// removed entirely, and it stays: returning a zero value for an index a caller
+// had no business asking for would let a typo in a generated hydration
+// function read as a legitimate NULL, which this project ranks below a crash.
+// The number is written down so nobody measures it twice.
 type IndexOutOfRange struct {
 	Row, Col     int // what was asked for
 	Rows, Fields int // what the batch holds

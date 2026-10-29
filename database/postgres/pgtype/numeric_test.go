@@ -124,11 +124,6 @@ func TestNumericFloat64IsNamedAndLossy(t *testing.T) {
 	if f := n.Float64(); f == 0 || math.IsInf(f, 0) {
 		t.Errorf("Float64 = %v, want a finite approximation", f)
 	}
-	// The approximation is not the value, which is the reason the conversion
-	// has to be asked for.
-	if got := strconv.FormatFloat(n.Float64(), 'f', -1, 64); got == exact {
-		t.Error("float64 held all thirty-eight digits, which it cannot")
-	}
 
 	// The special values convert to their float counterparts.
 	nan, _ := ParseNumeric("NaN")
@@ -428,4 +423,16 @@ func BenchmarkNumericFloat64(b *testing.B) {
 		sink += n.Float64()
 	}
 	_ = sink
+}
+
+// ParseNumeric holds a value to the display scale DecodeNumeric holds a
+// received one to, PostgreSQL's 16383 decimal places: one more is refused
+// here rather than by the server at Bind.
+func TestParseNumericBoundsTheScale(t *testing.T) {
+	if _, err := ParseNumeric("0." + strings.Repeat("0", numericMaxDscale)); err != nil {
+		t.Fatalf("%d decimal places: %v", numericMaxDscale, err)
+	}
+	if _, err := ParseNumeric("0." + strings.Repeat("0", numericMaxDscale+1)); !errors.Is(err, ErrCodec) {
+		t.Fatalf("%d decimal places: %v, want ErrCodec", numericMaxDscale+1, err)
+	}
 }

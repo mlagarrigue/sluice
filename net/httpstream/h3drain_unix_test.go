@@ -14,7 +14,7 @@ import (
 // no frame must not touch the stream's buffer — not even to copy it onto
 // itself. drain used to end with append(st.buf[:0], rest...) with rest the
 // whole of st.buf, which moved every parked byte on each one-byte delivery
-// of a trickled DATA frame (RP-20261020-secnet-01).
+// of a trickled DATA frame.
 //
 // The buffer's identity — first byte address, length, capacity — is checked,
 // but a copy onto itself preserves all three; the witness that tells the two

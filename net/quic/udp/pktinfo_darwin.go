@@ -92,7 +92,9 @@ func packetDestination(oob []byte) (netip.Addr, int, bool) {
 		case level == syscall.IPPROTO_IPV6 && typ == ipv6Pktinfo && len(data) >= 20:
 			// struct in6_pktinfo { in6_addr addr; unsigned int ifindex; }
 			ifindex := int(binary.NativeEndian.Uint32(data[16:20]))
-			return netip.AddrFrom16([16]byte(data[0:16])), ifindex, true
+			// IPv4 traffic on a dual-stack socket arrives here, mapped;
+			// it leaves as plain IPv4, the one form Windows can give too.
+			return netip.AddrFrom16([16]byte(data[0:16])).Unmap(), ifindex, true
 		}
 		oob = rest
 	}

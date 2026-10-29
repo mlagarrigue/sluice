@@ -379,7 +379,11 @@ type Config struct {
 	// A cancellation not confirmed in time closes the connection, and the
 	// statement ends with [ErrConnBroken]: a request still on its way could
 	// reach the server during the next statement and cancel that one
-	// instead.
+	// instead. A confirmed one gives the statement CancelTimeout again to
+	// end — the server interrupts it, then answers on the main connection —
+	// and closes the connection the same way when it has not: the
+	// confirmation says the signal arrived, not that the server will speak
+	// again.
 	CancelTimeout time.Duration
 
 	// Logger receives the warnings the connection has no error to return
@@ -392,6 +396,18 @@ type Config struct {
 	// (replication=database). Only [Replicate] sets it: the same key in
 	// Params would open a connection Query and Exec cannot drive.
 	replication bool
+}
+
+// Validate reports what [Connect] would refuse in cfg before dialling — an
+// empty User, a role or database set through Params, a bound outside its
+// range, protocol versions that exclude each other — and nil when it would
+// accept it. A configuration read at deployment, from the environment or a
+// file, is checked with it before any connection is opened; Connect runs
+// the same check, so the two never disagree. What only the server can
+// refuse — the password, the database's existence — stays for Connect.
+func (cfg Config) Validate() error {
+	_, err := startupBody(cfg)
+	return err
 }
 
 // String prints the configuration with the password hidden: %v and %+v on
@@ -441,15 +457,9 @@ func startup(rw io.ReadWriteCloser, cfg Config) (*Conn, error) {
 		return nil, fmt.Errorf("%w: Config.ChannelBinding is ChannelBindingRequire and the connection is not a *tls.Conn — channel binding ties the exchange to the server's certificate, so the DialFunc must return the *tls.Conn itself, not a wrapper around it — DialTLS does", ErrAuth)
 	}
 
-	c := NewConn(rw)
-	switch n := cfg.StatementCacheSize; {
-	case n < 0:
-		c.stmts = nil
-	case n > 0:
-		c.stmts = newStmtCache(n)
-	}
+	c := NewConn(rw, cfg)
 	_, c.encodingChosen = cfg.Params["client_encoding"]
-	c.cancelTimeout, c.logger = cfg.CancelTimeout, cfg.Logger
+	c.cancelTimeout = cfg.CancelTimeout
 	c.r.SetMaxMessage(maxStartupMessage)
 	c.w.Startup(body)
 	if err := c.w.Flush(); err != nil {
@@ -935,7 +945,9 @@ const maxServerParameterBytes = 16 << 20
 // a SET of a reportable parameter produces one, and so does a function that
 // changes one mid-statement. Every read loop in this package therefore records
 // them, because the alternative is [Conn.Parameter] quietly reporting what was
-// true when the connection opened.
+// true when the connection opened. The copy-in reader, which cannot touch the
+// Conn from its goroutine, queues them under the same two bounds
+// (copyReader.queueParameter) and records them when the COPY ends.
 func (c *Conn) recordParameter(body []byte) error {
 	name, val, err := parseParameterStatus(body)
 	if err != nil {

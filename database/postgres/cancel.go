@@ -180,12 +180,17 @@ const sqlstateQueryCanceled = "57014"
 // with the recipe [Connect] was given, sends the [CancelRequest] and waits
 // for the server to close that connection. The statement's own goroutine
 // is blocked in a read all the while, and is released by the server's
-// query_canceled error — or, when the cancellation cannot be confirmed, by
-// the watch closing the connection under it.
+// query_canceled error — or by the watch closing the connection under it,
+// when the cancellation cannot be confirmed or when, confirmed, it has not
+// ended the statement within CancelTimeout.
 type cancelWatch struct {
 	stop func() bool
 	done chan struct{}
 	err  error // written by the goroutine before done is closed
+	// over is closed once the statement has ended (end, disarm), which is
+	// what the goroutine waits for after the server's confirmation.
+	over   chan struct{}
+	isOver bool // over is closed; read and written by the statement's goroutine only
 }
 
 // watchCancel arms the watch for one statement. It is nil, and costs
@@ -195,7 +200,7 @@ func (c *Conn) watchCancel(ctx context.Context) *cancelWatch {
 	if c.cancelDial == nil || ctx.Done() == nil || !c.cancelKey.Known() {
 		return nil
 	}
-	w := &cancelWatch{done: make(chan struct{})}
+	w := &cancelWatch{done: make(chan struct{}), over: make(chan struct{})}
 	w.stop = context.AfterFunc(ctx, func() { w.run(c, ctx) })
 	return w
 }
@@ -205,12 +210,22 @@ func (c *Conn) watchCancel(ctx context.Context) *cancelWatch {
 // rest would cost more to read than to cancel. Same goroutine, same recipe,
 // same confirmation as the watch; end waits for it.
 func (c *Conn) cancelNow(ctx context.Context) *cancelWatch {
-	w := &cancelWatch{done: make(chan struct{}), stop: func() bool { return false }}
+	w := &cancelWatch{done: make(chan struct{}), over: make(chan struct{}), stop: func() bool { return false }}
 	go w.run(c, ctx)
 	return w
 }
 
 // run sends the cancellation and records how it went.
+//
+// The server's confirmation says the signal reached the backend, not that
+// the statement is over: the backend acts on it at its next check for
+// interrupts, and answers on the main connection, which has no deadline
+// (Connect). A backend that takes the signal and never gets there, or a
+// server that closes the second connection and then says nothing on the
+// first, would hold the statement's goroutine, the connection and whatever
+// its caller holds for as long as the socket lives. So the statement gets
+// CancelTimeout after the confirmation to end, and the connection is
+// closed under it when it has not, as for a cancellation not confirmed.
 func (w *cancelWatch) run(c *Conn, ctx context.Context) {
 	defer close(w.done)
 	if w.err = c.sendCancel(ctx); w.err != nil {
@@ -218,7 +233,25 @@ func (w *cancelWatch) run(c *Conn, ctx context.Context) {
 		// goroutine may be blocked in a read the server will never
 		// answer, and only the close releases it.
 		_ = c.rw.Close()
+		return
 	}
+	timeout := c.cancelBound()
+	t := time.NewTimer(timeout)
+	defer t.Stop()
+	select {
+	case <-w.over:
+	case <-t.C:
+		w.err = fmt.Errorf("%w Config.CancelTimeout (%v) later", errCancelNoEffect, timeout)
+		_ = c.rw.Close()
+	}
+}
+
+// cancelBound is Config.CancelTimeout, or its default.
+func (c *Conn) cancelBound() time.Duration {
+	if c.cancelTimeout == 0 {
+		return defaultCancelTimeout
+	}
+	return c.cancelTimeout
 }
 
 // end disarms the watch once the statement is over. A cancellation already
@@ -230,8 +263,17 @@ func (w *cancelWatch) end() error {
 	if w == nil || w.stop() {
 		return nil
 	}
+	w.ended()
 	<-w.done
 	return w.err
+}
+
+// ended tells the goroutine the statement is over, once.
+func (w *cancelWatch) ended() {
+	if !w.isOver {
+		w.isOver = true
+		close(w.over)
+	}
 }
 
 // disarm stops a watch that end will not reach — a consumer's panic
@@ -241,6 +283,7 @@ func (w *cancelWatch) end() error {
 func (w *cancelWatch) disarm() {
 	if w != nil {
 		w.stop()
+		w.ended()
 	}
 }
 
@@ -259,10 +302,7 @@ func (w *cancelWatch) disarm() {
 // The context that fired is kept for its values and nothing else: its
 // deadline is past.
 func (c *Conn) sendCancel(ctx context.Context) error {
-	timeout := c.cancelTimeout
-	if timeout == 0 {
-		timeout = defaultCancelTimeout
-	}
+	timeout := c.cancelBound()
 	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
 	rw, err := c.cancelDial(dctx)
@@ -336,11 +376,21 @@ func (c *Conn) settleCancel(ctx context.Context, w *cancelWatch, err error) erro
 	return err
 }
 
-// cancelUnconfirmed breaks the connection a cancellation was not confirmed
-// on — the watch has closed it — and logs one warning saying why.
+// errCancelNoEffect is the watch's error for a cancellation the server
+// confirmed and the statement outlived; any other error of the watch says
+// the cancellation was not confirmed.
+var errCancelNoEffect = errors.New("the server confirmed the cancellation, and the statement had not ended")
+
+// cancelUnconfirmed breaks the connection a cancellation did not settle —
+// not confirmed, or confirmed without the statement ending; the watch has
+// closed it — and logs one warning saying which.
 func (c *Conn) cancelUnconfirmed(ctx context.Context, cerr error, completed bool) {
-	c.broken = fmt.Errorf("%w: the cancellation was not confirmed, so the connection was closed: %w", ErrConnBroken, cerr)
-	c.log().LogAttrs(context.WithoutCancel(ctx), slog.LevelWarn, "postgres: cancellation not confirmed, connection closed",
+	what := "the cancellation was not confirmed"
+	if errors.Is(cerr, errCancelNoEffect) {
+		what = "the cancellation did not end the statement"
+	}
+	c.broken = fmt.Errorf("%w: %s, so the connection was closed: %w", ErrConnBroken, what, cerr)
+	c.log().LogAttrs(context.WithoutCancel(ctx), slog.LevelWarn, "postgres: "+what+", connection closed",
 		slog.Uint64("pid", uint64(c.cancelKey.PID)),
 		slog.Bool("statement_completed", completed),
 		slog.String("error", cerr.Error()))

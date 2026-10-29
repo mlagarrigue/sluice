@@ -1,7 +1,7 @@
 # ADR 0023 — Logical replication is a `Source` of changes, acknowledged by the consumer
 
 - **Created:** 2026-10-23
-- **Revised:** 2026-10-23 (LISTEN/NOTIFY has its own record)
+- **Revised:** 2026-10-23 (LISTEN/NOTIFY has its own record), 2026-10-27 (the relation table is bounded in bytes), 2026-10-28 (a batch is bounded in bytes too, and a Truncate split at BatchChanges; Type and Origin delivered)
 - **Theme:** postgres
 
 ## Problem
@@ -25,19 +25,32 @@ way in. The slot and the publication are created by the caller, in SQL
 objects of the server, whose life is the deployment's, not a connection's.
 
 **The element is a decoded change** (`Change`): `Begin`, `Commit`, `Insert`,
-`Update`, `Delete`, `Truncate`, with its position in the log (`LSN`), the
+`Update`, `Delete`, `Truncate`, `Type`, `Origin`, with its position in the
+log (`LSN`), the
 table it applies to as last described (`*Relation`: schema, name, columns,
-types) and its tuples in binary, which `pgtype` decodes. `Relation` messages
-update the relation table and are not delivered; `Type` and `Origin` are read
-and ignored; any other message (logical decoding messages, the
+types) and its tuples in binary, which `pgtype` decodes.
+
+**What is read is delivered.** `Type` and `Origin` arrive as changes of their
+own (`ChangeType` with the type's OID, namespace and name; `ChangeOrigin`
+with the origin's name and commit LSN), since a replica needs the name of a
+type the publisher's OID stands for, and a cascaded setup the origin of
+what it must not send back. `Relation` messages update the relation table
+and are not delivered, being what every row change already carries; any
+other message (logical decoding messages, the
 streamed-transaction messages of protocol 2 and later) is refused with
-`ErrProtocol`, since it was not asked for. The relation table is bounded.
+`ErrProtocol`, since it was not asked for. The relation table is bounded in
+count and in bytes: a server describing more relations, or longer names,
+than a budget allows is refused rather than followed into memory.
 
 **A batch is what the server has already delivered**, capped by
-`ReplicationConfig.BatchChanges` (zero: `sluice.DefaultBatchSize`): a batch
-closes when it is full or when the next message is not already received, so
-a received change is never held back waiting for the next one. A batch's
-bytes live until the next batch (rule 1).
+`ReplicationConfig.BatchChanges` (zero: `sluice.DefaultBatchSize`) and by
+`ReplicationConfig.BatchBytes`, the message payloads it keeps (zero: the
+default of `QueryConfig.BatchBytes`): a batch closes when either is
+reached or when the next message is not already received, so a received
+change is never held back waiting for the next one. A Truncate naming more
+relations than the batch has room for is split across batches; a batch
+that reaches `BatchBytes` without a change closes empty and the stream goes
+on. A batch's bytes live until the next batch (rule 1).
 
 **The consumer acknowledges.** `Replication.Ack(lsn)` declares everything
 before `lsn` processed — typically a `Commit`'s `EndLSN`. The position

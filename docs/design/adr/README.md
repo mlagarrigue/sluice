@@ -38,8 +38,6 @@ theme, the question each one settles beside its title.
 
 - [ADR 0008 — A multiplexed connection is a reader, a responder and a writer](0008-multiplexed-connection.md)
   — how a multiplexed connection splits reading, answering and writing.
-- [ADR 0025 — What the server and the gateway report: a `slog.Logger`, nothing else](0025-observability.md)
-  — what is logged, at which level, and what never leaves the log.
 - [ADR 0009 — One request contract for three protocols](0009-request-contract.md)
   — how three HTTP versions present one request.
 - [ADR 0013 — QPACK's static table ships, checked](0013-qpack-static-table.md)
@@ -48,10 +46,12 @@ theme, the question each one settles beside its title.
   — how a server stops without cutting what it is answering.
 - [ADR 0018 — Zero is the safe default, the bound is mandatory](0018-zero-values-and-mandatory-bounds.md)
   — what a zero or a negative setting means.
+- [ADR 0025 — What the server and the gateway report: a `slog.Logger`, nothing else](0025-observability.md)
+  — what is logged, at which level, and what never leaves the log.
 
 ## QUIC (`quic`)
 
-- [ADR 0014 — TLS stays in front of the experimental transport](0014-tls-stays-in-front.md)
+- [ADR 0014 — TLS stays in front of the transport](0014-tls-stays-in-front.md)
   — why the transport does not terminate TLS itself.
 - [ADR 0015 — The QUIC server: transport machinery, a real listener, a moving client](0015-quic-server.md)
   — what a QUIC server needs beyond a handshake.
@@ -74,7 +74,7 @@ theme, the question each one settles beside its title.
 
 ## Tooling (`ci`)
 
-- [ADR 0002 — The dependency graph is a decision, never a default](0002-one-dependency.md)
+- [ADR 0002 — The dependency graph is a decision, never a default](0002-dependency-graph.md)
   — why every production dependency is a recorded decision.
 
 ## Documentation (`docs`)

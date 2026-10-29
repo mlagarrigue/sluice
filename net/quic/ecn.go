@@ -87,12 +87,21 @@ func (e *ecnState) mark() uint8 {
 // loss or on a queue fully congested, where the marks are doing their job;
 // the counts' own checks (§13.4.2.1) are the ones kept.
 func (c *Conn) validateECNLocked(space int, f Frame, out ackOutcome) (newCE int) {
-	if c.ecn.phase == ecnFailed || !out.raisedLargest {
+	sp := &c.spaces[space]
+	// The frame's own Largest Acknowledged field, not the largest tracked
+	// packet it newly acknowledges: this end tracks ack-eliciting packets
+	// only, and a frame whose largest is one of its ACK-only packets still
+	// raises the field and carries counts that may have grown. Read on the
+	// tracked packets alone, its CE increase was not read on it.
+	raised := !sp.ecnSawAck || f.largest > sp.ecnLargest
+	if raised {
+		sp.ecnLargest, sp.ecnSawAck = f.largest, true
+	}
+	if c.ecn.phase == ecnFailed || !raised {
 		// A frame that does not increase the largest acknowledged number
 		// is old or reordered news, and MUST NOT fail validation.
 		return 0
 	}
-	sp := &c.spaces[space]
 	counts, ok := ackECNCounts(f)
 	if !ok {
 		// A peer that reports no counts for packets that left marked

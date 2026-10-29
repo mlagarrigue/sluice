@@ -1,9 +1,13 @@
 package sluice_test
 
 import (
+	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -101,9 +105,11 @@ func TestGuidesEndOnWhatYouCanDo(t *testing.T) {
 }
 
 // Every guide explains at least one term for a beginner: in a box of its
-// own, "> **In plain terms…", the form the guides share, or inline, "In
-// plain words:", the form the limits page uses in each of its entries.
-func TestEveryGuideHasAPlainTermsBox(t *testing.T) {
+// own, "> **In plain words…", or inline, "In plain words:", the form the
+// limits page uses in each of its entries. One name for the box, in every
+// document: a second name is a reader wondering whether it means something
+// else.
+func TestEveryGuideHasAPlainWordsBox(t *testing.T) {
 	guides, err := filepath.Glob("docs/guide/*.md")
 	if err != nil {
 		t.Fatal(err)
@@ -113,8 +119,17 @@ func TestEveryGuideHasAPlainTermsBox(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(b), "\n> **In plain terms") && !strings.Contains(string(b), "In plain words:") {
-			t.Errorf("%s: no \"> **In plain terms\" box and no \"In plain words:\"", g)
+		if !strings.Contains(string(b), "\n> **In plain words") && !strings.Contains(string(b), "In plain words:") {
+			t.Errorf("%s: no \"> **In plain words\" box and no \"In plain words:\"", g)
+		}
+	}
+	for _, f := range markdownFiles(t) {
+		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n := strings.Count(string(b), "In plain terms"); n > 0 {
+			t.Errorf("%s: %d boxes named \"In plain terms\"; the name is \"In plain words\"", f, n)
 		}
 	}
 }
@@ -188,4 +203,148 @@ func TestArchitectureQuotesAreShort(t *testing.T) {
 		}
 		n = 0
 	}
+}
+
+// maxParagraphLines is the longest paragraph of prose a guide or an entry
+// document may hold. Past it a paragraph carries eight or more things at
+// once, and a beginner the guides are written for loses the thread; it is
+// cut where its subject changes, or becomes a list.
+const maxParagraphLines = 18
+
+var numbered = regexp.MustCompile(`^\d+\. `)
+
+// Every paragraph of prose in the README, CONTRIBUTING, the guides and the
+// architecture runs maxParagraphLines lines at most. Code blocks and tables
+// do not count; a list item counts as a paragraph of its own, from its
+// marker; a quoted box counts without its "> ".
+func TestProseParagraphsAreShort(t *testing.T) {
+	guides, err := filepath.Glob("docs/guide/*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, page := range append(guides, "README.md", "CONTRIBUTING.md", "docs/design/architecture.md") {
+		b, err := os.ReadFile(page) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		start, n, fenced := 0, 0, false
+		flush := func() {
+			if n > maxParagraphLines {
+				t.Errorf("%s:%d: a paragraph of %d lines; cut it where its subject changes (at most %d)",
+					page, start, n, maxParagraphLines)
+			}
+			n = 0
+		}
+		for i, line := range strings.Split(string(b), "\n") {
+			if strings.HasPrefix(line, "```") {
+				fenced = !fenced
+				flush()
+				continue
+			}
+			if fenced {
+				continue
+			}
+			text := strings.TrimPrefix(strings.TrimPrefix(line, ">"), " ")
+			if strings.TrimSpace(text) == "" || strings.HasPrefix(text, "- ") || numbered.MatchString(text) || strings.HasPrefix(text, "|") {
+				flush()
+				if strings.HasPrefix(text, "- ") || numbered.MatchString(text) {
+					start, n = i+1, 1
+				}
+				continue
+			}
+			if n == 0 {
+				start = i + 1
+			}
+			n++
+		}
+		flush()
+	}
+}
+
+// The documentation counts the interop matrix in words a reader trusts
+// without checking: "31 peer-directions", "seventeen interop peers". The
+// count is interop/expected-results.json's — one key per implementation, one
+// side under it per direction — and a peer added to or dropped from the
+// record moves it. Every count of peer-directions, interop peers or interop
+// implementations in the README and docs/ is the record's; "at least two
+// interop peers" is a threshold, not a count, and is not read.
+func TestInteropCountsMatchTheRecord(t *testing.T) {
+	b, err := os.ReadFile("interop/expected-results.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(b, &record); err != nil {
+		t.Fatal(err)
+	}
+	peers, directions := len(record), 0
+	for _, sides := range record {
+		directions += len(sides)
+	}
+	if peers == 0 || directions == 0 {
+		t.Fatal("interop/expected-results.json records no implementation")
+	}
+	pages := []string{"README.md"}
+	err = filepath.WalkDir("docs", func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.HasSuffix(p, ".md") {
+			pages = append(pages, p)
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := regexp.MustCompile(`(?i)(at (?:least|most) )?\b([0-9]+|[a-z]+(?:-[a-z]+)?)[ \n]+(peer[- \n]directions|interop[ \n]+(?:peers|implementations))\b`)
+	for _, page := range pages {
+		text, err := os.ReadFile(page) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range count.FindAllSubmatchIndex(text, -1) {
+			if m[2] >= 0 {
+				continue
+			}
+			n, ok := countWord(string(text[m[4]:m[5]]))
+			if !ok {
+				continue
+			}
+			noun := strings.ToLower(string(text[m[6]:m[7]]))
+			want := peers
+			if strings.HasSuffix(noun, "directions") {
+				want = directions
+			}
+			if n != want {
+				line := 1 + strings.Count(string(text[:m[0]]), "\n")
+				t.Errorf("%s:%d: %q: interop/expected-results.json records %d", page, line, text[m[0]:m[1]], want)
+			}
+		}
+	}
+}
+
+// countWord reads a count written in digits or in English words up to
+// ninety-nine; ok is false for any other word.
+func countWord(s string) (n int, ok bool) {
+	if v, err := strconv.Atoi(s); err == nil {
+		return v, true
+	}
+	units := []string{
+		"", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+		"ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen",
+	}
+	tens := []string{"", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"}
+	s = strings.ToLower(s)
+	ten, unit, _ := strings.Cut(s, "-")
+	if i := slices.Index(tens, ten); i >= 2 {
+		if unit == "" {
+			return i * 10, true
+		}
+		if j := slices.Index(units, unit); j >= 1 && j <= 9 {
+			return i*10 + j, true
+		}
+		return 0, false
+	}
+	if i := slices.Index(units, s); i >= 1 {
+		return i, true
+	}
+	return 0, false
 }

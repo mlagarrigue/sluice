@@ -20,9 +20,9 @@ import (
 // is still a required argument with no usable zero, for the same reason web's
 // is.
 //
-// A body that arrives through [httpstream.Request.Stream] — the default since
-// [httpstream.BodyStreamed] became the zero [httpstream.Config.BodyDelivery]
-// — is assembled here, up to limit, by [httpstream.Request.ReadAll]: a stage
+// A body that arrives through [httpstream.Request.Stream] — the default, the
+// zero [httpstream.Config.BodyDelivery] being [httpstream.BodyStreamed] — is
+// assembled here, up to limit, by [httpstream.Request.ReadAll]: a stage
 // decoding one JSON value needs the value whole, and this is the step that
 // turns the streamed form back into it. Nothing about the refusals changes
 // with the form, which is the point: a body that rode along with the request's
@@ -34,7 +34,10 @@ import (
 // smuggling it is, and "too large" kept
 // distinct from "malformed" because they need different fixes. Here the
 // stage also picks the refusal's status — 413 past the limit, 400 otherwise
-// — where web leaves that to its net/http caller.
+// — where web leaves that to its net/http caller. So are the three readings
+// web.DecodeJSON names as encoding/json's: a repeated name's last value
+// wins and names match fields without regard to case, invalid UTF-8 and a
+// lone surrogate become U+FFFD, a byte order mark is refused.
 func DecodeJSON(e *Exchange, limit int64, dst any) bool {
 	if limit <= 0 {
 		panic("stream: DecodeJSON needs a positive byte limit; an unbounded body is not a default")

@@ -6,6 +6,7 @@ import (
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/internal/batch"
+	"github.com/mlagarrigue/sluice/internal/handoff"
 )
 
 // Ordered applies f to each batch on up to workers goroutines, preserving
@@ -79,9 +80,8 @@ import (
 // [sluice.Scan], [sluice.FlatMap], the joins), Ordered copies Items into a buffer owned by
 // the job slot at the hand-off (guarantee S14). The copy is what makes
 // composing Ordered downstream of any operator safe. The slot's buffer is
-// reused, so the steady state
-// allocates nothing — recycling the slots removed the ~2.2 allocations per
-// batch the previous shape paid for its job, its channel and its queue.
+// reused, so the steady state allocates nothing, where a job, a channel and
+// a queue entry made per batch would cost ~2.2 allocations per batch.
 //
 // # Stopping and failure
 //
@@ -154,7 +154,7 @@ type job[A, B any] struct {
 
 	// panicked holds what f panicked with, if it did, so the emitter can
 	// re-panic on the caller's goroutine rather than crashing a worker.
-	panicked batch.Panic
+	panicked handoff.Panic
 }
 
 // runParallel is the concurrent path, split out so the no-op above stays free
@@ -193,8 +193,8 @@ func runParallel[A, B any](s sluice.Stream[A], fs []func(sluice.Batch[A]) sluice
 	// flight, and they complete in the order they were enqueued, so a ring of
 	// workers slots is exactly enough. slots[head] is the oldest in flight,
 	// count how many are; the slot freed by an emit is the one the next enqueue
-	// reuses. Recycling the slot is what removes the per-batch job and channel
-	// allocations the previous shape paid.
+	// reuses. Recycling the slot is what spares a job and a channel
+	// allocation per batch.
 	slots := make([]job[A, B], workers)
 	for i := range slots {
 		slots[i].done = make(chan struct{}, 1)
@@ -287,6 +287,6 @@ func runJob[A, B any](j *job[A, B], f func(sluice.Batch[A]) sluice.Batch[B]) {
 	// stops early, whose tokens the shutdown never collects: it waits on the
 	// workers instead.
 	defer func() { j.done <- struct{}{} }()
-	defer func() { j.panicked = batch.Recovered(recover()) }()
+	defer func() { j.panicked = handoff.Recovered(recover()) }()
 	j.out = f(j.in)
 }

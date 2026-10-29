@@ -14,7 +14,7 @@ import (
 
 // FuzzH2Connection drives [ServeH2Conn] itself, not just [parseFrame]: bytes go
 // through the frame layer, HPACK, padding and priority stripping
-// (h2conn.go's headers, around the block that removes PADDED and PRIORITY),
+// (h2read.go's headers, around the block that removes PADDED and PRIORITY),
 // stream lifecycle and window accounting — the whole assembly a real
 // connection exercises, which FuzzParseFrame and FuzzHPACKDecode stop short
 // of on their own.
@@ -228,7 +228,7 @@ func fuzzSeedSplitHeaders() []byte {
 }
 
 // fuzzSeedPaddedPriority carries both PADDED and PRIORITY, which is the
-// stripping logic h2conn.go's headers exercises before HPACK ever sees the
+// stripping logic h2read.go's headers exercises before HPACK ever sees the
 // block.
 func fuzzSeedPaddedPriority() []byte {
 	data := append([]byte(Preface), fuzzFrame(frameSettings, 0, 0, nil)...)
@@ -243,7 +243,7 @@ func fuzzSeedPaddedPriority() []byte {
 // pad length equal to what is left of the block once the 5 priority bytes
 // are removed, so nothing remains for HPACK at all. This is legal framing —
 // RFC 9113 does not forbid an empty header block — and worth seeding so the
-// fuzzer starts near the boundary h2conn.go:241-257 has to get right rather
+// fuzzer starts near the boundary h2read.go's headers has to get right rather
 // than only reaching it by chance.
 func fuzzSeedPaddedPriorityEdge() []byte {
 	data := append([]byte(Preface), fuzzFrame(frameSettings, 0, 0, nil)...)

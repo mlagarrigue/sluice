@@ -22,13 +22,15 @@ import (
 // listenerCIDLen is the length every connection identifier a [Listener]
 // issues gets — the same 8 bytes [Dial] and standalone accept have always
 // used (randomID(8), every call site), so a short-header packet's DCID can
-// be peeled off with [ParseShortHeader] without first knowing which
+// be peeled off with [parseShortHeader] without first knowing which
 // connection it belongs to.
 // RFC 9000 §8.1 lets an endpoint treat a peer address as validated once
 // the peer uses a connection ID this end chose with 64 bits of entropy, as
 // these are; not done: validation waits for a Handshake packet or a Retry
-// token, one round trip later at most, and the earlier lift would only
-// matter to 0-RTT, which this server does not serve.
+// token, one round trip later at most. The earlier lift would only matter
+// to a 0-RTT response (served on request, ADR 0019): that response stays
+// within three times what the client sent until the round trip that
+// validates it, the cost of one round trip on a large answer.
 const listenerCIDLen = 8
 
 // defaultMaxPendingConns is [ListenerConfig.MaxPendingConns]'s value when
@@ -36,6 +38,18 @@ const listenerCIDLen = 8
 // flood of Initials that never complete a handshake cannot grow the demux
 // table without bound.
 const defaultMaxPendingConns = 1024
+
+// The bounds above which [ListenerConfig.Validate] refuses a size the
+// listener allocates up front: MaxPendingConns slots of the accept queue
+// (8 MiB of pointers at the bound), ConnQueueLen slots of each
+// connection's datagram queue, and the hint StatelessResetsPerSecond gives
+// the per-address reset table. Each is far past any figure the fields'
+// documentation leads to, and well under what make can build.
+const (
+	maxPendingConnsLimit = 1 << 20
+	maxConnQueueLen      = 1 << 16
+	maxResetsPerSecond   = 1 << 20
+)
 
 // ListenerConfig governs how a [Listener] treats a new connection attempt
 // before it has any reason to trust it.
@@ -52,8 +66,9 @@ type ListenerConfig struct {
 	// Off is not defenseless: a new Initial must arrive in a 1200-byte
 	// datagram (§14.1) and decrypt under the keys its own destination
 	// identifier derives before any connection state exists for it, and
-	// once the pending-handshake table passes half of MaxPendingConns the
-	// listener switches to the Retry flow on its own — spoofed-source
+	// once the pending-handshake table holds MaxPendingConns/2 entries
+	// (rounded down, so that with a bound of one every Initial takes it)
+	// the listener switches to the Retry flow on its own — spoofed-source
 	// floods then cost the attacker a provable round trip per slot instead
 	// of filling the table for free.
 	AlwaysRetry bool
@@ -66,9 +81,9 @@ type ListenerConfig struct {
 	// new handshakes rather than let peers park unbounded connections on
 	// it. Beyond the bound, a new Initial is refused (CONNECTION_REFUSED)
 	// — the client retries, the same as it must under any transient
-	// overload. Zero means 1024; a negative value is refused by
-	// [NewListener]. Accepted connections are not counted here: MaxConns
-	// bounds the total.
+	// overload. Zero means 1024; a negative value, or one past 1,048,576,
+	// is refused by [NewListener]. Accepted connections are not counted
+	// here: MaxConns bounds the total.
 	MaxPendingConns int
 
 	// HandshakeTimeout bounds how long one handshake may hold a pending
@@ -160,7 +175,7 @@ type ListenerConfig struct {
 	// connection whose reader is stalled holds up to ConnQueueLen ×
 	// max(MaxUDPPayloadSize, 2048) bytes, 128 KiB at the defaults —
 	// the figure to multiply by MaxConns when sizing memory. A negative
-	// value is refused by [NewListener].
+	// value, or one past 65,536, is refused by [NewListener].
 	ConnQueueLen int
 
 	// RetryTokenTTL is how long a Retry token stays acceptable: generous
@@ -179,6 +194,26 @@ type ListenerConfig struct {
 	// Retry-born connections times RetryTokenTTL. Zero means 16,384; a
 	// negative value is refused by [NewListener].
 	MaxSpentRetryTokens int
+
+	// StatelessResetsPerSecond bounds the stateless resets the listener
+	// sends, each an answer to a short-header datagram no connection here
+	// owns — the way a client still holding a connection this listener
+	// forgot (a restart) learns it is gone, instead of waiting out its idle
+	// timeout. Every reset answers unauthenticated bytes, so unbounded the
+	// listener would generate traffic toward whatever source address a
+	// sender claims; RFC 9000 §10.3.3 has an endpoint stop once a limit is
+	// reached. A server restarting in front of thousands of clients tells
+	// them at this rate. Zero means 16; a negative value, or one past
+	// 1,048,576, is refused by [NewListener].
+	StatelessResetsPerSecond int
+
+	// StatelessResetsPerAddress is one source address's share of that
+	// budget, the separate limit §10.3.3 recommends so that one sender
+	// spraying random identifiers cannot spend it all. The address is the
+	// IP alone, a port being free for a sender to vary, so every client
+	// behind one NAT shares it. Zero means 4; a negative value is refused
+	// by [NewListener].
+	StatelessResetsPerAddress int
 
 	// StatelessResetKey derives the stateless reset token of every
 	// connection identifier the listener issues (RFC 9000 §10.3.2:
@@ -219,7 +254,7 @@ type ListenerConfig struct {
 	TokenKey [32]byte
 
 	// SessionTickets makes every connection send the client one session
-	// ticket once its handshake completes (RFC 8446 §4.6.1, carried in a
+	// ticket once its handshake completes (RFC 9846 §4.7.1, carried in a
 	// 1-RTT CRYPTO frame as RFC 9001 §4.5 says). A client that presents it
 	// on a later connection resumes the session: the server sends no
 	// certificate chain and the client verifies none, though the handshake
@@ -234,7 +269,11 @@ type ListenerConfig struct {
 	// SessionTicketsDisabled is refused by [NewListener] alongside this
 	// field: crypto/tls would send nothing, silently. One ticket per
 	// connection is all crypto/tls sends, and the client, which presents a
-	// ticket once (see [Dial]), gets the next one on the resumed connection.
+	// ticket once (see [Dial]), gets the next one on the resumed connection
+	// — for seven days from the full handshake the chain started from:
+	// past that, the resumed connection issues no ticket and the client's
+	// next connection checks the certificate again (RFC 9846 §4.7.1
+	// recommends a bound on keying material tickets keep extending).
 	SessionTickets bool
 
 	// EarlyData lets clients send their first requests in 0-RTT packets on
@@ -246,13 +285,20 @@ type ListenerConfig struct {
 	// Early data can be a replay: anyone who copies a client's first
 	// flight can send it again, and the server cannot tell until the
 	// client's Finished arrives. The listener accepts the 0-RTT of a
-	// ticket at most once (RFC 8446 §8), and only for a ticket it issued
+	// ticket at most once (RFC 9846 §8), and only for a ticket it issued
 	// itself — another instance, or this one after a restart, resumes the
 	// connection in 1-RTT — less than EarlyDataWindow ago. What remains is
 	// the application's to judge: a connection with 0-RTT accepted is
 	// handed to [Listener.Accept] before its handshake ends, and whatever
 	// it receives before [Conn.HandshakeComplete] is closed may be a
 	// replay whose handshake never completes.
+	//
+	// 0-RTT is sent under the parameters the client remembers from the
+	// connection that gave it the ticket (RFC 9000 §7.4.1), which are the
+	// listener's: [NewListener] refuses EarlyData with parameters that let
+	// a client send no stream byte in 0-RTT — InitialMaxData at zero, or no
+	// stream it may open with a window — since the ticket would then
+	// promise a round trip saved that no request could use.
 	EarlyData bool
 
 	// EarlyDataWindow is how long after its issue a ticket may still carry
@@ -263,7 +309,11 @@ type ListenerConfig struct {
 	// MaxEarlyDataTickets bounds the record of tickets whose 0-RTT was
 	// accepted, each kept one EarlyDataWindow so that it is accepted once.
 	// Full, the record refuses 0-RTT rather than forget an entry: the
-	// connection resumes in 1-RTT, and the guarantee holds under any load.
+	// refusal is made in the TLS handshake, before any 0-RTT packet is
+	// read, the connection resumes in 1-RTT, and the guarantee holds
+	// under any load. A ticket is entered when the resumption is checked
+	// and given back if its 0-RTT is not accepted, so a resumption without
+	// 0-RTT and a failed handshake hold no entry past their own end.
 	// Size it as the rate of 0-RTT connections times the window; an entry
 	// is a 16-byte identifier and a time, in a map and a slice. Zero means
 	// 16,384; a negative value is refused by [NewListener].
@@ -333,6 +383,14 @@ type Listener struct {
 	// back without the address. MaxConns itself reads len(keysOf).
 	connsByIP map[string]int
 	ipOf      map[*Conn]string
+	// byPeer files the connections in keysOf by the remote address they
+	// send to, and peerOf is each one's key: resetFor finds a stateless
+	// reset's connections there, by the address §10.3.1 names, instead of
+	// walking every connection and taking each one's lock. A migration
+	// moves the entry (peerMoved, under the connection's lock); forget
+	// removes it.
+	byPeer map[peerKey][]*Conn
+	peerOf map[*Conn]peerKey
 	// spent is the Retry tokens that already admitted a connection, which a
 	// second Initial echoing one must not open again (RFC 9000 §8.1.4).
 	spent spentTokens
@@ -350,6 +408,18 @@ type Listener struct {
 	accepted chan *Conn
 	stop     chan struct{}
 	done     chan struct{} // closed when every read loop has returned
+}
+
+// Validate reports what [NewListener] would refuse in c alone — a negative
+// bound or one out of range — and nil when it would accept it. A
+// configuration read at deployment, from the environment or a file, is
+// checked with it before any socket is opened; NewListener runs the same
+// check. What depends on the rest of NewListener's arguments — a preferred
+// address of the other family, session tickets the tls.Config disables —
+// stays for NewListener.
+func (c ListenerConfig) Validate() error {
+	_, err := c.resolve()
+	return err
 }
 
 // resolve applies the defaults zero stands for and returns an error naming
@@ -374,11 +444,33 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 	if c.ConnQueueLen < 0 {
 		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.ConnQueueLen %d is negative — zero means %d", c.ConnQueueLen, defaultConnQueueLen))
 	}
+	// The three sizes allocated from these fields up front — the accept
+	// queue, each connection's datagram queue, the reset table's hint — are
+	// bounded here: past what make can build, NewListener or the first
+	// connection would panic instead of answering with an error.
+	for _, f := range [...]struct {
+		name     string
+		v, limit int
+	}{
+		{"MaxPendingConns", c.MaxPendingConns, maxPendingConnsLimit},
+		{"ConnQueueLen", c.ConnQueueLen, maxConnQueueLen},
+		{"StatelessResetsPerSecond", c.StatelessResetsPerSecond, maxResetsPerSecond},
+	} {
+		if f.v > f.limit {
+			err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.%s %d is past %d, the most the listener allocates for it", f.name, f.v, f.limit))
+		}
+	}
 	if c.RetryTokenTTL < 0 {
 		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.RetryTokenTTL %v is negative — zero means %v", c.RetryTokenTTL, defaultRetryTokenTTL))
 	}
 	if c.MaxSpentRetryTokens < 0 {
 		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.MaxSpentRetryTokens %d is negative — zero means %d", c.MaxSpentRetryTokens, defaultMaxSpentRetryTokens))
+	}
+	if c.StatelessResetsPerSecond < 0 {
+		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.StatelessResetsPerSecond %d is negative — zero means %d", c.StatelessResetsPerSecond, defaultResetsPerSecond))
+	}
+	if c.StatelessResetsPerAddress < 0 {
+		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.StatelessResetsPerAddress %d is negative — zero means %d", c.StatelessResetsPerAddress, defaultResetsPerAddress))
 	}
 	if c.EarlyDataWindow < 0 {
 		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.EarlyDataWindow %v is negative — zero means %v", c.EarlyDataWindow, defaultEarlyDataWindow))
@@ -425,6 +517,12 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 	if c.MaxSpentRetryTokens == 0 {
 		c.MaxSpentRetryTokens = defaultMaxSpentRetryTokens
 	}
+	if c.StatelessResetsPerSecond == 0 {
+		c.StatelessResetsPerSecond = defaultResetsPerSecond
+	}
+	if c.StatelessResetsPerAddress == 0 {
+		c.StatelessResetsPerAddress = defaultResetsPerAddress
+	}
 	// A random key per listener when none is given; both are drawn here so
 	// that what the listener runs with is all in its resolved config.
 	for _, k := range []*[32]byte{&c.StatelessResetKey, &c.TokenKey} {
@@ -442,7 +540,7 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 // receive goroutine, and a slow one stalls that connection alone ("The TLS
 // callbacks are the caller's", same place). cfg.Certificates is refused
 // when a leaf carries a Key Usage without digitalSignature or a chain
-// member is signed with SHA-1 (RFC 8446 §4.4.2.2, §4.2.3): a conformant
+// member is signed with SHA-1 (RFC 9846 §4.5.1.2, §4.3.3): a conformant
 // client would refuse the chain mid-handshake, where the cause is lost.
 // What GetCertificate or GetConfigForClient return is the caller's to hold
 // to the same rules, as is matching the chain to the client's
@@ -454,7 +552,7 @@ func NewListener(pc net.PacketConn, cfg *tls.Config, params TransportParameters,
 	if err := checkTLSConfig(cfg); err != nil {
 		return nil, err
 	}
-	if err := checkServerCertificates(cfg); err != nil {
+	if err := checkOwnCertificates(cfg); err != nil {
 		return nil, err
 	}
 	lcfg, err := lcfg.resolve()
@@ -464,6 +562,11 @@ func NewListener(pc net.PacketConn, cfg *tls.Config, params TransportParameters,
 	if (lcfg.SessionTickets || lcfg.EarlyData) && cfg.SessionTicketsDisabled {
 		return nil, fmt.Errorf("%w: ListenerConfig.SessionTickets or EarlyData is set and tls.Config.SessionTicketsDisabled too — "+
 			"crypto/tls would send no ticket", ErrQUIC)
+	}
+	if lcfg.EarlyData {
+		if err := params.earlyCredit(); err != nil {
+			return nil, err
+		}
 	}
 	var preferredV4, preferredV6 *net.UDPAddr
 	if lcfg.PreferredAddress != nil {
@@ -482,6 +585,8 @@ func NewListener(pc net.PacketConn, cfg *tls.Config, params TransportParameters,
 		pendingConns: make(map[*Conn]struct{}),
 		connsByIP:    make(map[string]int),
 		ipOf:         make(map[*Conn]string),
+		byPeer:       make(map[peerKey][]*Conn),
+		peerOf:       make(map[*Conn]peerKey),
 		accepted:     make(chan *Conn, lcfg.MaxPendingConns),
 		stop:         make(chan struct{}),
 		done:         make(chan struct{}),
@@ -526,11 +631,18 @@ func packetInfoSocket(pc net.PacketConn) *net.UDPConn {
 
 // Accept blocks until a new connection's handshake completes, mirroring
 // [net.Listener.Accept]'s shape, with [Dial]'s return contract: what comes
-// back is already past its handshake, not merely dialled.
+// back is already past its handshake, not merely dialled — except under
+// [ListenerConfig.EarlyData], below.
 //
-// No application data leaves before that point: RFC 8446 §4.4.4 lets a
-// server send it after its first flight (0.5-RTT), to a client not yet
-// authenticated, and a server here answers requests, which come after.
+// Without EarlyData no application data leaves before that point: RFC 9846
+// §4.5.3 lets a server send it after its first flight (0.5-RTT), to a
+// client not yet authenticated, and a server here answers requests, which
+// come after. With EarlyData, a connection whose 0-RTT was accepted comes
+// back as soon as its 1-RTT write keys are in, before the client's
+// Finished: the requests sent in 0-RTT are read, and the answers leave in
+// 1-RTT as 0.5-RTT data, to a client whose handshake may never complete —
+// a replay. [Conn.HandshakeComplete] says when it has; EarlyData says what
+// that leaves to the application.
 func (l *Listener) Accept() (*Conn, error) {
 	select {
 	case <-l.stop:
@@ -719,7 +831,7 @@ func (s *sourcedVias) read(buf []byte) (n int, from net.Addr, via net.PacketConn
 	if !ok || dst.IsMulticast() || dst.IsUnspecified() {
 		return n, from, s.uc, ecn, nil
 	}
-	if !dst.Is6() || dst.Is4In6() || !dst.IsLinkLocalUnicast() {
+	if !dst.Is6() || !dst.IsLinkLocalUnicast() {
 		ifindex = 0 // let routing pick the interface, as it would anyway
 	}
 	k := localKey{dst, ifindex}
@@ -731,7 +843,7 @@ func (s *sourcedVias) read(buf []byte) (n int, from net.Addr, via net.PacketConn
 		v = &sourcedConn{
 			UDPConn: s.uc,
 			oob:     udp.AppendPacketSource(nil, dst, ifindex),
-			local:   net.UDPAddrFromAddrPort(netip.AddrPortFrom(dst.Unmap(), uint16(s.uc.LocalAddr().(*net.UDPAddr).Port))), //nolint:gosec // G115: a UDP port fits 16 bits
+			local:   net.UDPAddrFromAddrPort(netip.AddrPortFrom(dst, uint16(s.uc.LocalAddr().(*net.UDPAddr).Port))), //nolint:gosec // G115: a UDP port fits 16 bits
 		}
 		s.byLocal[k] = v
 	}
@@ -1179,6 +1291,7 @@ func (l *Listener) bootstrapConn(datagram []byte, from net.Addr, h longHeader, r
 	ip := l.connKey(from)
 	l.ipOf[c] = ip
 	l.connsByIP[ip]++
+	l.placePeerLocked(c, from)
 	l.mu.Unlock()
 
 	go l.runHandshake(c, datagram, from, ecn)
@@ -1264,15 +1377,26 @@ func preferredAnnouncements(local net.Addr, ip4, ip6 netip.Addr) (v4, v6 *net.UD
 // stalled handshake must not head-of-line block every other connection's
 // datagrams behind it.
 func (l *Listener) runHandshake(c *Conn, first []byte, from net.Addr, ecn uint8) {
-	accepted := false
+	accepted, watched := false, false
 	defer func() {
 		l.mu.Lock()
 		delete(l.pendingConns, c)
 		l.mu.Unlock()
 		if !accepted {
-			l.forget(c)
 			_ = c.Close()
 			c.endTLS()
+			// A connection that never reached Accept — its handshake
+			// refused, or the peer's CONNECTION_CLOSE — keeps its closing
+			// state too, routable until gone like an accepted one (below):
+			// forgotten at once, the client's Initial sent again after a
+			// lost close would find no route and open a fresh attempt
+			// instead of the close repeated (§10.2, §10.2.1).
+			if !watched {
+				go func() {
+					<-c.gone
+					l.forget(c)
+				}()
+			}
 		}
 	}()
 
@@ -1311,6 +1435,7 @@ func (l *Listener) runHandshake(c *Conn, first []byte, from net.Addr, ecn uint8)
 	// missed it (§10.2.1), and only then do its identifiers — and the
 	// MaxConns slot they hold — come free. §10.2 asks a server that keeps
 	// its socket open not to cut this short.
+	watched = true
 	go func() {
 		<-c.gone
 		l.forget(c)
@@ -1347,7 +1472,8 @@ func (l *Listener) routeLocked(key string, c *Conn) {
 }
 
 // forget removes every demux entry a connection holds once it has no
-// further use for them: closed, or never going to be — its scid, the
+// further use for them: its closing state over (gone), accepted or not, or
+// the connection never served — its scid, the
 // client's first identifier, and whatever NEW_CONNECTION_ID issued since,
 // all found through keysOf. A key is deleted only while it still routes to
 // c: a client's first identifier is its own choice and may since name
@@ -1361,6 +1487,7 @@ func (l *Listener) forget(c *Conn) {
 		}
 	}
 	delete(l.keysOf, c)
+	l.unplacePeerLocked(c)
 	// The per-address count follows ipOf, not keysOf: a connection the
 	// closing listener turned away before registering (above) has keys but
 	// no address, and a second forget of the same one finds neither.
@@ -1431,18 +1558,17 @@ func (l *Listener) resetTokenFor(cid []byte) [16]byte {
 	return token
 }
 
-// maxResetsPerSecond bounds how many stateless resets one listener emits:
-// each is an answer to unauthenticated bytes, and answering every stray at
-// line rate would make the listener a traffic generator pointed wherever
-// the source addresses claim (§10.3's rate-limit advice).
-const maxResetsPerSecond = 16
+// defaultResetsPerSecond is ListenerConfig.StatelessResetsPerSecond when
+// zero: each reset is an answer to unauthenticated bytes, and answering
+// every stray at line rate would make the listener a traffic generator
+// pointed wherever the source addresses claim (§10.3.3).
+const defaultResetsPerSecond = 16
 
-// maxResetsPerSourcePerSecond is one source address's share of that
-// budget. Without it, one sender spraying short headers at random
-// identifiers spends the whole budget, and every genuine client whose
-// connection this listener lost waits out its idle timeout instead. The
-// address is the IP alone: the port is free for a sender to vary.
-const maxResetsPerSourcePerSecond = 4
+// defaultResetsPerAddress is ListenerConfig.StatelessResetsPerAddress when
+// zero. Without a share per address, one sender spraying short headers at
+// random identifiers spends the whole budget, and every genuine client
+// whose connection this listener lost waits out its idle timeout instead.
+const defaultResetsPerAddress = 4
 
 // resetFor reports which live connection, if any, an unroutable short-header
 // datagram is a stateless reset for: RFC 9000 §10.3.1 has the comparison
@@ -1454,23 +1580,25 @@ const maxResetsPerSourcePerSecond = 4
 // associated with the remote address on which the datagram was received"
 // (isStatelessResetFrom; used identifiers only, constant time).
 //
-// That address is also what bounds the cost. Until 2026-10-26 the tail was
-// compared against every live connection, and this comment claimed the
-// per-second reset budget as its bound — "a flood of unroutable datagrams
-// costs a comparison per connection each until the budget is spent". It is
-// not one: that budget is l.resetsSent, which only a reset actually sent
-// raises, and maxResetsPerSourcePerSecond caps one source at four of the
-// sixteen. Measured: 200 datagrams from a single source left it at 4, so
-// the gate never closed and every datagram paid the whole table — on the
-// one goroutine that reads the socket, with MaxConns zero by default.
+// That address is also what bounds the cost. The per-second reset budget
+// does not: it is l.resetsSent, which only a reset actually sent raises,
+// and StatelessResetsPerAddress caps one source at four of the sixteen.
+// Measured: 200 datagrams from a single source left it at 4, so compared
+// against every live connection, every datagram would pay the whole
+// table — on the one goroutine that reads the socket, with MaxConns zero
+// by default.
 // Scoped to the address, a flood from a source holding no connection
 // compares nothing, and the budget is left to do what it is for: bounding
 // the resets this end *sends*.
 //
-// The table is still walked to find those connections, which is a lock and
-// an address comparison each. An index by remote address would make it a
-// lookup; it would also have to follow every migration, and the walk is
-// not what the scan cost.
+// Those connections are looked up in byPeer, not found by walking the
+// table: a walk would take every live connection's lock to read its
+// address, one lock per connection per datagram on the goroutine that reads
+// the socket, and a flow of unroutable datagrams would keep that goroutine
+// contending with every connection's receive loop. The index follows
+// each migration (setPeerLocked), and isStatelessResetFrom still compares
+// the address under the connection's lock, since a move may land between
+// the lookup and the comparison.
 //
 // Long headers are not compared: §10.3 says "any packet", but a reset has
 // the short-header shape by construction (§10.3), a conforming peer never
@@ -1484,11 +1612,9 @@ func (l *Listener) resetFor(datagram []byte, from net.Addr) *Conn {
 	if len(datagram) < 21 { // §10.3: a reset is at least 21 bytes
 		return nil
 	}
+	var room [4]*Conn
 	l.mu.Lock()
-	conns := make([]*Conn, 0, len(l.keysOf))
-	for c := range l.keysOf {
-		conns = append(conns, c)
-	}
+	conns := append(room[:0], l.byPeer[peerKeyOf(from)]...)
 	l.mu.Unlock()
 	for _, c := range conns {
 		if c.isStatelessResetFrom(datagram, from) {
@@ -1496,6 +1622,68 @@ func (l *Listener) resetFor(datagram []byte, from net.Addr) *Conn {
 		}
 	}
 	return nil
+}
+
+// peerKey is a remote address as sameAddr compares them: for a UDP address
+// the IP without its IPv4-in-IPv6 mapping, and the port; for any other, its
+// network and text.
+type peerKey struct {
+	ap   netip.AddrPort
+	text string
+}
+
+func peerKeyOf(a net.Addr) peerKey {
+	if u, ok := a.(*net.UDPAddr); ok {
+		ap := u.AddrPort()
+		return peerKey{ap: netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port())}
+	}
+	if a == nil {
+		return peerKey{}
+	}
+	return peerKey{text: a.Network() + " " + a.String()}
+}
+
+// placePeerLocked files c under the remote address to, out of the one it
+// was filed under. Callers hold mu.
+func (l *Listener) placePeerLocked(c *Conn, to net.Addr) {
+	l.unplacePeerLocked(c)
+	k := peerKeyOf(to)
+	l.byPeer[k] = append(l.byPeer[k], c)
+	l.peerOf[c] = k
+}
+
+// unplacePeerLocked takes c out of byPeer. Callers hold mu.
+func (l *Listener) unplacePeerLocked(c *Conn) {
+	k, ok := l.peerOf[c]
+	if !ok {
+		return
+	}
+	delete(l.peerOf, c)
+	conns := l.byPeer[k]
+	for i, o := range conns {
+		if o == c {
+			last := len(conns) - 1
+			conns[i], conns[last] = conns[last], nil
+			conns = conns[:last]
+			break
+		}
+	}
+	if len(conns) == 0 {
+		delete(l.byPeer, k)
+	} else {
+		l.byPeer[k] = conns
+	}
+}
+
+// peerMoved is cidRegistrar's: c, whose lock the caller holds, now sends to
+// to (Conn.mu before Listener.mu). A connection already forgotten is not
+// filed again.
+func (l *Listener) peerMoved(c *Conn, to net.Addr) {
+	l.mu.Lock()
+	if _, ok := l.peerOf[c]; ok {
+		l.placePeerLocked(c, to)
+	}
+	l.mu.Unlock()
 }
 
 // resetBudgetLocked reports whether this end may still spend a reset on src
@@ -1506,7 +1694,7 @@ func (l *Listener) resetBudgetLocked(now time.Time, src string) bool {
 		l.resetWindow, l.resetsSent = now, 0
 		clear(l.resetsTo)
 	}
-	return l.resetsSent < maxResetsPerSecond && l.resetsTo[src] < maxResetsPerSourcePerSecond
+	return l.resetsSent < l.lcfg.StatelessResetsPerSecond && l.resetsTo[src] < l.lcfg.StatelessResetsPerAddress
 }
 
 // maybeSendStatelessReset answers one unroutable short-header datagram with
@@ -1534,7 +1722,7 @@ func (l *Listener) maybeSendStatelessReset(datagram, dcid []byte, from net.Addr,
 	}
 	l.resetsSent++
 	if l.resetsTo == nil {
-		l.resetsTo = make(map[string]int, maxResetsPerSecond)
+		l.resetsTo = make(map[string]int, l.lcfg.StatelessResetsPerSecond)
 	}
 	l.resetsTo[src]++
 	l.mu.Unlock()

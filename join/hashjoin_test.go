@@ -291,11 +291,11 @@ func TestJoinIsLazy(t *testing.T) {
 	}
 }
 
-// The consumer's refusal must reach the probe side (S10). Output is
-// re-batched through the emitter, so the refusal propagates at the next
-// batch boundary: the single build key here carries enough rows that the
-// first probe element alone fills a batch, which is what lets the refusal
-// reach the probe on its very first yield.
+// The consumer's refusal must reach the probe side (the architecture's S10).
+// Output is re-batched through the emitter, so the refusal propagates at the
+// next batch boundary: the single build key here carries enough rows that the
+// first probe element alone fills a batch, which is what lets the refusal reach
+// the probe on its very first yield.
 func TestJoinPropagatesEarlyStop(t *testing.T) {
 	build := make([]customer, 2*sluice.DefaultBatchSize)
 	for i := range build {

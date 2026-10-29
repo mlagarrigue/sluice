@@ -326,9 +326,9 @@ type ackOutcome struct {
 	// It dates a congestion event (RFC 9002 B.7) where largestSentAt
 	// cannot: only ack-eliciting packets are recorded, and the peer
 	// acknowledges every number it received, ACK-only ones included; a
-	// frame whose largest is one of those left largestSentAt at zero, which
-	// read as "before the recovery began" and dropped the CE mark it
-	// carried (§7.3.1 MUST), until 2026-10-21.
+	// frame whose largest is one of those leaves largestSentAt at zero,
+	// which reads as "before the recovery began" and would drop the CE mark
+	// it carries (§7.3.1 MUST).
 	latestSentAt time.Time
 	lostBytes    int
 	lostCount    uint64 // packets behind lostBytes, for Stats.LostPackets
@@ -827,10 +827,9 @@ func (s *sentTracker) oldestEliciting() (sentPacket, bool) {
 // resendable, be copied again at every backoff step, and shadow every
 // packet behind it. A server whose two-packet Initial flight is lost would
 // then resend the first packet forever and never the second, and the
-// client, holding half a ServerHello, would wait out the handshake.
-//
-// Until 2026-10-21 the packet was removed from the record instead, which
-// kept the flight the same size when §7.5 says it must grow.
+// client, holding half a ServerHello, would wait out the handshake. Nor is
+// the packet removed from the record: that would keep the flight the same
+// size when §7.5 says it must grow.
 func (s *sentTracker) liftOldestResendable() ([]byte, bool) {
 	for i := range s.packets {
 		if p := &s.packets[i]; p.ackEliciting && len(p.payload) > 0 {
@@ -938,8 +937,8 @@ type ackEvent struct {
 // markEvent is one ACK frame's newly reported CE marks, as onMarked sees
 // them: the peer counts marked packets, not bytes, and names no packet
 // (RFC 9000 §19.3.2), so the event is a count at a time, not a packet.
-// latestSent is when the frame's largest acknowledged packet left — what
-// RFC 9002 B.7 dates the congestion event with.
+// latestSent is when the latest tracked packet the frame acknowledges left —
+// what RFC 9002 B.7 dates the congestion event with.
 type markEvent struct {
 	now        time.Time
 	latestSent time.Time
@@ -1248,8 +1247,8 @@ type newReno struct {
 	// maxDatagram·size/cwnd falls short of it: the window grows within the
 	// window it is divided by, a byte lost per window at 2 MB. The price is
 	// the datagram arriving at the window's end rather than spread over it:
-	// measured 2026-10-16 against B.5 (gate-path.sh, three runs of eight
-	// rounds), BurstLoss 0.8–1% and Loss1pct 1.6–4.7% slower, the rest flat.
+	// measured against B.5 (gate-path.sh, three runs of eight rounds),
+	// BurstLoss 0.8–1% and Loss1pct 1.6–4.7% slower, the rest flat.
 	credit int
 	// hs is the initial slow start's HyStart++ state (hystart.go); the zero
 	// value is disarmed, the standard slow start (see newController).
@@ -1264,6 +1263,9 @@ type newReno struct {
 	limited     bool
 	maxInFlight int
 	roundMark   time.Time
+	// ssPace is the slow-start pacing rate, in windows per smoothed round
+	// trip: 2 for NewReno, 2.5 for CUBIC (pacingRate says why they differ).
+	ssPace float64
 }
 
 var _ congestionController = (*newReno)(nil)
@@ -1277,7 +1279,7 @@ func initialWindow(maxDatagram int) int {
 }
 
 func newNewReno(maxDatagram int) *newReno {
-	return &newReno{cwnd: initialWindow(maxDatagram), ssthresh: 1 << 30, maxDatagram: maxDatagram}
+	return &newReno{cwnd: initialWindow(maxDatagram), ssthresh: 1 << 30, maxDatagram: maxDatagram, ssPace: 2}
 }
 
 func (c *newReno) window() int              { return c.cwnd }
@@ -1349,22 +1351,32 @@ func (c *newReno) onMarked(ev markEvent) {
 
 // pacingRate is 5/4 of the window per smoothed round trip — the RFC's
 // "slightly higher than necessary" rate (§7.7), so pacing never becomes
-// the throughput ceiling — and of twice the window in slow start, where
-// the window itself doubles per round trip and pacing at the current cwnd
+// the throughput ceiling — and ssPace windows in slow start, where the
+// window itself doubles per round trip and pacing at the current cwnd
 // would lag the growth it is spreading (measured: ~3% off a clean 20ms
 // path's goodput; §7.7 permits a higher slow-start rate). The round trip
 // is floored at the timer's granularity: below it the rate is meaningless
 // and the division is unsafe.
 //
+// ssPace is 2 for NewReno and 2.5 for CUBIC, each the faster of the two on
+// the paths that tell them apart. At 2.5, a 50 Mbit/s path with five
+// milliseconds of buffer overflows a round early in about half of
+// NewReno's transfers: the slow start's one loss event then halves a
+// window of ~160 kB instead of ~230 kB, and the transfer takes 1 000 ms
+// instead of 840 (BenchmarkTransferBottleneck, 74 of 160 in the slow mode;
+// at 2, 80 of 80 within 816-856 ms, and RTT80Shallow 5.4 s → 4.6 s). CUBIC
+// at 2 loses 15% on RTT80Shallow (3.8 s → 4.4 s) and gains nothing on
+// Bottleneck (docs/benchmarks.md).
+//
 // Conservative Slow Start is the exception: HyStart++ grows the window a
 // quarter per round trip there, and five quarters cover it — pacing at
 // twice the window would burst into the buffer it just saw filling.
 func (c *newReno) pacingRate(srtt time.Duration) float64 {
-	w := c.cwnd
+	g := 1.25
 	if c.cwnd < c.ssthresh && (!c.hs.armed || !c.hs.css) {
-		w = 2 * c.cwnd
+		g = c.ssPace
 	}
-	return 1.25 * float64(w) / max(srtt, granularity).Seconds()
+	return g * float64(c.cwnd) / max(srtt, granularity).Seconds()
 }
 
 // absorb is the part of an acknowledgement every loss-based controller

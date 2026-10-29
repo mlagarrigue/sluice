@@ -142,3 +142,55 @@ func BenchmarkScanSkipAheadControl(b *testing.B) {
 		sink += int64(n)
 	}
 }
+
+// takePublished is the operator this package does not have (see the note at
+// the top of operators.go): sluice.Take, publishing the count it still wants
+// after each batch so the source could stop on its own.
+func takePublished(s sluice.Stream[int64], d *pushdown.Demand, n int) sluice.Stream[int64] {
+	return func(yield func(sluice.Batch[int64]) bool) {
+		left := n
+		d.LimitTo(int64(left))
+		s(func(b sluice.Batch[int64]) bool {
+			items := b.Items
+			if len(items) > left {
+				items = items[:left]
+			}
+			left -= len(items)
+			d.LimitTo(int64(left))
+			if !yield(sluice.Batch[int64]{Items: items}) {
+				return false
+			}
+			return left > 0
+		})
+	}
+}
+
+// BenchmarkScanTake is the core Take over the scan, stopping it on the batch
+// that reaches the count. The baseline for BenchmarkScanTakePublished.
+func BenchmarkScanTake(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		var n int
+		sluice.Take(scan(nil), wantRows)(func(bt sluice.Batch[int64]) bool {
+			n += bt.Len()
+			return true
+		})
+		sink += int64(n)
+	}
+}
+
+// BenchmarkScanTakePublished is the same count taken by takePublished over a
+// scan that reads the demand: the scan decodes the same pages, since the
+// last batch is one page of work either way, and pays the publishing besides.
+func BenchmarkScanTakePublished(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		d := new(pushdown.Demand)
+		var n int
+		takePublished(scan(d), d, wantRows)(func(bt sluice.Batch[int64]) bool {
+			n += bt.Len()
+			return true
+		})
+		sink += int64(n)
+	}
+}

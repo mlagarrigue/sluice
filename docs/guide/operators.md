@@ -1,5 +1,7 @@
 # Choosing an operator
 
+A word you do not know is likely in the [glossary](../glossary.md).
+
 ## One question: what does it keep in memory?
 
 An operator receives batches and produces batches. Some only need the batch
@@ -21,7 +23,7 @@ the answer before you open the documentation:
 | `sluice/parallel` | goroutines |
 | `sluice/distinct` | keys |
 
-> **In plain terms.** Everything in the root composes without limit and
+> **In plain words.** Everything in the root composes without limit and
 > cannot overflow memory. Everything elsewhere retains something, and makes
 > you write how much, at most.
 
@@ -127,7 +129,7 @@ Filtering on `Both()` gives an inner join; keeping `HasLeft`, a left join;
 `HasRight`, the left rows with no match (an anti-join), and the reverse for
 the right. Six SQL semantics, one operator and one filter.
 
-> **In plain terms.** If a key repeats on both sides (ten orders from the
+> **In plain words.** If a key repeats on both sides (ten orders from the
 > same customer, and ten addresses for that customer), the operator must
 > produce every combination, and then retains the right-hand run for that
 > key. It is the only case where its memory grows. If the streams are not
@@ -153,8 +155,8 @@ and what to do beyond. There is no default, because a table without a limit
 is a program that will die once the reference list has grown.
 
 **Why prefer the merge join** when you have the choice: on 65,536 rows a
-side, the merge costs 19 ns per element and 25 KB; the table, 83 ns and
-8.4 MB ([measured](../benchmarks.md#joins-and-hydration-in-isolation)). That is not a small difference, it is a difference in kind: the
+side, the merge costs 19 ns per element and 25 KB; the table, 93 ns and
+8.4 MB ([measured](../benchmarks.md#joins-and-hydration-in-isolation) 2026-10-28, one laptop under WSL2). That is not a small difference, it is a difference in kind: the
 merge advances a cursor, the table does a lookup per element. Loading a
 side into memory is what you do when you *cannot* sort.
 
@@ -206,7 +208,7 @@ stats := sluice.Convert(perMinute, func(p window.Pane[Click]) Stat {
 requests := window.CoalesceWithin(incoming, 64, 2*time.Millisecond)
 ```
 
-> **In plain terms: why `CoalesceWithin` exists beside `Coalesce`.**
+> **In plain words: why `CoalesceWithin` exists beside `Coalesce`.**
 > `Coalesce` waits until it has `size` elements, however long that takes:
 > perfect for reading a file, catastrophic for a server where ten requests
 > per second would fill a batch of 1024 in a hundred seconds.
@@ -220,7 +222,7 @@ whatever the batch cuts. A `Pane` is a closed window, with its start, its
 end and its elements; unlike an ordinary batch, it **owns** its elements:
 you may keep it.
 
-> **In plain terms: what `late` is for.** A window closes when an element
+> **In plain words: what `late` is for.** A window closes when an element
 > beyond it arrives, so an element that arrives *after* its own window
 > closed has nowhere to go. `late` says what then: `window.LateFail` stops
 > the stream (`sluice.ErrUnsorted`), `window.LateDrop` steps over the
@@ -268,7 +270,8 @@ enriched := parallel.OrderedWithState(rows, 4,
 rows := parallel.Async(readCSV(path), 4)
 ```
 
-> **In plain terms: parallelism pays less than you think.** Measured:
+> **In plain words: parallelism pays less than you think.**
+> [Measured](../benchmarks.md#the-architectures-figures):
 > four ordered goroutines give ×1.04 on 34 µs of work per batch, ×1.7 on
 > 83 µs and ×2.9 on 850 µs, never ×4 — handing each batch over and waking a
 > goroutine costs about what light work does, and the operator waits for the
@@ -301,7 +304,7 @@ unique := distinct.By(orders, 1000,
     sluice.DropOldest)
 ```
 
-> **In plain terms.** If you need a *global* deduplication over a finite
+> **In plain words.** If you need a *global* deduplication over a finite
 > stream, say so with `Collect` and a `map`: the code then shows that
 > everything is loaded. If the stream is infinite, the global one does not
 > exist, and `distinct.By` is the only honest form.

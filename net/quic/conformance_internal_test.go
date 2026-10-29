@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -161,6 +162,33 @@ func TestCloseCodeForTLSAlerts(t *testing.T) {
 	}
 }
 
+// RFC 9001 §6 wants a TLS KeyUpdate message closed as 0x010a
+// (unexpected_message); after the handshake crypto/tls sends that alert on
+// a record layer QUIC does not have and returns an error without it, and
+// the close is 0x0150 (internal_error) — what the package's godoc says, the
+// deviation it records. The godoc used to promise 0x010a. Here the server
+// sends the client one, in a 1-RTT CRYPTO frame, and reads the code of the
+// client's CONNECTION_CLOSE. This test turns red the day crypto/tls
+// surfaces the alert: the godoc is then to be corrected the other way.
+func TestAPostHandshakeKeyUpdateClosesAsInternalError(t *testing.T) {
+	client, server := plainPair(t)
+	// A TLS KeyUpdate handshake message: type 24, length 1, update_not_requested.
+	if err := server.sendCrypto(tls.QUICEncryptionLevelApplication, []byte{24, 0, 0, 1, 0}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the server to read the client's close", func() bool { return server.Err() != nil })
+	ce, ok := errors.AsType[*ConnectionError](server.Err())
+	if !ok {
+		t.Fatalf("the server ended with %v, want the client's CONNECTION_CLOSE", server.Err())
+	}
+	if want := uint64(transportCryptoErrorBase + 0x50); ce.Application || ce.Code != want {
+		t.Errorf("a KeyUpdate after the handshake closed with %#x (application %v), want %#x (internal_error), as the godoc says", ce.Code, ce.Application, want)
+	}
+	if client.Err() == nil {
+		t.Error("the client is still open")
+	}
+}
+
 // RFC 9000 §7.5: CRYPTO reassembly is bounded in bytes, not only in chunk
 // count — 256 chunks of ~1380 bytes each used to park ~350 KB per
 // never-completing handshake.
@@ -293,7 +321,7 @@ func TestStreamDirectionIsEnforced(t *testing.T) {
 func TestIdleTimeoutIsFlooredAtThreePTOs(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
 	params := DefaultParameters()
-	params.MaxIdleTimeout = 100
+	params.MaxIdleTimeout = 100 * time.Millisecond
 	c := assembleConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, params)
 	defer c.Close()
 
@@ -684,6 +712,52 @@ func TestBlockedFramesResendPeriodicallyWhileParked(t *testing.T) {
 	}
 }
 
+// The periodic re-announcement of §4.1 is one frame per limit, and only
+// "when it has no ack-eliciting packets in flight". Until 2026-10-29 every
+// tick appended a fresh copy of each *_BLOCKED frame to the control queue:
+// with the congestion window shut nothing left, and under a peer's
+// one-millisecond max_idle_timeout (a tick every 10 ms) the queue grew by
+// six bytes per limit per tick — 6006 bytes after a thousand ticks, without
+// bound. A copy still waiting in the queue is now enough, and with an
+// ack-eliciting packet in flight the tick queues nothing and stays armed.
+func TestBlockedResendQueuesOneFramePerLimit(t *testing.T) {
+	c := newResetReplayConn(t)
+	s, err := c.Stream(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.connSend.max, c.connSend.sent, c.connSend.blockedSent = 1000, 1000, true
+	s.sendQ.max, s.sendQ.sent, s.sendQ.blockedSent = 10, 10, true
+	c.reno().inFlight = c.reno().cwnd // the window is shut: nothing but grants leaves
+	now := time.Now()
+	c.resendBlockedFramesLocked(now)
+	one := len(c.control)
+	if one == 0 {
+		t.Fatal("the first tick queued no *_BLOCKED frame; the case under test is not reached")
+	}
+	for range 1000 {
+		c.resendBlockedFramesLocked(now)
+	}
+	if got := len(c.control); got != one {
+		t.Errorf("control queue holds %d bytes after 1001 ticks, %d after the first: a tick owes one copy per limit", got, one)
+	}
+
+	// An ack-eliciting packet in flight keeps the idle timers alive by
+	// itself: the tick adds nothing, and re-arms for when it is gone.
+	c.control = nil
+	c.spaces[spaceApplication].sent.record(sentPacket{pn: 1, sentAt: now, ackEliciting: true})
+	c.blockedResend = now
+	c.resendBlockedFramesLocked(now)
+	if len(c.control) != 0 {
+		t.Errorf("a tick with an ack-eliciting packet in flight queued %d bytes of *_BLOCKED", len(c.control))
+	}
+	if !c.blockedResend.After(now) {
+		t.Error("the blocked-resend deadline did not re-arm while still parked")
+	}
+}
+
 // RFC 9000 §10.3.1: a datagram that routes nowhere but ends in a reset
 // token the peer announced is the peer's stateless reset — the connection
 // ends silently, now, instead of grinding to the idle timeout against a
@@ -1020,5 +1094,54 @@ func TestStatelessResetTokenOfAnUnusedIDIsNotCompared(t *testing.T) {
 	// The token of the identifier in use is the reset it looks like.
 	if err := c.receive(reset(used), pcB.LocalAddr()); !errors.Is(err, ErrStatelessReset) {
 		t.Fatalf("receive returned %v for the used identifier's token, want ErrStatelessReset", err)
+	}
+}
+
+// RFC 9000 §7.5 again, for the other way of filling the buffer: CRYPTO data
+// in many disjoint fragments, each a byte, far under the byte bound but
+// over what reassembly parks. The close is CRYPTO_BUFFER_EXCEEDED as for
+// the byte bound, not the PROTOCOL_VIOLATION a fragmenting peer — which is
+// legal — has not committed.
+func TestCryptoInTooManyFragmentsIsABufferExceeded(t *testing.T) {
+	pcA, pcB := newLoopbackPair(t)
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	defer c.Close()
+	var err error
+	for i := range uint64(300) {
+		if err = c.handleCrypto(spaceInitial, Frame{Type: frameCrypto, offset: 1 + 2*i, Data: []byte("x")}); err != nil {
+			break
+		}
+	}
+	if err == nil {
+		t.Fatal("300 disjoint one-byte CRYPTO fragments were parked without complaint")
+	}
+	te := &transportError{}
+	if !errors.As(err, &te) || te.code != transportCryptoBufferExceeded {
+		t.Errorf("the refusal is %v, want CRYPTO_BUFFER_EXCEEDED (0x0d)", err)
+	}
+}
+
+// RFC 9000 §7.3: after a Retry, the server's retry_source_connection_id
+// must be present and equal to the Retry's Source Connection ID — which may
+// be zero-length. Absent and empty both read as a nil slice; the presence
+// is what tells them apart, as for initial_source_connection_id.
+func TestARetryWithAnEmptySourceIDStillNeedsItsEcho(t *testing.T) {
+	dcid, scid := []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}
+	c := assembleConn(&fuzzSink{addr: "rsc:self"}, fakeFuzzAddr("rsc:peer"), dcid, scid, true, DefaultParameters())
+	t.Cleanup(func() { _ = c.Close() })
+	c.initialDCID = dcid
+	c.mu.Lock()
+	c.retried, c.retrySCID = true, nil // the Retry carried an empty Source Connection ID
+	c.mu.Unlock()
+	srv := DefaultParameters()
+	srv.initialSourceCID = dcid // what the client checks it against here
+	srv.originalDCID = dcid
+	err := c.handlePeerParameters(appendParameters(nil, srv))
+	te := &transportError{}
+	if !errors.As(err, &te) || te.code != transportParameterError {
+		t.Fatalf("parameters without retry_source_connection_id after a Retry: %v, want TRANSPORT_PARAMETER_ERROR", err)
+	}
+	if !strings.Contains(err.Error(), "Retry") {
+		t.Fatalf("refused for another reason: %v", err)
 	}
 }

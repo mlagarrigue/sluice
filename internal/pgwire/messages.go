@@ -73,10 +73,10 @@ const (
 // FormatBinary and FormatText are the two wire formats a parameter or a result
 // column can take.
 //
-// This package uses binary throughout, which §8.6 requires rather than
-// prefers: text means parsing a number out of decimal digits per value, which
-// is the per-element cost the batch exists to remove — and it is lossy in both
-// directions for floats.
+// This package uses binary throughout, which the architecture's "Hydration"
+// requires rather than prefers: text means parsing a number out of decimal
+// digits per value, which is the per-element cost the batch exists to remove —
+// and it is lossy in both directions for floats.
 const (
 	FormatText   int16 = 0
 	FormatBinary int16 = 1
@@ -104,9 +104,9 @@ func CheckParamCount(n int) error {
 //
 // It takes no parameters, by construction rather than by omission: the simple
 // protocol interpolates values into SQL text, which is the injection surface
-// §8.8 removes. Use [Writer.Parse] and [Writer.BindBinary] for anything carrying a
-// value — every value then travels as a parameter, and a thousand of them
-// travel as one.
+// the architecture's "Security by construction" removes. Use [Writer.Parse] and
+// [Writer.BindBinary] for anything carrying a value — every value then travels
+// as a parameter, and a thousand of them travel as one.
 func (wr *Writer) Query(sql string) {
 	at := wr.Begin(FrontendQuery)
 	wr.AppendString(sql)
@@ -128,6 +128,18 @@ func (wr *Writer) Parse(name, sql string, paramOIDs []uint32) {
 		wr.AppendUint32(oid)
 	}
 	wr.End(at)
+}
+
+// BindLen is the framed length of the Bind [Writer.BindBinary] would append
+// — length field included, type byte excluded, as the bound counts it — so
+// that a caller can refuse an oversized one before buffering anything
+// ([ErrOutgoingTooLarge]).
+func BindLen(portal, stmt string, params [][]byte) int {
+	n := LengthSize + len(portal) + 1 + len(stmt) + 1 + 2 + 2 + 2 + 2 + 2
+	for _, p := range params {
+		n += 4 + len(p)
+	}
+	return n
 }
 
 // BindBinary appends a Bind message with every parameter and every result
@@ -195,8 +207,9 @@ func (wr *Writer) Close(kind byte, name string) {
 }
 
 // Sync appends a Sync, which ends the extended-query sequence and is the
-// per-batch error boundary §8.5 relies on: on error the backend skips
-// everything up to the next Sync, so a batch fails as a batch.
+// per-batch error boundary the architecture's "Pipelining and COPY" relies on:
+// on error the backend skips everything up to the next Sync, so a batch fails
+// as a batch.
 func (wr *Writer) Sync() { wr.Message(FrontendSync, nil) }
 
 // FlushMessage appends a Flush, which tells the backend to deliver what it has

@@ -179,7 +179,7 @@ func TestTakeZeroTouchesNothing(t *testing.T) {
 }
 
 // A consumer stopping early inside a Take must stop the source too: Take's own
-// bound must not mask the consumer's refusal (S10).
+// bound must not mask the consumer's refusal (the architecture's S10).
 func TestTakeForwardsConsumerStop(t *testing.T) {
 	released := false
 	src := Stream[int](func(yield func(Batch[int]) bool) {

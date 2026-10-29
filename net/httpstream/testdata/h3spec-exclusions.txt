@@ -5,7 +5,7 @@
 # RFC 9114 §7.2.4: refusing a repeated setting identifier is a MAY. The
 # server refuses repeats among identifiers below 64, where every setting
 # RFC 9114 and RFC 9204 define lives; this case repeats 0x40, a setting the
-# server ignores either way (h3conn.go, settings).
+# server ignores either way (h3uni.go, settings).
 HTTP/3 servers treats a repeated setting identifier as an error whatever its value [HTTP/3 7.2.4.1]
 
 # The case announces a GOAWAY of 1 GiB on the control stream and wants

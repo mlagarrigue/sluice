@@ -4,6 +4,10 @@ The project is at v0: the API is not stable and will change before v1. The
 most useful contributions today are **arguments about the design**,
 measurements, and adversarial tests — not only patches.
 
+A question about using it, or feedback after trying it: open a "Question or
+feedback" issue. Everyone here follows the
+[code of conduct](CODE_OF_CONDUCT.md).
+
 ## Before you write code
 
 Read the [architecture](docs/design/architecture.md) and the
@@ -69,10 +73,10 @@ directory.
 Before every commit, all of this, and none of it may print anything:
 
 ```bash
-gofumpt -l .
 go vet ./...
-go test -race -shuffle=on ./...
+gofumpt -l .
 golangci-lint run ./...
+go test -race -shuffle=on ./...
 go generate ./...        # generated files are committed; drift fails a test
 ```
 
@@ -113,8 +117,8 @@ it along.
 CI additionally runs `go vet` for Windows and macOS (`net/quic/udp` has
 per-OS files a Linux build never compiles), runs the integration tests against
 PostgreSQL 14 to 18 with the same `init.sql` as the devcontainer, and runs every
-fuzz target for 30 seconds nightly (`.github/scripts/fuzz.sh`, which also
-runs locally); a failing input is uploaded as an artifact, and committing it
+fuzz target for 30 seconds each night and five minutes on Sundays
+(`.github/scripts/fuzz.sh`, which also runs locally); a failing input is uploaded as an artifact, and committing it
 under the package's `testdata/fuzz/` makes it a regression test. Test order
 is shuffled: a failure that depends on order prints its seed, and
 `-shuffle=<seed>` reproduces it.
@@ -306,15 +310,20 @@ Three places, depending on what the peer or the benchmark needs:
   reaches the program at run time — a socket, a secret, a certificate, a
   server's reply — can be wrong on one machine and right on the next, so the
   constructor returns an `error` for the caller to report: `quic.NewListener`,
-  `web.NewHMACVerifier` on a short secret. A constructor that can fail on its
-  environment returns an `error` for all its refusals, programming errors
-  included, so the caller has one path to handle rather than two. The reason
+  `web.NewHMACVerifier` on a short secret.
+
+  A constructor that can fail on its environment returns an `error` for all
+  its refusals, programming errors included, so the caller has one path to
+  handle rather than two. The reason
   is rule 4: an `error` a caller may ignore (`rt, _ :=`) on a value the
   program itself wrote is a silent failure waiting for its first request,
   while a panic at startup is a crash with a name. A configuration the
   program reads at deployment is checked first with its type's `Validate`
-  (`gateway.Config`, `httpstream.Config`), which returns the same refusals
-  as an error.
+  (`gateway.Config`, `httpstream.Config`, `postgres.Config`,
+  `quic.ListenerConfig`, `quic.TransportParameters`), which returns the
+  same refusals as the constructor, from the same code. A type the program
+  writes in its own code (`postgres.QueryConfig`, `CopyConfig`) has none:
+  its constructor's refusal is what the program's first test meets.
 - **The godoc of every exported symbol starts with its name**, says what it
   retains and what it costs where that matters, and links to the
   architecture's named anchors, never to section numbers.
@@ -359,14 +368,15 @@ In review, comments follow
   API may change at every minor; v1.0.0 commits.
 - [release-please](https://github.com/googleapis/release-please) reads the
   conventional commits, opens the release pull request and writes the
-  CHANGELOG. The CHANGELOG is never edited by hand, with one exception: what
-  the tool left out is put back, and the omission is fixed so it cannot
-  recur. It read only its last 500 commits by default and silently dropped
-  26 of the 47 breaking changes of 0.3.0, a release 762 commits wide;
-  `commit-search-depth` in `release-please-config.json` now covers a lot
-  that size, and `TestEveryBreakingCommitIsInTheChangelog` counts the
-  release's breaking lines against the `!` commits of its range. In v0 a
-  `feat!` bumps the minor, not the major.
+  CHANGELOG. The CHANGELOG is edited by hand on two points only: the header
+  note that links the migration guide
+  (`TestChangelogPointsToTheMigrationGuide`), and what the tool would leave
+  out, put back and made impossible to leave out again. The tool reads 500
+  commits by default, fewer than a release spans (0.3.0 spanned 762):
+  `commit-search-depth` in `release-please-config.json` raises it to 2000,
+  and `TestEveryBreakingCommitIsInTheChangelog` counts the release's
+  breaking lines against the `!` commits of its range. In v0 a `feat!`
+  bumps the minor, not the major.
 - `scripts/check-api.sh` compares, with
   [apidiff](https://pkg.go.dev/golang.org/x/exp/cmd/apidiff), the exported
   API of each commit with its parent's, on every pull request and every push
@@ -375,8 +385,9 @@ In review, comments follow
   or without `!`: what v1 freezes, and what it leaves free, is
   [ADR 0020](docs/design/adr/0020-compatibility.md).
 - A commit with a `!` adds its entry to [docs/migration.md](docs/migration.md):
-  what changed and what to write instead, under its package, quoting the
-  commit's subject (its hash is not known yet). A test checks every `!`
+  what changed and what to write instead, under its package in the "Since
+  <last tag>" section, quoting the commit's subject (its hash is not known
+  yet). A test checks every `!`
   commit since the last tag.
 - Deprecating: `// Deprecated: use X instead.` on the symbol. In v0 it is
   kept at least one minor before removal; from v1 it stays until v2.

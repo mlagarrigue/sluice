@@ -7,7 +7,7 @@
 // compose without a layer in between, and — because a claim nobody can check is
 // decoration — it counts the round trips it makes and says so.
 //
-// It runs on the experimental transport: the architecture's request table
+// It runs on the streaming transport: the architecture's request table
 // with every arrow a stream stage, [httpstream] carrying the outer ones and
 // [github.com/mlagarrigue/sluice/web/stream] the
 // middle, so a batch of pipelined requests reaches the gateway as one
@@ -130,6 +130,8 @@ type Result struct {
 type Service struct {
 	gw   *gateway.Gateway[request, Result]
 	conn *postgres.Conn
+	// timeout bounds one batch on this side of the wire (batchTimeout).
+	timeout time.Duration
 
 	// roundTrips counts every round trip the pipeline makes — BEGIN and the
 	// statement_timeout it sets, each tenant's SET LOCAL and query, the final
@@ -138,6 +140,16 @@ type Service struct {
 	roundTrips atomic.Int64
 	batches    atomic.Int64
 }
+
+// batchTimeout bounds one batch here, on the client: past it the batch's
+// context ends, the connection cancels the statement it is in, and a server
+// that answers nothing more has its connection closed under the batch
+// (postgres.Config.CancelTimeout later). The transaction's own Timeout, 5 s,
+// bounds the server's work and nothing else: it cannot release a pipeline
+// whose server has stopped answering, and every batch behind that one would
+// wait with it. A second more than the server's bound, so that on a server
+// that answers, its statement_timeout is what ends a slow batch.
+const batchTimeout = 6 * time.Second
 
 const readLines = `
 SELECT order_id, line_index, sale_qty, price
@@ -148,7 +160,7 @@ WHERE (order_id, line_index) IN (SELECT * FROM unnest($1::bigint[], $2::int[]))`
 // costs half of what a request costs; this is the shape the measurements
 // asked for rather than the obvious one.
 func NewService(conn *postgres.Conn, size int, within time.Duration) *Service {
-	s := &Service{conn: conn}
+	s := &Service{conn: conn, timeout: batchTimeout}
 
 	s.gw = gateway.New(gateway.Config{Size: size, Within: within},
 		func(calls sluice.Stream[*gateway.Call[request, Result]]) {
@@ -169,8 +181,10 @@ func NewService(conn *postgres.Conn, size int, within time.Duration) *Service {
 func (s *Service) serve(parts *gateway.Partitions[*gateway.Call[request, Result], string], batch sluice.Batch[*gateway.Call[request, Result]]) {
 	// Detached from any caller's ctx on purpose: one caller's cancellation
 	// must not cancel the batch of 64 others riding with it. Bounded
-	// instead by the transaction's own Timeout, below.
-	ctx := context.Background()
+	// instead by the service's own timeout (batchTimeout), and on the
+	// server by the transaction's Timeout, below.
+	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
+	defer cancel()
 
 	tx, err := s.conn.Begin(ctx, postgres.TxConfig{Timeout: 5 * time.Second})
 	if err != nil {
@@ -379,7 +393,7 @@ func (s *Service) Close() error { return s.gw.Close() }
 
 // --- the transport -------------------------------------------------------------
 
-// StreamHandler joins the experimental transport to the vertical. The status
+// StreamHandler joins the streaming transport to the vertical. The status
 // code and the encoding stay visible in the render callback on purpose: they
 // are the two decisions that matter, and an adapter would hide them.
 //

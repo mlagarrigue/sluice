@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -137,4 +138,50 @@ func TestNewListenerRefusesTicketsTheConfigDisables(t *testing.T) {
 	if !errors.Is(err, quic.ErrQUIC) {
 		t.Fatalf("NewListener = %v, want ErrQUIC naming SessionTicketsDisabled", err)
 	}
+}
+
+// RFC 9000 §7.4.1: a client sends 0-RTT under the parameters it remembers
+// from the listener. A listener offering EarlyData under parameters that
+// grant 0-RTT no stream byte is refused, naming the field; until 2026-10-29
+// it was accepted, and its tickets promised a round trip saved that no
+// request could use.
+func TestNewListenerRefusesEarlyDataWithoutCredit(t *testing.T) {
+	pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	for _, tc := range []struct {
+		name  string
+		set   func(p *quic.TransportParameters)
+		field string
+	}{
+		{"no connection credit", func(p *quic.TransportParameters) { p.InitialMaxData = 0 }, "InitialMaxData"},
+		{"no stream", func(p *quic.TransportParameters) { p.InitialMaxStreamsBidi, p.InitialMaxStreamsUni = 0, 0 }, "InitialMaxStreamsBidi"},
+		{"no stream window", func(p *quic.TransportParameters) {
+			p.InitialMaxStreamDataBidiRemote, p.InitialMaxStreamDataUni = 0, 0
+		}, "InitialMaxStreamDataBidiRemote"},
+	} {
+		params := quic.DefaultParameters()
+		tc.set(&params)
+		_, err := quic.NewListener(pc, serverTLS(t), params, quic.ListenerConfig{EarlyData: true})
+		if !errors.Is(err, quic.ErrQUIC) || !strings.Contains(err.Error(), tc.field) {
+			t.Errorf("%s: NewListener = %v, want ErrQUIC naming %s", tc.name, err, tc.field)
+		}
+	}
+	// Uni streams alone carry 0-RTT: accepted. So are the same parameters
+	// without EarlyData, which promise nothing of 0-RTT.
+	params := quic.DefaultParameters()
+	params.InitialMaxStreamsBidi = 0
+	l, err := quic.NewListener(pc, serverTLS(t), params, quic.ListenerConfig{EarlyData: true})
+	if err != nil {
+		t.Fatalf("EarlyData with unidirectional credit only: %v", err)
+	}
+	_ = l.Close()
+	params = quic.DefaultParameters()
+	params.InitialMaxData = 0
+	if l, err = quic.NewListener(pc, serverTLS(t), params, quic.ListenerConfig{}); err != nil {
+		t.Fatalf("no EarlyData, InitialMaxData at zero: %v", err)
+	}
+	_ = l.Close()
 }

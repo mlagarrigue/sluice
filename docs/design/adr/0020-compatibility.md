@@ -1,7 +1,7 @@
 # ADR 0020 — What v1 freezes
 
 - **Created:** 2026-10-23
-- **Revised:** —
+- **Revised:** 2026-10-28 (`gateway.Partitions` listed experimental; written in the present tense; `audit` among the nested modules)
 - **Theme:** docs
 
 ## Problem
@@ -38,9 +38,12 @@ Part of the contract, like the signatures:
 Not part of the contract: the experimental packages (today `net/quic`,
 `net/quic/udp`, `web/stream`), whose breaks are still announced with `!` and
 listed in the CHANGELOG; the few symbols of a stable package whose
-documentation opens a paragraph with "Experimental:" (ADR 0021);
+documentation opens a paragraph with "Experimental:", listed in
+`scripts/api-experimental.txt` — a listed type with its fields and methods
+— today the HTTP/3 entry points of `httpstream` (ADR 0021) and
+`gateway.Partitions`, whose cost is measured but not yet when it pays;
 `internal/`; `example/`; the nested modules (`interop`, `benchmarks`,
-`comparison/…`), which are not published; the text of errors and logs;
+`comparison/…`, `audit`), which are not published; the text of errors and logs;
 performance, measured and published but not promised.
 
 **What still moves.** The Go floor rises in a minor version, never in a
@@ -70,7 +73,7 @@ text of errors does not, because it improves and a caller that compares it
 holds the wrong handle.
 
 What this costs: after v1, fixing a badly shaped stable API costs a v2,
-hence the grouped breaking version before v1 (decided on 2026-10-20). The
+hence one grouped breaking version before v1. The
 promise does not cover the experimental packages, which are precisely the
 ones whose shape has not met real use.
 

@@ -33,7 +33,9 @@ import (
 // The re-raised panic unwinds from this frame, so the trace shows Try between
 // the crash site and the caller; the panic value is untouched. The converted
 // error is the panic value as raised — for parallel.ErrState that is the
-// wrapping error, so errors.Is reaches both the sentinel and the cause.
+// wrapping error, so errors.Is reaches both the sentinel and the cause. A
+// sentinel raised on an operator's goroutine reaches Try in a [PanicError];
+// Try looks inside it and returns the sentinel as the goroutine raised it.
 //
 // Try panics if consume is nil. Why sentinels panic and Try converts them:
 // docs/design/adr/0006-sentinel-panics-and-try.md.
@@ -46,9 +48,12 @@ func Try(consume func()) (err error) {
 		if r == nil {
 			return
 		}
-		if e, ok := r.(error); ok {
-			var s *batch.Sentinel
-			if errors.As(e, &s) {
+		v := r
+		if relayed, ok := r.(*PanicError); ok {
+			v = relayed.Value
+		}
+		if e, ok := v.(error); ok {
+			if _, ok := errors.AsType[*batch.Sentinel](e); ok {
 				err = e
 				return
 			}

@@ -1,11 +1,12 @@
 // Package diagnostics is what can be said about a value without stopping the
-// stream: what is wrong with it, and what can be done about it.
+// stream: what is wrong with it, and what can be done about it. What is said
+// is kept by a Collector, up to the ceiling it was built with.
 //
 // It is deliberately outside the core. docs/design/architecture.md sets one test
 // for anything that would live beside the core's Stream and Batch — if
 // this type were removed, would the rest stop compiling? — and nothing here
 // passes it. No type in this package mentions a Stream or a Batch, and the
-// core never mentions a Diagnostic. Keeping them in one package said the
+// core never mentions a Diagnostic. Kept in one package, they would say the
 // opposite of what the architecture claims, which is that diagnostics are
 // built on top of the core without the core knowing about them.
 //

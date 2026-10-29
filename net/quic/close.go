@@ -120,8 +120,10 @@ func (e *ConnectionError) Error() string {
 // INTERNAL_ERROR. A TLS alert anywhere in the chain maps to RFC 9001 §4.8's
 // crypto range (0x0100 + alert), which is how the codes that RFC mandates —
 // 0x0178 for ALPN failure (§8.1), 0x016d for missing transport parameters
-// (§8.2), 0x010a for a KeyUpdate message (§6) — all reach the wire without
-// this package naming each alert; everything else is INTERNAL_ERROR.
+// (§8.2) — reach the wire without this package naming each alert; after
+// the handshake crypto/tls's errors carry internal_error alone, and a
+// KeyUpdate message (§6) closes as 0x0150, not 0x010a (the package's
+// godoc, "On the cryptography"); everything else is INTERNAL_ERROR.
 func closeCodeFor(err error) uint64 {
 	if te, ok := errors.AsType[*transportError](err); ok {
 		return te.code
@@ -146,6 +148,10 @@ func (c *Conn) abort(err error) {
 	_ = c.Close()
 }
 
+// closeAsyncLocked ends the connection from a path that holds mu: Close
+// takes mu, so it runs on its own goroutine once the caller lets go.
+func (c *Conn) closeAsyncLocked() { go func() { _ = c.Close() }() }
+
 // Close ends the connection, telling the peer with a CONNECTION_CLOSE frame
 // (NO_ERROR) so it can drop its state now rather than wait out an idle
 // period (§10.2). Close never blocks on the peer: the frame is sent once,
@@ -156,7 +162,7 @@ func (c *Conn) abort(err error) {
 //
 // The error return always comes back nil, kept for [io.Closer] rather than
 // for anything it could report: a failed write here is already "best
-// effort" and swallowed upstream (sendCloseLocked), not a reason for the
+// effort" and swallowed where it is sent, not a reason for the
 // caller to think closing failed.
 func (c *Conn) Close() error {
 	c.closeOnce(transportNoError, false)
@@ -167,9 +173,27 @@ func (c *Conn) Close() error {
 // is how HTTP/3 says H3_NO_ERROR (§10.2's application close). The reason
 // phrase is deliberately not sent; codes travel, prose stays home.
 //
-// Like [Conn.Close], the error return always comes back nil.
+// Like [Conn.Close], it returns nil — except for a code past 2^62-1, the
+// most an error code can carry (RFC 9000 §20), which it refuses with an
+// error and leaves the connection as it was, open.
 func (c *Conn) CloseWithError(code uint64) error {
+	if err := checkCode("CloseWithError", code); err != nil {
+		return err
+	}
 	c.closeOnce(code, true)
+	return nil
+}
+
+// checkCode refuses an error code no variable-length integer can carry
+// (RFC 9000 §20: application error codes are 62-bit). The frame that would
+// carry it — CONNECTION_CLOSE, RESET_STREAM, STOP_SENDING — cannot be
+// built, and the methods that take a code check it before changing
+// anything, so a refused call leaves no trace: no mutex held, no sync.Once
+// consumed, no stream direction closed.
+func checkCode(method string, code uint64) error {
+	if code > varint.Max {
+		return fmt.Errorf("quic: %s: code %d is past 2^62-1, the most an error code can carry", method, code)
+	}
 	return nil
 }
 
@@ -203,8 +227,13 @@ func (c *Conn) Shutdown(ctx context.Context) error {
 // which is how HTTP/3 ends a graceful shutdown with H3_NO_ERROR (RFC 9114
 // §5.2) once its last response has been acknowledged. It waits as Shutdown
 // does and closes in every case, like it; only the frame the peer reads
-// differs, as between [Conn.Close] and [Conn.CloseWithError].
+// differs, as between [Conn.Close] and [Conn.CloseWithError] — and like the
+// latter it refuses a code past 2^62-1 before waiting, leaving the
+// connection open.
 func (c *Conn) ShutdownWithError(ctx context.Context, code uint64) error {
+	if err := checkCode("ShutdownWithError", code); err != nil {
+		return err
+	}
 	err := c.drain(ctx)
 	c.closeOnce(code, true)
 	return err
@@ -356,6 +385,12 @@ func (c *Conn) wakeOwnedReadLoop() {
 // the peer is least certain to have — a server closing during the handshake
 // may hold Handshake keys the client has not derived yet — and a close the
 // peer cannot read is a client that eats its whole handshake timeout instead.
+//
+// The transport form's Frame Type is always 0, which §19.19 reserves for "the
+// frame type is unknown": a transportError carries its code and its cause,
+// not the frame that raised it, and threading the type through every refusal
+// would buy the peer's log one number. Revisited when a peer's diagnosis
+// needs it.
 func (c *Conn) sendCloseLocked(code uint64, app bool) {
 	if c.closeSent || c.draining {
 		return
@@ -523,7 +558,9 @@ func (c *Conn) closingPeriodLocked() time.Duration {
 // connection keeps its routing entry and its MaxConns and MaxConnsPerIP
 // slots for the whole period, so an uncapped one let a peer hold a slot
 // for a minute or more after every close. Ten seconds is three PTOs of a
-// path with a 2.5 s round trip, past any satellite hop. What ending early
+// path with a 2.5 s round trip, past any satellite hop: a PTO is the round
+// trip, four times its variation and max_ack_delay (RFC 9002 §6.2.1), 2.5 s
+// + 4 × 0.2 s + 25 ms ≈ 3.3 s on a steady such path. What ending early
 // costs is the one thing §10.2 names: a packet arriving later than that is
 // answered with a Stateless Reset rather than the close repeated, and both
 // tell the peer the connection is gone.
@@ -548,6 +585,7 @@ func (c *Conn) keepClosingDatagramLocked(pc net.PacketConn, b []byte, to net.Add
 // connection leaves on a timer; one that owns its socket leaves when its
 // read loop, which keeps answering until end, returns (holdClosing).
 func (c *Conn) enterClosingLocked() {
+	c.releaseEarlyTicketLocked() // a handshake that ends here used no 0-RTT
 	if len(c.closing.datagrams) == 0 && (!c.draining || !c.holdsClosingLocked()) {
 		c.closing.left = true
 		if !c.closing.loop {

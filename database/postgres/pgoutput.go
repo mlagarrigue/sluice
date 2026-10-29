@@ -41,7 +41,9 @@ type ChangeKind uint8
 
 // The kinds of change a logical replication stream delivers. A transaction
 // arrives as a Begin, its row changes, then a Commit; nothing of it arrives
-// before the server has committed it.
+// before the server has committed it. A Type names a type that is not built
+// in before a column of it is described, and an Origin follows the Begin of a
+// transaction that came from another node, possibly more than once.
 const (
 	ChangeBegin ChangeKind = iota + 1
 	ChangeCommit
@@ -49,9 +51,11 @@ const (
 	ChangeUpdate
 	ChangeDelete
 	ChangeTruncate
+	ChangeType
+	ChangeOrigin
 )
 
-var changeKindNames = [...]string{"", "Begin", "Commit", "Insert", "Update", "Delete", "Truncate"}
+var changeKindNames = [...]string{"", "Begin", "Commit", "Insert", "Update", "Delete", "Truncate", "Type", "Origin"}
 
 func (k ChangeKind) String() string {
 	if int(k) < len(changeKindNames) && k != 0 {
@@ -94,6 +98,30 @@ type Change struct {
 	// an Update left the key alone.
 	New, Old Tuple
 	OldIsKey bool
+
+	// Cascade and RestartIdentity are set on a Truncate run with CASCADE
+	// or with RESTART IDENTITY: both change what replaying it elsewhere
+	// does (the options byte of pgoutput's Truncate message).
+	Cascade, RestartIdentity bool
+
+	// Type is set on a Type: a type that is not built in — an enum, a
+	// domain, a composite — named for the OID a column's TypeOID carries,
+	// which is an OID of the publishing database and means nothing
+	// elsewhere.
+	Type DataType
+
+	// Origin is set on an Origin: the name of the node the transaction
+	// came from, its LSN the commit's position on that node. A cascaded
+	// setup tells by it what it must not send back.
+	Origin string
+}
+
+// DataType names a type as a Type message does: its OID on the publishing
+// server, its namespace (empty for pg_catalog) and its name.
+type DataType struct {
+	OID       uint32
+	Namespace string
+	Name      string
 }
 
 // Relation is a table as the replication stream describes it: the columns a
@@ -156,6 +184,40 @@ const (
 // than followed into memory.
 const maxReplicationRelations = 1 << 14
 
+// maxReplicationRelationBytes bounds the relation table together: the
+// namespace, name and column names of every relation kept, plus
+// relationColumnCost per column for the [RelationColumn] itself.
+//
+// Capping the count alone is not enough. A Relation message is bounded only
+// by [Config.MaxMessage], 64 MiB by default and up to 1 GiB, so the count
+// alone bounds the table at 16,384 times that — a figure, not a bound — and
+// a server can describe relations with names as long as a message for free,
+// kept for the life of the stream (measured: 64 relations with 4 MiB names
+// kept, 256 MiB). What PostgreSQL sends is small by construction: a name is
+// at most 63 bytes (NAMEDATALEN) and a table has at most 1,600 columns
+// (MaxHeapAttributeNumber), so a relation of ordinary shape costs a few
+// hundred bytes and the whole of a large publication a few megabytes: a
+// thousand tables of a hundred columns cost under 6 MiB (measured). The
+// budget is 64 MiB, four times maxServerParameterBytes, so that the count
+// bound is reachable by a conformant server before this one is: 16,384
+// tables of thirty columns, FOR ALL TABLES on a very large schema, cost
+// about 28 MiB.
+const maxReplicationRelationBytes = 64 << 20
+
+// relationColumnCost is what a [RelationColumn] costs the table beyond its
+// name: the struct itself, the name's header included.
+const relationColumnCost = 32
+
+// cost is what the table keeps for rel: its names, and relationColumnCost
+// per column.
+func (rel *Relation) cost() int {
+	n := len(rel.Namespace) + len(rel.Name)
+	for i := range rel.Columns {
+		n += len(rel.Columns[i].Name) + relationColumnCost
+	}
+	return n
+}
+
 // pgEpochMicros is 2000-01-01 in Unix microseconds, the origin the protocol
 // counts its timestamps from.
 const pgEpochMicros = 946_684_800_000_000
@@ -164,6 +226,9 @@ const pgEpochMicros = 946_684_800_000_000
 // keeps the relation table the row changes refer to.
 type replDecoder struct {
 	relations map[uint32]*Relation
+	// relationBytes is the cost of every relation in the table, bounded by
+	// maxReplicationRelationBytes.
+	relationBytes int
 }
 
 // replReader walks one message body; every read checks what remains.
@@ -247,7 +312,7 @@ func pgTime(micros uint64) time.Time {
 }
 
 // decode reads one pgoutput message. It appends the changes the message
-// carries to dst — none for a Relation, Type or Origin, one per relation for
+// carries to dst — none for a Relation, one per relation for
 // a Truncate — and the tuples' values to vals, which the caller owns; a
 // Change's tuples are left nil and described by the spans returned with it,
 // so that vals may grow without leaving a Change pointing at a stale array.
@@ -274,11 +339,24 @@ func (d *replDecoder) decode(body []byte, at LSN, dst []Change, spans []tupleSpa
 		}
 	case 'R':
 		d.relation(&r)
-	case 'Y', 'O':
-		// Type names a type that is not built in, and Origin the node a
-		// transaction came from. Neither changes what a value is: the
-		// column's type OID already says how it decodes.
-		return dst, spans, vals, nil
+	case 'Y':
+		// Delivered, as everything read is (ADR 0023): the name is what
+		// makes a non-built-in column's TypeOID mean something on the
+		// replica.
+		c := Change{Kind: ChangeType, LSN: at}
+		c.Type.OID = r.u32("Type")
+		c.Type.Namespace = r.cstring("Type")
+		c.Type.Name = r.cstring("Type")
+		if r.err == nil {
+			dst, spans = append(dst, c), append(spans, tupleSpans{})
+		}
+	case 'O':
+		c := Change{Kind: ChangeOrigin}
+		c.LSN = LSN(r.u64("Origin"))
+		c.Origin = r.cstring("Origin")
+		if r.err == nil {
+			dst, spans = append(dst, c), append(spans, tupleSpans{})
+		}
 	case 'I', 'U', 'D':
 		c := Change{Kind: ChangeInsert, LSN: at}
 		switch typ {
@@ -317,15 +395,30 @@ func (d *replDecoder) decode(body []byte, at LSN, dst []Change, spans []tupleSpa
 		}
 	case 'T':
 		n := r.u32("Truncate")
-		r.u8("Truncate")
+		opts := r.u8("Truncate") // §54.9: 1 for CASCADE, 2 for RESTART IDENTITY
 		if r.err == nil && int(n) > len(r.b)/4 {
 			r.err = fmt.Errorf("%w: pgoutput Truncate names %d relations in %d bytes", ErrProtocol, n, len(r.b))
 		}
+		// Each relation once: PostgreSQL writes one OID per relation
+		// truncated (logicalrep_write_truncate). One relation named over
+		// and over made a Change per four bytes of the message, in one batch
+		// past BatchChanges; refused, a Truncate yields at most one Change
+		// per relation the table holds, each of which cost a Relation
+		// message of its own. A set, not a look back over the changes: the
+		// table may hold thousands, and a scan per OID would be quadratic.
+		seen := make(map[*Relation]struct{}, min(n, 64))
 		for i := uint32(0); i < n && r.err == nil; i++ {
 			rel := d.relationOf(&r)
-			if r.err == nil {
-				dst, spans = append(dst, Change{Kind: ChangeTruncate, LSN: at, Relation: rel}), append(spans, tupleSpans{})
+			if r.err != nil {
+				break
 			}
+			if _, dup := seen[rel]; dup {
+				r.err = fmt.Errorf("%w: pgoutput Truncate names %s.%s twice", ErrProtocol, rel.Namespace, rel.Name)
+				break
+			}
+			seen[rel] = struct{}{}
+			c := Change{Kind: ChangeTruncate, LSN: at, Relation: rel, Cascade: opts&1 != 0, RestartIdentity: opts&2 != 0}
+			dst, spans = append(dst, c), append(spans, tupleSpans{})
 		}
 	default:
 		// Logical decoding messages and the streamed-transaction messages
@@ -371,13 +464,25 @@ func (d *replDecoder) relation(r *replReader) {
 	if d.relations == nil {
 		d.relations = make(map[uint32]*Relation)
 	}
-	if _, known := d.relations[rel.OID]; !known && len(d.relations) >= maxReplicationRelations {
+	old, known := d.relations[rel.OID]
+	if !known && len(d.relations) >= maxReplicationRelations {
 		r.err = fmt.Errorf("%w: the server described more than %d relations", ErrProtocol, maxReplicationRelations)
+		return
+	}
+	// A redescription replaces its predecessor in the table, so it is
+	// charged the difference, not the whole.
+	total := d.relationBytes + rel.cost()
+	if known {
+		total -= old.cost()
+	}
+	if total > maxReplicationRelationBytes {
+		r.err = fmt.Errorf("%w: a Relation of %d bytes takes the relation table past its %d-byte budget", ErrProtocol, rel.cost(), maxReplicationRelationBytes)
 		return
 	}
 	// A new value rather than an update in place: changes already delivered
 	// keep the description they were decoded under.
 	d.relations[rel.OID] = rel
+	d.relationBytes = total
 }
 
 func (d *replDecoder) relationOf(r *replReader) *Relation {

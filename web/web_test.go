@@ -169,6 +169,16 @@ func TestDecodeJSONRefusesTrailingContent(t *testing.T) {
 	if d.Code != web.CodeMalformedBody {
 		t.Errorf("code = %q, want %q", d.Code, web.CodeMalformedBody)
 	}
+	// Whatever follows the document is refused, not only a whole second
+	// one: a closer, a scalar, a byte that is no JSON at all.
+	for _, tail := range []string{"}", "]", "7", `"x"`, "x", "{"} {
+		if _, ok := web.DecodeJSON(post(`{"orderId":1,"saleQty":1} `+tail), 1<<16, &a); ok {
+			t.Errorf("a body followed by %q was accepted", tail)
+		}
+	}
+	if _, ok := web.DecodeJSON(post("{\"orderId\":1,\"saleQty\":1} \r\n\t"), 1<<16, &a); !ok {
+		t.Error("a body followed by whitespace alone was refused")
+	}
 }
 
 // An unknown field is a typo or a client talking to the wrong version, and

@@ -468,15 +468,16 @@ func (v *HMACVerifier) principalFrom(claims map[string]any) (Principal, error) {
 	return p, nil
 }
 
-// numericDate reads a JWT NumericDate. JSON gives it as a float64, and seconds
-// since the Unix epoch is what the specification says it is — not
-// milliseconds, which is the mistake that makes every token look valid until
-// the year 56000.
+// minNumericDate and maxNumericDate bound what numericDate accepts.
 const (
 	minNumericDate = -(1 << 53)
 	maxNumericDate = 1 << 53
 )
 
+// numericDate reads a JWT NumericDate. JSON gives it as a float64, and seconds
+// since the Unix epoch is what the specification says it is — not
+// milliseconds, which is the mistake that makes every token look valid until
+// the year 56000.
 func numericDate(v any) (time.Time, bool) {
 	f, ok := v.(float64)
 	// Bounded to ±2^53, where every float64 is an exact integer and the int64

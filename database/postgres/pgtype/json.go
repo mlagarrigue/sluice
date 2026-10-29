@@ -2,13 +2,6 @@ package pgtype
 
 import "fmt"
 
-// OIDs of PostgreSQL's two JSON types. They are not interchangeable on the
-// wire and mixing them is silent: see [AppendJSONB].
-const (
-	OIDJSON  uint32 = 114
-	OIDJSONB uint32 = 3802
-)
-
 // JSONBVersion is the format byte every binary jsonb value begins with.
 //
 // It exists so that the layout can change without every reader guessing, and
@@ -35,8 +28,8 @@ const JSONBVersion = 1
 // cannot read, with a SQLSTATE that says where — which is a better error than
 // anything this package could produce, and it is the same parser that will
 // have to agree.
-func AppendJSONB(dst, json []byte) []byte {
-	return append(append(dst, JSONBVersion), json...)
+func AppendJSONB(dst, text []byte) []byte {
+	return append(append(dst, JSONBVersion), text...)
 }
 
 // DecodeJSONB returns the JSON text of a jsonb value, checking its version
@@ -62,7 +55,7 @@ func DecodeJSONB(b []byte) ([]byte, error) {
 // It is one line and it exists anyway, because the call site is where the
 // difference with [AppendJSONB] has to be visible. A caller reaching for
 // "append some JSON" and finding one function would pick wrong half the time.
-func AppendJSON(dst, json []byte) []byte { return append(dst, json...) }
+func AppendJSON(dst, text []byte) []byte { return append(dst, text...) }
 
 // DecodeJSON returns the text of a json value, which has no version byte.
 // The slice borrows the batch's storage.

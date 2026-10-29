@@ -13,10 +13,10 @@ import (
 // library's two halves meet: the gateway gathers concurrent requests into a
 // batch, and the batch becomes one `= ANY($1)` rather than sixty-four queries.
 //
-// Until this existed, that seam was a sentence in a comment. It is compiled
-// now, which is the difference between a claim and a check — running it needs
-// a server, but a signature that stopped matching, a codec that changed shape
-// or a query helper that was renamed would break the build.
+// That seam is compiled here, which is the difference between a claim and a
+// check — running it needs a server, but a signature that stopped matching, a
+// codec that changed shape or a query helper that was renamed would break the
+// build.
 //
 // # One connection is enough, and that is not a coincidence
 //

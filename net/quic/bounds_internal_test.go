@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -135,7 +136,7 @@ func TestAckDelayParametersAnnouncedAtZeroAreNotTheDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
-	exp, delay := c.peerAckDelayExponent(), c.peerMaxAckDelayLocked()
+	exp, delay := c.peerAckDelayExponentLocked(), c.peerMaxAckDelayLocked()
 	c.mu.Unlock()
 	if exp != 3 || delay != 25*time.Millisecond {
 		t.Errorf("absent parameters read as exponent %d, max_ack_delay %v; want the defaults 3 and 25ms", exp, delay)
@@ -147,7 +148,7 @@ func TestAckDelayParametersAnnouncedAtZeroAreNotTheDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
-	exp, delay = c.peerAckDelayExponent(), c.peerMaxAckDelayLocked()
+	exp, delay = c.peerAckDelayExponentLocked(), c.peerMaxAckDelayLocked()
 	c.mu.Unlock()
 	if exp != 0 || delay != 0 {
 		t.Errorf("parameters announced at 0 read as exponent %d, max_ack_delay %v; want 0 and 0", exp, delay)
@@ -245,6 +246,7 @@ func TestDeferredEarlyReplayIsNotCountedTwice(t *testing.T) {
 
 	server := boundsConn(t, false)
 	server.mu.Lock()
+	server.early = newEarlyGate(0, 0) // a server that admits 0-RTT holds the packet
 	server.amplActive, server.amplRecv, server.amplSent = true, 0, 0
 	server.mu.Unlock()
 
@@ -347,5 +349,220 @@ func TestTheIdleFloorStillDefersTheTimeout(t *testing.T) {
 	case <-c.closed:
 		t.Error("the connection was given up at its idle timeout although three PTOs had not passed: §10.1's floor is gone")
 	default:
+	}
+}
+
+// The floored deadline is also what the loops wait for. While the floor
+// holds a connection past its raw idle deadline, actOnDeadlines returns the
+// floored deadline as the next one pending — never the raw one, which is in
+// the past: timerLoop would then compute wait = 0, re-arm at once and spin,
+// taking c.mu at each turn, until the floor let go. readLoop and readLoopFed
+// read the same deadline (idleDeadlineLocked) for the same reason.
+func TestIdleFloorDoesNotSpinTheLoops(t *testing.T) {
+	c := boundsConn(t, false)
+	c.mu.Lock()
+	c.idleTimeout = 10 * time.Millisecond
+	c.peerParams.MaxAckDelay = 500 * time.Millisecond
+	c.peerParams.sawMaxAckDelay = true
+	c.hasPeerParams = true
+	c.idleDeadline = time.Now().Add(-5 * time.Millisecond)
+	floor := 3 * c.rtt.pto(c.peerMaxAckDelayLocked())
+	floored := c.idleDeadline.Add(floor - c.idleTimeout)
+	c.mu.Unlock()
+	if floor <= c.idleTimeout || floor > maxIdleFloor {
+		t.Fatalf("three PTOs come to %v, want between the idle timeout %v and the cap %v; the case under test is not reached",
+			floor, c.idleTimeout, maxIdleFloor)
+	}
+
+	now := time.Now()
+	next := c.actOnDeadlines(now)
+	select {
+	case <-c.closed:
+		t.Fatal("the connection was given up at its idle timeout although three PTOs had not passed: §10.1's floor is gone")
+	default:
+	}
+	if next.IsZero() {
+		t.Fatal("actOnDeadlines returned no deadline while the idle floor still runs")
+	}
+	if !next.After(now) {
+		t.Fatalf("actOnDeadlines returned a deadline %v before now: timerLoop waits 0 and spins until the floor lets go, %v later",
+			now.Sub(next), floored.Sub(now))
+	}
+	if !next.Equal(floored) {
+		t.Errorf("actOnDeadlines returned %v as the next deadline, want the floored idle deadline %v", next, floored)
+	}
+}
+
+// Every number this package puts on the wire travels as a variable-length
+// integer, bounded at 2^62-1 (RFC 9000 §16), and internal/varint.Append
+// panics past it. A value the caller passes — a transport parameter, an
+// error code — is refused at the API with an error naming it, before
+// anything changes: TransportParameters.check used to let 2^62 through and
+// appendParameters panicked on the first handshake, on a Listener's read
+// goroutine; CloseWithError used to panic inside closeOnce with c.mu held
+// and the sync.Once consumed, leaving a connection nothing could lock or
+// close; Reset and StopSending used to panic after marking the stream.
+func TestCallerValuesPastTheVarintCeilingAreRefused(t *testing.T) {
+	t.Run("transport parameters", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			set  func(p *TransportParameters, v uint64)
+		}{
+			{"InitialMaxData", func(p *TransportParameters, v uint64) { p.InitialMaxData = v }},
+			{"InitialMaxStreamDataUni", func(p *TransportParameters, v uint64) { p.InitialMaxStreamDataUni = v }},
+			{"InitialMaxStreamDataBidiLocal", func(p *TransportParameters, v uint64) { p.InitialMaxStreamDataBidiLocal = v }},
+			{"InitialMaxStreamDataBidiRemote", func(p *TransportParameters, v uint64) { p.InitialMaxStreamDataBidiRemote = v }},
+			{"ActiveConnIDLimit", func(p *TransportParameters, v uint64) { p.ActiveConnIDLimit = v }},
+		} {
+			for _, v := range []uint64{1 << 62, ^uint64(0)} {
+				p := DefaultParameters()
+				tc.set(&p, v)
+				err := p.check()
+				if err == nil || !strings.Contains(err.Error(), tc.name) {
+					t.Errorf("%s = %d: check returned %v, want an error naming the field", tc.name, v, err)
+				}
+			}
+			p := DefaultParameters()
+			tc.set(&p, varint.Max)
+			if err := p.check(); err != nil {
+				t.Errorf("%s = 2^62-1: check returned %v, want nil — the ceiling itself is encodable", tc.name, err)
+			}
+		}
+		for _, tc := range []struct {
+			name string
+			set  func(p *TransportParameters, v uint64)
+		}{
+			{"InitialMaxStreamsBidi", func(p *TransportParameters, v uint64) { p.InitialMaxStreamsBidi = v }},
+			{"InitialMaxStreamsUni", func(p *TransportParameters, v uint64) { p.InitialMaxStreamsUni = v }},
+		} {
+			p := DefaultParameters()
+			tc.set(&p, maxStreamsLimit+1)
+			if err := p.check(); err == nil || !strings.Contains(err.Error(), tc.name) {
+				t.Errorf("%s = 2^60+1: check returned %v, want an error naming the field (§4.6)", tc.name, err)
+			}
+			tc.set(&p, maxStreamsLimit)
+			if err := p.check(); err != nil {
+				t.Errorf("%s = 2^60: check returned %v, want nil", tc.name, err)
+			}
+		}
+		// What check accepts, appendParameters encodes without a panic.
+		p := DefaultParameters()
+		p.InitialMaxData, p.InitialMaxStreamsBidi = varint.Max, maxStreamsLimit
+		if err := p.check(); err != nil {
+			t.Fatal(err)
+		}
+		_ = appendParameters(nil, p)
+	})
+
+	t.Run("close codes", func(t *testing.T) {
+		c := boundsConn(t, false)
+		installAppSealer(t, c)
+		if err := c.CloseWithError(1 << 62); err == nil {
+			t.Fatal("CloseWithError(1<<62) returned nil, want a refusal")
+		}
+		if err := c.ShutdownWithError(t.Context(), 1<<62); err == nil {
+			t.Fatal("ShutdownWithError(ctx, 1<<62) returned nil, want a refusal")
+		}
+		// The timer loop takes c.mu on its own schedule, so a TryLock
+		// would fail by chance: a Lock that returns within a second is
+		// the proof the refusal left the mutex free.
+		locked := make(chan struct{})
+		go func() {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			close(locked)
+		}()
+		select {
+		case <-locked:
+		case <-time.After(time.Second):
+			t.Fatal("c.mu is held after the refusals: the connection can no longer be locked")
+		}
+		select {
+		case <-c.closed:
+			t.Fatal("the connection closed on a refused code")
+		default:
+		}
+		// The sync.Once was not consumed: a close with a legal code still
+		// closes.
+		if err := c.CloseWithError(1); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-c.closed:
+		default:
+			t.Fatal("CloseWithError(1) after a refused code did not close the connection: closeOnce was consumed by the refusal")
+		}
+	})
+
+	t.Run("stream codes", func(t *testing.T) {
+		c := boundsConn(t, false)
+		installAppSealer(t, c)
+		c.mu.Lock()
+		c.peerMaxStreamsBidi = 1
+		c.hasPeerParams = true
+		c.mu.Unlock()
+		s, err := c.OpenStream(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Reset(1 << 62); err == nil {
+			t.Error("Reset(1<<62) returned nil, want a refusal")
+		}
+		if err := s.StopSending(1 << 62); err == nil {
+			t.Error("StopSending(1<<62) returned nil, want a refusal")
+		}
+		c.mu.Lock()
+		reset, sendClosed := s.writeReset, s.sendClosed
+		c.mu.Unlock()
+		s.mu.Lock()
+		taken := s.endTaken
+		s.mu.Unlock()
+		if reset || sendClosed || taken {
+			t.Errorf("after the refusals writeReset=%v sendClosed=%v endTaken=%v, want all false: a refused code changes nothing", reset, sendClosed, taken)
+		}
+	})
+}
+
+// peerRetiredSelf is a ring that never grows with the connection's age:
+// every NEW_CONNECTION_ID scans it (retiredSelfLocked), so a list that kept
+// one sequence per migration would make that scan grow for the connection's
+// life. The newest retirement is remembered, the oldest past the ring is not.
+func TestRetiredSelfRingIsBounded(t *testing.T) {
+	c := boundsConn(t, false)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	const retired = 10 * maxRetiredSelf
+	for seq := uint64(1); seq <= retired; seq++ {
+		c.noteRetiredSelfLocked(seq)
+	}
+	if got := len(c.peerRetiredSelf); got > maxRetiredSelf {
+		t.Fatalf("%d sequences remembered after %d retirements, want at most %d", got, retired, maxRetiredSelf)
+	}
+	if !c.retiredSelfLocked(retired) {
+		t.Error("the newest retirement is not remembered")
+	}
+	if c.retiredSelfLocked(1) {
+		t.Error("the oldest retirement is still remembered past the ring")
+	}
+}
+
+// One packet of 1 451 PINGs parses to as many frames; the parse scratch
+// that held them is not what the connection keeps for the next packet.
+// An ordinary packet's scratch still is, which is what the scratch is for.
+func TestParseScratchDoesNotKeepAPacketOfPings(t *testing.T) {
+	c := assembleConn(&fuzzSink{addr: "scratch:self"}, fakeFuzzAddr("scratch:peer"), []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+	t.Cleanup(func() { _ = c.Close() })
+	pings := bytes.Repeat([]byte{framePing}, 1451)
+	if err := c.frames(spaceApplication, pings, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got := cap(c.parseScratch); got > maxKeptFrames {
+		t.Errorf("after 1451 PINGs the connection keeps a scratch of %d frames, want at most %d", got, maxKeptFrames)
+	}
+	if err := c.frames(spaceApplication, pings[:3], time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if c.parseScratch == nil {
+		t.Error("an ordinary packet's scratch was not kept")
 	}
 }

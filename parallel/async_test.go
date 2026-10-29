@@ -7,6 +7,7 @@ import (
 	"testing/synctest"
 
 	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/internal/streamtest"
 )
 
 func TestAsync(t *testing.T) {
@@ -95,8 +96,8 @@ func TestAsyncProducerRunsAhead(t *testing.T) {
 	})
 }
 
-// The S14 composition: Async downstream of a buffer-reusing operator must be
-// race-free and correct — the producer copies at the hand-off.
+// The architecture's S14 composition: Async downstream of a buffer-reusing
+// operator must be race-free and correct — the producer copies at the hand-off.
 func TestAsyncCopiesInputBatch(t *testing.T) {
 	const n = 1 << 14
 	src := make([]int64, n)
@@ -157,7 +158,7 @@ func TestAsyncPropagatesSourcePanic(t *testing.T) {
 
 		func() {
 			defer func() {
-				if r := recover(); r != "source boom" {
+				if r := streamtest.Relayed(recover()); r != "source boom" {
 					t.Errorf("recovered %v, want the source's panic", r)
 				}
 			}()
@@ -215,7 +216,7 @@ func TestAsyncEarlyStopStillRaisesSourcePanic(t *testing.T) {
 			})
 		}()
 
-		if recovered != "source boom" {
+		if recovered := streamtest.Relayed(recovered); recovered != "source boom" {
 			t.Errorf("recovered %v, want the source's panic: it was swallowed by the early stop", recovered)
 		}
 		if seen != 1 {

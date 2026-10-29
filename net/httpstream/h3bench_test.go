@@ -81,7 +81,7 @@ func BenchmarkH3Expire(b *testing.B) {
 // declared a frame at MaxBodyBytes and delivers its payload one byte at a
 // time. The figure must not grow with the parked size — a flat line from
 // 64 KiB to 1 MiB — or each byte a peer sends buys a copy of everything it
-// sent before (RP-20261020-secnet-01).
+// sent before.
 func BenchmarkH3DrainIncomplete(b *testing.B) {
 	for _, parked := range []int{64 << 10, 1 << 20} {
 		b.Run(fmt.Sprintf("parked=%dKiB", parked>>10), func(b *testing.B) {

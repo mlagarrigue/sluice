@@ -18,9 +18,9 @@
 // against interop/expected-results.json; the others are reported, not
 // judged, so treat them as untested.
 // The deployments it is written for — a client behind a NAT that rebinds,
-// a server on a host with several addresses (Linux only, through
-// [net/quic/udp]) — are gathered in docs/guide/experimental.md ("Supported
-// deployments"); each row names where the code decides it.
+// a server on a host with several addresses (Linux, macOS and Windows,
+// through [net/quic/udp]) — are gathered in docs/guide/deployments.md, one
+// section each, which names where the code decides it.
 //
 // # Why it exists
 //
@@ -129,11 +129,11 @@
 //     rotates its own keys before the AEAD's confidentiality limit (§6.6)
 //     rather than closing — a long-lived connection does not die of its
 //     packet count. [Stats.KeyUpdates] counts the rotations.
-//   - ECN (§13.4), on Linux: the field is read off every datagram and
-//     reported in ACK frames, this end marks its own packets ECT(0) once
-//     the path validates, and a rise in the CE count a peer reports is a
-//     congestion event for the controller. Elsewhere the field is neither
-//     read nor set, and [Stats] shows zero.
+//   - ECN (§13.4), on Linux, macOS and Windows: the field is read off
+//     every datagram and reported in ACK frames, this end marks its own
+//     packets ECT(0) once the path validates, and a rise in the CE count a
+//     peer reports is a congestion event for the controller. Elsewhere the
+//     field is neither read nor set, and [Stats] shows zero.
 //   - Session resumption and 0-RTT (RFC 9001 §4.5, §4.6; ADR 0019), on
 //     request. A [Listener] issues tickets ([ListenerConfig.SessionTickets])
 //     and accepts 0-RTT ([ListenerConfig.EarlyData]) once per ticket and
@@ -155,6 +155,11 @@
 //     (RFC 9000 §7.4.2). Version 2 differs from 1 in constants only and
 //     exists against middlebox ossification, which no peer of this
 //     package has shown; it is to be added the day one does.
+//   - **The latency spin bit** (RFC 9000 §17.4), an optional signal that
+//     lets an observer on the path measure the round trip. The bit is
+//     drawn at random per connection and per connection identifier, as
+//     the section asks of an endpoint that does not spin, and the peer's
+//     bit is ignored.
 //
 // # The socket is the caller's
 //
@@ -167,8 +172,10 @@
 // already holds. When the socket given is a [net.UDPConn], [Dial] and
 // [NewListener] apply them themselves, best effort, as they ask it to
 // report ECN; a plain [net.ListenPacket] socket therefore works as one
-// from udp.Listen. A socket of any other type is used as it comes, and
-// is fragmentable unless the caller configured it.
+// from udp.Listen. A socket of any other type is used as it comes: the
+// package cannot set DF on it, takes it as the caller configured it, and
+// searches the path as on a configured socket — a socket that fragments
+// makes that search's probes prove nothing.
 //
 // # The TLS callbacks are the caller's
 //
@@ -209,19 +216,22 @@
 // TLS alert leaves in a CONNECTION_CLOSE with code 0x0100 plus the alert
 // (RFC 9001 §4.8), which is also how the codes that RFC mandates — 0x0178
 // for no application protocol (§8.1), 0x016d for missing transport
-// parameters (§8.2), 0x010a for a KeyUpdate message (§6) — reach the wire.
-// Four refusals RFC 9001 names PROTOCOL_VIOLATION (0x0a) go out under
-// their alert's code instead: CRYPTO data of a level already finished,
-// past the end received (§4.1.3, internal_error); data of a level left
-// unconsumed when the next level's keys arrive (§4.1.3,
-// unexpected_message); a CertificateRequest after the handshake, on a
-// client (§4.4, unexpected_message); a NewSessionTicket whose early_data
-// is not 0xffffffff (§4.6.1, illegal_parameter). The connection closes in
-// each case; only the code differs. The alert is all this package sees,
-// and the same alert serves other causes — an internal_error is also a
-// real one — so no translation is made. To revisit when crypto/tls states
-// the cause of an alert. The TLS 1.3 compatibility mode (RFC 8446 Appendix
-// D.4, legacy_session_id) is neither requested nor policed here; the
+// parameters (§8.2) — reach the wire. Two refusals RFC 9001 names
+// PROTOCOL_VIOLATION (0x0a) go out under their alert's code instead:
+// CRYPTO data of a level already finished, past the end received (§4.1.3,
+// internal_error); data of a level left unconsumed when the next level's
+// keys arrive (§4.1.3, unexpected_message). After the handshake,
+// crypto/tls gives no alert at all: its post-handshake path sends the
+// alert on a record layer QUIC does not have and returns an error without
+// it, so a KeyUpdate message (§6, which wants 0x010a), a CertificateRequest
+// on a client (§4.4) and a NewSessionTicket whose early_data is not
+// 0xffffffff (§4.6.1) — the last two PROTOCOL_VIOLATION — close as
+// internal_error, 0x0150. The connection closes in each case; only the
+// code differs. The error is all this package sees, and the same alert
+// serves other causes — an internal_error is also a real one — so no
+// translation is made. To revisit when crypto/tls states the cause of an
+// alert, or surfaces the one it records after the handshake. The TLS 1.3 compatibility mode (RFC 9846 Appendix
+// E.4, legacy_session_id) is neither requested nor policed here; the
 // limits guide says why.
 package quic
 
@@ -237,6 +247,8 @@ import (
 // allow it. errors.Is(err, ErrQUIC) tells them from a context's and the
 // socket's own errors; the message says which, and [Conn.Err] whether the
 // connection ended. Nothing is gained by retrying the same call.
+// [ErrEarlyDataRejected] stands apart: a refused 0-RTT is no misuse, and
+// sending again on a new stream is its remedy.
 var ErrQUIC = errors.New("quic: malformed")
 
 // ErrTruncated reports a buffer that ends inside what it was describing. It
@@ -271,6 +283,22 @@ func varintBytes(v uint64) int {
 		return 4
 	default:
 		return 8
+	}
+}
+
+// appendVarintOn encodes v on exactly width bytes (1, 2, 4 or 8), which may
+// be more than varintBytes(v): RFC 9000 §16 lets every field but the frame
+// type use a longer encoding than its value needs. v must fit the width.
+func appendVarintOn(dst []byte, v uint64, width int) []byte {
+	switch width {
+	case 1:
+		return append(dst, byte(v)) //nolint:gosec // G115: keeps the low octet of each shift
+	case 2:
+		return append(dst, 0x40|byte(v>>8), byte(v)) //nolint:gosec // G115: keeps the low octet of each shift
+	case 4:
+		return append(dst, 0x80|byte(v>>24), byte(v>>16), byte(v>>8), byte(v)) //nolint:gosec // G115: keeps the low octet of each shift
+	default:
+		return append(dst, 0xc0|byte(v>>56), byte(v>>48), byte(v>>40), byte(v>>32), byte(v>>24), byte(v>>16), byte(v>>8), byte(v)) //nolint:gosec // G115: keeps the low octet of each shift
 	}
 }
 

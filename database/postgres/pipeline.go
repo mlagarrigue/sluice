@@ -210,13 +210,15 @@ func (tx *Tx) Pipeline(ctx context.Context, parts []Part, cfg QueryConfig, fn fu
 	// Joined on every way out, a panic in fn included: the next statement
 	// on this connection reuses the Writer's buffer, which is the sender's
 	// until it has returned.
-	join := sync.OnceValue(func() error { return <-sent })
+	join := sync.OnceValue(func() error { return c.joinSender(sent) })
 	defer func() { _ = join() }()
 	w := c.watchCancel(ctx)
 	defer w.disarm()
 	err = c.readPipeline(ctx, parts, batchRows, batchBytes, fn)
 	if sendErr := join(); sendErr != nil {
-		c.broken = fmt.Errorf("%w: sending the pipeline: %w", ErrConnBroken, sendErr)
+		if c.broken == nil {
+			c.broken = fmt.Errorf("%w: sending the pipeline: %w", ErrConnBroken, sendErr)
+		}
 		err = c.broken
 	}
 	return c.settleCancel(ctx, w, err)
@@ -237,12 +239,12 @@ func (tx *Tx) Pipeline(ctx context.Context, parts []Part, cfg QueryConfig, fn fu
 // [Tx.Pipeline].
 func (c *Conn) readPipeline(ctx context.Context, parts []Part, batchRows, batchBytes int, fn func(int, sluice.Batch[Row]) bool) error {
 	// A panic in fn would otherwise abandon the connection mid-pipeline with
-	// broken still nil — and the next query would read this pipeline's
-	// leftover rows as its own. The same rule as query.run's deferred resync
-	// (S10), paid only on the panic path. The drain reads every undelivered
-	// row of every remaining part before the panic continues — the same cost
-	// the documented early-stop path (fn returning false) already carries,
-	// since parts run with no row limit. A caller who must abandon the
+	// broken still nil — and the next query would read this pipeline's leftover
+	// rows as its own. The same rule as query.run's deferred resync (the
+	// architecture's S10), paid only on the panic path. The drain reads every
+	// undelivered row of every remaining part before the panic continues — the
+	// same cost the documented early-stop path (fn returning false) already
+	// carries, since parts run with no row limit. A caller who must abandon the
 	// connection immediately closes it instead of recovering.
 	defer func() {
 		if r := recover(); r != nil {

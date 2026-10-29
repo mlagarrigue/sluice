@@ -74,9 +74,9 @@ type ackTracker struct {
 	// them. Nothing legitimate is lost: a peer never resends a packet
 	// number, it retransmits the frames under a new one (§12.3), so a
 	// number below the floor is a duplicate, a replay or a straggler.
-	// Until 2026-10-21 trim forgot the low ranges outright, and a replayed
-	// packet of a forgotten number was recorded and processed anew — its
-	// frames idempotent, its ECN count and its ACK counted twice.
+	// Without the floor, a trim that forgot the low ranges outright would
+	// let a replayed packet of a forgotten number be recorded and processed
+	// anew — its frames idempotent, its ECN count and its ACK counted twice.
 	floor    uint64
 	hasFloor bool
 }
@@ -228,4 +228,16 @@ func (a *ackTracker) settle() {
 	a.immediate = false
 	a.outOfOrder = false
 	a.due = time.Time{}
+}
+
+// rearm owes again the ACK a settled packet did not deliver: one the
+// anti-amplification budget withheld (writePacketLocked). The debt rides
+// the next packet sent, or the next flush — flushAcksLocked runs after
+// every processed packet, so the peer's next datagram, which raises the
+// budget, also releases the ACK. No deadline is armed: the timer would
+// only find the budget still spent.
+func (a *ackTracker) rearm() {
+	if len(a.ranges) > 0 {
+		a.immediate = true
+	}
 }

@@ -75,10 +75,7 @@ func TestH3HandlerPanicIsLogged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Write(h3Request("GET", "/x")); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.CloseWrite(); err != nil {
+	if _, err := s.WriteFinal(h3Request("GET", "/x")); err != nil {
 		t.Fatal(err)
 	}
 	if got := h3Status(t, readH3Frame(t, s)); got != "500" {

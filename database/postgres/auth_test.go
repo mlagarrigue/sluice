@@ -600,7 +600,7 @@ func TestStartupBodyOmitsAnEmptyDatabase(t *testing.T) {
 // A Conn from NewConn never saw the startup phase, and says so by reporting
 // nothing rather than by panicking on a nil map.
 func TestParameterOnAConnThatSkippedStartup(t *testing.T) {
-	conn := NewConn(&fakeServer{})
+	conn := NewConn(&fakeServer{}, Config{})
 	if got := conn.Parameter("server_version"); got != "" {
 		t.Errorf("Parameter = %q, want empty", got)
 	}

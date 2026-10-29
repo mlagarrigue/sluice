@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"slices"
@@ -61,6 +62,8 @@ func (r *testRegistrar) resetTokenFor(cid []byte) [16]byte {
 	t[15] = 0xeb
 	return t
 }
+
+func (r *testRegistrar) peerMoved(*Conn, net.Addr) {}
 
 func (r *testRegistrar) addLocalCID(c *Conn) ([]byte, error) {
 	cid, err := randomID(listenerCIDLen)
@@ -2222,9 +2225,22 @@ func TestOldPathFlightDoesNotShapeTheNewPath(t *testing.T) {
 // "peercid2", …, and feeds it one sealed 1-RTT datagram from a new address,
 // naming the local identifier given and carrying a PATH_CHALLENGE padded to
 // 1200 bytes: RFC 9000 §9.5's probe of a new path when the identifier is
-// not the path's, a NAT rebinding when it is. Returns what it takes to send
-// more from that address.
+// not the path's, a NAT rebinding when it is. The challenge must have drawn
+// one answer, to the new address. Returns what it takes to send more from
+// that address.
 func challengeFromNewAddress(t *testing.T, named []byte, fresh int) (c *Conn, pc *recordingPC, newAddr net.Addr, seal func(pn uint64, payload []byte) []byte) {
+	t.Helper()
+	c, pc, newAddr, seal = sendChallengeFromNewAddress(t, named, fresh)
+	w := pc.recorded()
+	if len(w) != 1 || !sameAddr(w[0].to, newAddr) {
+		t.Fatalf("writes = %d, want one to %v", len(w), newAddr)
+	}
+	return c, pc, newAddr, seal
+}
+
+// sendChallengeFromNewAddress is challengeFromNewAddress without the check
+// on what the challenge drew.
+func sendChallengeFromNewAddress(t *testing.T, named []byte, fresh int) (c *Conn, pc *recordingPC, newAddr net.Addr, seal func(pn uint64, payload []byte) []byte) {
 	t.Helper()
 	pc = &recordingPC{addr: fakeFuzzAddr("np:self")}
 	c = newConn(pc, fakeFuzzAddr("np:peerA"), []byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
@@ -2263,10 +2279,6 @@ func challengeFromNewAddress(t *testing.T, named []byte, fresh int) (c *Conn, pc
 	newAddr = fakeFuzzAddr("np:peerB")
 	if err := c.receive(seal(1, challenge), newAddr); err != nil {
 		t.Fatal(err)
-	}
-	w := pc.recorded()
-	if len(w) != 1 || !sameAddr(w[0].to, newAddr) {
-		t.Fatalf("writes = %d, want one to %v", len(w), newAddr)
 	}
 	return c, pc, newAddr, seal
 }
@@ -2343,13 +2355,180 @@ func TestRebindChallengeIsAnsweredUnderTheCurrentCID(t *testing.T) {
 	}
 }
 
-// With no pooled identifier to take, the answer goes under the current one
-// rather than not at all: §9.3 owes it.
-func TestNewPathChallengeWithAnEmptyPoolIsStillAnswered(t *testing.T) {
-	_, pc, newAddr, _ := challengeFromNewAddress(t, []byte("selfcid1"), 0)
-	if got := answerDCID(t, pc, newAddr, 0); !bytes.Equal(got, []byte("peercid0")) {
-		t.Fatalf("answer names %q, want peercid0, the only identifier the peer issued", got)
+// With no pooled identifier to take, a challenge from a new path goes
+// unanswered (RFC 9000 §9.5, mayFollowLocked): an answer under the
+// identifier in use toward the old address would link the two. It used to
+// go under the current one, §8.2.2's MUST taken over §9.5's.
+func TestNewPathChallengeWithAnEmptyPoolGoesUnanswered(t *testing.T) {
+	_, pc, newAddr, _ := sendChallengeFromNewAddress(t, []byte("selfcid1"), 0)
+	for _, w := range pc.recorded() {
+		if sameAddr(w.to, newAddr) {
+			t.Fatalf("a datagram left for %v under %q with no identifier never used", newAddr, w.data[1:9])
+		}
 	}
+}
+
+// framesSentTo decrypts the datagrams challengeFromNewAddress's server
+// wrote to addr and returns their frames, in order.
+func framesSentTo(t *testing.T, pc *recordingPC, addr net.Addr) []Frame {
+	t.Helper()
+	secrets, err := initialSecrets([]byte("np secrets"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opener, err := newPacketOpener(secrets.Server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var frames []Frame
+	for _, w := range pc.recorded() {
+		if !sameAddr(w.to, addr) {
+			continue
+		}
+		h, err := parseShortHeader(append([]byte(nil), w.data...), 8)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload, _, err := opener.Open(h.Raw, h.PNOffset, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fs, err := parseFrames(nil, payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		frames = append(frames, fs...)
+	}
+	return frames
+}
+
+// RFC 9000 §9.6.3: "Servers SHOULD initiate path validation to the
+// client's new address upon receiving a probe packet from a different
+// address." The answer to a probe from a new address carries the server's
+// own PATH_CHALLENGE toward it; once the client echoes it, the client's
+// move there needs no validation of its own — no amplification limit, no
+// challenge in flight. A probe used to draw the answer alone, the address
+// challenged only at the client's first non-probing packet, a round trip
+// later.
+func TestAServerChallengesTheNewAddressAClientProbesFrom(t *testing.T) {
+	c, pc, newAddr, seal := challengeFromNewAddress(t, []byte("selfcid1"), 2)
+	var challenge []byte
+	for _, f := range framesSentTo(t, pc, newAddr) {
+		if f.Type == framePathChallenge {
+			challenge = f.Data
+		}
+	}
+	if len(challenge) != 8 {
+		t.Fatalf("the answer to a probe from %v carries no PATH_CHALLENGE of the server's: %+v", newAddr, framesSentTo(t, pc, newAddr))
+	}
+
+	// The client echoes it from there, then moves there.
+	padded := func(payload []byte) []byte {
+		return append(payload, make([]byte, 1200-len(payload)-1-8-4-16)...)
+	}
+	if err := c.receive(seal(2, padded(append(varint.Append(nil, framePathResponse), challenge...))), newAddr); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.receive(seal(3, padded([]byte{framePing})), newAddr); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.migrations != 1 || !sameAddr(c.peer, newAddr) {
+		t.Fatalf("the client's move was not followed: %d migrations, peer %v", c.migrations, c.peer)
+	}
+	if c.amplActive || c.pathProbe.pending {
+		t.Errorf("a move to an address that answered the server's challenge: amplification limit %v, challenge in flight %v; want neither", c.amplActive, c.pathProbe.pending)
+	}
+}
+
+// RFC 9000 §9.5: "an endpoint MUST NOT reuse a connection ID when sending
+// to more than one destination address", and §9.3: a recipient with no
+// unused identifier from the peer "will not be able to send anything on
+// the new path until the peer provides one". A peer that moves under a new
+// identifier of this end, leaving no spare one, is not followed: nothing
+// leaves for its new address and the connection keeps its path, until the
+// peer issues one and its next packet moves the connection under it. The
+// section's one exception, a NAT rebinding — the path's own identifier of
+// this end, from a new address — is followed under the current
+// identifier. migrateLocked used to follow either way, under a used
+// identifier or the current one, whatever the packet named.
+func TestMigrationWithoutASpareIdentifierDoesNotReuseAnIdentifierAcrossAddresses(t *testing.T) {
+	// moveTo feeds c a non-probing packet from addr naming this end's
+	// identifier of sequence named.
+	moveTo := func(t *testing.T, c *Conn, addr net.Addr, named uint64) {
+		t.Helper()
+		rxFromNewAddress(c, addr, 1200, true)
+		c.mu.Lock()
+		c.rxLocalCIDSeq = named
+		c.mu.Unlock()
+		if err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		c.mu.Lock()
+		c.flushControlLocked()
+		c.mu.Unlock()
+	}
+	// state is the migrations made and the identifier sent under.
+	state := func(c *Conn) (uint64, string) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.migrations, string(c.dcid)
+	}
+	// under is the set of identifiers each destination was sent under.
+	under := func(pc *recordingPC) map[string]map[string]bool {
+		ids := map[string]map[string]bool{}
+		for _, w := range pc.recorded() {
+			to := w.to.String()
+			if ids[to] == nil {
+				ids[to] = map[string]bool{}
+			}
+			ids[to][string(w.data[1:9])] = true
+		}
+		return ids
+	}
+
+	t.Run("a new identifier, none spare", func(t *testing.T) {
+		c, pc := newMigratableServer(t, "spare")
+		peerA, peerB := fakeFuzzAddr("spare:peerA"), fakeFuzzAddr("spare:peerB")
+		moveTo(t, c, peerB, 1)
+		if migrated, dcid := state(c); migrated != 0 || dcid != "peercid0" {
+			t.Fatalf("with no spare identifier: %d migrations, sending under %q; want none, under peercid0", migrated, dcid)
+		}
+		if ids := under(pc); len(ids[peerB.String()]) != 0 {
+			t.Fatalf("datagrams left for %v under %v with no spare identifier", peerB, ids[peerB.String()])
+		}
+
+		// The peer issues one: its next packet moves the connection there.
+		c.mu.Lock()
+		c.peerCIDs = append(c.peerCIDs, peerCID{seq: 1, cid: []byte("peercid1")})
+		c.mu.Unlock()
+		moveTo(t, c, peerB, 1)
+		if migrated, dcid := state(c); migrated != 1 || dcid != "peercid1" {
+			t.Fatalf("with peercid1 issued: %d migrations, sending under %q; want one, under peercid1", migrated, dcid)
+		}
+		ids := under(pc)
+		for id := range ids[peerA.String()] {
+			if ids[peerB.String()][id] {
+				t.Fatalf("identifier %q sent toward both %v and %v: %v", id, peerA, peerB, ids)
+			}
+		}
+		if len(ids[peerB.String()]) == 0 {
+			t.Fatalf("nothing left for %v once it had an identifier: %v", peerB, ids)
+		}
+	})
+
+	t.Run("a NAT rebinding", func(t *testing.T) {
+		c, pc := newMigratableServer(t, "nat")
+		peerB := fakeFuzzAddr("nat:peerB")
+		moveTo(t, c, peerB, 0)
+		if migrated, dcid := state(c); migrated != 1 || dcid != "peercid0" {
+			t.Fatalf("a rebinding with no spare identifier: %d migrations, sending under %q; want one, under peercid0", migrated, dcid)
+		}
+		if ids := under(pc)[peerB.String()]; !ids["peercid0"] || len(ids) != 1 {
+			t.Fatalf("toward the rebound address under %v, want peercid0 alone", ids)
+		}
+	})
 }
 
 // RFC 9000 §9.5: a new local address never sends under a connection
@@ -2689,7 +2868,7 @@ func TestThePathLeftIsChallengedUnderAFreshIDWhenItsOwnIsRetired(t *testing.T) {
 // packet number arrived there, and this end's own probe from it was
 // answered. The second is remembered in pathProbe.viaValidated, beside the
 // socket itself in pathProbe.via — and until 2026-10-26
-// startPathChallengeData cleared via on every new probe while leaving both
+// startPathChallengeDataLocked cleared via on every new probe while leaving both
 // flags standing. A client that validated the preferred address and then
 // migrated (§9.3) left a validation behind that belonged to no socket; its
 // next non-probing packet arriving on the preferred socket — §9.6.3's own
@@ -2803,9 +2982,9 @@ func TestPreferredMoveRefusesAStaleValidation(t *testing.T) {
 // credited with 60, four datagrams expanded to 1200 each, and a fresh
 // unaccounted series for every forged migration. Two authenticated packets
 // copied from two successive addresses were enough, and the address in the
-// middle is a victim whose source may have been forged. The three resends
-// also repeated the first challenge's payload, where §8.2.1 wants
-// unpredictable data in every PATH_CHALLENGE frame.
+// middle is a victim whose source may have been forged. Whether each
+// challenge carries fresh data is TestLeftPathResendsCarryFreshData's: on
+// this budget only the first challenge leaves.
 func TestLeftPathChallengeStaysUnderItsBudget(t *testing.T) {
 	c, pc := newMigratableServer(t, "left04")
 	b := fakeFuzzAddr("left04:peerB")
@@ -2853,27 +3032,12 @@ func TestLeftPathChallengeStaysUnderItsBudget(t *testing.T) {
 		t.Fatalf("offPath.addr is not C, so the off-path books might still cover B; the sequence under test was not reached")
 	}
 
-	// Every resend §9.4 allows. The challenge data is read between them:
-	// the recorded datagrams are sealed, so what §8.2.1 asks about — the
-	// payload of each PATH_CHALLENGE — is only visible here.
-	// Counted only for a fire that actually put a datagram on the wire: a
-	// challenge given up sends nothing, and its unchanged data is not a
-	// repeated challenge.
-	seen := map[[8]byte]int{}
-	_, sent, _ := toB()
-	c.mu.Lock()
-	seen[c.pathProbe.oldData]++
-	c.mu.Unlock()
+	// Every resend §9.4 allows.
 	for range pathProbeMaxRetransmits + 2 {
 		c.mu.Lock()
 		now = now.Add(time.Hour)
 		c.pathProbeDeadlineLocked(now)
-		data := c.pathProbe.oldData
 		c.mu.Unlock()
-		if _, after, _ := toB(); len(after) > len(sent) {
-			sent = after
-			seen[data]++
-		}
 	}
 
 	total, sizes, _ := toB()
@@ -2881,9 +3045,65 @@ func TestLeftPathChallengeStaysUnderItsBudget(t *testing.T) {
 		t.Errorf("%d bytes left toward B, credited with %d: past the three times §8.1 allows toward an address this end never validated (datagrams %v)",
 			total, fromB, sizes)
 	}
+}
+
+// RFC 9000 §8.2.1: "The endpoint MUST use unpredictable data in every
+// PATH_CHALLENGE frame". The path a connection migrated away from is
+// challenged again on every resend §9.4 allows, and each resend carries
+// data of its own, never the first challenge's again. The address left
+// behind is credited with a full datagram, so the budget of §8.1 lets the
+// resends leave and the data of each can be compared; under a smaller
+// credit only the first leaves and nothing is compared at all.
+func TestLeftPathResendsCarryFreshData(t *testing.T) {
+	c, pc := newMigratableServer(t, "left05")
+	b := fakeFuzzAddr("left05:peerB")
+	d := fakeFuzzAddr("left05:peerC")
+	const fromB = 1200
+	toB := func() (n int) {
+		for _, w := range pc.recorded() {
+			if sameAddr(w.to, b) {
+				n++
+			}
+		}
+		return n
+	}
+
+	// A -> B, then B -> C before B answered: B is the path left behind.
+	rxFromNewAddress(c, b, fromB, true)
+	c.maybeMigrate([]Frame{{Type: framePing}}, time.Now())
+	rxFromNewAddress(c, d, fromB, true)
+	now := time.Now()
+	c.maybeMigrate([]Frame{{Type: framePing}}, now)
+
+	// The challenge data is read between the resends: the recorded
+	// datagrams are sealed, so the payload of each PATH_CHALLENGE is only
+	// visible here. Counted only for a fire that put a datagram on the
+	// wire: a challenge given up sends nothing, and its unchanged data is
+	// not a repeated challenge.
+	seen := map[[8]byte]int{}
+	sent := toB()
+	c.mu.Lock()
+	seen[c.pathProbe.oldData]++
+	c.mu.Unlock()
+	challenges := 1
+	for range pathProbeMaxRetransmits + 2 {
+		c.mu.Lock()
+		now = now.Add(time.Hour)
+		c.pathProbeDeadlineLocked(now)
+		data := c.pathProbe.oldData
+		c.mu.Unlock()
+		if n := toB(); n > sent {
+			sent = n
+			seen[data]++
+			challenges++
+		}
+	}
+	if challenges < 2 {
+		t.Fatalf("%d challenge toward B under a credit of %d bytes: no resend left, and nothing is compared", challenges, fromB)
+	}
 	for data, n := range seen {
 		if n > 1 {
-			t.Errorf("the challenge data %x was used for %d of the challenges toward B: §8.2.1 wants unpredictable data in every PATH_CHALLENGE frame", data, n)
+			t.Errorf("the challenge data %x was used for %d of the %d challenges toward B: §8.2.1 wants unpredictable data in every PATH_CHALLENGE frame", data, n, challenges)
 		}
 	}
 }
@@ -2943,6 +3163,43 @@ func newConnectionIDFrame(seq, retire uint64, cid string, tok byte) []byte {
 		b = append(b, tok)
 	}
 	return b
+}
+
+// §19.15 again, for a sequence a Retire Prior To retired: each copy of its
+// NEW_CONNECTION_ID is answered with RETIRE_CONNECTION_ID (§19.16), and a
+// retirement still waiting in the control queue — a shut congestion window
+// holds it there — is not queued twice. Until 2026-10-29 every copy queued
+// one more, against the bound queueRetireLocked keeps on retirements, and
+// twenty copies in one datagram ended the connection with
+// CONNECTION_ID_LIMIT_ERROR.
+func TestCopiesOfARetiredNewConnectionIDQueueOneRetirement(t *testing.T) {
+	c := newConn(&fuzzSink{addr: "ncidcopies:self"}, fakeFuzzAddr("ncidcopies:peer"),
+		[]byte("initial0"), []byte("selfcid0"), true, DefaultParameters())
+	defer c.Close()
+	c.pinPeerSCID([]byte("srv-cid0"))
+	tok := make([]byte, 16)
+	one := ncidFrame(1, 0, []byte("srv-cid1"), tok)
+	if err := c.frames(spaceApplication, one, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.frames(spaceApplication, ncidFrame(2, 2, []byte("srv-cid2"), tok), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	queued := c.controlRetires
+	c.mu.Unlock()
+	var packet []byte
+	for range 20 {
+		packet = append(packet, one...)
+	}
+	if err := c.frames(spaceApplication, packet, time.Now()); err != nil {
+		t.Fatalf("twenty copies of one NEW_CONNECTION_ID ended the connection: %v", err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.controlRetires != queued {
+		t.Errorf("%d retirements queued after twenty copies, %d before: the one waiting answers them all", c.controlRetires, queued)
+	}
 }
 
 // RFC 9000 §19.15: "Receipt of the same frame multiple times MUST NOT be
@@ -3175,5 +3432,244 @@ func TestAChallengeOnThePreferredSocketIsAnswered(t *testing.T) {
 	}
 	if bytesOut == 0 {
 		t.Errorf("no datagram left either socket after a PATH_CHALLENGE that reached the preferred-address socket from an address other than the path's, with %d unused peer identifiers in the pool (§8.2.2 MUST respond)", spareBefore)
+	}
+}
+
+// RFC 9000 §9.3.3: "In response to an apparent migration, endpoints MUST
+// validate the previously active path using a PATH_CHALLENGE frame." A
+// client may choose a zero-length connection ID (§5.1), and then the one
+// identifier its server holds for it is empty: it is the old path's all the
+// same, and the challenge leaves under it. It used to be taken for an
+// identifier retired since, and with no fresh one in a pool of one the
+// challenge was given up — the client's previous address never challenged.
+func TestAZeroLengthCIDPeersOldPathIsChallenged(t *testing.T) {
+	main := &recordingPC{addr: fakeFuzzAddr("zcid:self")}
+	peerA := fakeFuzzAddr("zcid:peerA")
+	peerB := fakeFuzzAddr("zcid:peerB")
+
+	// A server whose client chose a zero-length connection ID.
+	c := newConn(main, peerA, nil, []byte("selfcid0"), false, DefaultParameters())
+	installAppSealer(t, c)
+	c.mu.Lock()
+	c.handshakeConfirmed = true
+	c.mu.Unlock()
+	t.Cleanup(func() { _ = c.Close() })
+
+	// A non-probing packet from a new address: an apparent migration (§9.3).
+	c.mu.Lock()
+	c.rxFrom, c.rxVia, c.rxDatagramLen, c.rxHighest = net.Addr(peerB), main, 1200, true
+	c.mu.Unlock()
+	c.maybeMigrate([]Frame{{Type: framePing}}, time.Now())
+
+	c.mu.Lock()
+	moved := sameAddr(c.peer, peerB)
+	oldPending := c.pathProbe.oldPending
+	c.mu.Unlock()
+	if !moved {
+		t.Fatal("the connection did not follow the client's new address; the case under test is not reached")
+	}
+	toOld := 0
+	for _, w := range main.recorded() {
+		if sameAddr(w.to, peerA) {
+			toOld++
+		}
+	}
+	if toOld == 0 || !oldPending {
+		t.Errorf("after the migration %d datagrams went to the address left behind, and the old-path challenge is pending=%v: a zero-length-CID client's previous path is not challenged",
+			toOld, oldPending)
+	}
+}
+
+// RFC 9000 §8.2 lets a peer probe several paths, and a challenge goes
+// again at every probe timeout: two addresses probing in turn are an
+// ordinary sequence. Each is answered under its own fresh identifier, the
+// same one every time (§9.5), and the pool is not spent by the alternation.
+// Remembering one answered address only, every return to the first took
+// another identifier, until the pool ran dry and the answers fell back to
+// the identifier in use — linking the paths.
+func TestTwoAddressesProbingInTurnKeepTheirIdentifiers(t *testing.T) {
+	c, pc, addrB, seal := challengeFromNewAddress(t, []byte("selfcid1"), 4)
+	addrC := fakeFuzzAddr("np:peerC")
+	challenge := func(n byte) []byte {
+		p := varint.Append(nil, framePathChallenge)
+		p = append(p, n, n, n, n, n, n, n, n)
+		return append(p, make([]byte, 1200-len(p)-1-8-4-16)...)
+	}
+	pn := uint64(2)
+	for round := range 3 {
+		for _, to := range []net.Addr{addrB, addrC} {
+			if err := c.receive(seal(pn, challenge(byte(pn))), to); err != nil {
+				t.Fatal(err)
+			}
+			pn++
+		}
+		if got := answerDCID(t, pc, addrB, round+1); !bytes.Equal(got, []byte("peercid1")) {
+			t.Fatalf("round %d: the answer to B names %q, want peercid1, B's from the start", round, got)
+		}
+		if got := answerDCID(t, pc, addrC, round); !bytes.Equal(got, []byte("peercid2")) {
+			t.Fatalf("round %d: the answer to C names %q, want peercid2, C's from the start", round, got)
+		}
+	}
+	c.mu.Lock()
+	unused := 0
+	for _, e := range c.peerCIDs {
+		if !e.used {
+			unused++
+		}
+	}
+	c.mu.Unlock()
+	if unused != 2 {
+		t.Fatalf("%d peer identifiers left unused after three rounds, want 2: the alternation spent the pool", unused)
+	}
+}
+
+// RFC 9000 §5.1.2: an endpoint SHOULD retire a connection ID it no longer
+// uses on the address it was used on. A server following a client from
+// address to address moved to a fresh identifier each time and retired
+// none, so a client keeping its pool full issued no replacement, and after
+// a few moves the server had no fresh identifier left and sent under one
+// another path had used (§9.5). Each move now retires the identifier it
+// left once the new path answers its challenge.
+func TestPassiveMigrationRetiresTheIdentifierItLeaves(t *testing.T) {
+	c, _ := newMigratableServer(t, "retire16")
+	c.mu.Lock()
+	for seq := uint64(1); seq <= 3; seq++ {
+		c.peerCIDs = append(c.peerCIDs, peerCID{seq: seq, cid: []byte(fmt.Sprintf("peercid%d", seq))})
+	}
+	c.mu.Unlock()
+
+	now := time.Now()
+	used := map[uint64]string{0: "retire16:peerA"}
+	for i := range 3 {
+		addr := fakeFuzzAddr(fmt.Sprintf("retire16:peer%c", 'B'+i))
+		rxFromNewAddress(c, addr, 1200, true)
+		now = now.Add(time.Second)
+		c.maybeMigrate([]Frame{{Type: framePing}}, now)
+		c.mu.Lock()
+		seq, data := c.currentPeerSeq, c.pathProbe.data
+		c.mu.Unlock()
+		if prev, ok := used[seq]; ok {
+			t.Fatalf("move %d sends under sequence %d, which %s used", i+1, seq, prev)
+		}
+		used[seq] = addr.String()
+		c.handlePathResponse(Frame{Type: framePathResponse, Data: data[:]}, now)
+
+		// The queue drains into the next packet — the next move's
+		// challenge — so each retirement is read as it is queued.
+		left := uint64(i)
+		c.mu.Lock()
+		queued := bytes.Contains(c.control, appendFrame(nil, frameRetireConnectionID, left))
+		pooled := slices.ContainsFunc(c.peerCIDs, func(e peerCID) bool { return e.seq == left })
+		c.mu.Unlock()
+		if !queued || pooled {
+			t.Errorf("after move %d, sequence %d: RETIRE_CONNECTION_ID queued %v, still pooled %v", i+1, left, queued, pooled)
+		}
+	}
+}
+
+// RFC 9000 §5.1.2 on the client: once it moves to the server's preferred
+// address, the identifier the handshake's path used serves no address.
+func TestPreferredAddressMoveRetiresTheHandshakeIdentifier(t *testing.T) {
+	c := newConn(&recordingPC{addr: fakeFuzzAddr("retirepa:self")}, fakeFuzzAddr("retirepa:peer"), []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+	defer c.Close()
+	installAppSealer(t, c)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.handshakeConfirmed = true
+	c.peerCIDs = append(c.peerCIDs, peerCID{seq: 1, cid: []byte("peercid1"), used: true})
+	c.pathProbe.target = fakeFuzzAddr("retirepa:preferred")
+	c.pathProbe.targetCID = []byte("peercid1")
+	c.adoptPreferredPathLocked(time.Now())
+	if c.currentPeerSeq != 1 {
+		t.Fatalf("sending under sequence %d, want 1", c.currentPeerSeq)
+	}
+	if !bytes.Contains(c.control, appendFrame(nil, frameRetireConnectionID, 0)) {
+		t.Error("no RETIRE_CONNECTION_ID for sequence 0 after the move to the preferred address")
+	}
+}
+
+// RFC 9000 §8.2.2: a PATH_RESPONSE is expanded to 1200 bytes unless the
+// anti-amplification limit does not permit it. Toward an off-path address
+// the limit is three times what that address sent (Conn.offPath), and an
+// answer to a challenge of 400 to 1199 bytes was left unexpanded although
+// the budget covered 1200: only a challenge that arrived at full size was
+// answered at full size. The expansion now goes as far as the budget.
+func TestOffPathResponseIsExpandedWithinTheBudget(t *testing.T) {
+	c, pc := newMigratableServer(t, "expand21")
+	c.mu.Lock()
+	c.peerCIDs = append(c.peerCIDs, peerCID{seq: 1, cid: []byte("peercid1")}, peerCID{seq: 2, cid: []byte("peercid2")})
+	c.mu.Unlock()
+	challenge := varint.Append(nil, framePathChallenge)
+	challenge = append(challenge, 1, 2, 3, 4, 5, 6, 7, 8)
+	for i, tc := range []struct {
+		received int
+		min, max int
+	}{
+		{600, 1200, 1200},
+		{100, 0, 300},
+	} {
+		addr := fakeFuzzAddr(fmt.Sprintf("expand21:peer%c", 'B'+i))
+		rxFromNewAddress(c, addr, tc.received, true)
+		if err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		writes := pc.recorded()
+		if len(writes) != i+1 || !sameAddr(writes[i].to, addr) {
+			t.Fatalf("challenge of %d bytes: %d datagrams left, want the answer to %v", tc.received, len(writes), addr)
+		}
+		if n := len(writes[i].data); n < tc.min || n > tc.max {
+			t.Errorf("challenge of %d bytes answered in %d bytes, want %d to %d", tc.received, n, tc.min, tc.max)
+		}
+	}
+}
+
+// RFC 9000 §9.5: "an endpoint MUST NOT reuse a connection ID when sending to
+// more than one destination address." The fallback to the last validated
+// path (§9.3.2) goes back under the identifier used there; when the peer has
+// retired that one since, it takes one never used, and with none left it
+// sends nothing — the connection ends silently, as the fallback does with no
+// validated path at all — rather than reuse one another address has seen.
+func TestFallbackNeverReusesAnIdentifierSentToAnotherAddress(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		pool    []peerCID
+		wantSeq uint64
+		closes  bool
+	}{
+		{name: "a never-used identifier is taken", pool: []peerCID{
+			{seq: 1, cid: []byte("peercid1"), used: true},
+			{seq: 2, cid: []byte("peercid2"), used: true},
+			{seq: 3, cid: []byte("peercid3")},
+		}, wantSeq: 3},
+		{name: "with none left, nothing is sent", pool: []peerCID{
+			{seq: 1, cid: []byte("peercid1"), used: true},
+			{seq: 2, cid: []byte("peercid2"), used: true},
+		}, closes: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pc := &recordingPC{addr: fakeFuzzAddr("fb:self")}
+			validated := fakeFuzzAddr("fb:validated")
+			c := newConn(pc, fakeFuzzAddr("fb:failed"), []byte("peercid1"), []byte("selfcid0"), true, DefaultParameters())
+			defer c.Close()
+			c.mu.Lock()
+			c.handshakeConfirmed = true
+			// Sequence 0, the validated path's, was retired by the peer
+			// during the probe: it is no longer in the pool.
+			c.peerCIDs = tc.pool
+			c.currentPeerSeq, c.dcid = 1, []byte("peercid1")
+			c.lastValidatedPeer, c.lastValidatedPC, c.lastValidatedSeq = validated, pc, 0
+			c.revertToValidatedLocked(time.Now())
+			seq, closing := c.currentPeerSeq, c.closeErr != nil
+			c.mu.Unlock()
+			if closing != tc.closes {
+				t.Fatalf("closing = %v, want %v", closing, tc.closes)
+			}
+			if !tc.closes && seq != tc.wantSeq {
+				t.Fatalf("the fallback sends under sequence %d, want %d", seq, tc.wantSeq)
+			}
+			if tc.closes && seq == 2 {
+				t.Fatal("the fallback reuses sequence 2, already sent to another address")
+			}
+		})
 	}
 }

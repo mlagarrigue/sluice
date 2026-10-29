@@ -17,7 +17,11 @@
 #     that the proxy holds in its pool, and the request after it;
 #   - response trailers, which each proxy relays or drops by its own rule;
 #   - HAProxy's health check, OPTIONS * every 200 ms, one failure enough to
-#     take the server out of rotation.
+#     take the server out of rotation;
+#   - last, the server's graceful stop (SIGTERM) with a slow response in
+#     flight through each proxy: it finishes whole, and a request sent
+#     during the stop is answered — by the server, or by the proxy with
+#     502 or 503 — never cut.
 #
 # A weekly CI job runs this same script (workflow interop-proxy.yml). The
 # containers share the server's network: the host's in CI and, in the
@@ -170,3 +174,43 @@ cases "envoy h2" 18085 "three batches"
 # (RFC 9112 §3.2.4) is answered, not refused.
 expect "OPTIONS * straight to the server" "200" \
   curl -sS --max-time 10 -o /dev/null -w '%{http_code}' -X OPTIONS --request-target '*' "http://$addr"
+
+# --- the graceful stop ------------------------------------------------------
+
+# SIGTERM is Serve's graceful stop: the listener closes, an idle HTTP/1.1
+# connection is closed, an HTTP/2 one is told with its GOAWAY pair, and what
+# is in flight is answered whole within the grace. One stop for the five
+# ports, a slow response (/slow, two seconds) in flight on each; the
+# requests sent during the stop may still be served — RFC 9113 §6.8 lets a
+# stream the first GOAWAY did not exclude through — or be answered by the
+# proxy, which then knows the server is going, but never cut.
+echo "## the server stopped with a response in flight through each proxy"
+ports="18081 18082 18083 18084 18085"
+for port in $ports; do
+  get -o "$work/slow-$port" "http://127.0.0.1:$port/slow" 2>"$work/slow-$port.err" &
+  echo $! >"$work/slow-$port.pid"
+done
+sleep 1
+kill -TERM "$pid"
+sleep 0.3
+for port in $ports; do
+  code=$(curl -sS --max-time 10 -o "$work/during-$port" -w '%{http_code}' "http://127.0.0.1:$port/during-stop") ||
+    fail "port $port: a request during the stop was cut"
+  case $code in
+    200) [ "$(cat "$work/during-$port")" = "you asked for /during-stop" ] ||
+      fail "port $port: a request during the stop read $(cat "$work/during-$port")"
+      echo "ok  port $port: a request during the stop, served" ;;
+    502 | 503) echo "ok  port $port: a request during the stop, answered $code by the proxy" ;;
+    *) fail "port $port: a request during the stop got $code" ;;
+  esac
+done
+for port in $ports; do
+  wait "$(cat "$work/slow-$port.pid")" || fail "port $port: the response in flight was cut: $(cat "$work/slow-$port.err")"
+  [ "$(cat "$work/slow-$port")" = "$(printf 'slow 1\nslow 2')" ] ||
+    fail "port $port: the response in flight read $(cat "$work/slow-$port")"
+  echo "ok  port $port: the response in flight finished whole"
+done
+stopped=$pid
+pid=
+wait "$stopped" || fail "the server's stop was not clean: $(tail -n 5 "$work/log")"
+echo "ok  the server stopped cleanly"

@@ -77,7 +77,7 @@ func (b *Backend) exec(sql string, params [][]byte, settings map[string]string) 
 // connection on the other, closed when the test ends.
 func (b *Backend) Conn(tb testing.TB) *postgres.Conn {
 	tb.Helper()
-	return postgres.NewConn(b.pipe(tb, false))
+	return postgres.NewConn(b.pipe(tb, false), postgres.Config{})
 }
 
 // Dial is a [postgres.DialFunc] onto this backend, for the callers that go
@@ -115,6 +115,12 @@ type portal struct {
 	ran  bool // completed once
 }
 
+// serve speaks the server side of one connection, in this order: start the
+// writer goroutine that stands for a socket's buffers; answer the startup when
+// asked to; define the transaction rules a statement applies (fail, refused,
+// endTx, complete); then read messages, one case per frontend message — Query,
+// Parse, Bind, Describe, Execute, Close, Flush, Sync, Terminate — until the
+// client leaves.
 func (b *Backend) serve(nc net.Conn, startup bool) {
 	defer func() { _ = nc.Close() }()
 	rd := pgwire.NewReader(nc)

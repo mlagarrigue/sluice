@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/mlagarrigue/sluice"
@@ -28,7 +30,7 @@ import (
 // is only what Request.Stream reads it through. One pointer type for all
 // three keeps Request one word over what it was before bodies streamed.
 type bodyStream struct {
-	r *reader
+	r *h1Conn
 	q *bodyQueue
 
 	chunked bool
@@ -40,8 +42,16 @@ type bodyStream struct {
 
 	expect bool // the client waits for 100 Continue before it sends the body
 	done   bool // the body ended, and what follows it is the next request's
-	closed bool // the handler returned: the stream is over whatever its state
+	// closed is set by the connection's goroutine once the handler returned:
+	// the stream is over whatever its state. Atomic, and read before any other
+	// field, because the reader it stops is a handler that kept the stream past
+	// its return on a goroutine of its own — the misuse errBodyAfterReturn names
+	// — and that reader must not race the connection on the way to the error.
+	closed atomic.Bool
 	err    error
+
+	// progress is the clock its reads wait under (readProgress).
+	progress readProgress
 
 	// onDone is called once when the body ends: the client watch, deferred
 	// while the body was still on the wire, may then start.
@@ -52,6 +62,9 @@ type bodyStream struct {
 	chunkLeft     int
 	trailerBytes  int
 	trailerFields int
+	// trailers is the trailer section, copied out of r.buf as each field
+	// is read: the request pipelined behind the body moves over it.
+	trailers []Header
 
 	item [1][]byte
 }
@@ -68,7 +81,7 @@ const (
 // errBodyAfterReturn reports a streamed body read after its handler returned.
 var errBodyAfterReturn = errors.New("httpstream: a request body read after its handler returned — the stream is valid during the call")
 
-func newBodyStream(r *reader, req Request, frame streamBody, start int) *bodyStream {
+func newBodyStream(r *h1Conn, req Request, frame streamBody, start int) *bodyStream {
 	b := &bodyStream{
 		r: r, chunked: frame.chunked, left: frame.length,
 		limit: max(r.cfg.MaxBodyBytes, r.cfg.MaxStreamedBodyBytes), start: start, pos: start,
@@ -94,7 +107,14 @@ func (b *bodyStream) source() sluice.Source[[]byte] {
 			}
 		}
 	}
-	return sluice.NewSource(sluice.Stream[[]byte](stream), func() error { return b.err })
+	return sluice.NewSource(sluice.Stream[[]byte](stream), func() error {
+		// Past the handler's return, err belongs to the connection's
+		// goroutine, which may be reading the next request through it.
+		if b.closed.Load() {
+			return errBodyAfterReturn
+		}
+		return b.err
+	})
 }
 
 // next returns the next piece of the body, nil once it has ended, or the
@@ -111,14 +131,16 @@ func (b *bodyStream) next() ([]byte, error) {
 		return data, nil
 	}
 	for {
+		if b.closed.Load() {
+			// Nothing written: the connection's goroutine owns every other
+			// field once the handler has returned.
+			return nil, errBodyAfterReturn
+		}
 		if b.err != nil {
 			return nil, b.err
 		}
 		if b.done {
 			return nil, nil
-		}
-		if b.closed {
-			return nil, b.fail(errBodyAfterReturn)
 		}
 		data, more, err := b.step()
 		if err != nil {
@@ -224,9 +246,11 @@ func (b *bodyStream) step() (data []byte, more bool, err error) {
 			return nil, false, fmt.Errorf("%w: over %d trailer fields", errHeadersTooLarge, b.r.cfg.MaxHeaders)
 		}
 		b.trailerFields++
-		if _, err := parseHeaderLine(line); err != nil {
+		h, err := parseHeaderLine(line)
+		if err != nil {
 			return nil, false, err
 		}
+		b.trailers = appendHeaderCopies(b.trailers, h)
 		return nil, true, nil
 	}
 }
@@ -276,10 +300,18 @@ func (b *bodyStream) read() error {
 		}
 		r.sent100 = true
 	}
-	if err := r.conn.SetReadDeadline(time.Now().Add(r.cfg.ReadTimeout)); err != nil {
+	left := b.progress.left(r.cfg.ReadTimeout)
+	if left <= 0 {
+		return fmt.Errorf("%w: the body did not move by %d bytes within the read timeout %v",
+			os.ErrDeadlineExceeded, r.cfg.ReadProgressBytes, r.cfg.ReadTimeout)
+	}
+	start := time.Now()
+	if err := r.conn.SetReadDeadline(start.Add(left)); err != nil {
 		return err
 	}
 	n, err := r.conn.Read(r.buf[r.n:])
+	b.progress.wait(time.Since(start))
+	b.progress.moved(n, r.cfg.ReadProgressBytes)
 	r.n += n
 	if n > 0 {
 		return nil
@@ -337,14 +369,62 @@ func streamedBody(batch []Request) *bodyStream {
 // after the response, since nothing can be read past it, resets the HTTP/2
 // stream with NO_ERROR after it, and asks the HTTP/3 client to stop sending
 // (STOP_SENDING, H3_NO_ERROR) after it. Each element borrows the connection's
-// buffer until the next is pulled. The trailers of a streamed body are
-// checked against the header bounds and not kept: Trailers was handed over
-// before they arrived.
+// buffer until the next is pulled. The trailers of a streamed body arrive
+// after it: [Request.Trailers] reads them once it has ended.
 func (r Request) Stream() sluice.Source[[]byte] {
 	if r.body == nil {
 		return sluice.Source[[]byte]{}
 	}
 	return r.body.source()
+}
+
+// Trailers is the request's trailer section, in the order the client sent
+// it: the fields after the last chunk of an HTTP/1.1 body, or the trailing
+// HEADERS on HTTP/2 and HTTP/3; nil when it sent none. They arrive after the
+// body, so they are nil until the body has ended without error, whichever
+// way it is delivered: under [BodyWhole] that is before the handler is
+// called, for a streamed body once [Request.Stream] has ended. One call
+// reads both, so a handler need not know which mode it was given. They are
+// valid while the handler runs.
+//
+// They are held to the bounds the headers are held to, separately: a
+// trailer section of its own up to [Config.MaxHeaders] fields and
+// [Config.MaxHeaderBytes] bytes. They are kept apart from Headers on
+// purpose and nothing in them is interpreted. RFC 9110 §6.5 has a trailer
+// stored separately and never merged into the header section unless the
+// field's own definition allows it: a Content-Length or Authorization
+// arriving after the body came too late to frame, route or authorise this
+// request, and a handler that reads one from here takes that on knowingly.
+func (r Request) Trailers() []Header {
+	if r.body == nil {
+		return r.trailers
+	}
+	if r.body.q != nil {
+		return r.body.q.trailerSection()
+	}
+	if !r.body.done || r.body.err != nil {
+		return nil
+	}
+	return r.body.trailers
+}
+
+// appendHeaderCopies appends copies of hs to dst, their names and values in
+// one allocation of their own, apart from the buffer they were read from.
+func appendHeaderCopies(dst []Header, hs ...Header) []Header {
+	n := 0
+	for _, h := range hs {
+		n += len(h.Name) + len(h.Value)
+	}
+	arena := make([]byte, 0, n)
+	for _, h := range hs {
+		at := len(arena)
+		arena = append(arena, h.Name...)
+		name := arena[at:len(arena):len(arena)]
+		at = len(arena)
+		arena = append(arena, h.Value...)
+		dst = append(dst, Header{Name: name, Value: arena[at:len(arena):len(arena)]})
+	}
+	return dst
 }
 
 // streamBody is parseRequest's answer for a request whose head is whole and
@@ -357,3 +437,29 @@ type streamBody struct {
 }
 
 func (streamBody) Error() string { return "httpstream: the body streams" }
+
+// readProgress is the clock a streamed body reads under: ReadTimeout of
+// waiting for the peer to deliver [Config.ReadProgressBytes], refilled each
+// time it has — WriteTimeout's rule on the reading side. Only time spent
+// waiting for the peer counts; the handler's own between two reads does
+// not. A timeout re-armed at every read is no bound at all: a peer that
+// sends a byte per fraction of it holds the request for as long as it
+// likes.
+type readProgress struct {
+	waited time.Duration // waiting since the last step of progress
+	got    int           // bytes since the last step of progress
+}
+
+// left is how much of timeout the body has to make its next step.
+func (p *readProgress) left(timeout time.Duration) time.Duration { return timeout - p.waited }
+
+// wait counts d of waiting for the peer.
+func (p *readProgress) wait(d time.Duration) { p.waited += d }
+
+// moved counts n bytes delivered; need of them since the last step is the
+// next step, which gives the whole timeout back.
+func (p *readProgress) moved(n, need int) {
+	if p.got += n; p.got >= need {
+		p.got, p.waited = 0, 0
+	}
+}

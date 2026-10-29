@@ -64,31 +64,32 @@ type IntervalSpec[L, R any, K comparable, Out any] struct {
 // # State is bounded by the caller, not by hope
 //
 // The operator retains each row until the other side's time passes its match
-// window: O(throughput × interval) rows in the steady state. A row whose
-// window the other side has already passed when it arrives is joined and not
-// retained at all, so it never counts against the limit. That product is
-// not knowable here, so per S1 the bound is a required parameter: limit
+// window: O(throughput × interval) rows in the steady state. A row whose window
+// the other side has already passed when it arrives is joined and not retained
+// at all, so it never counts against the limit. That product is not knowable
+// here, so per the architecture's S1 the bound is a required parameter: limit
 // counts the retained rows of both sides together, [sluice.Fail] panics with
-// [sluice.ErrOverflow] when it is reached, and [sluice.DropNewest] stops retaining new rows
-// — an arriving row still probes and joins against what is buffered, but is
-// not kept for rows yet to come, so the result is missing pairs, never wrong
-// ones. Under a dropping policy the first drop calls limit.Report when one is
-// set — typically to raise a Critical diagnostic — once rather than per row
-// — a diagnostic per dropped row would outweigh the data it reports on.
+// [sluice.ErrOverflow] when it is reached, and [sluice.DropNewest] stops
+// retaining new rows — an arriving row still probes and joins against what is
+// buffered, but is not kept for rows yet to come, so the result is missing
+// pairs, never wrong ones. Under a dropping policy the first drop calls
+// limit.Report when one is set — typically to raise a Critical diagnostic —
+// once rather than per row — a diagnostic per dropped row would outweigh the
+// data it reports on.
 //
 // # Cost
 //
-// This is a hash-family operator, not a merge-family one: every element pays
-// a map probe and most pay a map insert, exactly the term that dominates
+// This is a hash-family operator, not a merge-family one: every element pays a
+// map probe and most pay a map insert, exactly the term that dominates
 // [StreamTable]. The temporal machinery itself (timestamps, eviction, the
 // frontier) costs a fraction on top of the hashing, a wider window adds the
 // cost of the extra pairs it emits, and a window that excludes zero costs no
 // more per probe than one that does: rows still waiting for their window to
 // open are kept out of the probes' way (BenchmarkIntervalJoinNarrow and
 // BenchmarkIntervalJoinWide in internal/bench, BenchmarkIntervalJoinOffset
-// here; the figures live in docs/design/architecture.md, "Infinite streams: interval join"). Sorted inputs joined
-// on equality alone belong in [Merge]; this operator is bought for the
-// temporal predicate.
+// here; the figures live in docs/design/architecture.md, "Infinite streams:
+// interval join"). Sorted inputs joined on equality alone belong in [Merge];
+// this operator is bought for the temporal predicate.
 //
 // # Output
 //

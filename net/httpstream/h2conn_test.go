@@ -56,7 +56,12 @@ type h2client struct {
 
 func dialH2(t *testing.T, addr string) *h2client {
 	t.Helper()
-	c := dial(t, addr)
+	return h2clientOn(t, dial(t, addr))
+}
+
+// h2clientOn is dialH2 on a connection the test dialled itself.
+func h2clientOn(t *testing.T, c net.Conn) *h2client {
+	t.Helper()
 	if _, err := c.Write([]byte(Preface)); err != nil {
 		t.Fatal(err)
 	}
@@ -1302,7 +1307,7 @@ func TestH2HPACKTableShrinkToZeroThenRestore(t *testing.T) {
 	}
 }
 
-// B6. h2conn.go strips PADDED and PRIORITY off a HEADERS frame before HPACK
+// B6. h2read.go strips PADDED and PRIORITY off a HEADERS frame before HPACK
 // ever sees it. The normal case: both flags set, a real header block between
 // the priority fields and the padding.
 func TestH2PaddedPriorityHeadersAreStrippedCorrectly(t *testing.T) {
@@ -2069,17 +2074,17 @@ func TestH2OversizedBlockOnAClosedStreamIsNotResetAgain(t *testing.T) {
 // RFC 9113 §6.9: a WINDOW_UPDATE with a zero increment on a stream is a
 // stream error, PROTOCOL_ERROR; only the connection-level one (stream 0)
 // ends the connection. Before the split, one zero on one stream cost a
-// client every other request in flight.
+// client every other request in flight. Stream 1 is still open — its
+// request's body not sent — since a stream already closed both ways gets
+// no RST_STREAM at all (§5.1, TestH2NoResetOnAStreamClosedByBothEndStreams).
 func TestH2ZeroWindowUpdateOnAStreamResetsOnlyThatStream(t *testing.T) {
 	addr, _ := serveTest(t, Config{}, echoTarget)
 	c := dialH2(t, addr)
 
-	c.request(1, "GET", "/one")
-	c.flush()
-	if got := c.bodies(1)[1]; got != "/one" {
-		t.Fatalf("request 1 got %q", got)
-	}
-
+	c.frame(h2Frame{
+		Type: frameHeaders, Flags: flagEndHeaders, StreamID: 1,
+		Payload: headBlock("POST", "/one", [2]string{"content-length", "4"}),
+	})
 	c.frame(h2Frame{Type: frameWindowUpdate, StreamID: 1, Payload: windowUpdatePayload(0)})
 	c.flush()
 	if code := c.waitReset(1); code != 0x1 {
@@ -2088,7 +2093,7 @@ func TestH2ZeroWindowUpdateOnAStreamResetsOnlyThatStream(t *testing.T) {
 
 	c.request(3, "GET", "/two")
 	c.flush()
-	if got := c.bodies(2)[3]; got != "/two" {
+	if got := c.bodies(1)[3]; got != "/two" {
 		t.Errorf("after the reset the request got %q, want %q", got, "/two")
 	}
 
@@ -3123,7 +3128,7 @@ func TestH2RefusesRequestFieldsAndAMalformedDate(t *testing.T) {
 		{"host", "example.test"}, {"te", "trailers"}, {"expect", "100-continue"}, {"date", "yesterday"},
 	} {
 		res := Response{Status: 200, Headers: []Header{{Name: []byte(tc.name), Value: []byte(tc.value)}}}
-		if _, err := (&h2Server{}).appendHead(nil, 1, []byte("GET"), res, 16384); !errors.Is(err, ErrMalformed) {
+		if _, err := (&h2Conn{}).appendHead(nil, 1, []byte("GET"), res, 16384); !errors.Is(err, ErrMalformed) {
 			t.Errorf("%s: %s: got %v, want ErrMalformed", tc.name, tc.value, err)
 		}
 	}

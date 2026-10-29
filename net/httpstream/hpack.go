@@ -32,7 +32,7 @@ import (
 // HPACK format (RFC 7541), the HTTP/2 protocol (RFC 9113) and the HTTP/3
 // protocol (RFC 9114). The split is what the wire needs: HTTP/2 answers an
 // HPACK failure with COMPRESSION_ERROR and a framing failure with
-// PROTOCOL_ERROR, and [codeFor] tells them apart with errors.Is. The names
+// PROTOCOL_ERROR, and this package tells them apart with errors.Is. The names
 // follow the RFCs' own words, which is why HPACK, a format, carries no
 // "Protocol" suffix while the two protocol versions do. Renaming any of the
 // three is an API break.
@@ -54,10 +54,10 @@ type hpackDecoder struct {
 	// dynamic is a ring of n entries starting at the oldest, first: an
 	// insertion writes one slot and an eviction clears one. The index space
 	// numbers entries the other way round (most recent first, §2.3.3), which
-	// entry translates. A most-recent-first slice made every insertion a
-	// memmove of the whole table — 1 MiB of it per field under
-	// NewHPACKDecoder(1<<20, ...) — and an oldest-first one resliced from
-	// the front reallocated it every few dozen insertions.
+	// entry translates. A most-recent-first slice would make every insertion
+	// a memmove of the whole table — 1 MiB of it per field under
+	// newHPACKDecoder(1<<20, ...) — and an oldest-first one resliced from
+	// the front would reallocate it every few dozen insertions.
 	dynamic []hpackEntry
 	first   int
 	n       int

@@ -3,7 +3,6 @@ package httpstream
 import (
 	"errors"
 	"fmt"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -70,6 +69,13 @@ type h3Assembler struct {
 	served    atomic.Int64
 	cancelled int
 	excess    error
+	// charged remembers the request streams already counted in cancelled,
+	// so a stream is charged once however many of its frames say it ended:
+	// the RESET_STREAM and STOP_SENDING of one cancellation (§4.1.1), in
+	// either order, and a refusal of this end's that crosses them. Bounded
+	// like the tombstones.
+	charged      map[uint64]struct{}
+	chargedOrder []uint64
 	// Finish, when set, is called by retire when the last in-flight stream
 	// of a draining connection retires: nothing more is owed, the
 	// connection may close. It must not block — it runs on the read
@@ -103,12 +109,12 @@ type h3Assembler struct {
 	// unidirectional stream past its parse — is released here, the moment
 	// it stops being retained. Request bodies handed to the handler are the
 	// one exception: the handler call releases those once the handler
-	// returns. Nil means the transport credits on delivery, as before.
+	// returns. Nil means the transport credits on delivery.
 	Credit func(streamID, n uint64)
 
 	// CreditConn and CreditStream are Credit's two levels apart, and Interim
 	// writes an interim 100 on a request stream. ServeH3Conn sets them when
-	// request bodies stream (Config.MaxStreamedBodyBytes) and the transport
+	// request bodies stream (Config.BodyDelivery) and the transport
 	// runs manual credit, which streaming needs: a streamed body's bytes are
 	// released at the connection level as they arrive and at the stream
 	// level as the handler consumes them (bodyQueue), so the stream window
@@ -180,9 +186,11 @@ type h3Assembler struct {
 	frames []h3Frame
 }
 
-// maxRefusedRemembered bounds the tombstones. A peer still sending on a
-// stream refused this long ago is not confused but hostile, and re-refusing
-// it costs one map hit.
+// maxRefusedRemembered bounds the tombstones, and the streams remembered as
+// charged. A peer still sending on a stream refused this long ago is not
+// confused but hostile, and re-refusing it costs one map hit; one that
+// sends the second frame of a cancellation this late is charged twice for
+// it, which only shortens a hostile peer's allowance.
 const maxRefusedRemembered = 256
 
 type h3Stream struct {
@@ -274,6 +282,7 @@ func newH3Assembler(cfg Config) *h3Assembler {
 		qpack:   newQPACKDecoder(cfg.QPACKStatic, cfg.MaxHeaderBytes),
 		streams: make(map[uint64]*h3Stream),
 		refused: make(map[uint64]struct{}),
+		charged: make(map[uint64]struct{}),
 		unis:    make(map[uint64]*h3Uni),
 		// §5.2: a client's GOAWAY carries a push ID, at most 2^62-1.
 		peerGoAway:       1 << 62,
@@ -439,6 +448,15 @@ func (e h3ConnectionError) Unwrap() error { return e.Err }
 // offset in sight to detect an overlap from even if it wanted to.
 // Retransmission-safety for a stream's bytes belongs in
 // quic/reassembly_test.go, not duplicated at this layer.
+//
+// Frames runs in this order: clear the delivery's scratch (batch, ids,
+// failures, the 100s owed); expire the streams past their deadline and forget
+// the closed streamed bodies; fold each frame in packet order — a STOP_SENDING
+// cancels the request it names, a request stream's bytes go through framing
+// and assembly (head, body, trailers, FIN, RESET_STREAM), a unidirectional
+// stream goes to the control or QPACK reader; refuse the whole delivery when a
+// charge in it went over a connection bound (excess); hand over the requests
+// whose head is complete (handOver); and keep the interim 100s still owed.
 func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint64, []h3StreamError, error) {
 	a.batch, a.ids, a.failed = a.batch[:0], a.ids[:0], a.failed[:0]
 	a.after, a.continues = a.after[:0], a.continues[:0]
@@ -457,13 +475,12 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 		if f.Type == quic.FrameStopSending {
 			// The peer stopped reading a response: a request this end
 			// still holds — assembling, in the handler's hands or being
-			// written — is cancelled (§4.1.1), and charged as one. The
-			// transport hands the frame up only for a stream whose sending
-			// side it had not already abandoned, so a refusal and a
-			// cancellation that cross are one charge, not two. Stream 3 is
-			// ServeH3Conn's own: it ended the connection before this ran.
+			// written — is cancelled (§4.1.1), and charged as one, the
+			// RESET_STREAM that usually comes with it included (countCancel
+			// charges a stream once). Stream 3 is ServeH3Conn's own: it
+			// ended the connection before this ran.
 			if f.StreamID&0x03 == 0 {
-				a.countCancel()
+				a.countCancel(f.StreamID)
 			}
 			continue
 		}
@@ -512,9 +529,9 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 				// a stream's slot back as soon as both directions are done
 				// — which a client's STOP_SENDING on a complete request
 				// does at once (§4.1.1), with the handler call still
-				// running. Counting the streams still assembling, as this
-				// did before 2026-10-20, let a client run one call per
-				// cancellation: the rapid-reset shape (CVE-2023-44487).
+				// running. Counting only the streams still assembling would
+				// let a client run one call per cancellation: the
+				// rapid-reset shape (CVE-2023-44487).
 				a.fail(f.StreamID, h3RequestRejected, fmt.Errorf("%w: over %d unanswered request streams",
 					ErrH3Protocol, a.cfg.MaxConcurrentStreams))
 				a.release(f.StreamID, len(f.Data))
@@ -535,8 +552,17 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 		// a frame header or a trailer section: its DATA moves on to the queue
 		// in this very drain, and the stream window bounds the delta, which
 		// the transport's reassembly may make as large as the window.
+		// Before its head, a stream whose body will stream is bounded after
+		// drain instead, on what stays in buf: its first delivery may carry
+		// the head and the body's start together, as large as the stream
+		// window, and the DATA behind the head leaves buf for the queue in
+		// this very drain. Bounded here, on what arrived, such a request
+		// was refused EXCESSIVE_LOAD whenever the transport delivered more
+		// than the raw bound before the reader ran — a client sending its
+		// upload at once over a fast path.
 		streams := a.streaming() && st.gotHead
-		if bound := a.rawStreamBound(); !streams && len(st.buf)+len(f.Data) > bound {
+		headFirst := a.streaming() && !st.gotHead
+		if bound := a.rawStreamBound(); !streams && !headFirst && len(st.buf)+len(f.Data) > bound {
 			a.fail(f.StreamID, h3ExcessiveLoad, fmt.Errorf("%w: a stream over %d bytes",
 				ErrTooLarge, bound))
 			a.release(f.StreamID, len(f.Data)) // never appended; fail released the rest
@@ -548,7 +574,7 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 		// peer park per-stream bounds times the stream limit. ServeH3Conn's
 		// manual credit closes that at the window; this cap stays as the
 		// standalone bound and as defense in depth.
-		if !streams && a.assembling+len(f.Data) > 4*a.cfg.MaxBodyBytes {
+		if !streams && !headFirst && a.assembling+len(f.Data) > 4*a.cfg.MaxBodyBytes {
 			a.fail(f.StreamID, h3ExcessiveLoad, fmt.Errorf(
 				"%w: over %d bytes buffered across this connection's unfinished requests",
 				ErrTooLarge, 4*a.cfg.MaxBodyBytes))
@@ -598,6 +624,20 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 			a.fail(f.StreamID, code, err)
 			continue
 		}
+		if headFirst && !st.gotHead {
+			// Still short of its head after drain: the two bounds above,
+			// on what it keeps.
+			if bound := a.rawStreamBound(); len(st.buf) > bound {
+				a.fail(f.StreamID, h3ExcessiveLoad, fmt.Errorf("%w: a stream over %d bytes", ErrTooLarge, bound))
+				continue
+			}
+			if a.assembling > 4*a.cfg.MaxBodyBytes {
+				a.fail(f.StreamID, h3ExcessiveLoad, fmt.Errorf(
+					"%w: over %d bytes buffered across this connection's unfinished requests",
+					ErrTooLarge, 4*a.cfg.MaxBodyBytes))
+				continue
+			}
+		}
 		if st.gotHead && !headBefore && expectsContinue(st.req) {
 			// The head is complete and the client says it waits to be told
 			// to send the body: a candidate for the interim 100 of RFC 9110
@@ -613,8 +653,8 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 				// stream was truncated, this MUST be treated as a connection
 				// error"): the tail the peer declared never arrived, and a
 				// framer that ends streams mid-frame cannot be trusted on
-				// the next one either. Until 2026-10-21 the stream alone was
-				// reset with that code — the right code at the wrong scope.
+				// the next one either. Resetting the stream alone with that
+				// code would be the right code at the wrong scope.
 				return sluice.Batch[Request]{}, nil, a.failed, h3ConnectionError{Code: h3FrameError, Err: fmt.Errorf(
 					"%w: stream %d ended inside a frame, %d bytes short", ErrH3Protocol, f.StreamID, len(st.buf)+int(st.skip)+int(st.dataLeft))} //nolint:gosec // G115: skip and dataLeft are under the stream's bounds, far below 2^63
 			}
@@ -803,9 +843,9 @@ func (a *h3Assembler) failBodies(err error) {
 //
 // The sweep runs only once the earliest deadline (nextExpiry) has passed,
 // and finds the next one as it goes: a datagram costs one comparison, not
-// a walk of every stream parked. Measured before 2026-10-21, the walk cost
-// 6.5 ns per parked stream on every datagram — 6.7 µs at 1024 — paid by a
-// peer that trickles one byte per datagram across many open uploads.
+// a walk of every stream parked. The walk measured 6.5 ns per parked stream
+// on every datagram — 6.7 µs at 1024 — paid by a peer that trickles one
+// byte per datagram across many open uploads.
 // Streams are created with one ReadTimeout each, so the earliest deadline
 // is the oldest stream's; a stream that leaves before its deadline leaves
 // nextExpiry early, and the sweep that finds it gone moves on — one walk
@@ -856,7 +896,7 @@ func (a *h3Assembler) reset(id uint64) error {
 		// is gone on both sides — §4.1.1 makes the answer a MAY, and it
 		// would tell a client that stopped listening what it already knows.
 		a.Forget(id)
-		a.countCancel()
+		a.countCancel(id)
 	case 2:
 		if u := a.unis[id]; u != nil {
 			a.release(id, len(u.buf))
@@ -898,7 +938,7 @@ func (a *h3Assembler) uniRetained(id uint64) int {
 // rapid-reset shape with the roles swapped.
 func (a *h3Assembler) fail(id, code uint64, err error) {
 	a.dropFailing(id, err)
-	a.countCancel()
+	a.countCancel(id)
 	a.failed = append(a.failed, h3StreamError{StreamID: id, Code: code, Err: err})
 }
 
@@ -917,18 +957,21 @@ func (a *h3Assembler) answer(id uint64, status int, method []byte, err error) {
 			after = st.interim // the status follows the 100 the head was owed
 		}
 	}
-	a.countCancel()
+	a.countCancel(id)
 	a.failed = append(a.failed, h3StreamError{StreamID: id, Code: h3NoError, Err: err, Status: status, Method: method, After: after})
 }
 
-// countCancel charges one request stream ended short of its answer — by the
+// countCancel charges request stream id, ended short of its answer — by the
 // peer's STOP_SENDING or RESET_STREAM, or by a refusal of this end's —
 // against the rapid-reset allowance: four times MaxConcurrentStreams flat,
-// plus two for every request this connection has answered in full. Past it
+// plus two for every request this connection has answered in full. A
+// stream is charged once: a client that cancels as §4.1.1 asks sends both
+// frames, and charged per frame its allowance would be half the one stated
+// here, where HTTP/2 charges its one RST_STREAM once. Past it
 // the connection is closed with H3_EXCESSIVE_LOAD (RFC 9114 §10.5), at the
 // end of the delivery that crossed the line.
 //
-// The HTTP/2 side keeps the same rule (h2Server.countReset): a long-lived
+// The HTTP/2 side keeps the same rule (h2Conn.countReset): a long-lived
 // connection that serves requests may go on cancelling; one that only
 // cancels runs out. It is expressed against work done rather than against a
 // clock, so it holds while a connection is stalled and it can be tested
@@ -939,7 +982,10 @@ func (a *h3Assembler) answer(id uint64, status int, method []byte, err error) {
 // nothing else. The flat part is in this layer's own unit where HTTP/2's is
 // four batches of frames: a peer may fill the limit and cancel it all four
 // times over before it has let one answer through.
-func (a *h3Assembler) countCancel() {
+func (a *h3Assembler) countCancel(id uint64) {
+	if !remember(a.charged, &a.chargedOrder, id) {
+		return
+	}
 	a.cancelled++
 	if a.excess != nil || int64(a.cancelled) <= int64(4*a.cfg.MaxConcurrentStreams)+2*a.served.Load() {
 		return
@@ -971,15 +1017,22 @@ func (a *h3Assembler) drop(id uint64) *h3Stream {
 // tombstone remembers a stream as dead so later frames on it are dropped
 // rather than re-opening assembly, FIFO-bounded like every memory here.
 func (a *h3Assembler) tombstone(id uint64) {
-	if _, ok := a.refused[id]; ok {
-		return
+	remember(a.refused, &a.refusedOrder, id)
+}
+
+// remember adds id to set, whose insertion order is order, forgetting the
+// oldest past maxRefusedRemembered, and reports whether id was new.
+func remember(set map[uint64]struct{}, order *[]uint64, id uint64) bool {
+	if _, ok := set[id]; ok {
+		return false
 	}
-	a.refused[id] = struct{}{}
-	a.refusedOrder = append(a.refusedOrder, id)
-	for len(a.refusedOrder) > maxRefusedRemembered {
-		delete(a.refused, a.refusedOrder[0])
-		a.refusedOrder = a.refusedOrder[1:]
+	set[id] = struct{}{}
+	*order = append(*order, id)
+	for len(*order) > maxRefusedRemembered {
+		delete(set, (*order)[0])
+		*order = (*order)[1:]
 	}
+	return true
 }
 
 // Forget drops a stream's assembly state, which is what a RESET_STREAM from
@@ -1029,9 +1082,9 @@ const (
 // Admitting and counting under one lock is what makes the GOAWAY's promise
 // hold: beginDrain reads the count under the same lock, so a stream is
 // either counted before the drain looks — and waited for — or rejected.
-// Until 2026-10-21 the count was raised after admit returned, and a drain
-// deciding in between saw nothing in flight, finished the connection, and
-// cut the request it had just promised to serve.
+// Raised after admit returns, the count would let a drain deciding in
+// between see nothing in flight, finish the connection, and cut the request
+// it had just promised to serve.
 func (a *h3Assembler) admit(id uint64) admission {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -1058,7 +1111,11 @@ func (a *h3Assembler) beginDrain() (from uint64, idle bool) {
 	defer a.mu.Unlock()
 	a.draining = true
 	if a.accepted {
-		a.rejectFrom = a.last + 4
+		// The last identifier a client can open is h3MaxServerGoAway itself:
+		// past it there is no "next" stream, and a.last+4 would be 2^62, which
+		// no varint carries. The client can open nothing more either, so the
+		// bound names the same set of streams (§5.2).
+		a.rejectFrom = min(a.last+4, h3MaxServerGoAway)
 	}
 	if a.inFlight.Load() == 0 {
 		a.finished = true
@@ -1088,340 +1145,6 @@ func (a *h3Assembler) retire() {
 	}
 }
 
-// uni folds one frame of a client unidirectional stream (RFC 9114 §6.2): the
-// type varint first, then the stream's own content: the control stream's
-// frames, and the QPACK pair's instructions, checked against the dynamic
-// table neither side uses. Push streams are a client opening what only
-// servers may, and unknown types are discarded, as §6.2 permits.
-func (a *h3Assembler) uni(f quic.Frame) error {
-	u := a.unis[f.StreamID]
-	if u == nil {
-		if len(a.unis) >= maxUniStreams {
-			return nil // far past the transport's own stream admission
-		}
-		u = &h3Uni{kind: -1}
-		a.unis[f.StreamID] = u
-	}
-	switch u.kind {
-	case -1:
-		// The whole delivery is appended, but only an incomplete type varint
-		// — under 8 bytes — stays parked: once it parses, the buffer keeps
-		// just what follows it.
-		u.buf = append(u.buf, f.Data...)
-		typ, rest, err := varint.Read(u.buf)
-		if err != nil {
-			// Not yet a whole varint. A stream closed before its type byte
-			// is tolerated (§6.2), not an error.
-			if f.Fin {
-				delete(a.unis, f.StreamID)
-			}
-			return nil
-		}
-		u.buf = append(u.buf[:0], rest...)
-		switch typ {
-		case h3StreamControl:
-			if a.hasControl {
-				return h3ConnectionError{Code: h3StreamCreationError, Err: fmt.Errorf(
-					"%w: a second control stream", ErrH3Protocol)}
-			}
-			a.hasControl = true
-			u.kind = h3StreamControl
-		case h3StreamPush:
-			// §6.2.2: push streams are server-initiated by definition.
-			return h3ConnectionError{Code: h3StreamCreationError, Err: fmt.Errorf(
-				"%w: a client opened a push stream", ErrH3Protocol)}
-		case h3StreamQPACKEncode:
-			if a.hasEncoder {
-				return h3ConnectionError{Code: h3StreamCreationError, Err: fmt.Errorf(
-					"%w: a second QPACK encoder stream", ErrH3Protocol)}
-			}
-			a.hasEncoder = true
-			u.kind = h3StreamQPACKEncode
-			// The bytes after the type varint are instructions, kept: a
-			// capacity of zero was advertised, so almost any of them is the
-			// peer misusing a table it was told does not exist.
-		case h3StreamQPACKDecode:
-			if a.hasDecoder {
-				return h3ConnectionError{Code: h3StreamCreationError, Err: fmt.Errorf(
-					"%w: a second QPACK decoder stream", ErrH3Protocol)}
-			}
-			a.hasDecoder = true
-			u.kind = h3StreamQPACKDecode
-			// Like the encoder stream's, the bytes after the type are
-			// instructions and are read (decoderInstructions).
-		default:
-			u.kind = uniKindUnknown
-			u.buf = nil
-		}
-	case h3StreamControl:
-		// What is left of an unknown frame goes by unread (§7.2.8). The
-		// carry buffer holds at most one incomplete frame this server
-		// reads, under MaxHeaderBytes plus its header: parseH3Frames
-		// refuses a longer known frame on its declaration and skips an
-		// unknown one unbuffered, so what controlFrames keeps is bounded
-		// without a check of its own. Until 2026-10-21 the bound was
-		// checked on arrival, which refused a long GREASE frame the
-		// section says to ignore.
-		data, skip := skipAhead(f.Data, u.skip)
-		u.skip = skip
-		u.buf = append(u.buf, data...)
-	case h3StreamQPACKEncode, h3StreamQPACKDecode:
-		// Each instruction is consumed as soon as it is whole, so what parks
-		// here is at most one integer's few bytes.
-		u.buf = append(u.buf, f.Data...)
-	}
-	switch u.kind {
-	case h3StreamControl:
-		if err := a.controlFrames(u); err != nil {
-			return err
-		}
-	case h3StreamQPACKEncode:
-		if err := a.encoderInstructions(u); err != nil {
-			return err
-		}
-	case h3StreamQPACKDecode:
-		if err := a.decoderInstructions(u); err != nil {
-			return err
-		}
-	}
-	if f.Fin {
-		kind := u.kind
-		delete(a.unis, f.StreamID)
-		return a.criticalGone(kind)
-	}
-	return nil
-}
-
-// controlFrames consumes whole frames off the control stream's carry buffer:
-// SETTINGS first and once (§6.2.1, §7.2.4), nothing that belongs on a
-// request stream, and the frames a non-pushing server has no action for
-// skipped.
-func (a *h3Assembler) controlFrames(u *h3Uni) error {
-	if !a.controlSettings && len(u.buf) > 0 {
-		// §6.2.1: SETTINGS must be the control stream's very first frame.
-		// ParseH3Frames below skips GREASE frame types, as §7.2.8 wants
-		// everywhere else — so the first frame's type is read here, before
-		// the skip can hide a GREASE frame standing where SETTINGS has to be.
-		if typ, _, err := varint.Read(u.buf); err == nil && typ != h3Settings {
-			return h3ConnectionError{Code: h3MissingSettings, Err: fmt.Errorf(
-				"%w: the control stream opened with frame %#x, not SETTINGS", ErrH3Protocol, typ)}
-		}
-	}
-	frames, rest, skip, err := parseH3Frames(a.frames[:0], u.buf, a.cfg.MaxHeaderBytes)
-	// Added, not set: a skip still owed emptied the buffer before the parse,
-	// which then started none; a parse that started one found none owed.
-	a.frames, u.skip = keepFrames(frames), u.skip+skip
-	if err != nil {
-		// A frame too long is a layout fault (H3_FRAME_ERROR); an HTTP/2
-		// frame type is §7.2.8's H3_FRAME_UNEXPECTED.
-		code := uint64(h3FrameError)
-		if errors.Is(err, errH3FrameUnexpected) {
-			code = h3FrameUnexpected
-		}
-		return h3ConnectionError{Code: code, Err: err}
-	}
-	for _, fr := range frames {
-		if !a.controlSettings {
-			if fr.Type != h3Settings {
-				return h3ConnectionError{Code: h3MissingSettings, Err: fmt.Errorf(
-					"%w: the control stream opened with frame %#x, not SETTINGS", ErrH3Protocol, fr.Type)}
-			}
-			if err := a.settings(fr.Payload); err != nil {
-				// A payload that ends inside a pair fails the frame's layout,
-				// which §7.1 makes H3_FRAME_ERROR; what the pairs say is
-				// §7.2.4's H3_SETTINGS_ERROR.
-				code := uint64(h3SettingsError)
-				if errors.Is(err, errH3FrameLayout) {
-					code = h3FrameError
-				}
-				return h3ConnectionError{Code: code, Err: err}
-			}
-			a.controlSettings = true
-			continue
-		}
-		switch fr.Type {
-		case h3Settings:
-			return h3ConnectionError{Code: h3FrameUnexpected, Err: fmt.Errorf(
-				"%w: a second SETTINGS on the control stream", ErrH3Protocol)}
-		case h3Data, h3Headers, h3PushPromise:
-			return h3ConnectionError{Code: h3FrameUnexpected, Err: fmt.Errorf(
-				"%w: frame type %#x on the control stream", ErrH3Protocol, fr.Type)}
-		case h3GoAway, h3MaxPushID, h3CancelPush:
-			// Legal here, and inert: this server never pushes and announces
-			// its own shutdown by closing, so there is nothing to act on.
-			// Their payloads are still held to their layout (§7.1, §10.8:
-			// exactly one identifier) and to the identifier rules of §5.2,
-			// §7.2.3 and §7.2.7 — each a MUST for a connection error, and
-			// each a peer whose framer or push state is wrong.
-			if err := a.controlIdentifier(fr); err != nil {
-				return err
-			}
-		}
-	}
-	u.buf = keepRest(u.buf, rest)
-	return nil
-}
-
-// controlIdentifier checks the one-identifier frames of the control stream:
-// a GOAWAY carrying a push ID larger than the previous one (§5.2), a
-// MAX_PUSH_ID smaller than the previous one (§7.2.7), and any CANCEL_PUSH
-// at all — it names a push ID "not yet mentioned by a PUSH_PROMISE frame"
-// (§7.2.3), since this server promises none — are connection errors of type
-// H3_ID_ERROR; a payload that is not exactly one varint is H3_FRAME_ERROR.
-func (a *h3Assembler) controlIdentifier(fr h3Frame) error {
-	id, err := h3Identifier(fr.Payload)
-	if err != nil {
-		return h3ConnectionError{Code: h3FrameError, Err: fmt.Errorf("frame %#x: %w", fr.Type, err)}
-	}
-	switch fr.Type {
-	case h3GoAway:
-		if id > a.peerGoAway {
-			return h3ConnectionError{Code: h3IDError, Err: fmt.Errorf(
-				"%w: GOAWAY(%d) after GOAWAY(%d)", ErrH3Protocol, id, a.peerGoAway)}
-		}
-		a.peerGoAway = id
-	case h3MaxPushID:
-		if id < a.peerMaxPush {
-			return h3ConnectionError{Code: h3IDError, Err: fmt.Errorf(
-				"%w: MAX_PUSH_ID(%d) after MAX_PUSH_ID(%d)", ErrH3Protocol, id, a.peerMaxPush)}
-		}
-		a.peerMaxPush = id
-	case h3CancelPush:
-		return h3ConnectionError{Code: h3IDError, Err: fmt.Errorf(
-			"%w: CANCEL_PUSH(%d) for a push never promised", ErrH3Protocol, id)}
-	}
-	return nil
-}
-
-// encoderInstructions consumes QPACK encoder-stream instructions against the
-// dynamic-table capacity of zero this server advertised. RFC 9204 §3.2.3
-// binds the peer that accepted it to send no instruction that uses the table,
-// so there is almost nothing legal to arrive here: the one shape tolerated is
-// Set Dynamic Table Capacity (§4.3.1) carrying zero, which changes nothing
-// and which §4.3.1 gives no ground to refuse. An insert, a duplicate, or a
-// capacity above the advertised zero is the connection error
-// QPACK_ENCODER_STREAM_ERROR (§4.2, §8.3).
-func (a *h3Assembler) encoderInstructions(u *h3Uni) error {
-	// One pass over the buffer, one compaction at the end (keepRest):
-	// moving the rest to the front after each instruction made a delivery of
-	// one-byte instructions quadratic.
-	buf := u.buf
-	defer func() { u.buf = keepRest(u.buf, buf) }()
-	for len(buf) > 0 {
-		if buf[0]&0xe0 != 0x20 {
-			// Insert With Name Reference (1xxxxxxx), Insert With Literal
-			// Name (01xxxxxx) and Duplicate (000xxxxx) all grow or read a
-			// table whose capacity cannot leave zero.
-			return h3ConnectionError{Code: qpackEncoderStreamError, Err: fmt.Errorf(
-				"%w: encoder instruction %#x against a dynamic-table capacity of zero", ErrH3Protocol, buf[0])}
-		}
-		capacity, rest, err := hpackInt(buf, 5)
-		if err != nil {
-			// An integer that runs off the end has not all arrived yet; one
-			// wider than 62 bits (RFC 9204 §4.1.1) never will be legal.
-			if errors.Is(err, errIntegerShort) {
-				return nil
-			}
-			return h3ConnectionError{Code: qpackEncoderStreamError, Err: fmt.Errorf(
-				"%w: a dynamic-table capacity wider than 62 bits", ErrH3Protocol)}
-		}
-		if capacity != 0 {
-			return h3ConnectionError{Code: qpackEncoderStreamError, Err: fmt.Errorf(
-				"%w: a dynamic-table capacity of %d, but zero was advertised", ErrH3Protocol, capacity)}
-		}
-		buf = rest
-	}
-	return nil
-}
-
-// decoderInstructions consumes the client's QPACK decoder stream (RFC 9204
-// §4.4), which reports on this server's encoder's dynamic table. That table
-// is never used: every field section goes out with a Required Insert Count of
-// zero and nothing is ever inserted. So Stream Cancellation (§4.4.2), which a
-// decoder may send for any reset stream, is the one instruction that can
-// legitimately arrive; a Section Acknowledgment (§4.4.1) names a section
-// with nothing to acknowledge and an Insert Count Increment (§4.4.3) counts
-// inserts never sent, and both are QPACK_DECODER_STREAM_ERROR. Discarding the
-// stream unread, as before, accepted either without a word.
-func (a *h3Assembler) decoderInstructions(u *h3Uni) error {
-	buf := u.buf // one pass, one compaction, as in encoderInstructions
-	defer func() { u.buf = keepRest(u.buf, buf) }()
-	for len(buf) > 0 {
-		switch b := buf[0]; {
-		case b&0x80 != 0:
-			return h3ConnectionError{Code: qpackDecoderStreamError, Err: fmt.Errorf(
-				"%w: a Section Acknowledgment, but no field section used the dynamic table", ErrH3Protocol)}
-		case b&0x40 == 0:
-			return h3ConnectionError{Code: qpackDecoderStreamError, Err: fmt.Errorf(
-				"%w: an Insert Count Increment, but nothing was ever inserted", ErrH3Protocol)}
-		}
-		// Stream Cancellation: a stream identifier with a 6-bit prefix, and
-		// nothing for an encoder without a table to do about it. The
-		// identifier is a QUIC stream ID, 62 bits wide (RFC 9000 §2.1), and
-		// hpackInt admits the whole width: a decoder that stopped at 28 bits
-		// would close the connection over the cancellation of stream
-		// 2^28 — a legal instruction a long-lived client reaches, since
-		// HTTP/3 caps no request count.
-		_, rest, err := hpackInt(buf, 6)
-		if err != nil {
-			// As in encoderInstructions: an integer that runs off the end
-			// has not all arrived yet.
-			if errors.Is(err, errIntegerShort) {
-				return nil
-			}
-			return h3ConnectionError{Code: qpackDecoderStreamError, Err: fmt.Errorf(
-				"%w: a Stream Cancellation naming a stream wider than 62 bits", ErrH3Protocol)}
-		}
-		buf = rest
-	}
-	return nil
-}
-
-// peerMaxFieldSection is the MAX_FIELD_SECTION_SIZE the client advertised, or
-// h3NoFieldSectionLimit when none has arrived — RFC 9114 §4.2.2 binds a
-// sender only once the parameter has been received, and an advertised zero
-// binds it to nothing at all.
-func (a *h3Assembler) peerMaxFieldSection() uint64 {
-	return a.peerFieldSection
-}
-
-// settings takes the client's SETTINGS, keeping what this server acts on.
-//
-// A repeated identifier is refused among the low ones, where every setting
-// RFC 9114 and RFC 9204 define lives; above them a repeat is two values of a
-// setting this server ignores either way, which §7.2.4 lets it pass over
-// (refusing is a MAY) without remembering every identifier to find out.
-func (a *h3Assembler) settings(payload []byte) error {
-	var seen uint64 // a bit per identifier below 64
-	return walkH3Settings(payload, func(id, v uint64) error {
-		if id < 64 {
-			if seen&(1<<id) != 0 {
-				return fmt.Errorf("%w: setting %#x appears twice", ErrH3Protocol, id)
-			}
-			seen |= 1 << id
-		}
-		if id == h3SettingMaxFieldSection {
-			a.peerFieldSection = v
-		}
-		return nil
-	})
-}
-
-// criticalGone is the connection error a closed critical stream is
-// (RFC 9114 §6.2.1, RFC 9204 §4.2), and nil for every stream whose closure
-// is the peer's own business.
-func (a *h3Assembler) criticalGone(kind int) error {
-	switch kind {
-	case h3StreamControl:
-		return h3ConnectionError{Code: h3ClosedCriticalStream, Err: fmt.Errorf(
-			"%w: the control stream closed", ErrH3Protocol)}
-	case h3StreamQPACKEncode, h3StreamQPACKDecode:
-		return h3ConnectionError{Code: h3ClosedCriticalStream, Err: fmt.Errorf(
-			"%w: a QPACK stream closed", ErrH3Protocol)}
-	}
-	return nil
-}
-
 // h3FrameSlack is the room a request's frame headers take beyond its header
 // and body bounds — a few varints per frame, generously rounded. ServeH3Conn's
 // stream window (Config.TransportParameters) carries the same headroom.
@@ -1436,6 +1159,14 @@ func (a *h3Assembler) rawStreamBound() int {
 // drain consumes whole HTTP/3 frames out of a stream's buffer, leaving what
 // has not arrived. A QUIC stream is a byte stream: a frame split across two
 // datagrams is ordinary rather than an error.
+//
+// drain runs in this order: skip what an ignored frame still owes and stream
+// what a DATA frame still owes (dataLeft); parse the whole frames in the
+// buffer, refusing one past its bound; then one case per frame type — HEADERS
+// (the head, or the trailers once the head is in), DATA (into the body, whole
+// or streamed), a control-stream frame on a request stream (refused),
+// PUSH_PROMISE (refused); and last, keep the start of a frame not yet arrived,
+// checking its declared type and length before waiting for the rest.
 func (a *h3Assembler) drain(st *h3Stream) error {
 	if st.skip > 0 {
 		// The buffer is this delivery alone: an unknown frame being skipped
@@ -1460,10 +1191,19 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 	// A frame over the bound leaves rest at its start. A DATA frame there is
 	// judged below, after the frames ahead of it, as a body over
 	// MaxBodyBytes: h1 and h2 answer that with a 413, and the declared length
-	// says so before any of the payload is buffered. Any other type keeps the
-	// refusal parseH3Frames gave it.
-	if typ, _, e := varint.Read(rest); err != nil && (e != nil || typ != h3Data) {
-		return err
+	// says so before any of the payload is buffered. A frame of a type a
+	// request stream never carries is judged on its type first — the
+	// connection error the switch below gives it under the bound — so its
+	// declared length cannot buy it the lesser stream error. Any other type
+	// keeps the refusal parseH3Frames gave it.
+	if err != nil {
+		typ, _, e := varint.Read(rest)
+		switch {
+		case e == nil && (typ == h3Settings || typ == h3GoAway || typ == h3MaxPushID || typ == h3CancelPush || typ == h3PushPromise):
+			return fmt.Errorf("%w: frame type %#x does not belong on a request stream", errH3FrameUnexpected, typ)
+		case e != nil || typ != h3Data:
+			return err
+		}
 	}
 	a.frames = keepFrames(frames)
 	for _, f := range frames {
@@ -1476,6 +1216,13 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 			if len(f.Payload) > a.cfg.MaxHeaderBytes {
 				return fmt.Errorf("%w: a HEADERS frame of %d bytes, over the %d header bound",
 					ErrTooLarge, len(f.Payload), a.cfg.MaxHeaderBytes)
+			}
+			// An empty payload ends before the field section's prefix, the
+			// field §7.2.2 identifies: §7.1 makes that a frame error, not a
+			// decompression failure.
+			if len(f.Payload) == 0 {
+				return h3ConnectionError{Code: h3FrameError, Err: fmt.Errorf(
+					"%w: a HEADERS frame with no field section", ErrH3Protocol)}
 			}
 			if st.gotTrailers {
 				return fmt.Errorf("%w: a HEADERS frame after the trailers", errH3FrameUnexpected)
@@ -1491,7 +1238,8 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 				dst := st.headers[len(st.headers):]
 				if st.handed {
 					// The handler is reading the head's storage: the
-					// trailers of a streamed body are checked and not kept.
+					// trailers of a streamed body are decoded apart and
+					// copied into it (setTrailers below).
 					dst = nil
 				}
 				trailers, err := a.qpack.Decode(dst, f.Payload)
@@ -1510,8 +1258,13 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 						return err
 					}
 				}
-				if len(trailers) > 0 {
-					st.req.Trailers = trailers
+				switch {
+				case st.body != nil:
+					// A streamed body: the trailers go with it, read
+					// through Request.Trailers once it has ended.
+					st.body.setTrailers(trailers)
+				case len(trailers) > 0:
+					st.req.trailers = trailers
 				}
 				st.gotTrailers = true
 				continue
@@ -1541,7 +1294,14 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 			st.headers, st.declared, st.req = req.Headers, declared, req
 			st.req.Headers = req.Headers[:len(req.Headers):len(req.Headers)]
 			st.gotHead = true
-			if bound := max(a.cfg.MaxBodyBytes, a.cfg.MaxStreamedBodyBytes); declared > bound {
+			// The streamed bound only where a body may stream: on windows too
+			// small for manual credit bodies arrive whole, under MaxBodyBytes
+			// alone, whatever BodyDelivery asks.
+			bound := a.cfg.MaxBodyBytes
+			if a.streaming() {
+				bound = max(bound, a.cfg.MaxStreamedBodyBytes)
+			}
+			if declared > bound {
 				// A content-length past every bound a body is held to:
 				// refused before any of it is read, and before the 100 the
 				// client may be waiting for, as on HTTP/1.1 and HTTP/2.
@@ -1602,14 +1362,14 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 					return a.drain(st) // the frame ended here: frames follow it
 				}
 				return nil
-			case typ == h3Headers && length > uint64(a.cfg.MaxHeaderBytes): //nolint:gosec // G115: positive config, set by withDefaults
+			case typ == h3Headers && length > uint64(a.cfg.MaxHeaderBytes): //nolint:gosec // G115: positive config, set by Config.resolve
 				return fmt.Errorf("%w: a HEADERS frame of %d bytes, over the %d header bound",
 					ErrTooLarge, length, a.cfg.MaxHeaderBytes)
 			case typ == h3Data && !st.gotHead:
 				return fmt.Errorf("%w: DATA before HEADERS", errH3FrameUnexpected)
 			case typ == h3Data && st.gotTrailers:
 				return fmt.Errorf("%w: DATA after the trailers", errH3FrameUnexpected)
-			case typ == h3Data && uint64(len(st.req.Body))+length > uint64(a.cfg.MaxBodyBytes): //nolint:gosec // G115: positive config, set by withDefaults
+			case typ == h3Data && uint64(len(st.req.Body))+length > uint64(a.cfg.MaxBodyBytes): //nolint:gosec // G115: positive config, set by Config.resolve
 				return h3StatusFail(413, st.req.Method, "%w: a body over %d bytes", ErrTooLarge, a.cfg.MaxBodyBytes)
 			}
 		}
@@ -1683,192 +1443,4 @@ func sectionRefused(err error) error {
 		return err
 	}
 	return h3ConnectionError{Code: qpackDecompressionFailed, Err: err}
-}
-
-// appendH3StreamedBody writes one batch of a streamed response as DATA
-// frames. The stream's FIN is what ends the body, so there is no terminator
-// to write here.
-func appendH3StreamedBody(dst []byte, chunks [][]byte) []byte {
-	for _, c := range chunks {
-		if len(c) == 0 {
-			continue // an empty batch is cadence, not an end
-		}
-		dst = appendH3Frame(dst, h3Data, c)
-	}
-	return dst
-}
-
-// appendH3ResponseBasic writes one response's HEADERS frame, and its DATA frame if
-// it has a body to send in full now — RFC 9110 §8.6's 204/304 never do,
-// no matter who asks. It has no request to check against, so a HEAD
-// response's body is this function's business only through [appendH3Response]
-// — the internal responder path, which knows the method and calls that
-// instead.
-func appendH3ResponseBasic(dst []byte, r Response) ([]byte, error) {
-	return appendH3Response(dst, r, nil, h3NoFieldSectionLimit, &h3Scratch{}, dateFor(time.Now()))
-}
-
-// h3Scratch is one writer's reusable per-response state: the field list
-// and QPACK block appendH3Response builds, and the digits of the two numeric
-// values it writes. Drawn from h3ScratchPool for one response, it is what makes the
-// response path allocation-free — safe because [quic.Stream.Write] copies into its own frame before returning.
-type h3Scratch struct {
-	head   []byte
-	fields []Header
-	qpack  []byte
-	names  []byte   // lowercased copies of the field names a handler spelled in HTTP/1.1 case
-	status [3]byte  // checkStatus bounds a final status to 200..599
-	clen   [20]byte // enough digits for any int
-}
-
-// appendH3Response is AppendH3Response's real body, plus two things the
-// exported wrapper cannot know: the request's method, needed to withhold a
-// HEAD response's bytes the same way the HTTP/1.1 and HTTP/2 paths do, and
-// the peer's SETTINGS_MAX_FIELD_SECTION_SIZE — zero for unbounded — which
-// RFC 9114 §4.2.2 says a sender SHOULD NOT exceed. A field section that
-// would exceed it is refused here rather than sent to a client that told
-// us it will not accept it. date is [dateFor]'s value for the batch.
-func appendH3Response(dst []byte, r Response, method []byte, peerFieldSection uint64, sc *h3Scratch, date []byte) ([]byte, error) {
-	if err := r.check(); err != nil {
-		return nil, err
-	}
-	status := r.Status
-	if status == 0 {
-		status = 200
-	}
-	if err := checkStatus(status); err != nil {
-		return nil, err
-	}
-	noLength, noBody := noLengthAndBody(status, method)
-	fields := append(sc.fields[:0], Header{Name: h3StatusName, Value: appendDigits(sc.status[:0], status)})
-	dated, err := datedBy(r.Headers)
-	if err != nil {
-		return nil, err
-	}
-	if !dated {
-		// RFC 9110 §6.6.1's Date, as the other two writers add it and
-		// where: on every final response the handler did not date itself,
-		// first after :status. The value is the batch's, formatted once and
-		// never written after.
-		fields = append(fields, Header{Name: h3DateName, Value: date})
-	}
-	sc.names = sc.names[:0]
-	for _, h := range r.Headers {
-		// A name the handler spelled in HTTP/1.1 case goes on the wire
-		// lowercase (RFC 9114 §4.2), from a copy in sc.names: the handler's
-		// bytes are borrowed, never written. The copies outlive the loop,
-		// since fields holds them until appendQPACK reads them.
-		name := lowerName(h.Name, &sc.names)
-		// The octet rule the HTTP/1.1 writer applies (response.go): QPACK
-		// carries any byte, and a name holding a space or a colon becomes a
-		// second field, or a malformed one, at the first hop that
-		// re-serialises this response toward HTTP/1.1.
-		if !isToken(name) {
-			return nil, fmt.Errorf("%w: response field %q is not a token", ErrH3Protocol, h.Name)
-		}
-		if hasCRLF(h.Value) {
-			return nil, ErrHeaderInjection
-		}
-		if hasFieldControl(h.Value) {
-			return nil, fmt.Errorf("%w: the value of %q holds a control character", ErrH3Protocol, h.Name)
-		}
-		if err := checkResponseField(name); err != nil {
-			return nil, err
-		}
-		// The HTTP/2 writer's refusals, for the same reasons: a
-		// connection-specific field makes the response malformed (RFC 9114
-		// §4.2), and framing is this package's to state.
-		// TE, whose §4.2 exception holds in a request alone, was refused
-		// above by checkResponseField as a request's field.
-		if connectionSpecific(name) {
-			return nil, fmt.Errorf("%w: the connection-specific response field %q", ErrH3Protocol, h.Name)
-		}
-		if string(name) == "content-length" {
-			return nil, fmt.Errorf("%w: content-length is set by the writer, not the caller", ErrH3Protocol)
-		}
-		fields = append(fields, Header{Name: name, Value: h.Value})
-	}
-	if n, ok := statedLength(r, noLength, noBody); ok {
-		v := strconv.AppendInt(sc.clen[:0], n, 10)
-		fields = append(fields, Header{Name: h3ContentLengthName, Value: v})
-	}
-	if err := checkH3FieldSection(fields, peerFieldSection); err != nil {
-		return nil, err
-	}
-
-	sc.fields = fields
-	sc.qpack = appendQPACK(sc.qpack[:0], fields)
-	dst = appendH3Frame(dst, h3Headers, sc.qpack)
-	if !noBody && len(r.Body) > 0 {
-		dst = appendH3Frame(dst, h3Data, r.Body)
-	}
-	if !noBody && !r.streamed() && r.Trailers != nil {
-		// A body in hand has its trailers in the same write, so a refusal
-		// is still answered with a 500.
-		return appendH3Trailers(dst, r, peerFieldSection, sc)
-	}
-	return dst, nil
-}
-
-// checkH3FieldSection refuses a field section over the peer's
-// SETTINGS_MAX_FIELD_SECTION_SIZE — h3NoFieldSectionLimit when none was
-// announced, zero when zero was — measured as §4.2.2 does: the uncompressed
-// name and value, plus 32 per field.
-func checkH3FieldSection(fields []Header, peerFieldSection uint64) error {
-	var size uint64
-	for _, h := range fields {
-		size += uint64(len(h.Name)+len(h.Value)) + 32
-	}
-	if size > peerFieldSection {
-		return fmt.Errorf("%w: a field section of %d bytes, over the peer's %d limit",
-			ErrH3Protocol, size, peerFieldSection)
-	}
-	return nil
-}
-
-// appendH3Trailers writes a response's trailer section as the HEADERS frame
-// that follows its DATA (RFC 9114 §4.1), held to [checkTrailer] and to the
-// peer's field section limit as the head is. Its names go on the wire
-// lowercase, from copies, as the head's do.
-func appendH3Trailers(dst []byte, r Response, peerFieldSection uint64, sc *h3Scratch) ([]byte, error) {
-	trailers, err := r.trailers()
-	if err != nil {
-		return nil, err
-	}
-	fields := sc.fields[:0]
-	sc.names = sc.names[:0]
-	for _, h := range trailers {
-		fields = append(fields, Header{Name: lowerName(h.Name, &sc.names), Value: h.Value})
-	}
-	sc.fields = fields
-	if err := checkH3FieldSection(fields, peerFieldSection); err != nil {
-		return nil, err
-	}
-	sc.qpack = appendQPACK(sc.qpack[:0], fields)
-	return appendH3Frame(dst, h3Headers, sc.qpack), nil
-}
-
-// h3StatusName, h3ContentLengthName and h3DateName are the three field names
-// the responder writes itself, kept as package bytes so no response
-// re-allocates them.
-var (
-	h3StatusName        = []byte(":status")
-	h3ContentLengthName = []byte("content-length")
-	h3DateName          = []byte("date")
-)
-
-// appendDigits writes v in decimal, the no-string itoa the response scratch
-// wants: itoa's string return would allocate once per use here.
-func appendDigits(dst []byte, v int) []byte {
-	if v == 0 {
-		return append(dst, '0')
-	}
-	var b [20]byte
-	i := len(b)
-	for v > 0 {
-		i--
-		b[i] = byte('0' + v%10)
-		v /= 10
-	}
-	return append(dst, b[i:]...)
 }

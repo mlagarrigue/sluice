@@ -5,17 +5,6 @@ import (
 	"net/netip"
 )
 
-// OIDs of PostgreSQL's two network address types.
-//
-// They share one binary layout and differ in a flag: `cidr` requires the bits
-// below the netmask to be zero, `inet` keeps them. That is why a host address
-// with a netmask — 192.168.1.1/24, an interface's own configuration — is an
-// inet and cannot be a cidr.
-const (
-	OIDCIDR uint32 = 650
-	OIDInet uint32 = 869
-)
-
 // PostgreSQL's own address family numbers.
 //
 // These are **not** the operating system's AF_INET and AF_INET6. PostgreSQL
@@ -69,6 +58,9 @@ func AppendInet(dst []byte, p netip.Prefix) []byte { return appendNetworkAddr(ds
 //
 // An invalid prefix is written as [AppendInet] writes one, for the server to
 // refuse.
+//
+// There is no DecodeCIDR: a cidr column is read with [DecodeInet], the layout
+// being the same.
 func AppendCIDR(dst []byte, p netip.Prefix) []byte { return appendNetworkAddr(dst, p, 1) }
 
 func appendNetworkAddr(dst []byte, p netip.Prefix, isCIDR byte) []byte {

@@ -1,5 +1,7 @@
 # Web
 
+A word you do not know is likely in the [glossary](../glossary.md).
+
 ## What this is about
 
 A web server receives HTTP **requests** ("give me order 42", "change line
@@ -41,7 +43,7 @@ mux.HandleFunc("PATCH /orders/{order}/lines/{line}", func(w http.ResponseWriter,
 })
 ```
 
-> **In plain terms: why no wrapper around the handler?** Many frameworks
+> **In plain words: why no wrapper around the handler?** Many frameworks
 > have you write a function that returns an object, and choose the status
 > code and the format for you. That is comfortable, and it is precisely
 > what disappears from the code: the two decisions that matter in a handler
@@ -50,9 +52,13 @@ mux.HandleFunc("PATCH /orders/{order}/lines/{line}", func(w http.ResponseWriter,
 
 `DecodeJSON` requires a maximum size: a body without a limit is an open
 door to a client sending gigabytes. `PathInt64` reads a **wildcard** from
-the address (`{order}`), which `http.ServeMux` can extract since Go 1.22.
-`Status` picks the code from the diagnostics (see below); `WriteJSON`
-writes the response as JSON.
+the address (`{order}`), which `http.ServeMux` can extract since Go 1.22;
+`QueryInt64` reads a query parameter (`?limit=50`) the same way, an absent
+one and an unparseable one being two diagnostics with two fixes.
+`Status` picks the code from the diagnostics (see below); `IsTransport`
+tells one of this package's — a body that would not parse, a parameter
+that was not there, usually a 400 — from a business rule's, usually a 422.
+`WriteJSON` writes the response as JSON.
 
 `DecodeJSON` also requires the request to say it carries JSON: one
 `Content-Type` header, `application/json` or a `+json` subtype (such as
@@ -92,7 +98,7 @@ remedy is at the same place as the problem. What travels is the message
 **key** (`QtyMustBeOverZero`) and its arguments, never a sentence already
 written: the client picks the language.
 
-> **In plain terms: three nuances that matter.**
+> **In plain words: three nuances that matter.**
 > A diagnostic is not a Go `error` — it does not implement the interface,
 > on purpose: a mere warning must not trip any `if err != nil`, and the
 > value keeps moving. The internal **cause** (the SQL error, the trace) is
@@ -149,21 +155,22 @@ panicked stays dead: build a new one. What the gateway and the server log,
 and what never leaves the log, is
 [ADR 0025](../design/adr/0025-observability.md).
 
-> **In plain terms: the gateway's rule.** Every call gets **exactly one**
+> **In plain words: the gateway's rule.** Every call gets **exactly one**
 > answer, through `Reply` or `Fail`. Never zero: the pipeline's element *is*
 > the call, with the channel its answer returns through, and a call removed
 > from the stream is a client waiting until its context expires. A business
 > refusal is answered with its diagnostics. Cancelling a `Do`'s context ends
 > the client's wait, not the batch's work.
 
-> **In plain terms: when it pays.** The gateway only saves round trips.
+> **In plain words: when it pays.** The gateway only saves round trips.
 > Measured in front of a resource that serves 16 queries at once: 11.9 times
 > the throughput of one query per call, 15.4 with parallelism inside the
 > pipeline. With nothing behind it, it only costs: one call every 3.7 µs at
 > best, where a direct call is free. Without a database or a remote service,
 > no gateway. And under WSL2, a `Within` below one millisecond is rounded up
 > by the system clock: 500 µs cost a lone call 1.11 ms. The benchmarks are in
-> [the measurements](../benchmarks.md#the-gateway-against-a-bounded-backend).
+> [the measurements](../benchmarks.md#the-gateway-against-a-bounded-backend),
+> taken 2026-10-22 on one laptop under WSL2.
 > If your traffic is often low, `Eager` removes the wait: a lone call leaves
 > at once, and batches form only when the database slows down. The price is
 > more queries while the database has room to spare
@@ -205,7 +212,7 @@ if err != nil {
 grant, d, err := web.Authorize(principal, policy) // policy: your Authorizer, or ClaimAuthorizer
 ```
 
-> **In plain terms: two recipients, two messages.** The error says *why*
+> **In plain words: two recipients, two messages.** The error says *why*
 > (bad signature, expired token) and goes to your log. The diagnostic
 > rendered to the client says only "refused": explaining to an attacker
 > which half of their forgery was right is telling them how to fix the
@@ -225,12 +232,17 @@ caller; authenticating first keeps it for those you serve. And a refused
 authentication says nothing about the body: an anonymous client does not
 learn which fields your API expects.
 
-`ClaimAuthorizer` builds the grant from the token's own claims; that is
+`ClaimAuthorizer` builds the grant from the token's own claims —
+`DimensionClaims` says which claim carries each dimension's values; that is
 correct only if the token's issuer is your own service. Otherwise,
 implement `Authorizer` against whatever knows the policy. The grant is then
 passed to the database through `tx.SetLocal`, so that PostgreSQL's
 row-level security filters the right tenant's data — without ever writing
-the tenant into the SQL text.
+the tenant into the SQL text. When a rule is decided in Go instead,
+`grant.Allows("region", "eu")` answers it, `grant.Dimension("region")`
+lists what the grant permits on that axis (none means match nothing, never
+"no filter"), and `principal.HasScope("orders:write")` reads the token's
+scopes.
 
 ### Verifier settings
 
@@ -262,7 +274,9 @@ if err := web.Serve(ctx, srv, 10*time.Second, gw); err != nil {
 stopped: on context cancellation, it gives in-flight requests ten seconds
 to finish, then closes what it was handed — the gateway, the database
 connection. A grace of zero means five seconds, as an `httpstream`
-`ShutdownGrace` left at zero does, and a negative grace means no bound. A server without `ReadHeaderTimeout` gets ten seconds by
+`ShutdownGrace` left at zero does, and a negative grace means no bound.
+
+A server without `ReadHeaderTimeout` gets ten seconds by
 default: a client sending its headers one byte at a time cannot hold the
 process hostage. Likewise, a server with neither `IdleTimeout` nor
 `ReadTimeout` gets two minutes: a *keep-alive* connection (kept open for
@@ -274,19 +288,45 @@ them, a client that sends one byte of body and then goes quiet holds the
 handler inside `DecodeJSON` until the forced stop. A handler that streams
 for long, or reads a slow body on purpose, moves its own deadlines with
 `http.NewResponseController(w)` (`SetReadDeadline`, `SetWriteDeadline`); a
-negative value lifts the bound for the whole server. `Recover` turns a
-panic in a handler into a 500 response you observe, instead of killing the
-process and every request in flight.
+negative value lifts the bound for the whole server.
+
+`Recover` turns a panic in a handler into a 500 response you observe,
+instead of killing the process and every request in flight.
+
+### Over TLS, and HTTP/2
+
+Outside the loopback, serve over TLS: `ServeTLS` is `Serve` over TLS, with
+the same default timeouts and the same clean stop.
+
+```go
+srv := &http.Server{Addr: ":8443", Handler: web.Recover(observe, mux)}
+if err := web.ServeTLS(ctx, srv, 10*time.Second, "cert.pem", "key.pem", gw); err != nil {
+    log.Fatal(err)
+}
+```
+
+There is nothing to turn on for HTTP/2: `net/http` offers it through ALPN
+whenever it serves TLS, and a client that asks for it gets it. Nothing
+changes in the pipeline — a batch of one is still a batch of one. What
+changes is on the wire: requests multiplexed on one connection reach the
+server together, where the same requests pipelined over HTTP/1.1 each wait
+for the one before; that is what makes a `gateway` worth having behind a
+single client. The two file names may be empty when `srv.TLSConfig` already
+carries the certificates.
+
+> **In plain words.** ALPN is the TLS extension by which client and server
+> agree on the protocol spoken inside.
 
 Behind a CDN or a TLS-terminating proxy, a request may arrive with the
 header `Early-Data: 1`: the proxy received it in *early data*, sent by the
 client before its TLS handshake ended, which a third party can replay
 as is. `web.EarlyData(allow, h)` answers such a request 425 Too Early,
 unless `allow` accepts it; the client sends it again once its handshake is
-through. Accept only what a duplicate does not hurt — a catalogue read, not
+through. The body of that 425 is `web.TooEarlyReport()`, for a handler that
+refuses early data on its own terms. Accept only what a duplicate does not hurt — a catalogue read, not
 an order.
 
-> **In plain terms.** With no such proxy in front of you, the header never
+> **In plain words.** With no such proxy in front of you, the header never
 > arrives and the wrapper costs one table lookup per request.
 
 ## The complete example

@@ -1,7 +1,7 @@
 # ADR 0009 — One request contract for three protocols
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-15 (what a bounded body costs; `*` for OPTIONS; the authority rule), 2026-10-23 (the response says its payload one way; the body streamed when asked for; what bounds a streamed HTTP/2 body; HTTP/3 streams on manual credit), 2026-10-24 (the default streams: `BodyDelivery`, and `MaxStreamedBodyBytes` left with the bound alone)
+- **Revised:** 2026-10-28 (the authority as received, compared without regard to case; written in the present tense; the absolute-form, the streaming default and its cost stated as delivered); 3 earlier, from 2026-10-15, in its `git log`
 - **Theme:** httpstream
 
 ## Problem
@@ -22,11 +22,23 @@ enforces it:
    refused, not resolved. The value is an authority by one grammar on all
    three (RFC 9110 §7.2: a host, an optional port, no userinfo, never
    empty); `Host: u@h` is refused on HTTP/1.1 as `:authority: u@h` is on
-   HTTP/2 and HTTP/3.
+   HTTP/2 and HTTP/3. It is delivered as received: not lowercased, not
+   stripped of an empty or default port, not decoded — a handler that
+   compares host names compares them without regard to case (RFC 3986
+   §6.2.2.1). The two fields agree when they differ in ASCII case only,
+   the host and the `%` triplets being case-insensitive: a conformant
+   intermediary that lowercases one of them does not get the request
+   refused. A port written on one side and left out on the other is still
+   a disagreement: a port's default depends on the scheme, and judging it
+   here would normalise what the delivered value does not.
 
 2. **Target raw and origin-form.** Begins with `/`, query attached, nothing
    percent-decoded. The one exception is `*` on an `OPTIONS` request (RFC
-   9110 §7.1), accepted on all three; other forms are refused by the parser.
+   9110 §7.1), accepted on all three. An HTTP/1.1 absolute-form
+   (`GET http://host/path`) is reduced to the origin-form before the
+   handler sees it, as RFC 9112 §3.2.2 has a server accept it, its
+   authority bound for the `Host`; the authority-form is CONNECT's, and a
+   CONNECT is answered 501.
 
 3. **Header names keep the case the protocol sent.** The handler matches
    case-insensitively (`Request.Get` does) rather than the package rewriting
@@ -90,14 +102,13 @@ enforces it:
      midway, with `os.ErrDeadlineExceeded` when a wait passes
      `ReadTimeout`.
 
-   - **The default has switched** (a break, 0.3.0). The three protocols
-     stream since fb556c5, and a paired A/B of small h1, h2 and h3
-     requests read noise on all six pairs with identical allocations
-     (`docs/benchmarks.md`, `body_bench_test.go`). The third condition
-     written here — a real consumer had used it — was waived rather than
-     met: the first consumer builds on 0.3.0, so the switch had to be in
-     that release or cost a second breaking version for a change already
-     decided and measured (decision 235: one breaking version).
+   - **Streaming is the default.** The three protocols stream, and a
+     paired A/B of small h1, h2 and h3 requests reads noise on all six
+     pairs with identical allocations (`docs/benchmarks.md`,
+     `body_bench_test.go`). Of the conditions set for making it the
+     default, one — a real consumer had used it — was waived rather than
+     met: the first consumer builds on 0.3.0, the one grouped breaking
+     version, and a later switch would have cost a second.
 
 5. **The cookie arrives whole.** HTTP/2 and HTTP/3 let a client split its
    `Cookie` into one field per pair (RFC 9113 §8.2.3, RFC 9114 §4.2.1);
@@ -123,27 +134,26 @@ protocols; anything the contract does not promise is explicitly not
 portable, and a handler relying on it anyway has a documented bug rather
 than a surprise.
 
-Article 4 has a cost, and it is accepted rather than streamed away: a
-connection's read buffer grows toward one request at its ceiling —
-request line, headers and body bounds together, about 1 MiB at the
-defaults — and holds it for `ReadTimeout` at most before an unfinished
-request is refused. The server's bound is that sum times `MaxConns`; a
-server without `MaxConns` has none. Streaming the body instead would hand
-the handler a request whose framing is still open, which is exactly what
-the contract exists to remove, and every `web/stream` stage would have to
-learn a partial element. It is revisited if a workload needs request
-bodies that do not fit in memory (uploads); until then the bound is a
-configuration, not a design.
+A body held whole (`BodyWhole`) has a cost: a connection's read buffer
+grows toward one request at its ceiling — request line, headers and body
+bounds together, about 1 MiB at the defaults — and holds it for
+`ReadTimeout` at most before an unfinished request is refused. The
+server's bound is that sum times `MaxConns`; a server without `MaxConns`
+has none. That cost is why the default streams: a streamed body hands the
+handler a request whose framing is still open, which the handler reads
+through `Request.Stream`, bounded by `MaxStreamedBodyBytes` and paced by
+`ReadTimeout` per wait.
 
-That workload is the library's own philosophy — process on arrival, bounded
-memory, backpressure — so article 4 now carries its streaming form. Keeping
+Streaming is the library's own philosophy — process on arrival, bounded
+memory, backpressure — so article 4 carries its streaming form. Keeping
 `Body` for a body whole in the first read keeps the batch, which is the unit
 of transport; a `Source` on the request rather than a second `Handler` type
-keeps one contract, and a handler that ignores the stream keeps working
-while the bound is zero. Returning a stream's window on consumption is what
-makes backpressure a property of the protocol rather than of the server's
-memory; returning the connection's on arrival is what keeps one unread body
-from stalling the others.
+keeps one contract, and a handler that wants the body whole asks for it
+(`Config.BodyDelivery = BodyWhole`) and never sees a stream. Returning a
+stream's window on consumption is what makes backpressure a property of
+the protocol rather than of the server's memory; returning the
+connection's on arrival is what keeps one unread body from stalling the
+others.
 
 Counting a streamed body against the aggregate bound as well was the first
 form and was measured wrong: two concurrent uploads, each within its window,

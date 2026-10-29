@@ -80,8 +80,8 @@ func FuzzDistinctMatchesReference(f *testing.F) {
 // FuzzDistinctWindowOfOneSuppressesOnlyRuns pins the bound for the smallest
 // window: with a window of one, a key can only be suppressed if it repeats
 // immediately, so any other suppression proves the operator remembered more
-// than one key. It is the S1 bound observed through behaviour at window=1 —
-// the general case, every window against the oracle, is
+// than one key. It is the architecture's S1 bound observed through behaviour at
+// window=1 — the general case, every window against the oracle, is
 // FuzzDistinctMatchesReference above.
 func FuzzDistinctWindowOfOneSuppressesOnlyRuns(f *testing.F) {
 	f.Add(1, 2, 3)

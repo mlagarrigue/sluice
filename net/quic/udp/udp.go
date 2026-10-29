@@ -26,13 +26,23 @@
 //   - macOS: IP_DONTFRAG / IPV6_DONTFRAG. The kernel refuses, with
 //     EMSGSIZE at send time, a datagram larger than the outgoing interface
 //     MTU. No flow-label control exists; the label stays whatever the
-//     kernel chooses. Tested here.
+//     kernel chooses. Tested here. A path MTU the kernel holds for the
+//     destination below 1200 bytes — kept in its host route, where an ICMP
+//     Fragmentation Needed writes it — does not refuse the 1200-byte
+//     datagram, so no option like PROBE is needed: CI installs a host
+//     route of MTU 600 and sends through it (pmtu_cache_darwin_test.go).
 //   - Windows: IP_DONTFRAGMENT / IPV6_DONTFRAG. Winsock refuses, with
 //     WSAEMSGSIZE at send time, a datagram larger than the outgoing
 //     interface MTU. No flow-label control exists. SIO_UDP_CONNRESET is
 //     turned off, best-effort, so an ICMP port-unreachable for an earlier
 //     send no longer surfaces as WSAECONNRESET on the next read. Tested
-//     here.
+//     here. DF is set through IP_MTU_DISCOVER / IPV6_MTU_DISCOVER at
+//     IP_PMTUDISC_PROBE, which Winsock documents as refusing only past the
+//     interface MTU and ignoring the path MTU it holds for the destination;
+//     IP_DONTFRAGMENT takes over on a stack without the mode. The mode is
+//     read back here; its effect on a cached path MTU is Winsock's
+//     documented one, not measured, since no route MTU stands in for the
+//     cache on Windows and filling it would take a forged ICMP.
 //   - Anything else: [Configure] returns [errors.ErrUnsupported] and
 //     changes nothing. The socket still works; it just may be fragmented,
 //     and the [quic] package then keeps its datagrams at 1200 bytes rather
@@ -160,9 +170,11 @@ func EnablePacketInfo(c *net.UDPConn) error {
 
 // PacketDestination finds, in the out-of-band bytes of one datagram read
 // from a socket [EnablePacketInfo] was applied to, the local address the
-// datagram reached and the index of the interface it arrived on. An
-// AF_INET socket reports an IPv4 address; an AF_INET6 one reports IPv4
-// traffic as IPv4-mapped. ok is false when oob carries no such message.
+// datagram reached and the index of the interface it arrived on. IPv4
+// traffic is reported as plain IPv4 on every system and every socket,
+// AF_INET or dual-stack AF_INET6 — where Linux and macOS hand it over
+// IPv4-mapped and Windows does not — and [AppendPacketSource] takes that
+// form back on either socket. ok is false when oob carries no such message.
 // It does not allocate.
 func PacketDestination(oob []byte) (dst netip.Addr, ifindex int, ok bool) {
 	return packetDestination(oob)
@@ -172,8 +184,9 @@ func PacketDestination(oob []byte) (dst netip.Addr, ifindex int, ok bool) {
 // datagram sent with [net.UDPConn.WriteMsgUDP] leave from src. ifindex
 // pins the outgoing interface and is only needed for a link-local src;
 // zero leaves the choice to routing. src should be what
-// [PacketDestination] reported on the same socket: an IPv4 address for an
-// AF_INET socket, an IPv6 or IPv4-mapped one for an AF_INET6 socket. Where
+// [PacketDestination] reported on the same socket: an IPv4 address for IPv4
+// traffic, on an AF_INET socket or a dual-stack one, and an IPv6 address
+// otherwise; an IPv4-mapped one is taken too. Where
 // [EnablePacketInfo] is unsupported, oob is returned unchanged.
 func AppendPacketSource(oob []byte, src netip.Addr, ifindex int) []byte {
 	return appendPacketSource(oob, src, ifindex)

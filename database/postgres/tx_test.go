@@ -8,6 +8,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -66,7 +67,7 @@ func setConfigCycle() [][]byte {
 
 func TestBeginCommit(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{cmdCycle("BEGIN"), cmdCycle("COMMIT")}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	tx, err := conn.Begin(t.Context(), TxConfig{})
 	if err != nil {
@@ -84,7 +85,7 @@ func TestBeginCommit(t *testing.T) {
 // deferred Rollback beside a Commit on the success path must send nothing.
 func TestRollbackAfterCommitIsANoOp(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{cmdCycle("BEGIN"), cmdCycle("COMMIT")}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	tx, err := conn.Begin(t.Context(), TxConfig{})
 	if err != nil {
@@ -116,7 +117,7 @@ func TestBeginOptionsReachTheStatement(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := &fakeServer{responses: [][]byte{cmdCycle("BEGIN"), cmdCycle("ROLLBACK")}}
-			conn := NewConn(srv)
+			conn := NewConn(srv, Config{})
 			tx, err := conn.Begin(t.Context(), tc.opts)
 			if err != nil {
 				t.Fatal(err)
@@ -131,7 +132,7 @@ func TestBeginOptionsReachTheStatement(t *testing.T) {
 
 func TestBeginRejectsAnUnknownIsolationLevel(t *testing.T) {
 	srv := &fakeServer{}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	if _, err := conn.Begin(t.Context(), TxConfig{Isolation: IsolationLevel(9)}); err == nil {
 		t.Fatal("Begin accepted an isolation level that does not exist")
 	}
@@ -144,7 +145,7 @@ func TestBeginRejectsAnUnknownIsolationLevel(t *testing.T) {
 // COMMIT close somebody else's transaction. It must be refused here.
 func TestBeginRefusesASecondTransaction(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{cmdCycle("BEGIN"), cmdCycle("ROLLBACK")}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	tx, err := conn.Begin(t.Context(), TxConfig{})
 	if err != nil {
@@ -167,7 +168,7 @@ func TestBeginRefusesASecondTransaction(t *testing.T) {
 // whether one is already open.
 func TestCopyRefusesToNestInsideATransaction(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{cmdCycle("BEGIN")}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	if _, err := conn.Begin(t.Context(), TxConfig{}); err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +186,7 @@ func TestCopyRefusesToNestInsideATransaction(t *testing.T) {
 // cannot be closed by someone else's.
 func TestBeginRefusedWhileACopyHoldsATransaction(t *testing.T) {
 	srv := &fakeServer{responses: txCycle()}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	cp, err := conn.CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)", CopyConfig{RowsPerTx: 100})
 	if err != nil {
 		t.Fatal(err)
@@ -209,7 +210,7 @@ func TestBeginRefusedWhileACopyHoldsATransaction(t *testing.T) {
 // appear in the SQL the client sends.
 func TestSetLocalNeverPutsTheValueIntoSQL(t *testing.T) {
 	srv := &fakeServer{responses: append([][]byte{cmdCycle("BEGIN")}, setConfigCycle()...)}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	tx, err := conn.Begin(t.Context(), TxConfig{})
 	if err != nil {
@@ -256,7 +257,7 @@ func TestSetLocalRejectsHostileNames(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			srv := &fakeServer{responses: [][]byte{cmdCycle("BEGIN")}}
-			conn := NewConn(srv)
+			conn := NewConn(srv, Config{})
 			tx, err := conn.Begin(t.Context(), TxConfig{})
 			if err != nil {
 				t.Fatal(err)
@@ -328,7 +329,7 @@ func bindParams(t *testing.T, srv *fakeServer) [][][]byte {
 
 func TestSetLocalTimeoutRoundsUpAndRefusesZero(t *testing.T) {
 	srv := &fakeServer{responses: append([][]byte{cmdCycle("BEGIN")}, setConfigCycle()...)}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	tx, err := conn.Begin(t.Context(), TxConfig{})
 	if err != nil {
 		t.Fatal(err)
@@ -370,7 +371,7 @@ func TestSetLocalTimeoutRoundsUpAndRefusesZero(t *testing.T) {
 // three round trips for a row nobody reads.
 func TestSetLocalIsOneRoundTrip(t *testing.T) {
 	srv := &fakeServer{responses: append([][]byte{cmdCycle("BEGIN")}, setConfigCycle()...)}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	tx, err := conn.Begin(t.Context(), TxConfig{})
 	if err != nil {
 		t.Fatal(err)
@@ -395,7 +396,7 @@ func TestExecDerivesTransactionStateFromReadyForQuery(t *testing.T) {
 		append(beCommandComplete("COMMIT"), frame(pgwire.BackendReadyForQuery, "I")...),
 		cmdCycle("BEGIN"),
 	}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	ctx := t.Context()
 
 	if err := conn.Exec(ctx, "BEGIN"); err != nil {
@@ -421,7 +422,7 @@ func TestAFailedTransactionBlockStillRefusesBegin(t *testing.T) {
 		append(beCommandComplete("BEGIN"), frame(pgwire.BackendReadyForQuery, "T")...),
 		append(beErrorResponse("42703", "column does not exist"), frame(pgwire.BackendReadyForQuery, "E")...),
 	}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	ctx := t.Context()
 	if err := conn.Exec(ctx, "BEGIN"); err != nil {
 		t.Fatal(err)
@@ -444,7 +445,7 @@ func TestCommitInAbortedBlockReportsRollback(t *testing.T) {
 		append(beCommandComplete("ROLLBACK"), frame(pgwire.BackendReadyForQuery, "I")...),
 		cmdCycle("BEGIN"),
 	}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	ctx := t.Context()
 
 	tx, err := conn.Begin(ctx, TxConfig{})
@@ -477,7 +478,7 @@ func TestCommitRefusesARollbackTagWithoutAFailedStatus(t *testing.T) {
 		append(beCommandComplete("BEGIN"), frame(pgwire.BackendReadyForQuery, "T")...),
 		append(beCommandComplete("ROLLBACK"), frame(pgwire.BackendReadyForQuery, "I")...),
 	}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	tx, err := conn.Begin(t.Context(), TxConfig{})
 	if err != nil {
@@ -495,7 +496,7 @@ func TestCommitRefusesARollbackTagWithoutAFailedStatus(t *testing.T) {
 // could not be bounded must not be handed back as if it had been.
 func TestBeginTimeoutIsAppliedAndFailsClosed(t *testing.T) {
 	srv := &fakeServer{responses: append([][]byte{cmdCycle("BEGIN")}, setConfigCycle()...)}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	tx, err := conn.Begin(t.Context(), TxConfig{Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("Begin returned %v", err)
@@ -522,7 +523,7 @@ func TestBeginRollsBackWhenTheTimeoutCannotBeSet(t *testing.T) {
 		refused,
 		cmdCycle("ROLLBACK"),
 	}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	if _, err := conn.Begin(t.Context(), TxConfig{Timeout: time.Second}); err == nil {
 		t.Fatal("Begin returned a transaction that is not bounded the way it was asked to be")
@@ -541,7 +542,7 @@ func TestBeginRollsBackWhenTheTimeoutCannotBeSet(t *testing.T) {
 // ordinary. It must be an error.
 func TestQueryConsumedAfterCommitFails(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{cmdCycle("BEGIN"), cmdCycle("COMMIT")}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	tx, err := conn.Begin(t.Context(), TxConfig{})
 	if err != nil {
@@ -569,7 +570,7 @@ func TestQueryConsumedAfterCommitFails(t *testing.T) {
 // A Source built after the transaction ended never runs either.
 func TestQueryBuiltAfterCommitFails(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{cmdCycle("BEGIN"), cmdCycle("COMMIT")}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	tx, err := conn.Begin(t.Context(), TxConfig{})
 	if err != nil {
 		t.Fatal(err)
@@ -586,7 +587,7 @@ func TestQueryBuiltAfterCommitFails(t *testing.T) {
 
 func TestTxOperationsAfterEndAreRefused(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{cmdCycle("BEGIN"), cmdCycle("COMMIT")}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	tx, err := conn.Begin(t.Context(), TxConfig{})
 	if err != nil {
 		t.Fatal(err)
@@ -618,7 +619,7 @@ func TestSavepointRoundTrip(t *testing.T) {
 		cmdCycle("RELEASE"),
 		cmdCycle("COMMIT"),
 	}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	tx, err := conn.Begin(t.Context(), TxConfig{})
 	if err != nil {
 		t.Fatal(err)
@@ -657,7 +658,7 @@ func TestSavepointRejectsHostileNames(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			srv := &fakeServer{responses: [][]byte{cmdCycle("BEGIN")}}
-			conn := NewConn(srv)
+			conn := NewConn(srv, Config{})
 			tx, err := conn.Begin(t.Context(), TxConfig{})
 			if err != nil {
 				t.Fatal(err)
@@ -675,7 +676,7 @@ func TestSavepointRejectsHostileNames(t *testing.T) {
 
 func TestBeginRefusesACancelledContext(t *testing.T) {
 	srv := &fakeServer{}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if _, err := conn.Begin(ctx, TxConfig{}); !errors.Is(err, context.Canceled) {
@@ -702,7 +703,7 @@ func equalStrings(a, b []string) bool {
 // Kept separate so neither test can pass for the other's reason.
 func TestSetLocalSucceeds(t *testing.T) {
 	srv := &fakeServer{responses: append([][]byte{cmdCycle("BEGIN")}, setConfigCycle()...)}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	tx, err := conn.Begin(t.Context(), TxConfig{})
 	if err != nil {
 		t.Fatal(err)
@@ -723,7 +724,7 @@ func TestSavepointsSendsThemAllBeforeReadingAny(t *testing.T) {
 	responses = append(responses, cmdCycle("COMMIT"))
 
 	srv := &fakeServer{responses: responses}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	tx, err := conn.Begin(t.Context(), TxConfig{})
 	if err != nil {
 		t.Fatal(err)
@@ -750,7 +751,7 @@ func TestSavepointsAreUsable(t *testing.T) {
 		cmdCycle("ROLLBACK"),
 		cmdCycle("COMMIT"),
 	}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	ctx := t.Context()
 	tx, err := conn.Begin(ctx, TxConfig{})
 	if err != nil {
@@ -787,7 +788,7 @@ func TestSavepointsAreUsable(t *testing.T) {
 // sent if any one of them is refused, rather than half a list.
 func TestSavepointsRejectHostileNamesBeforeSendingAnything(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{cmdCycle("BEGIN")}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	tx, err := conn.Begin(t.Context(), TxConfig{})
 	if err != nil {
 		t.Fatal(err)
@@ -824,7 +825,7 @@ func TestSavepointsRejectHostileNamesBeforeSendingAnything(t *testing.T) {
 
 func TestSavepointsEmptyAndFinished(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{cmdCycle("BEGIN"), cmdCycle("COMMIT")}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	ctx := t.Context()
 	tx, err := conn.Begin(ctx, TxConfig{})
 	if err != nil {
@@ -862,7 +863,7 @@ func TestExecCommitInAbortedBlockReportsRollback(t *testing.T) {
 	rolledBack := append(beCommandComplete("ROLLBACK"), frame(pgwire.BackendReadyForQuery, "I")...)
 	for _, commit := range []string{"COMMIT", "commit;", "  /* a /* nested */ note */ END", "-- done\nCommit and chain", "PREPARE TRANSACTION 'x'"} {
 		t.Run(commit, func(t *testing.T) {
-			conn := NewConn(abortedBlock(rolledBack))
+			conn := NewConn(abortedBlock(rolledBack), Config{})
 			ctx := t.Context()
 			if err := conn.Exec(ctx, "BEGIN"); err != nil {
 				t.Fatal(err)
@@ -885,7 +886,7 @@ func TestExecCommitInAbortedBlockReportsRollback(t *testing.T) {
 func TestExecRollbackInAbortedBlockSucceeds(t *testing.T) {
 	rolledBack := append(beCommandComplete("ROLLBACK"), frame(pgwire.BackendReadyForQuery, "I")...)
 	for _, rollback := range []string{"ROLLBACK", "abort", "/* commit */ ROLLBACK"} {
-		conn := NewConn(abortedBlock(rolledBack))
+		conn := NewConn(abortedBlock(rolledBack), Config{})
 		ctx := t.Context()
 		_ = conn.Exec(ctx, "BEGIN")
 		_ = conn.Exec(ctx, "SELECT nope")
@@ -902,7 +903,7 @@ func TestExecCommitThatCommittedSucceeds(t *testing.T) {
 		append(beCommandComplete("BEGIN"), frame(pgwire.BackendReadyForQuery, "T")...),
 		append(append(beCommandComplete("COMMIT"), beCommandComplete("ROLLBACK")...), frame(pgwire.BackendReadyForQuery, "I")...),
 	}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	ctx := t.Context()
 	if err := conn.Exec(ctx, "BEGIN"); err != nil {
 		t.Fatal(err)
@@ -914,7 +915,7 @@ func TestExecCommitThatCommittedSucceeds(t *testing.T) {
 
 // Tx.Exec is the other door to the same statement.
 func TestTxExecCommitInAbortedBlockReportsRollback(t *testing.T) {
-	conn := NewConn(abortedBlock(append(beCommandComplete("ROLLBACK"), frame(pgwire.BackendReadyForQuery, "I")...)))
+	conn := NewConn(abortedBlock(append(beCommandComplete("ROLLBACK"), frame(pgwire.BackendReadyForQuery, "I")...)), Config{})
 	ctx := t.Context()
 	tx, err := conn.Begin(ctx, TxConfig{})
 	if err != nil {
@@ -964,25 +965,34 @@ func TestAsksToCommit(t *testing.T) {
 // one of them failed: once the connection broke, the socket is off limits.
 type tripwire struct {
 	*fakeServer
-	tripped bool
-	after   int
+	mu         sync.Mutex // a client may read and write on two goroutines, as Tx.Savepoints does
+	tripped    bool
+	after      int // socket calls after the first failed read
+	readsAfter int // the reads among them
 }
 
 func (w *tripwire) Read(p []byte) (int, error) {
+	w.mu.Lock()
 	if w.tripped {
 		w.after++
+		w.readsAfter++
 	}
+	w.mu.Unlock()
 	n, err := w.fakeServer.Read(p)
 	if err != nil {
+		w.mu.Lock()
 		w.tripped = true
+		w.mu.Unlock()
 	}
 	return n, err
 }
 
 func (w *tripwire) Write(p []byte) (int, error) {
+	w.mu.Lock()
 	if w.tripped {
 		w.after++
 	}
+	w.mu.Unlock()
 	return w.fakeServer.Write(p)
 }
 
@@ -993,7 +1003,7 @@ func TestBrokenConnectionRefusesEveryEntryPoint(t *testing.T) {
 	w := &tripwire{fakeServer: &fakeServer{responses: [][]byte{
 		append(beCommandComplete("BEGIN"), frame(pgwire.BackendReadyForQuery, "T")...),
 	}}}
-	conn := NewConn(w)
+	conn := NewConn(w, Config{})
 	ctx := t.Context()
 	tx, err := conn.Begin(ctx, TxConfig{})
 	if err != nil {
@@ -1047,7 +1057,7 @@ func TestSavepointsStopsReadingOnceBroken(t *testing.T) {
 	w := &tripwire{fakeServer: &fakeServer{responses: [][]byte{
 		append(beCommandComplete("BEGIN"), frame(pgwire.BackendReadyForQuery, "T")...),
 	}}}
-	conn := NewConn(w)
+	conn := NewConn(w, Config{})
 	tx, err := conn.Begin(t.Context(), TxConfig{})
 	if err != nil {
 		t.Fatal(err)
@@ -1055,8 +1065,12 @@ func TestSavepointsStopsReadingOnceBroken(t *testing.T) {
 	if err := tx.Savepoints(t.Context(), "a", "b", "c"); !errors.Is(err, ErrConnBroken) {
 		t.Fatalf("Savepoints returned %v, want ErrConnBroken", err)
 	}
-	if w.after != 0 {
-		t.Errorf("Savepoints touched the socket %d more times after it failed", w.after)
+	// Reads only: the SAVEPOINTs are sent while the answers are read, so
+	// the write may still be finishing when the first read fails.
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.readsAfter != 0 {
+		t.Errorf("Savepoints read the socket %d more times after a read failed", w.readsAfter)
 	}
 }
 
@@ -1065,7 +1079,7 @@ func TestSavepointsStopsReadingOnceBroken(t *testing.T) {
 // a negative statement_timeout is a server error the caller did not ask for.
 func TestSetLocalTimeoutDoesNotOverflow(t *testing.T) {
 	srv := &fakeServer{responses: append([][]byte{cmdCycle("BEGIN")}, setConfigCycle()...)}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	tx, err := conn.Begin(t.Context(), TxConfig{})
 	if err != nil {
 		t.Fatal(err)

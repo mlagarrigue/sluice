@@ -42,7 +42,10 @@ const (
 // endpoint that announces no data credit has announced none, and a peer that
 // honours it can send nothing at all. The zero value is therefore not usable
 // and [Dial], accept and [NewListener] refuse it with [ErrZeroParameters]:
-// start from [DefaultParameters] and change what you need.
+// start from [DefaultParameters] and change what you need. They refuse too,
+// with an error naming the field, a count past 2^62-1 — the most a
+// transport parameter can carry (RFC 9000 §16, §18.2) — and a stream count
+// past 2^60 (§4.6).
 type TransportParameters struct {
 	// MaxIdleTimeout ends a connection nobody is using. Zero means no
 	// timeout, which is the one default the RFC allows and this package does
@@ -60,6 +63,13 @@ type TransportParameters struct {
 
 	// InitialMaxData bounds everything the peer may send on all streams
 	// together, and the three below bound it per stream and per stream count.
+	//
+	// The stream counts are also a memory budget the peer spends at will: a
+	// STREAM frame of a few bytes on identifier n opens every stream of its
+	// type below n at once (RFC 9000 §3.2), each a Stream, a channel and two
+	// table entries, so InitialMaxStreamsBidi and InitialMaxStreamsUni are
+	// what one connection may make this end hold, and a Listener holds that
+	// MaxConns times.
 	InitialMaxData                 uint64
 	InitialMaxStreamDataUni        uint64
 	InitialMaxStreamDataBidiLocal  uint64
@@ -104,7 +114,10 @@ type TransportParameters struct {
 	// RetrySourceCID is the identifier a server put on the Retry packet it
 	// sent, echoed so the client can bind the connection it ends up with to
 	// the Retry that redirected it — present only when a Retry happened.
-	retrySourceCID []byte
+	// hasRetrySourceCID says it was present: a Retry may carry a
+	// zero-length identifier, whose echo is as empty as its absence.
+	retrySourceCID    []byte
+	hasRetrySourceCID bool
 
 	// ActiveConnIDLimit is how many of the peer's connection identifiers
 	// this endpoint will keep active at once (§18.2; the protocol minimum
@@ -281,7 +294,7 @@ func (a CongestionAlgorithm) String() string {
 	return "CongestionAlgorithm(" + strconv.Itoa(int(a)) + ")"
 }
 
-// PreferredAddress is RFC 9000 §18.2's preferred_address: up to one
+// preferredAddress is RFC 9000 §18.2's preferred_address: up to one
 // address per family a server would rather be reached at, the connection
 // identifier (sequence 1) a client must use there, and that identifier's
 // stateless reset token. A family not offered is nil here and all-zero on
@@ -371,6 +384,32 @@ func parsePreferredAddress(val []byte) (*preferredAddress, error) {
 // kind announced, which no caller can mean literally.
 var ErrZeroParameters = errors.New("quic: zero TransportParameters announce no credit at all — start from DefaultParameters()")
 
+// Validate reports what [Dial], [DialEarly] and [NewListener] would refuse
+// in p — the zero value, a count past what the wire can carry, a
+// MaxDatagramSize no path can carry — and nil when they would accept it. A
+// configuration read at deployment is checked with it before any socket is
+// opened; the three run the same check.
+func (p TransportParameters) Validate() error { return p.check() }
+
+// earlyCredit refuses, for a listener with EarlyData, parameters under
+// which a client can send no stream byte in 0-RTT: the connection's credit
+// at zero, or no stream the client may open — bidirectional or
+// unidirectional — with a window of its own (RFC 9000 §7.4.1: 0-RTT is
+// sent under the remembered values, and these are what the client
+// remembers). The error names the field.
+func (p TransportParameters) earlyCredit() error {
+	if p.InitialMaxData == 0 {
+		return fmt.Errorf("%w: ListenerConfig.EarlyData with TransportParameters.InitialMaxData at zero — a client could send no byte in 0-RTT", ErrQUIC)
+	}
+	bidi := p.InitialMaxStreamsBidi > 0 && p.InitialMaxStreamDataBidiRemote > 0
+	uni := p.InitialMaxStreamsUni > 0 && p.InitialMaxStreamDataUni > 0
+	if !bidi && !uni {
+		return fmt.Errorf("%w: ListenerConfig.EarlyData with no stream a client may open and send on — "+
+			"TransportParameters.InitialMaxStreamsBidi and InitialMaxStreamDataBidiRemote, or InitialMaxStreamsUni and InitialMaxStreamDataUni, at zero", ErrQUIC)
+	}
+	return nil
+}
+
 // check refuses the zero value, which would announce a connection that
 // cannot move, and a MaxDatagramSize no path can carry.
 func (p TransportParameters) check() error {
@@ -378,6 +417,32 @@ func (p TransportParameters) check() error {
 		p.InitialMaxStreamDataUni == 0 && p.InitialMaxStreamDataBidiLocal == 0 && p.InitialMaxStreamDataBidiRemote == 0 &&
 		p.InitialMaxStreamsBidi == 0 && p.InitialMaxStreamsUni == 0 && p.ActiveConnIDLimit == 0 {
 		return ErrZeroParameters
+	}
+	// Every count here travels as a variable-length integer (§18.2), which
+	// carries up to varint.Max; the stream counts stop lower, at
+	// maxStreamsLimit (§4.6). Past those, appendParameters would panic on
+	// the first handshake — on a Listener, on the socket's read goroutine,
+	// at the first valid Initial of any client — so the refusal is here,
+	// where the caller is.
+	for _, f := range [...]struct {
+		name string
+		v    uint64
+	}{
+		{"InitialMaxData", p.InitialMaxData},
+		{"InitialMaxStreamDataUni", p.InitialMaxStreamDataUni},
+		{"InitialMaxStreamDataBidiLocal", p.InitialMaxStreamDataBidiLocal},
+		{"InitialMaxStreamDataBidiRemote", p.InitialMaxStreamDataBidiRemote},
+		{"ActiveConnIDLimit", p.ActiveConnIDLimit},
+	} {
+		if f.v > varint.Max {
+			return fmt.Errorf("quic: %s %d is past 2^62-1, the most a transport parameter can carry", f.name, f.v)
+		}
+	}
+	if n := p.InitialMaxStreamsBidi; n > maxStreamsLimit {
+		return fmt.Errorf("quic: InitialMaxStreamsBidi %d is past 2^60, the most streams RFC 9000 §4.6 allows", n)
+	}
+	if n := p.InitialMaxStreamsUni; n > maxStreamsLimit {
+		return fmt.Errorf("quic: InitialMaxStreamsUni %d is past 2^60, the most streams RFC 9000 §4.6 allows", n)
 	}
 	if n := p.MaxDatagramSize; n != 0 && (n < pmtuBaseSize || n > pmtuMaxSize) {
 		return fmt.Errorf("quic: MaxDatagramSize %d is outside %d..%d", n, pmtuBaseSize, pmtuMaxSize)
@@ -421,7 +486,7 @@ func DefaultParameters() TransportParameters {
 	}
 }
 
-// AppendParameters encodes the parameters as the TLS extension carries them:
+// appendParameters encodes the parameters as the TLS extension carries them:
 // a sequence of identifier, length and value, all variable-length integers
 // except the value.
 func appendParameters(dst []byte, p TransportParameters) []byte {
@@ -500,7 +565,12 @@ func parseParameters(b []byte) (TransportParameters, error) {
 	// peer itself repeats is the same malformed block. The defined
 	// identifiers all sit below 64 and take a bit each; anything above
 	// (extensions, §18.1's reserved values) goes in a slice no longer than
-	// the block has parameters.
+	// the block has parameters, sorted and checked for a repeat once the
+	// block is read. A scan of every earlier identifier at each one cost the
+	// square of their count, which the peer chooses at three bytes an
+	// identifier: 19,000 of them fit a 64 KiB ClientHello (§7.4.2 has them
+	// ignored, not refused). Refusing at the end rather than at the repeat
+	// changes nothing: the block is refused whole either way.
 	var seen uint64
 	var seenHigh []uint64
 	for len(b) > 0 {
@@ -529,9 +599,6 @@ func parseParameters(b []byte) (TransportParameters, error) {
 			}
 			seen |= bit
 		} else {
-			if slices.Contains(seenHigh, id) {
-				return p, parameterError(fmt.Errorf("%w: transport parameter %#x appears twice", ErrQUIC, id))
-			}
 			seenHigh = append(seenHigh, id)
 		}
 
@@ -544,7 +611,7 @@ func parseParameters(b []byte) (TransportParameters, error) {
 			// slice alone cannot tell the two apart.
 			p.initialSourceCID, p.hasInitialSourceCID = val, true
 		case paramRetrySourceCID:
-			p.retrySourceCID = val
+			p.retrySourceCID, p.hasRetrySourceCID = val, true
 		case paramStatelessResetToken:
 			p.sawStatelessResetToken = true
 			if len(val) != 16 {
@@ -624,6 +691,12 @@ func parseParameters(b []byte) (TransportParameters, error) {
 				p.MaxAckDelay = idleDuration(v)
 				p.sawMaxAckDelay = true
 			}
+		}
+	}
+	slices.Sort(seenHigh)
+	for i := 1; i < len(seenHigh); i++ {
+		if seenHigh[i] == seenHigh[i-1] {
+			return p, parameterError(fmt.Errorf("%w: transport parameter %#x appears twice", ErrQUIC, seenHigh[i]))
 		}
 	}
 	if seen&(1<<paramMaxUDPPayloadSize) == 0 {

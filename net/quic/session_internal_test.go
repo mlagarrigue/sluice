@@ -22,7 +22,7 @@ func (m mapSessionCache) Put(key string, cs *tls.ClientSessionState) {
 	m[key] = cs
 }
 
-// RFC 9001 §4.5, RFC 8446 Appendix C.4: a ticket is presented once. The
+// RFC 9001 §4.5, RFC 9846 Appendix C.4: a ticket is presented once. The
 // wrapper hands a session out and removes it in the same Get; a miss
 // touches nothing; a Put goes through so the server's next ticket lands.
 func TestSingleUseSessionCacheHandsATicketOutOnce(t *testing.T) {

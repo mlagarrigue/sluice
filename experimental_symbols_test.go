@@ -38,18 +38,27 @@ func TestExperimentalSymbolsMatchTheirList(t *testing.T) {
 			listed = append(listed, line)
 		}
 	}
-	var marked []string
+	var marked, loose []string
 	for path, synopsis := range docs {
 		if strings.Contains(strings.ToLower(synopsis), "experiment") {
 			continue // the whole package is outside the promise
 		}
 		rel := strings.TrimPrefix(strings.TrimPrefix(path, module), "/")
-		marked = append(marked, markedSymbols(t, rel)...)
+		m, l := markedSymbols(t, rel)
+		marked, loose = append(marked, m...), append(loose, l...)
 	}
 	slices.Sort(listed)
 	slices.Sort(marked)
 	if !slices.Equal(listed, marked) {
 		t.Errorf("%s lists %q;\nthe symbols whose documentation has an \"Experimental:\" paragraph are %q", experimentalSymbols, listed, marked)
+	}
+	// A symbol that calls itself experimental in any other words claims an
+	// exemption nothing gives: gateway.Partitions said "Partitions is
+	// experimental" for weeks while scripts/check-api.sh held it to the v1
+	// promise.
+	slices.Sort(loose)
+	for _, s := range loose {
+		t.Errorf("%s says it is experimental outside an \"Experimental:\" paragraph, so the v1 promise still covers it: open the paragraph and list it, or drop the word", s)
 	}
 	if len(marked) == 0 {
 		t.Error("no symbol is marked experimental: the HTTP/3 entry points of net/httpstream should be")
@@ -58,8 +67,9 @@ func TestExperimentalSymbolsMatchTheirList(t *testing.T) {
 
 // markedSymbols returns, in apidiff's spelling, the exported symbols of the
 // package in dir whose documentation has a paragraph starting with
-// "Experimental:".
-func markedSymbols(t *testing.T, dir string) []string {
+// "Experimental:", and apart those whose documentation says "is
+// experimental" without one.
+func markedSymbols(t *testing.T, dir string) (marked, loose []string) {
 	t.Helper()
 	fset := token.NewFileSet()
 	matches, err := filepath.Glob(filepath.Join(filepath.FromSlash(dir+"/"), "*.go"))
@@ -81,7 +91,7 @@ func markedSymbols(t *testing.T, dir string) []string {
 		files = append(files, f)
 	}
 	if len(files) == 0 {
-		return nil
+		return nil, nil
 	}
 	p, err := doc.NewFromFiles(fset, files, dir)
 	if err != nil {
@@ -95,32 +105,29 @@ func markedSymbols(t *testing.T, dir string) []string {
 		}
 		return false
 	}
-	var out []string
-	add := func(name string) { out = append(out, dir+"."+name) }
-	for _, f := range p.Funcs {
-		if isMarked(f.Doc) {
-			add(f.Name)
+	add := func(name, text string) {
+		switch {
+		case isMarked(text):
+			marked = append(marked, dir+"."+name)
+		case strings.Contains(strings.ToLower(text), "is experimental"):
+			loose = append(loose, dir+"."+name)
 		}
+	}
+	for _, f := range p.Funcs {
+		add(f.Name, f.Doc)
 	}
 	for _, typ := range p.Types {
-		if isMarked(typ.Doc) {
-			add(typ.Name)
-		}
+		add(typ.Name, typ.Doc)
 		for _, f := range typ.Funcs {
-			if isMarked(f.Doc) {
-				add(f.Name)
-			}
+			add(f.Name, f.Doc)
 		}
 		for _, m := range typ.Methods {
-			if !isMarked(m.Doc) {
-				continue
-			}
 			if strings.HasPrefix(m.Recv, "*") {
-				add("(*" + typ.Name + ")." + m.Name)
+				add("(*"+typ.Name+")."+m.Name, m.Doc)
 			} else {
-				add(typ.Name + "." + m.Name)
+				add(typ.Name+"."+m.Name, m.Doc)
 			}
 		}
 	}
-	return out
+	return marked, loose
 }

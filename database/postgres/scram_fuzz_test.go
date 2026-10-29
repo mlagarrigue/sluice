@@ -219,7 +219,7 @@ func FuzzAuthenticate(f *testing.F) {
 	f.Add([]byte{})
 
 	f.Fuzz(func(t *testing.T, stream []byte) {
-		c := NewConn(fuzzPeer{bytes.NewReader(stream)})
+		c := NewConn(fuzzPeer{bytes.NewReader(stream)}, Config{})
 		err := c.authenticate(Config{User: "u", Password: "pw"}, nil)
 		if err == nil {
 			// Success ends at a ReadyForQuery and leaves a usable connection.

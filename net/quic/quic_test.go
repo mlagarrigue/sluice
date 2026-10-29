@@ -86,7 +86,7 @@ func TestOneDatagramCarriesSeveralStreams(t *testing.T) {
 
 	frames, err := parseFrames(nil, payload)
 	if err != nil {
-		t.Fatalf("ParseFrames returned %v", err)
+		t.Fatalf("parseFrames returned %v", err)
 	}
 
 	streams := map[uint64]string{}
@@ -122,7 +122,7 @@ func TestParseFramesRefusals(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if _, err := parseFrames(nil, tt.payload); !errors.Is(err, ErrQUIC) {
-				t.Fatalf("ParseFrames returned %v, want ErrQUIC", err)
+				t.Fatalf("parseFrames returned %v, want ErrQUIC", err)
 			}
 		})
 	}
@@ -173,7 +173,7 @@ func TestParseLongHeader(t *testing.T) {
 
 	h, rest, err := parseLongHeader(pkt)
 	if err != nil {
-		t.Fatalf("ParseLongHeader returned %v", err)
+		t.Fatalf("parseLongHeader returned %v", err)
 	}
 	if h.Type != packetInitial {
 		t.Errorf("type = %d, want Initial", h.Type)
@@ -207,7 +207,7 @@ func TestParseLongHeaderRefusals(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if _, _, err := parseLongHeader(tt.pkt); !errors.Is(err, ErrQUIC) {
-				t.Fatalf("ParseLongHeader returned %v, want ErrQUIC", err)
+				t.Fatalf("parseLongHeader returned %v, want ErrQUIC", err)
 			}
 		})
 	}
@@ -383,7 +383,7 @@ func TestFramesCarryTheirVarintFields(t *testing.T) {
 
 	frames, err := parseFrames(nil, concat(reset, stop, maxStream, maxData))
 	if err != nil {
-		t.Fatalf("ParseFrames: %v", err)
+		t.Fatalf("parseFrames: %v", err)
 	}
 	if len(frames) != 4 {
 		t.Fatalf("%d frames, want 4", len(frames))
@@ -559,6 +559,76 @@ func TestInitialPaddingConvergesAcrossAVarintWidthThreshold(t *testing.T) {
 func TestInitialPaddingIsZeroPastTheFloor(t *testing.T) {
 	if pad := initialPadding(20, 4, 2000); pad != 0 {
 		t.Errorf("pad = %d, want 0 — the payload alone already clears 1200", pad)
+	}
+}
+
+// Closing a coalesced datagram, the padding can leave the Length field with
+// no width consistent with its own value: before + headerLen = 1135 and a
+// closing packet of 43 payload bytes or fewer pads the length to 64 on a
+// one-byte field and to 63 on a two-byte one. RFC 9000 §16 lets the field be
+// encoded wider than its value needs; the datagram still lands on 1200. A
+// fixed-point loop panicked there, on the goroutine flushing the datagram.
+func TestInitialPaddingAlwaysHasAWidth(t *testing.T) {
+	const pnLen = 4
+	total := func(before, headerLen, payloadLen, pad, width int) int {
+		return before + headerLen + width + pnLen + payloadLen + pad + 16
+	}
+
+	// The case the probe named, by hand: 1100 + 35 = 1135, 10 payload bytes.
+	pad, width := initialPaddingAfter(1100, 35, pnLen, 10)
+	if width != 2 || pad != 33 || total(1100, 35, 10, pad, width) != 1200 {
+		t.Errorf("initialPaddingAfter(1100, 35, 4, 10) = (pad %d, width %d), total %d; want (33, 2) on a two-byte field for a length of 63, total 1200",
+			pad, width, total(1100, 35, 10, pad, width))
+	}
+
+	// The whole plausible range: every triple has an answer, the datagram
+	// is exactly 1200 bytes whenever padding is added, and the field is
+	// never narrower than its value.
+	wider := 0
+	for before := range 1201 {
+		for headerLen := 1; headerLen <= 80; headerLen++ {
+			for payloadLen := range 100 {
+				pad, width := initialPaddingAfter(before, headerLen, pnLen, payloadLen)
+				need := varintBytes(uint64(pnLen + payloadLen + pad + 16))
+				got := total(before, headerLen, payloadLen, pad, width)
+				switch {
+				case width < need:
+					t.Fatalf("(%d, %d, 4, %d): the Length field is %d bytes wide for a value needing %d", before, headerLen, payloadLen, width, need)
+				case pad > 0 && got != 1200, pad == 0 && got < 1200:
+					t.Fatalf("(%d, %d, 4, %d): pad %d on a %d-byte field makes a %d-byte datagram, want 1200", before, headerLen, payloadLen, pad, width, got)
+				case width > need:
+					wider++
+				}
+			}
+		}
+	}
+	if wider == 0 {
+		t.Error("no triple in 0..1200 x 1..80 x 0..99 needed the wider field: the case under test is not reached")
+	}
+}
+
+// The wider field is written as such: appendVarintOn encodes on the width it
+// is given, and varint.Read takes the result for the same value.
+func TestAppendVarintOnEncodesTheWidthItIsGiven(t *testing.T) {
+	for _, tc := range []struct {
+		v     uint64
+		width int
+		want  []byte
+	}{
+		{63, 1, []byte{0x3f}},
+		{63, 2, []byte{0x40, 0x3f}},
+		{63, 4, []byte{0x80, 0, 0, 0x3f}},
+		{63, 8, []byte{0xc0, 0, 0, 0, 0, 0, 0, 0x3f}},
+		{16383, 2, []byte{0x7f, 0xff}},
+	} {
+		got := appendVarintOn(nil, tc.v, tc.width)
+		if !bytes.Equal(got, tc.want) {
+			t.Errorf("appendVarintOn(%d, %d) = % x, want % x", tc.v, tc.width, got, tc.want)
+			continue
+		}
+		if v, rest, err := varint.Read(got); err != nil || v != tc.v || len(rest) != 0 {
+			t.Errorf("varint.Read(% x) = %d, %d bytes left, %v; want %d", got, v, len(rest), err, tc.v)
+		}
 	}
 }
 

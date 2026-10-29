@@ -334,10 +334,12 @@ func TestH2ConnectionsLeaveNoGoroutines(t *testing.T) {
 	t.Errorf("%d goroutines of this package outlived their connections:\n%s", len(left), strings.Join(left, "\n\n"))
 }
 
-// packageGoroutines returns the stacks of the goroutines that are running a
-// function of this module's production code, or were created by one. A
-// frame is attributed by the file that follows it in the dump, so a test
-// helper's own goroutines — a listener's accept loop, say — do not count.
+// packageGoroutines returns the stacks of the goroutines that have a function
+// of this module's production code in any frame. The "created by" line is
+// not read: a goroutine a production function started but which runs only
+// test code is not counted. A frame is attributed by the file that follows
+// it in the dump, so a test helper's own goroutines — a listener's accept
+// loop, say — do not count.
 func packageGoroutines() []string {
 	buf := make([]byte, 1<<20)
 	buf = buf[:runtime.Stack(buf, true)]

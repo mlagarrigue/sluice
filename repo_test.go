@@ -103,18 +103,7 @@ func headingSlugs(content string) map[string]bool {
 		if !strings.HasPrefix(text, " ") {
 			continue
 		}
-		text = strings.TrimSpace(text)
-		text = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`).ReplaceAllString(text, "$1")
-		var b strings.Builder
-		for _, r := range strings.ToLower(text) {
-			switch {
-			case r == ' ':
-				b.WriteByte('-')
-			case r == '-' || r == '_' || unicode.IsLetter(r) || unicode.IsNumber(r):
-				b.WriteRune(r)
-			}
-		}
-		s := b.String()
+		s := slugOf(text)
 		n := seen[s]
 		seen[s] = n + 1
 		if n > 0 {
@@ -123,6 +112,22 @@ func headingSlugs(content string) map[string]bool {
 		out[s] = true
 	}
 	return out
+}
+
+// slugOf is the slug of one heading's text, before any suffix for repeats.
+func slugOf(text string) string {
+	text = strings.TrimSpace(text)
+	text = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`).ReplaceAllString(text, "$1")
+	var b strings.Builder
+	for _, r := range strings.ToLower(text) {
+		switch {
+		case r == ' ':
+			b.WriteByte('-')
+		case r == '-' || r == '_' || unicode.IsLetter(r) || unicode.IsNumber(r):
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 var linkRE = regexp.MustCompile(`\]\(([^)\s]+)\)`)
@@ -294,6 +299,12 @@ func TestDecisionRecordsShareOneHeader(t *testing.T) {
 				if r := strings.TrimPrefix(l, "- **Revised:** "); r != "—" && !date.MatchString(r) {
 					t.Errorf("%s: a revision is dated YYYY-MM-DD: %q", f, l)
 				}
+				// The header says when, not what: past 300 characters it
+				// is a changelog nobody reads, and the record's history is
+				// its git log (adr/README.md).
+				if len(l) > 300 {
+					t.Errorf("%s: the Revised line runs %d characters, 300 at most; keep the last revision and count the others", f, len(l))
+				}
 			case strings.HasPrefix(l, "- **Theme:** "):
 				th := strings.TrimPrefix(l, "- **Theme:** ")
 				theme = slices.Contains(scopes, th)
@@ -316,6 +327,288 @@ func TestDecisionRecordsShareOneHeader(t *testing.T) {
 		if bytes.Contains(bytes.ToLower(b), []byte("superseded")) {
 			t.Errorf("%s: a record is revised in place, never superseded", f)
 		}
+	}
+}
+
+// A record revised in place says when: its header's last date — Created or
+// the last Revised — is no older than the last commit that changed its
+// Decision or its Rationale. The header is what a reader dates the decision
+// by, and ADR 0008's stopped a day before two commits changed what it
+// decides. Problem, the header and the title may change without a date.
+// Read from the history, so a shallow clone skips.
+func TestDecisionRecordsDateTheirLastRevision(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	if shallow, err := exec.Command("git", "rev-parse", "--is-shallow-repository").Output(); err != nil || strings.TrimSpace(string(shallow)) != "false" {
+		t.Skip("needs the full history")
+	}
+	files, err := filepath.Glob("docs/design/adr/[0-9][0-9][0-9][0-9]-*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	date := regexp.MustCompile(`\b\d{4}-\d{2}-\d{2}\b`)
+	for _, f := range files {
+		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		var dated string
+		for l := range strings.SplitSeq(string(b), "\n") {
+			if strings.HasPrefix(l, "- **Created:** ") || strings.HasPrefix(l, "- **Revised:** ") {
+				for _, d := range date.FindAllString(l, -1) {
+					dated = max(dated, d)
+				}
+			}
+		}
+		// The whole file as context, so every changed line is seen under
+		// its section's heading; one commit per record, newest first.
+		out, err := exec.Command("git", "log", "--no-merges", "--format=\x1e%as", "-p", "-U100000", "--", f).Output() //nolint:gosec // G204: a repository path from a glob, not input
+		if err != nil {
+			t.Skipf("not a git checkout: %v", err)
+		}
+		for rec := range strings.SplitSeq(string(out), "\x1e") {
+			when, diff, ok := strings.Cut(rec, "\n")
+			if !ok {
+				continue
+			}
+			if strings.Contains(diff, "\nnew file mode ") {
+				// The commit that brings the record in — the history was
+				// imported on 2026-10-09 — is not a revision: Created
+				// dates the decision, which may be older than the file.
+				break
+			}
+			section, inHunk, changed := "", false, false
+			for l := range strings.SplitSeq(diff, "\n") {
+				if strings.HasPrefix(l, "@@") {
+					inHunk = true
+					continue
+				}
+				if !inHunk || l == "" {
+					continue
+				}
+				if text := l[1:]; strings.HasPrefix(text, "## ") && l[0] != '-' {
+					section = strings.TrimPrefix(text, "## ")
+				}
+				if (l[0] == '+' || l[0] == '-') && (section == "Decision" || section == "Rationale") {
+					changed = true
+					break
+				}
+			}
+			if !changed {
+				continue
+			}
+			if when > dated {
+				t.Errorf("%s: its Decision or Rationale changed on %s, and its header's last date is %s", f, when, dated)
+			}
+			break
+		}
+	}
+}
+
+// Every exported name of database/postgres/pgtype is one a reader can find:
+// derived from the guide's table of codecs (AppendX and DecodeX for each X,
+// the array and the array with NULLs where the table says yes, and the OID
+// constants of the same types), named in the PostgreSQL guide itself, or used
+// outside the package. A codec is the caller's to call, so a consumer in the
+// tree is not required of it; a name nothing documents and nothing uses is.
+func TestPgtypeNamesAreDocumentedOrUsed(t *testing.T) {
+	guide, err := os.ReadFile("docs/guide/postgres.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	documented := map[string]bool{}
+	row := regexp.MustCompile("(?m)^\\| `([a-z0-9_]+)`.*\\| `([A-Za-z0-9]+)`[^|]*\\| (yes|—) \\| (yes|—) \\|")
+	for _, m := range row.FindAllStringSubmatch(string(guide), -1) {
+		for _, x := range regexp.MustCompile("`([A-Z][A-Za-z0-9]*)`").FindAllStringSubmatch(m[0][strings.Index(m[0], m[2])-1:], -1) {
+			name := x[1]
+			documented["Append"+name], documented["Decode"+name] = true, true
+			documented["OID"+name], documented["OID"+name+"Array"] = true, true
+			if m[3] == "yes" {
+				documented["Append"+name+"Array"], documented["Decode"+name+"Array"] = true, true
+			}
+			if m[4] == "yes" {
+				documented["AppendNullable"+name+"Array"], documented["DecodeNullable"+name+"Array"] = true, true
+			}
+		}
+	}
+	for _, w := range regexp.MustCompile(`\b[A-Z][A-Za-z0-9]*\b`).FindAllString(string(guide), -1) {
+		documented[w] = true
+	}
+	used := map[string]bool{}
+	fset := token.NewFileSet()
+	for _, dir := range packageDirs(t) {
+		if filepath.ToSlash(dir) == "database/postgres/pgtype" {
+			continue
+		}
+		for _, tests := range []bool{false, true} {
+			for _, f := range parseDir(t, fset, dir, tests) {
+				ast.Inspect(f, func(n ast.Node) bool {
+					if sel, ok := n.(*ast.SelectorExpr); ok {
+						if x, ok := sel.X.(*ast.Ident); ok && x.Name == "pgtype" {
+							used[sel.Sel.Name] = true
+						}
+					}
+					return true
+				})
+			}
+		}
+	}
+	var missing []string
+	for _, f := range parseDir(t, fset, "database/postgres/pgtype", false) {
+		for _, d := range f.Decls {
+			var names []string
+			switch d := d.(type) {
+			case *ast.FuncDecl:
+				if d.Recv == nil {
+					names = append(names, d.Name.Name)
+				}
+			case *ast.GenDecl:
+				for _, s := range d.Specs {
+					switch s := s.(type) {
+					case *ast.TypeSpec:
+						names = append(names, s.Name.Name)
+					case *ast.ValueSpec:
+						for _, n := range s.Names {
+							names = append(names, n.Name)
+						}
+					}
+				}
+			}
+			for _, n := range names {
+				if ast.IsExported(n) && !documented[n] && !used[n] {
+					missing = append(missing, n)
+				}
+			}
+		}
+	}
+	slices.Sort(missing)
+	for _, n := range missing {
+		t.Errorf("pgtype.%s is neither derived from the guide's table of codecs, named in the PostgreSQL guide, nor used outside the package", n)
+	}
+}
+
+// adrRuleSince is the last day before a commit that changes a decision
+// record had to name it; the history before it is read as it was written.
+const adrRuleSince = "2026-10-28"
+
+// unnamedADRChanges lists, for the git repository at dir, every commit after
+// adrRuleSince that changes a line of a decision record's Decision or
+// Rationale without naming that record — "ADR 0007" or "adr/0007" — in its
+// message. A record's first commit brings it in and is not a change.
+func unnamedADRChanges(dir string) ([]string, error) {
+	out, err := exec.Command("git", "-C", dir, "log", "--no-merges", "--format=%x1e%h%x00%as%x00%B%x00", "-p", "-U100000", "--", "docs/design/adr/").Output() //nolint:gosec // G204: a repository path, not input
+	if err != nil {
+		return nil, err
+	}
+	record := regexp.MustCompile(`^diff --git a/\S*docs/design/adr/(\d{4})-\S+ b/`)
+	var faults []string
+	for rec := range strings.SplitSeq(string(out), "\x1e") {
+		parts := strings.SplitN(rec, "\x00", 4)
+		if len(parts) < 4 || parts[1] <= adrRuleSince {
+			continue
+		}
+		hash, msg, diff := parts[0], parts[2], parts[3]
+		num, fresh, section, inHunk := "", false, "", false
+		changed := map[string]bool{}
+		for l := range strings.SplitSeq(diff, "\n") {
+			if m := record.FindStringSubmatch(l); m != nil {
+				num, fresh, section, inHunk = m[1], false, "", false
+				continue
+			}
+			if num == "" || fresh {
+				continue
+			}
+			switch {
+			case strings.HasPrefix(l, "new file mode "):
+				fresh = true
+				continue
+			case strings.HasPrefix(l, "@@"):
+				inHunk = true
+				continue
+			case !inHunk || l == "":
+				continue
+			}
+			if text := l[1:]; strings.HasPrefix(text, "## ") && l[0] != '-' {
+				section = strings.TrimPrefix(text, "## ")
+			}
+			if (l[0] == '+' || l[0] == '-') && (section == "Decision" || section == "Rationale") {
+				changed[num] = true
+			}
+		}
+		for n := range changed {
+			if !strings.Contains(msg, "ADR "+n) && !strings.Contains(msg, "adr/"+n) {
+				faults = append(faults, fmt.Sprintf("%s changes ADR %s's Decision or Rationale and does not name it", hash, n))
+			}
+		}
+	}
+	slices.Sort(faults)
+	return faults, nil
+}
+
+// A commit that changes what a decision record decides, or why, names the
+// record in its message, so that `git log --grep "ADR 0015"` finds every
+// revision of it. Read from the history, so a shallow clone skips.
+func TestCommitsNameTheDecisionRecordTheyChange(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	if shallow, err := exec.Command("git", "rev-parse", "--is-shallow-repository").Output(); err != nil || strings.TrimSpace(string(shallow)) != "false" {
+		t.Skip("needs the full history")
+	}
+	faults, err := unnamedADRChanges(".")
+	if err != nil {
+		t.Skipf("not a git checkout: %v", err)
+	}
+	for _, f := range faults {
+		t.Error(f)
+	}
+}
+
+// The reading above, on a repository made for it: a record brought in, a
+// Decision changed without naming it, then changed again naming it, and a
+// Problem changed without naming it, which is no revision of the decision.
+func TestUnnamedADRChangesAreFound(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	dir := t.TempDir()
+	git := func(date string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.org", "-c", "commit.gpgsign=false"}, args...)...) //nolint:gosec // G204: fixed arguments
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_DATE="+date+"T12:00:00Z", "GIT_COMMITTER_DATE="+date+"T12:00:00Z")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(problem, decision string) {
+		t.Helper()
+		p := filepath.Join(dir, "docs", "design", "adr", "0007-x.md")
+		if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		body := "# ADR 0007\n\n## Problem\n\n" + problem + "\n\n## Decision\n\n" + decision + "\n\n## Rationale\n\nBecause.\n"
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("2026-11-01", "init", "-q")
+	write("A problem.", "First.")
+	git("2026-11-01", "add", "-A")
+	git("2026-11-01", "commit", "-q", "-m", "docs: a record")
+	write("A problem.", "Second.")
+	git("2026-11-02", "commit", "-q", "-a", "-m", "docs: a quiet change")
+	write("A problem.", "Third.")
+	git("2026-11-03", "commit", "-q", "-a", "-m", "docs: ADR 0007 decides the third")
+	write("Another problem.", "Third.")
+	git("2026-11-04", "commit", "-q", "-a", "-m", "docs: the problem reworded")
+
+	faults, err := unnamedADRChanges(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(faults) != 1 || !strings.Contains(faults[0], "ADR 0007") {
+		t.Fatalf("faults = %q, want one, for the quiet change", faults)
 	}
 }
 
@@ -355,25 +648,29 @@ func TestCommitMessagesFollowTheConvention(t *testing.T) {
 var (
 	commitSubject = regexp.MustCompile(`^(feat|fix|perf|refactor|docs|test|build|ci|chore)(\(([a-z]+)\))?!?: \S.*[^.]$`)
 	commitTrailer = regexp.MustCompile(`(?mi)^co-authored-by:`)
+	// The same shape scripts/check-hygiene.sh exempts.
+	releaseSubject = regexp.MustCompile(`^chore\([a-z][a-z-]*\): release ([a-z-]+ )?[0-9]+\.[0-9]+\.[0-9]+( \(#[0-9]+\))?$`)
 )
 
 // commitMessageFaults says what is wrong with one commit message — author,
 // subject and body apart — or nothing. release-please's own commits are
-// "chore(main): release X.Y.Z": that scope is its, not ours, and so is the
-// trailer naming the bot that opened the pull request — both are let
-// through on that one shape of subject and refused on every other. The
+// "chore(main): release X.Y.Z", or "chore(release-dry-run): release dryrun
+// X.Y.Z" for a rehearsal under a component: that scope is its, not ours,
+// and so is the trailer naming the bot that opened the pull request — both
+// are let through on that one shape of subject, version included, and
+// refused on every other. The
 // trailer is also let through when the author is dependabot[bot]: GitHub
 // writes the squash message of its pull requests, and adds a
 // Co-authored-by line for every author the branch carried, as it does after
 // an update of the branch from main. A person's commit with that trailer is
 // still refused.
 func commitMessageFaults(author, subj, body string) (faults []string) {
+	releaseCommit := releaseSubject.MatchString(subj)
 	m := commitSubject.FindStringSubmatch(subj)
-	if m == nil {
+	if m == nil && !releaseCommit {
 		return []string{fmt.Sprintf("subject %q is not `<type>(<scope>): <subject>` without a trailing period", subj)}
 	}
-	releaseCommit := m[1] == "chore" && m[3] == "main" && strings.HasPrefix(subj, "chore(main): release ")
-	if m[3] != "" && !releaseCommit && !slices.Contains(scopes, m[3]) {
+	if !releaseCommit && m[3] != "" && !slices.Contains(scopes, m[3]) {
 		faults = append(faults, fmt.Sprintf("scope %q is not in the closed list", m[3]))
 	}
 	if len(subj) > 72 {
@@ -400,6 +697,9 @@ func TestCommitMessageFaults(t *testing.T) {
 		{"mlagarrigue", "fix(web): bound the int conversion explicitly", "", 0},
 		{"mlagarrigue", "fix(web): bound the int conversion explicitly", trailer, 1},
 		{"mlagarrigue", "chore(main): tidy the release notes", trailer, 2},
+		{"sluice-release[bot]", "chore(release-dry-run): release dryrun 0.4.0 (#25)", trailer, 0},
+		{"mlagarrigue", "chore(release-dry-run): tidy the rehearsal", trailer, 1},
+		{"mlagarrigue", "chore(web): release 1.2.3 early", trailer, 1},
 		{"mlagarrigue", "docs: a trailing period.", "", 1},
 		{"mlagarrigue", "feat(nowhere): an unknown scope", "", 1},
 		{"dependabot[bot]", "ci: bump actions/upload-artifact from 7.0.1 to 7.0.2 (#13)", trailer, 0},
@@ -670,6 +970,23 @@ func TestInteropRunnerIsPinned(t *testing.T) {
 	}
 }
 
+// h3spec is a release binary the HTTP/3 conformance run downloads: it is held
+// to one release by its tag and to one build by its SHA-256, as the runner is
+// held to one commit, so a moved release cannot change what the exclusions
+// file is read against.
+func TestH3SpecIsPinned(t *testing.T) {
+	script, err := os.ReadFile("scripts/interop-http3.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`(?m)^H3SPEC_URL=\S+/releases/download/v\d+\.\d+\.\d+/\S+$`).Match(script) {
+		t.Error("scripts/interop-http3.sh: H3SPEC_URL does not name a release tag; a latest link moves under the results")
+	}
+	if !regexp.MustCompile(`(?m)^H3SPEC_SHA256=[0-9a-f]{64}$`).Match(script) {
+		t.Error("scripts/interop-http3.sh: H3SPEC_SHA256 is not a 64-hex digest; the binary would run unchecked")
+	}
+}
+
 // packageDirs lists the directory of every package of the root module, test
 // files included or not: go list stops at nested modules, which have their
 // own go.mod and their own reviews.
@@ -767,6 +1084,85 @@ func plainLinks(blocks []comment.Block) []string {
 	return out
 }
 
+// A code block in a doc comment is what a reader copies, and nothing
+// compiles it the way an Example is compiled or resolves it the way a doc
+// link is (plainLinks leaves code blocks out). So every pkg.Name in one,
+// where pkg is the name of a package of this module, names an exported
+// symbol of that package. Four names the doc of postgres.Param and
+// Tx.ExecParams kept after 1608e0c moved them to pgtype were dead for a week
+// under a green CI. A variable that shares a package's name would read as
+// that package here; none does today.
+func TestDocCodeBlocksNameRealSymbols(t *testing.T) {
+	type pkgDoc struct {
+		dir string
+		p   *godoc.Package
+	}
+	var pkgs []pkgDoc
+	exported := map[string]map[string]bool{}
+	for _, dir := range packageDirs(t) {
+		fset := token.NewFileSet()
+		files := parseDir(t, fset, dir, false)
+		if len(files) == 0 {
+			continue
+		}
+		p, err := godoc.NewFromFiles(fset, files, "example.com/p", godoc.PreserveAST)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pkgs = append(pkgs, pkgDoc{dir, p})
+		names := exported[p.Name]
+		if names == nil {
+			names = map[string]bool{}
+			exported[p.Name] = names
+		}
+		for _, v := range append(p.Consts, p.Vars...) {
+			for _, n := range v.Names {
+				names[n] = true
+			}
+		}
+		for _, f := range p.Funcs {
+			names[f.Name] = true
+		}
+		for _, ty := range p.Types {
+			names[ty.Name] = true
+			for _, v := range append(ty.Consts, ty.Vars...) {
+				for _, n := range v.Names {
+					names[n] = true
+				}
+			}
+			for _, f := range ty.Funcs {
+				names[f.Name] = true
+			}
+		}
+	}
+	checked := 0
+	for _, pd := range pkgs {
+		parse := pd.p.Parser()
+		for _, d := range exportedDocs(pd.p) {
+			for _, b := range parse.Parse(d.text).Content {
+				code, ok := b.(*comment.Code)
+				if !ok {
+					continue
+				}
+				for _, m := range qualified.FindAllStringSubmatch(code.Text, -1) {
+					names, ok := exported[m[1]]
+					if !ok {
+						continue // the standard library, or a variable
+					}
+					checked++
+					if !names[m[2]] {
+						t.Errorf("%s, doc of %s: the code block names %s.%s, which package %s does not export",
+							filepath.Base(pd.dir), d.name, m[1], m[2], m[1])
+					}
+				}
+			}
+		}
+	}
+	if checked == 0 {
+		t.Error("no code block of a doc comment names a symbol of this module: the parser or the regexp changed")
+	}
+}
+
 // A section number means something only beside the document it numbers.
 // The protocol packages cite their RFCs and protocol pages by section, and
 // name them in their package documentation; elsewhere a section sign and a number
@@ -790,6 +1186,43 @@ func TestSectionReferencesNameTheirSource(t *testing.T) {
 						t.Errorf("%s: %s with no RFC, PostgreSQL page or ADR named in the comment", fset.Position(g.Pos()), s)
 					}
 				}
+			}
+		}
+	}
+}
+
+// S1 to S14 are the architecture's security guarantees, a name a reader who
+// opens one file cannot look up unless something says where they live. The
+// first comment of each file that cites one names the architecture, or the
+// guarantees, in its own text or within three lines of the citation.
+func TestGuaranteeReferencesNameTheirSource(t *testing.T) {
+	cite := regexp.MustCompile(`\bS([1-9]|1[0-4])\b`)
+	named := regexp.MustCompile(`(?i)architecture|guarantee`)
+	for _, dir := range packageDirs(t) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			if !strings.HasSuffix(e.Name(), ".go") {
+				continue
+			}
+			p := filepath.Join(dir, e.Name())
+			b, err := os.ReadFile(p) //nolint:gosec // G304: a repository path, not input
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines := strings.Split(string(b), "\n")
+			for i, l := range lines {
+				c := strings.Index(l, "//")
+				if c < 0 || !cite.MatchString(l[c:]) {
+					continue
+				}
+				near := strings.Join(lines[max(0, i-3):min(len(lines), i+4)], " ")
+				if !named.MatchString(near) {
+					t.Errorf("%s:%d: %q cites a guarantee without naming the architecture", p, i+1, cite.FindString(l[c:]))
+				}
+				break
 			}
 		}
 	}
@@ -833,8 +1266,8 @@ func exportedDocs(p *godoc.Package) []namedDoc {
 // reader may ask: it had been "supported" in one page, "on no supported
 // path" in its own documentation, "fuzzed in CI" in a guide and "not fuzzed"
 // in the architecture.
-const httpstreamStatus = "net/httpstream is supported — out of the experimental label since " +
-	"2026-10-10 and under the compatibility promise — and fuzzed in CI without " +
+const httpstreamStatus = "net/httpstream is supported — outside the experimental label " +
+	"and under the compatibility promise — and fuzzed in CI without " +
 	"a public corpus; it has neither run in production nor had an outside " +
 	"security review."
 
@@ -843,7 +1276,7 @@ func TestHTTPStreamStatusIsSaidOnce(t *testing.T) {
 		s = strings.NewReplacer("//", " ", "**", "", "\n", " ").Replace(s)
 		return strings.Join(strings.Fields(s), " ")
 	}
-	for _, f := range []string{"README.md", "docs/guide/experimental.md", "docs/design/architecture.md", "net/httpstream/httpstream.go"} {
+	for _, f := range []string{"README.md", "docs/guide/httpstream.md", "docs/design/architecture.md", "net/httpstream/httpstream.go"} {
 		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
 		if err != nil {
 			t.Fatal(err)
@@ -884,7 +1317,7 @@ func TestEveryErrorIsDocumented(t *testing.T) {
 		if !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
 			return nil
 		}
-		f, err := parser.ParseFile(token.NewFileSet(), p, nil, parser.SkipObjectResolution)
+		f, err := parser.ParseFile(token.NewFileSet(), p, nil, parser.SkipObjectResolution|parser.ParseComments)
 		if err != nil {
 			return err
 		}
@@ -894,13 +1327,20 @@ func TestEveryErrorIsDocumented(t *testing.T) {
 				continue
 			}
 			for _, spec := range gen.Specs {
-				for _, name := range spec.(*ast.ValueSpec).Names {
+				vs := spec.(*ast.ValueSpec)
+				for _, name := range vs.Names {
 					n := name.Name
 					if !strings.HasPrefix(n, "Err") || !name.IsExported() {
 						continue
 					}
 					if !regexp.MustCompile(`\b` + n + `\b`).MatchString(text) {
 						t.Errorf("%s: %s.%s is named in no document; add it to docs/guide/troubleshooting.md", p, f.Name.Name, n)
+					}
+					// go doc shows a grouped variable under the group's
+					// comment: each error says its own action, on its own
+					// declaration or its own spec.
+					if vs.Doc == nil && (gen.Lparen.IsValid() || gen.Doc == nil) {
+						t.Errorf("%s: %s.%s has no doc comment of its own", p, f.Name.Name, n)
 					}
 				}
 			}
@@ -934,31 +1374,54 @@ func TestSettingsHaveATableRow(t *testing.T) {
 			}
 		}
 	}
-	for _, c := range []struct{ file, typ string }{
-		{"net/httpstream/httpstream.go", "Config"},
-		{"net/quic/transport.go", "TransportParameters"},
-	} {
-		f, err := parser.ParseFile(token.NewFileSet(), c.file, nil, parser.SkipObjectResolution)
+	// Every configuration the library exports: a struct named Config, or
+	// ending in Config or Parameters, outside the examples, the internal
+	// packages and the nested modules.
+	skip := []string{"example", "internal", "cmd", "benchmarks", "comparison", "interop", "audit"}
+	configs := 0
+	err = filepath.WalkDir(".", func(p string, d os.DirEntry, err error) error {
 		if err != nil {
-			t.Fatal(err)
+			return err
 		}
-		var fields *ast.FieldList
-		ast.Inspect(f, func(n ast.Node) bool {
-			if ts, ok := n.(*ast.TypeSpec); ok && ts.Name.Name == c.typ {
-				fields = ts.Type.(*ast.StructType).Fields
+		if d.IsDir() {
+			if slices.Contains(skip, d.Name()) || (p != "." && strings.HasPrefix(d.Name(), ".")) {
+				return filepath.SkipDir
 			}
-			return fields == nil
-		})
-		if fields == nil {
-			t.Fatalf("%s: no type %s", c.file, c.typ)
+			return nil
 		}
-		for _, field := range fields.List {
-			for _, name := range field.Names {
-				if name.IsExported() && !rows[name.Name] {
-					t.Errorf("%s: %s.%s has no row in a settings table of docs/guide", c.file, c.typ, name.Name)
+		if !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
+			return nil
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), p, nil, parser.SkipObjectResolution)
+		if err != nil {
+			return err
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			ts, ok := n.(*ast.TypeSpec)
+			if !ok || !ts.Name.IsExported() || !strings.HasSuffix(ts.Name.Name, "Config") && !strings.HasSuffix(ts.Name.Name, "Parameters") {
+				return true
+			}
+			st, ok := ts.Type.(*ast.StructType)
+			if !ok {
+				return true
+			}
+			configs++
+			for _, field := range st.Fields.List {
+				for _, name := range field.Names {
+					if name.IsExported() && !rows[name.Name] {
+						t.Errorf("%s: %s.%s.%s has no row in a settings table of docs/guide", p, f.Name.Name, ts.Name.Name, name.Name)
+					}
 				}
 			}
-		}
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configs < 10 {
+		t.Fatalf("found %d configuration types; the walk no longer sees them", configs)
 	}
 }
 
@@ -1231,4 +1694,80 @@ func importablePackages(t *testing.T) map[string]string {
 	}
 	out["sluice"] = "github.com/mlagarrigue/sluice"
 	return out
+}
+
+// zeroSays is how a field's doc comment says what its zero value does:
+// "Zero means 64 MiB", "zero is no bound", "A zero ... is refused".
+var zeroSays = regexp.MustCompile(`(?i)\bzero\b|\bunset\b|\bleft at 0\b|\brequired\b`)
+
+// zeroIsTheProtocols names the fields whose zero is not a default but the
+// protocol's own value, carried as is: a transport parameter announced as 0
+// grants nothing (RFC 9000 §18.2), and DefaultParameters fills the defaults.
+var zeroIsTheProtocols = map[string]bool{
+	"TransportParameters.InitialMaxData": true, "TransportParameters.InitialMaxStreamDataUni": true,
+	"TransportParameters.InitialMaxStreamDataBidiLocal": true, "TransportParameters.InitialMaxStreamDataBidiRemote": true,
+	"TransportParameters.InitialMaxStreamsBidi": true, "TransportParameters.InitialMaxStreamsUni": true,
+	"TransportParameters.AckDelayExponent": true, "TransportParameters.MaxAckDelay": true,
+}
+
+// ADR 0018: a numeric field of a configuration whose zero is not refused
+// means a default the field's documentation names. Every integer or
+// duration field of an exported configuration says what its zero does.
+func TestConfigZeroValuesAreNamed(t *testing.T) {
+	skip := []string{"example", "internal", "cmd", "benchmarks", "comparison", "interop", "audit"}
+	numeric := map[string]bool{
+		"int": true, "int32": true, "int64": true, "uint": true, "uint8": true,
+		"uint16": true, "uint32": true, "uint64": true, "time.Duration": true, "float64": true,
+	}
+	err := filepath.WalkDir(".", func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if slices.Contains(skip, d.Name()) || (p != "." && strings.HasPrefix(d.Name(), ".")) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
+			return nil
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), p, nil, parser.SkipObjectResolution|parser.ParseComments)
+		if err != nil {
+			return err
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			ts, ok := n.(*ast.TypeSpec)
+			if !ok || !ts.Name.IsExported() || !strings.HasSuffix(ts.Name.Name, "Config") && !strings.HasSuffix(ts.Name.Name, "Parameters") {
+				return true
+			}
+			st, ok := ts.Type.(*ast.StructType)
+			if !ok {
+				return true
+			}
+			prev := ""
+			for _, field := range st.Fields.List {
+				doc := field.Doc.Text() + field.Comment.Text()
+				// "IPv4PrefixBits and IPv6PrefixBits are …": one comment
+				// above two fields says for both.
+				if field.Doc == nil && len(field.Names) > 0 && strings.Contains(prev, field.Names[0].Name) {
+					doc = prev
+				}
+				prev = doc
+				typ := types.ExprString(field.Type)
+				if !numeric[typ] || len(field.Names) == 0 || !field.Names[0].IsExported() ||
+					zeroIsTheProtocols[ts.Name.Name+"."+field.Names[0].Name] {
+					continue
+				}
+				if !zeroSays.MatchString(doc) {
+					t.Errorf("%s: %s.%s.%s (%s) does not say what its zero does (ADR 0018)", p, f.Name.Name, ts.Name.Name, field.Names[0].Name, typ)
+				}
+			}
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 }

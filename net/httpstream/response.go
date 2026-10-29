@@ -245,12 +245,14 @@ var refusedTrailers = [...]string{
 // response is not the role of Host (§7.2, the request's routing), TE
 // (§10.1.4, what the client accepts) or Expect (§10.1.1, what the client
 // expects of the server). Each would tell a recipient something about a
-// request it is not reading. One point for the three writers and the
+// request it is not reading. Early-Data is named by its own text: RFC 8470
+// §5.1 says it "MUST NOT be included in responses or request trailers". One
+// point for the three writers and the
 // trailers; the other request fields (Accept, Range, If-Match…) are not
 // listed: they mislead no one about the message, and a catalogue of every
 // request field is a mirror this package would keep wrong.
 func checkResponseField(name []byte) error {
-	if equalFold(name, "host") || equalFold(name, "te") || equalFold(name, "expect") {
+	if equalFold(name, "host") || equalFold(name, "te") || equalFold(name, "expect") || equalFold(name, "early-data") {
 		return fmt.Errorf("%w: %s is a request field, not a response's", ErrMalformed, name)
 	}
 	return nil
@@ -353,8 +355,8 @@ var ErrHeaderInjection = fmt.Errorf("%w: a response header holds CR or LF", ErrM
 //
 // Every response that does not close says Connection: keep-alive and
 // Keep-Alive: timeout=<seconds>, from cfg's IdleTimeout, as [Serve] writes
-// them: a caller serving the connection itself answers the way Serve would
-// (see appendKeepAlive). IdleTimeout is the one field of cfg it reads, and it
+// them: a caller serving the connection itself answers the way Serve would.
+// IdleTimeout is the one field of cfg it reads, and it
 // is resolved as Serve resolves it: zero is the default, and a negative value
 // is refused with the same error. The other fields are not checked here —
 // resolving them all on every batch would cost more than writing one.
@@ -400,7 +402,7 @@ const keepAliveFieldMax = len("Connection: keep-alive\r\nKeep-Alive: timeout=\r\
 // requires Connection to name it, since it is hop-by-hop). Neither of those
 // two does: nginx ignores it (ngx_http_upstream.c) and Envoy strips it, so
 // in front of them the proxy's own upstream idle timeout is what must be set
-// below this one, as docs/guide/experimental.md shows. The option also
+// below this one, as docs/guide/deployments.md shows. The option also
 // answers an HTTP/1.0 client's Connection: keep-alive, which RFC 9112 §9.3
 // honours only when the response says keep-alive back; such a client was
 // served one request per connection before.

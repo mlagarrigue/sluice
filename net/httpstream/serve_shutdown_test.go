@@ -266,6 +266,63 @@ func TestServeShutdownDrainsH2Stream(t *testing.T) {
 	}
 }
 
+// RFC 9113 §6.8 lets through a stream the first GOAWAY did not exclude: one
+// the client opens before it has acknowledged the drain's PING may have left
+// before it read that GOAWAY, and it is served, and named by the second. A
+// proxy in front of the server meets exactly this when it reuses its
+// connection during the stop; the proxy suite allows the 200 it then gets
+// but cannot make it happen, so it is pinned here.
+func TestServeShutdownServesAStreamOpenedBeforeThePingAck(t *testing.T) {
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	addr, cancel, done := serveUntilCancelled(t, Config{ShutdownGrace: 10 * time.Second}, func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		if b.Len() > 0 && string(b.Items[0].Target) == "/slow" {
+			entered <- struct{}{}
+			<-release
+		}
+		return echoTarget(ctx, b)
+	})
+
+	c := dialH2(t, addr)
+	c.request(1, "GET", "/slow")
+	c.flush()
+	<-entered
+	cancel()
+	c.pump(func() bool { return len(c.goAways) >= 1 && len(c.pinged) >= 1 })
+	if len(c.goAways) != 1 || len(c.pinged) < 1 {
+		t.Fatalf("after the cancellation: %d GOAWAY and %d PING, want one GOAWAY and its PING", len(c.goAways), len(c.pinged))
+	}
+
+	// Opened before the acknowledgement: inside what the first GOAWAY let
+	// through, and answered.
+	c.request(3, "GET", "/during-stop")
+	c.flush()
+	c.pump(func() bool { _, reset := c.resets[3]; return c.ended[3] || reset })
+	if code, reset := c.resets[3]; reset {
+		t.Fatalf("stream 3, opened before the PING was acknowledged, was reset with %#x", code)
+	}
+	if c.got[3] != "/during-stop" {
+		t.Fatalf("stream 3 read %q, want its answer", c.got[3])
+	}
+
+	c.frame(h2Frame{Type: framePing, Flags: flagAck, Payload: c.pinged[0]})
+	c.flush()
+	c.pump(func() bool { return len(c.goAways) >= 2 })
+	if len(c.goAways) < 2 || goAwayLast(c.goAways[1]) != 3 {
+		t.Fatalf("second GOAWAY: %d in all, want one naming stream 3", len(c.goAways))
+	}
+	close(release)
+	c.pump(func() bool { return c.ended[1] })
+	if c.got[1] != "/slow" {
+		t.Fatalf("stream 1 read %q, want the whole answer", c.got[1])
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return once both streams were answered")
+	}
+}
+
 // RFC 9113 §6.8: "Endpoints MUST NOT increase the value they send in the
 // last stream identifier". A stream the client opens after the drain's
 // second GOAWAY is refused but still advances the highest identifier seen;

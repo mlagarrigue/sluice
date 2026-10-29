@@ -1,12 +1,14 @@
 // Package postgres speaks the PostgreSQL frontend/backend protocol, version 3,
-// over the standard library alone.
+// over the standard library alone. A connection keeps its session — the
+// statement cache, the transaction in progress — and a batch's rows only until
+// the next batch is read.
 //
 // It exists because database/sql cannot batch (docs/design/architecture.md,
 // "`database/sql` does not fit"):
 // its interface hands back one row at a time, which is the shape this library
 // was built to escape. Reimplementing the wire protocol is what buys
 // `= ANY($1)` over a thousand keys in one round trip, and binary COPY over a
-// batch — the difference the gateway's measured ×6.9 is made of.
+// batch — the difference the gateway's measured ×11.9 is made of.
 //
 // # The user path
 //

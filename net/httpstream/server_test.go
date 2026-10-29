@@ -9,6 +9,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -268,6 +269,100 @@ func TestServerCloseCancelsTheHandler(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Server.Close closes the sockets before it cancels the handlers. The other
+// order let a cancelled handler return and its answer reach the client
+// ahead of the close: a forced stop that still answered, which
+// TestServerCloseCancelsTheHandler caught 7 times in 2,000 runs, on
+// HTTP/1.1 and HTTP/2 — rarely, since a handler's context hears of the stop
+// through context.AfterFunc, on a goroutine of its own (batchCtx). Here the
+// order is read where it happens, without a race to win: the first Close
+// of the server's socket, with a handler running on it, finds the forced
+// stop every handler's context derives from not yet cancelled.
+func TestServerCloseClosesTheSocketsBeforeCancelling(t *testing.T) {
+	for _, p := range []struct {
+		name string
+		dial func(t *testing.T, addr string) stopClient
+	}{
+		{"HTTP/1.1", func(t *testing.T, addr string) stopClient {
+			t.Helper()
+			c := dial(t, addr)
+			return &h1StopClient{c: c, br: bufio.NewReader(c)}
+		}},
+		{"HTTP/2", func(t *testing.T, addr string) stopClient {
+			t.Helper()
+			return &h2StopClient{c: dialH2(t, addr)}
+		}},
+	} {
+		t.Run(p.name, func(t *testing.T) {
+			h := newStopHandler()
+			defer close(h.release)
+			srv := &Server{Config: Config{Logger: discardLogger()}, Handler: h.handle}
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			order := &closeOrderListener{Listener: ln, srv: srv}
+			go func() { _ = srv.Serve(order) }()
+			t.Cleanup(func() { _ = srv.Close() })
+
+			p.dial(t, ln.Addr().String()).ask(t)
+			select {
+			case <-h.entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the handler was never called")
+			}
+			if err := srv.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			switch order.verdict.Load() {
+			case closedFirst:
+			case cancelledFirst:
+				t.Error("the handlers were cancelled before the socket was closed")
+			default:
+				t.Error("Close did not close the socket")
+			}
+		})
+	}
+}
+
+// closeOrderListener hands out connections whose first Close records
+// whether srv's forced stop was already cancelled.
+type closeOrderListener struct {
+	net.Listener
+	srv     *Server
+	verdict atomic.Int32 // closedFirst or cancelledFirst, once the first Close has run
+}
+
+const (
+	closedFirst int32 = 1 + iota
+	cancelledFirst
+)
+
+func (l *closeOrderListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return &closeOrderConn{TCPConn: c.(*net.TCPConn), l: l}, nil
+}
+
+type closeOrderConn struct {
+	*net.TCPConn
+	l    *closeOrderListener
+	once sync.Once
+}
+
+func (c *closeOrderConn) Close() error {
+	c.once.Do(func() {
+		v := closedFirst
+		if c.l.srv.forced.Err() != nil {
+			v = cancelledFirst
+		}
+		c.l.verdict.CompareAndSwap(0, v)
+	})
+	return c.TCPConn.Close()
 }
 
 // A Server reaches the HTTP/2 bounds through its one Config: the stream

@@ -26,14 +26,14 @@ import (
 // RESET_STREAM from the peer abandons what it was sending and surfaces to
 // [Stream.Read]; a STOP_SENDING from the peer — or a local [Stream.Reset] —
 // abandons what this end was sending and surfaces to [Stream.Write].
-//
-// Locking: the receive side (reassembly, the read buffer, the peer's reset)
-// lives under the stream's own lock; the send side (offsets, credit, this
-// end's reset) lives under the connection's, which serialises every packet
-// written. The lock order is c.mu → s.mu: Conn.maybeRemoveLocked takes s.mu
-// (via Stream.recvState) while holding c.mu, so s.mu must never be held
-// while taking c.mu.
 type Stream struct {
+	// Locking: the receive side (reassembly, the read buffer, the peer's
+	// reset) lives under the stream's own lock; the send side (offsets,
+	// credit, this end's reset) lives under the connection's, which
+	// serialises every packet written. The lock order is c.mu → s.mu:
+	// Conn.maybeRemoveLocked takes s.mu (via Stream.recvState) while holding
+	// c.mu, so s.mu must never be held while taking c.mu.
+
 	id   uint64
 	conn *Conn
 
@@ -77,6 +77,7 @@ type Stream struct {
 	writeReset bool // this end sent RESET_STREAM, or the peer sent STOP_SENDING
 	writeCode  uint64
 	sendClosed bool // FIN or RESET_STREAM sent: the peer knows this side's size
+	dataRecvd  bool // "Data Recvd" found once (streamDataRecvdLocked): terminal, kept
 	queued     bool // waiting in the accept queue (Conn.acceptQ), under conn.mu
 	// writeDeadline is when a Write parked on credit or the congestion
 	// window gives up (SetWriteDeadline); zero means never.
@@ -102,7 +103,7 @@ func (s *Stream) sendOnly() bool {
 func newStream(c *Conn, id uint64) *Stream {
 	s := &Stream{id: id, conn: c, ready: make(chan struct{}, 1)}
 	if c.hasPeerParams {
-		s.sendQ.max = initialStreamSendLimit(c.peerParams, id, c.isClient)
+		s.sendQ.max = initialStreamSendLimit(c.sendLimitsLocked(), id, c.isClient)
 	}
 	s.recvQ = newRecvQuota(initialStreamRecvLimit(c.params, id, c.isClient))
 	// A unidirectional stream only ever carries bytes one way: the direction
@@ -186,16 +187,33 @@ func (s *Stream) deliver(f Frame, dst []byte) (delta []byte, finished bool, high
 // keepForRead stores a delivered delta for [Stream.Read] and wakes it. Batch
 // mode skips this: the callback is the consumer, and buffering a second copy
 // for a Read nobody calls is memory spent on nothing.
-func (s *Stream) keepForRead(delta []byte, finished bool) {
+//
+// A stream the application has stopped reading ([Stream.StopSending] set
+// endTaken) keeps nothing: RFC 9000 §3.5 has the bytes that arrive before
+// the peer sees the STOP_SENDING "still counted toward connection and
+// stream flow control, even though these frames can be discarded upon
+// receipt" — counted they were, by receive; discarded they are here, and
+// the count is reported back so the caller gives the connection window
+// their credit at once, as a Read would have. Kept in the read buffer
+// nobody drains, they would stay uncredited for the life of the
+// connection: 24 streams abandoned with 16 KiB each in flight take 384 KiB
+// off a 1 MiB window for good (measured).
+func (s *Stream) keepForRead(delta []byte, finished bool) (dropped uint64) {
 	s.mu.Lock()
-	s.buf = append(s.buf, delta...)
+	if s.endTaken {
+		dropped = uint64(len(delta)) //nolint:gosec // G115: a byte count, positive
+		s.recvQ.consumed += dropped  // the stream's own window earns no grant: §3.3, "Recv" only
+	} else {
+		s.buf = append(s.buf, delta...)
+	}
 	if finished {
 		s.readEnded = true
 	}
 	s.mu.Unlock()
-	if len(delta) > 0 || finished {
+	if dropped == 0 && (len(delta) > 0 || finished) {
 		s.signal()
 	}
+	return dropped
 }
 
 // endForRead marks the stream's end as handed over — a reset dispatched to
@@ -502,6 +520,9 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 		if err := c.sendPacketLocked(spaceApplication, frame, opts); err != nil {
 			s.sendQ.sent -= uint64(n)
 			c.connSend.sent -= uint64(n)
+			if errors.Is(err, errRefit) {
+				continue // cut again for the datagram size now in force
+			}
 			return written, err
 		}
 		s.writeOff += uint64(n)
@@ -530,7 +551,13 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 // peer needs to close its own flow-control accounting for the stream. A
 // direction already finished — FIN sent and every byte acknowledged — has
 // nothing left to abandon, and nothing is sent (RFC 9000 §3.3).
+//
+// A code past 2^62-1, the most an error code can carry (RFC 9000 §20), is
+// refused with an error before anything changes.
 func (s *Stream) Reset(code uint64) error {
+	if err := checkCode("Reset", code); err != nil {
+		return err
+	}
 	c := s.conn
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -562,8 +589,12 @@ func (s *Stream) Reset(code uint64) error {
 // either may well have happened; the application's intent is kept all the
 // same. On a unidirectional stream this end opened the peer has no sending
 // part to stop and would answer STREAM_STATE_ERROR (§19.5): an error, no
-// frame.
+// frame. A code past 2^62-1, the most an error code can carry (§20), is
+// refused the same way.
 func (s *Stream) StopSending(code uint64) error {
+	if err := checkCode("StopSending", code); err != nil {
+		return err
+	}
 	c := s.conn
 	if s.sendOnly() {
 		return fmt.Errorf("%w: STOP_SENDING on stream %d, which this end opened send-only", ErrQUIC, s.id)
@@ -577,10 +608,6 @@ func (s *Stream) StopSending(code uint64) error {
 	s.endTaken = true
 	over := s.readReset || s.recvDone
 	s.mu.Unlock()
-	if over {
-		c.maybeRemoveLocked(s)
-		return nil
-	}
 	// The application has said it will not read the rest, so the bytes
 	// already in the read buffer are forfeit — and the connection window
 	// gets them back. Nothing else ever would: bytes delivered into the
@@ -592,9 +619,17 @@ func (s *Stream) StopSending(code uint64) error {
 	// exhausted a 1 MiB window — 1 MiB received, 256 bytes given back —
 	// and the peer was left with no credit on a connection that was still
 	// answering. Batch mode (CreditOnDelivery) credits on delivery and was
-	// never affected.
+	// never affected. A stream with nothing left to stop owes the same: its
+	// FIN arrived whole with bytes nobody read, or the peer's RESET_STREAM,
+	// which settles only the bytes never delivered (abandon), left some in
+	// the buffer.
 	if n := s.dropUnreadLocked(); n > 0 && c.connRecv.consume(n) {
 		c.grants = appendFrame(c.grants, frameMaxData, c.connRecv.nextMax())
+	}
+	if over {
+		c.maybeRemoveLocked(s)
+		c.flushControlLocked()
+		return nil
 	}
 	frame := appendFrame(nil, FrameStopSending, s.id, code)
 	err := c.sendPacketLocked(spaceApplication, frame, sendOpts{}) // ungated: see sendOpts.waitCwnd
@@ -634,8 +669,8 @@ func (s *Stream) abandon(code, finalSize uint64) (highGrowth, neverConsumed uint
 	// The reset's final size is the stream's final size from here on, held
 	// exactly as a FIN's: a later STREAM frame past it, a FIN elsewhere, or
 	// a second RESET_STREAM naming another size is FINAL_SIZE_ERROR through
-	// the checks above and deliver's. Until 2026-10-21 only a FIN set these,
-	// so a reset stream accepted a larger reset or data beyond its end.
+	// the checks above and deliver's: set by a FIN alone, a reset stream
+	// would accept a larger reset or data beyond its end.
 	s.fin, s.finAt = true, finalSize
 	s.readReset, s.readCode = true, code
 	s.recvDone = true
@@ -643,7 +678,8 @@ func (s *Stream) abandon(code, finalSize uint64) (highGrowth, neverConsumed uint
 	// already delivered but not yet credited — this packet's own STREAM delta
 	// when STREAM and RESET_STREAM share a packet, or bytes parked in the read
 	// buffer — are credited by whoever consumes them (settleBatchConsumption,
-	// or Read draining to the reset error). Counting them here too would
+	// Read draining to the reset error, or keepForRead dropping them on a
+	// stream the application stopped). Counting them here too would
 	// over-grant the connection window by exactly that delta.
 	neverConsumed = finalSize - s.rasm.consumed
 	s.recvQ.consumed += neverConsumed
@@ -758,9 +794,10 @@ func boolBit(b bool, bit uint64) uint64 {
 //
 // A stream the peer opened before the connection ended is still handed
 // out, ahead of the error that says it ended: the peer's data on it has
-// arrived — a [Conn.Shutdown] on its side waited for exactly that — and a
-// select that picked at random between the queue and the closed signal
-// handed the error one time in a hundred, and lost the stream.
+// arrived — a [Conn.Shutdown] on its side waited for exactly that — so the
+// queue is read first: a select that picked at random between the queue and
+// the closed signal would hand the error one time in a hundred, and lose the
+// stream.
 func (c *Conn) AcceptStream(ctx context.Context) (*Stream, error) {
 	for {
 		c.mu.Lock()
@@ -852,7 +889,7 @@ func (c *Conn) open(ctx context.Context, uni bool) (*Stream, error) {
 	if !c.hasPeerParams {
 		return nil, fmt.Errorf("%w: opening a stream before the handshake delivered the peer's limits", ErrQUIC)
 	}
-	opened, limit := c.localStreamCounters(uni)
+	opened, limit := c.localStreamCountersLocked(uni)
 	if *opened >= *limit {
 		if err := c.waitStreamCreditLocked(ctx, uni); err != nil {
 			return nil, err
@@ -872,10 +909,10 @@ func (c *Conn) open(ctx context.Context, uni bool) (*Stream, error) {
 	return s, nil
 }
 
-// localStreamCounters returns how many streams of the kind this end has
+// localStreamCountersLocked returns how many streams of the kind this end has
 // opened and how many the peer allows, for open and its wait to read and
 // advance the same pair. Callers hold c.mu.
-func (c *Conn) localStreamCounters(uni bool) (opened, limit *uint64) {
+func (c *Conn) localStreamCountersLocked(uni bool) (opened, limit *uint64) {
 	if uni {
 		return &c.openedUni, &c.peerMaxStreamsUni
 	}
@@ -896,7 +933,7 @@ func (c *Conn) waitStreamCreditLocked(ctx context.Context, uni bool) error {
 		c.mu.Unlock()
 	})
 	defer stop()
-	opened, limit := c.localStreamCounters(uni)
+	opened, limit := c.localStreamCountersLocked(uni)
 	told, frame := &c.bidiBlockedTold, uint64(frameStreamsBlocked)
 	if uni {
 		told, frame = &c.uniBlockedTold, frameStreamsBlocked|1
@@ -1075,15 +1112,25 @@ func (c *Conn) retireTaken(s *Stream) {
 // credit within an eighth of what one-per-stream would give it, and the
 // grant never waits on the peer saying it is blocked, which §4.6 forbids:
 // it follows retirements alone. A limit under 8 still returns every slot.
+//
+// The batch holds only while the peer is far from the limit. Once it has
+// opened to within a batch of it, every slot comes back at once: a peer
+// keeping most of its streams open and cycling a few short ones would
+// otherwise stay up to an eighth under the concurrency the limit announces
+// — 90 kept open of 100, 10 short ones finished, and the 101st waited on
+// two more retirements. A server answering one small request at a time
+// stays far from the limit, so its grants still go by the batch.
+//
 // The limit is raised as the grant is queued, not when it leaves — the
 // same choice as recvQuota.nextMax, with the same reason. Callers hold c.mu.
 func (c *Conn) returnStreamSlotLocked(uni bool) {
-	limit, retired, initial, typ := &c.localMaxStreamsBidi, &c.retiredBidi, c.params.InitialMaxStreamsBidi, uint64(frameMaxStreams)
+	limit, retired, seen, initial, typ := &c.localMaxStreamsBidi, &c.retiredBidi, c.seenPeerBidi, c.params.InitialMaxStreamsBidi, uint64(frameMaxStreams)
 	if uni {
-		limit, retired, initial, typ = &c.localMaxStreamsUni, &c.retiredUni, c.params.InitialMaxStreamsUni, frameMaxStreams|1
+		limit, retired, seen, initial, typ = &c.localMaxStreamsUni, &c.retiredUni, c.seenPeerUni, c.params.InitialMaxStreamsUni, frameMaxStreams|1
 	}
 	*retired++
-	if *retired < max(1, initial/8) {
+	batch := max(1, initial/8)
+	if *retired < batch && *limit-seen >= batch {
 		return
 	}
 	*limit += *retired

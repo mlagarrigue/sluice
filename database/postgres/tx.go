@@ -95,6 +95,7 @@ type TxConfig struct {
 	// context stops this client waiting, and CancelRequest is advisory. In a
 	// batched pipeline one unbounded statement stalls every caller in the
 	// batch, so a transaction with no timeout is a decision, not a default.
+	// Zero sets none: the server's own statement_timeout applies.
 	Timeout time.Duration
 }
 
@@ -133,12 +134,16 @@ type Tx struct {
 
 // Begin opens a transaction.
 //
-// The deferred Rollback in the example above is the shape to copy: it is a
+// The deferred Rollback in [Tx]'s example is the shape to copy: it is a
 // no-op after a successful Commit, and it is the only thing that closes the
 // transaction on the paths nobody writes a test for — an early return, a
 // validation failure, a panic caught upstream. A transaction left open holds
 // the vacuum horizon back for as long as the connection lives.
-func (c *Conn) Begin(ctx context.Context, opts TxConfig) (*Tx, error) {
+//
+// A ctx that ends before the server has answered cancels the statement as
+// [Conn.Query] does ("What ctx stops, and what it does not"), and the call
+// returns ctx's error.
+func (c *Conn) Begin(ctx context.Context, cfg TxConfig) (*Tx, error) {
 	if c.broken != nil {
 		return nil, c.broken
 	}
@@ -149,22 +154,23 @@ func (c *Conn) Begin(ctx context.Context, opts TxConfig) (*Tx, error) {
 		return nil, fmt.Errorf("abandoning the transaction before it was opened: %w", err)
 	}
 
-	level, err := opts.Isolation.sql()
+	level, err := cfg.Isolation.sql()
 	if err != nil {
 		return nil, err
 	}
 	begin := "BEGIN" + level
-	if opts.ReadOnly {
+	if cfg.ReadOnly {
 		begin += " READ ONLY"
 	}
-	if err := c.execBusy(begin); err != nil {
+	w := c.watchCancel(ctx)
+	if err := c.settleCancel(ctx, w, c.execBusy(begin)); err != nil {
 		return nil, fmt.Errorf("opening the transaction: %w", err)
 	}
 	c.inTx = true
 	tx := &Tx{conn: c, gen: c.txGen}
 
-	if opts.Timeout > 0 {
-		if err := tx.SetLocalTimeout(ctx, opts.Timeout); err != nil {
+	if cfg.Timeout > 0 {
+		if err := tx.SetLocalTimeout(ctx, cfg.Timeout); err != nil {
 			// The transaction opened but is not in the state that was asked
 			// for. Running it anyway would mean running it unbounded, which is
 			// the opposite of what the caller requested.
@@ -263,7 +269,7 @@ func resultTag(body []byte, suspended int) CommandTag {
 // rows it touched:
 //
 //	tag, err := conn.ExecParams(ctx, "UPDATE orders SET shipped = true WHERE customer = $1",
-//		[]postgres.Param{{OID: postgres.OIDText, Value: postgres.AppendText(nil, customer)}})
+//		[]postgres.Param{{OID: pgtype.OIDText, Value: pgtype.AppendText(nil, customer)}})
 //	n, _ := tag.RowsAffected()
 //
 // The values travel in binary on the extended-query path, as they do for
@@ -421,12 +427,15 @@ func skipSpaceAndComments(sql string) int {
 
 // Commit ends the transaction, keeping its effects. A context that is
 // already done abandons the commit without sending it, as every statement
-// does; the transaction then stays open until [Tx.Rollback].
+// does; the transaction then stays open until [Tx.Rollback]. A context that
+// ends while the server has not answered the COMMIT cancels it as it cancels
+// any statement ([Conn.Query], "What ctx stops, and what it does not"): a COMMIT the server
+// completed anyway reports nil, one it did not reports ctx's error.
 func (tx *Tx) Commit(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("abandoning the commit: %w", err)
 	}
-	return tx.end("COMMIT")
+	return tx.end(ctx, "COMMIT")
 }
 
 // Rollback ends the transaction, discarding its effects. It is a no-op on a
@@ -435,15 +444,24 @@ func (tx *Tx) Commit(ctx context.Context) error {
 //
 // It takes no context, deliberately: it runs from a defer, after the context
 // that drove the transaction may already be done, and a block left open on a
-// connection that will be reused is the worse outcome.
+// connection that will be reused is the worse outcome. It is bounded all the
+// same, by [Config.CancelTimeout]: a server that has not answered the
+// ROLLBACK by then is sent a cancellation, and one that does not end it
+// within CancelTimeout more has the connection closed under it, which rolls
+// the transaction back on the server and leaves [ErrConnBroken] here. A
+// ROLLBACK is the cheapest statement a server runs, so the bound is for a
+// server gone silent, not for a slow one.
 func (tx *Tx) Rollback() error {
 	if tx.done {
 		return nil
 	}
-	return tx.end("ROLLBACK")
+	ctx, cancel := context.WithTimeout(context.Background(), tx.conn.cancelBound())
+	defer cancel()
+	return tx.end(ctx, "ROLLBACK")
 }
 
-func (tx *Tx) end(verb string) error {
+// end sends COMMIT or ROLLBACK under ctx's cancellation watch.
+func (tx *Tx) end(ctx context.Context, verb string) error {
 	if tx.done {
 		return ErrTxDone
 	}
@@ -471,8 +489,9 @@ func (tx *Tx) end(verb string) error {
 	// Read before the statement runs: the ReadyForQuery that answers it
 	// resets the flag to the clean state the connection is now in.
 	failed := tx.conn.txFailed
-	rolledBack, err := tx.conn.execRolledBack(verb)
-	if err != nil {
+	w := tx.conn.watchCancel(ctx)
+	rolledBack, execErr := tx.conn.execRolledBack(verb)
+	if err := tx.conn.settleCancel(ctx, w, execErr); err != nil {
 		return err
 	}
 	// Belt and braces: the status byte said the block was aborted, or the
@@ -492,11 +511,15 @@ func (tx *Tx) end(verb string) error {
 // SQL.
 // A COMMIT sent this way in an aborted block reports [ErrTxCommitRollback], as
 // [Conn.Exec] does.
+// A ctx that ends before the server has answered cancels the statement as
+// [Conn.Query] does ("What ctx stops, and what it does not"), and the call
+// returns ctx's error.
 func (tx *Tx) Exec(ctx context.Context, sql string) error {
 	if err := tx.check(ctx); err != nil {
 		return err
 	}
-	err := tx.conn.execUser(sql)
+	w := tx.conn.watchCancel(ctx)
+	err := tx.conn.settleCancel(ctx, w, tx.conn.execUser(sql))
 	tx.endedBySQL()
 	return err
 }
@@ -586,10 +609,11 @@ func (tx *Tx) Query(ctx context.Context, sql string, params []Param, cfg QueryCo
 //
 // So this uses `set_config($1, $2, true)`, which is the same setting through a
 // function call, where both arguments are ordinary bound parameters travelling
-// in binary. No value reaches the wire as SQL text (§8.8). The *name* is still
-// a value here rather than an identifier, which is why it can be a parameter
-// at all — and it is validated anyway, because a name assembled from user
-// input is a caller reaching a setting they were not meant to reach.
+// in binary. No value reaches the wire as SQL text (architecture, "Security by
+// construction"). The *name* is still a value here rather than an identifier,
+// which is why it can be a parameter at all — and it is validated anyway,
+// because a name assembled from user input is a caller reaching a setting they
+// were not meant to reach.
 func (tx *Tx) SetLocal(ctx context.Context, name, value string) error {
 	if err := tx.check(ctx); err != nil {
 		return err
@@ -646,11 +670,14 @@ func (tx *Tx) SetLocalTimeout(ctx context.Context, d time.Duration) error {
 // The name is an SQL identifier, not a value, so it cannot be a bound
 // parameter and is validated instead. Do not build it from anything a request
 // carried.
+// A ctx that ends before the server has answered cancels the statement as
+// [Conn.Query] does ("What ctx stops, and what it does not"), and the call
+// returns ctx's error.
 func (tx *Tx) Savepoint(ctx context.Context, name string) error {
 	if err := tx.checkName(ctx, name); err != nil {
 		return err
 	}
-	return tx.conn.execBusy("SAVEPOINT " + name)
+	return tx.conn.settleCancel(ctx, tx.conn.watchCancel(ctx), tx.conn.execBusy("SAVEPOINT "+name))
 }
 
 // Savepoints establishes several savepoints in one round trip.
@@ -673,12 +700,12 @@ func (tx *Tx) Savepoint(ctx context.Context, name string) error {
 // needed — the count still bounds what the backend tracks even when
 // establishing them is cheap.
 //
-// Every SAVEPOINT is written before any answer is read, and each answer is
-// about twenty bytes: the exchange leans on the socket buffers for
-// len(names) × 20 bytes, which both sides hold until the names run into the
-// hundreds of thousands. A batch that large is not what savepoints are for;
-// keep it to the hundreds the backend's subtransaction cache suits, and the
-// write-then-read is safe by a wide margin.
+// The answers are read while the SAVEPOINTs are still being written, as
+// [Tx.Pipeline] does, so the number of names is bounded by nothing but the
+// backend; keep it to the hundreds its subtransaction cache suits.
+// A ctx that ends before the server has answered cancels the statement as
+// [Conn.Query] does ("What ctx stops, and what it does not"), and the call
+// returns ctx's error.
 func (tx *Tx) Savepoints(ctx context.Context, names ...string) error {
 	if err := tx.check(ctx); err != nil {
 		return err
@@ -702,12 +729,24 @@ func (tx *Tx) Savepoints(ctx context.Context, names ...string) error {
 	for _, name := range names {
 		c.w.Query("SAVEPOINT " + name)
 	}
-	if err := c.w.Flush(); err != nil {
-		return c.breakConn(fmt.Errorf("establishing %d savepoints: %w", len(names), err))
-	}
+	// Sent and read at once, for Tx.Pipeline's reason: the server answers
+	// each SAVEPOINT as it reads it, about twenty bytes, and a server whose
+	// send buffer is full stops reading. Written whole before any answer was
+	// read, the exchange leaned on both socket buffers for len(names) × 20
+	// bytes — a bound argued, never measured, and on an unbuffered transport
+	// (net.Pipe) two names were enough to hang it. A failed write closes the
+	// socket under the reader, and its error is the one reported.
+	sent := make(chan error, 1)
+	go func() {
+		err := c.w.Flush()
+		if err != nil {
+			_ = c.rw.Close()
+		}
+		sent <- err
+	}()
+	w := c.watchCancel(ctx)
 	// A simple Query message is its own transaction boundary, so each one
-	// answers with its own ReadyForQuery. They were all sent before any was
-	// read, which is where the round trips went.
+	// answers with its own ReadyForQuery.
 	var first error
 	for range names {
 		if err := c.drainToReady(); err != nil && first == nil {
@@ -716,29 +755,46 @@ func (tx *Tx) Savepoints(ctx context.Context, names ...string) error {
 		// A broken connection has no further ReadyForQuery to read: the next
 		// read would block on, or misframe, whatever the socket holds.
 		if c.broken != nil {
-			return c.broken
+			break
 		}
 	}
-	return first
+	// Joined before returning: the next statement reuses the Writer's
+	// buffer, which is the sender's until it has returned.
+	if err := c.joinSender(sent); err != nil {
+		if c.broken == nil {
+			c.broken = fmt.Errorf("%w: establishing %d savepoints: %w", ErrConnBroken, len(names), err)
+		}
+		first = c.broken
+	}
+	if c.broken != nil {
+		first = c.broken
+	}
+	return c.settleCancel(ctx, w, first)
 }
 
 // RollbackTo undoes everything since the named savepoint, leaving the
 // transaction open and the savepoint still established.
+// A ctx that ends before the server has answered cancels the statement as
+// [Conn.Query] does ("What ctx stops, and what it does not"), and the call
+// returns ctx's error.
 func (tx *Tx) RollbackTo(ctx context.Context, name string) error {
 	if err := tx.checkName(ctx, name); err != nil {
 		return err
 	}
-	return tx.conn.execBusy("ROLLBACK TO SAVEPOINT " + name)
+	return tx.conn.settleCancel(ctx, tx.conn.watchCancel(ctx), tx.conn.execBusy("ROLLBACK TO SAVEPOINT "+name))
 }
 
 // Release forgets a savepoint, keeping its effects. Releasing one that is no
 // longer needed is what keeps the subtransaction count away from the cliff
 // described on [Tx.Savepoint].
+// A ctx that ends before the server has answered cancels the statement as
+// [Conn.Query] does ("What ctx stops, and what it does not"), and the call
+// returns ctx's error.
 func (tx *Tx) Release(ctx context.Context, name string) error {
 	if err := tx.checkName(ctx, name); err != nil {
 		return err
 	}
-	return tx.conn.execBusy("RELEASE SAVEPOINT " + name)
+	return tx.conn.settleCancel(ctx, tx.conn.watchCancel(ctx), tx.conn.execBusy("RELEASE SAVEPOINT "+name))
 }
 
 func (tx *Tx) check(ctx context.Context) error {
@@ -773,8 +829,8 @@ func validIdentifier(name string) error {
 	if name == "" {
 		return errors.New("postgres: the identifier is empty")
 	}
-	if len(name) > 63 {
-		return fmt.Errorf("postgres: the identifier %q is %d bytes; PostgreSQL truncates at 63, so two of them would silently become one", name, len(name))
+	if len(name) > maxIdentifierBytes {
+		return fmt.Errorf("postgres: the identifier %q is %d bytes; PostgreSQL truncates at %d, so two of them would silently become one", name, len(name), maxIdentifierBytes)
 	}
 	for i := range len(name) {
 		ch := name[i]

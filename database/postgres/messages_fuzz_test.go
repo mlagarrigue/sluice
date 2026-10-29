@@ -8,9 +8,10 @@ import (
 	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 )
 
-// The backend parsers read network input too, so S8 covers them as squarely as
-// the framing does: an ErrorResponse arrives before authentication completes,
-// and a DataRow is the message an attacker who controls a row controls.
+// The backend parsers read network input too, so the architecture's S8 covers
+// them as squarely as the framing does: an ErrorResponse arrives before
+// authentication completes, and a DataRow is the message an attacker who
+// controls a row controls.
 func FuzzParseError(f *testing.F) {
 	f.Add([]byte{0})
 	f.Add([]byte("SERROR\x00C23505\x00\x00"))

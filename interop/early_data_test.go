@@ -174,9 +174,11 @@ func TestQuicGoZeroRTTAgainstSluiceServer(t *testing.T) {
 	}
 }
 
-// A ticket's 0-RTT is accepted once (RFC 8446 §8): presented a second time —
-// a replay of the client's first flight, as far as the server can tell —
-// it resumes the session in 1-RTT.
+// A ticket's 0-RTT is accepted once (RFC 9846 §8): presented again — a
+// replay of the client's first flight, as far as the server can tell — it
+// resumes the session in 1-RTT, the fourth time as the second. Until
+// 2026-10-29 a refused presentation's end gave back the entry the admitted
+// one held, and the third presentation had its 0-RTT accepted again.
 func TestSluiceAcceptsATicketsZeroRTTOnce(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -190,12 +192,14 @@ func TestSluiceAcceptsATicketsZeroRTTOnce(t *testing.T) {
 	if st := dialEarly(t, ctx, addr, cfg, false); !st.Used0RTT {
 		t.Fatal("the ticket's first 0-RTT was refused")
 	}
-	st := dialEarly(t, ctx, addr, cfg, false)
-	if !st.TLS.DidResume {
-		t.Error("the second presentation did not resume the session")
-	}
-	if st.Used0RTT {
-		t.Error("the same ticket had its 0-RTT accepted twice")
+	for i := 2; i <= 4; i++ {
+		st := dialEarly(t, ctx, addr, cfg, false)
+		if !st.TLS.DidResume {
+			t.Errorf("presentation %d did not resume the session", i)
+		}
+		if st.Used0RTT {
+			t.Errorf("presentation %d of the same ticket had its 0-RTT accepted again", i)
+		}
 	}
 }
 
@@ -563,5 +567,38 @@ func TestDialDoesNotSpendTheTicketsZeroRTT(t *testing.T) {
 	// the proof that the server accepted it.
 	if _, err := io.ReadAll(st); err != nil {
 		t.Fatalf("the ticket's 0-RTT was spent by Dial: %v", err)
+	}
+}
+
+// A full ticket register refuses 0-RTT in the TLS handshake, as ADR 0019
+// says: with room for one ticket, the second ticket's resumption is accepted
+// without early_data — DidResume, not Used0RTT. Until 2026-10-27 the
+// register's capacity was checked after crypto/tls had accepted the 0-RTT:
+// the client saw early_data in the EncryptedExtensions (Used0RTT), the
+// server kept no early key, and the 0-RTT packets were lost to a probe
+// timeout.
+func TestAFullTicketRegisterRefusesZeroRTTInTLS(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	addr, _ := earlyServer(t, serverTLS(t), quic.ListenerConfig{EarlyData: true, MaxEarlyDataTickets: 1})
+
+	first := clientTLS()
+	first.ClientSessionCache = &stickyCache{cs: map[string]*tls.ClientSessionState{}}
+	primeTicket(t, ctx, addr, first, first.ClientSessionCache)
+	if st := dialEarly(t, ctx, addr, first, true); !st.Used0RTT {
+		t.Fatal("the first ticket's 0-RTT was refused; the case under test is not reached")
+	}
+
+	// The register is full: the second ticket resumes the session, in
+	// 1-RTT, and the refusal is in the handshake, not a silent drop.
+	second := clientTLS()
+	second.ClientSessionCache = &stickyCache{cs: map[string]*tls.ClientSessionState{}}
+	primeTicket(t, ctx, addr, second, second.ClientSessionCache)
+	st := dialEarly(t, ctx, addr, second, false) // a refusal invalidates quic-go's early streams: nothing is sent
+	if !st.TLS.DidResume {
+		t.Error("the second ticket did not resume the session")
+	}
+	if st.Used0RTT {
+		t.Error("the second ticket had its 0-RTT accepted in TLS although the register was full: the server keeps no early key for it")
 	}
 }

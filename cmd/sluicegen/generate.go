@@ -3,15 +3,15 @@
 //
 // It exists because reflection costs on every field of every row, even
 // written carefully: the gap is measured by BenchmarkHydrateReflect against
-// BenchmarkHydrateRowMajor in postgres/hydrate_test.go, and the figure lives
+// BenchmarkHydrateRowMajor in database/postgres/hydrate_test.go, and the figure lives
 // in docs/design/architecture.md, "Hydration". Generated code is how a caller gets the
 // hand-written figure without writing it per entity and keeping it in step
 // with the schema.
 //
-// The same measurement corrected what to generate. That section argued for columnar
-// decoding — one pass per column, then assemble — and that shape measured
-// *slower* than the row-major loop it was meant to beat, by 11% at a thousand
-// rows and 43% at one. So this generator emits row-major code.
+// The same measurement decides what to generate. Columnar decoding — one pass
+// per column, then assemble — measures *slower* than the row-major loop, by
+// 11% at a thousand rows and 43% at one. So this generator emits row-major
+// code.
 //
 //	//go:generate go run github.com/mlagarrigue/sluice/cmd/sluicegen -type Order
 //
@@ -294,8 +294,6 @@ func columnName(fieldName string, tag *ast.BasicLit) (name string, skip bool) {
 	return snakeCase(fieldName), false
 }
 
-// typeExpr renders a field's type and reports whether it is a pointer, which
-// is how the generated code expresses a nullable column.
 // typeExpr resolves a field's type to the Go type the mapping is keyed by,
 // whether NULL is expressible, and how a present value is wrapped.
 //

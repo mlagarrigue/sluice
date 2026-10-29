@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// MaxConnectionIDLen is the longest connection identifier QUIC version 1
+// maxConnectionIDLen is the longest connection identifier QUIC version 1
 // allows (RFC 9000 §17.2). The field that carries it is a byte, so a peer can
 // name a longer one; refusing it here is what keeps a length from becoming a
 // read past the datagram.
@@ -20,12 +20,12 @@ const (
 	packetRetry     = 0x3
 )
 
-// Version1 is the QUIC version this package speaks. A version it does not
+// version1 is the QUIC version this package speaks. A version it does not
 // know is not guessed at: the header format itself is version-specific past
 // the first five bytes.
 const version1 = 0x00000001
 
-// LongHeader is a parsed long-header packet, up to but not including its
+// longHeader is a parsed long-header packet, up to but not including its
 // protected payload.
 //
 // Everything borrows the datagram.
@@ -53,7 +53,7 @@ type longHeader struct {
 	Raw []byte
 }
 
-// ParseLongHeader decodes one long-header packet off the front of a datagram
+// parseLongHeader decodes one long-header packet off the front of a datagram
 // and returns what follows it.
 //
 // A datagram may carry several packets end to end (RFC 9000 §12.2), which is
@@ -132,13 +132,13 @@ func parseLongHeader(b []byte) (longHeader, []byte, error) {
 	return h, b[end:], nil
 }
 
-// ShortHeader is a 1-RTT packet's header. Its connection identifier has no
+// shortHeader is a 1-RTT packet's header. Its connection identifier has no
 // length on the wire — the endpoint chose it and is expected to recognise it
 // — so the caller says how long its own identifiers are.
 type shortHeader struct {
 	DCID []byte
 
-	// PNOffset is where the packet number starts, as in [LongHeader].
+	// PNOffset is where the packet number starts, as in [longHeader].
 	PNOffset int
 
 	// Raw is the whole packet: a short-header packet has no length field and
@@ -147,7 +147,7 @@ type shortHeader struct {
 	Raw []byte
 }
 
-// ParseShortHeader decodes a 1-RTT packet, given the length of the connection
+// parseShortHeader decodes a 1-RTT packet, given the length of the connection
 // identifiers this endpoint issued.
 func parseShortHeader(b []byte, dcidLen int) (shortHeader, error) {
 	var h shortHeader
@@ -180,8 +180,9 @@ func parseShortHeader(b []byte, dcidLen int) (shortHeader, error) {
 // The list holds the versions served and nothing else. RFC 9000 §6.3 (and
 // RFC 9368 §2.1) let it carry a reserved version, and let an endpoint send
 // whole packets of one, to keep peers' parsers honest; not done: a VN only
-// ever goes to a client that offered a version this server does not speak,
-// a path no conformant client takes, and a test packet would spend a
+// ever goes to a client that offered a version this server does not speak
+// (QUIC v2 among them, RFC 9369), whose parser is that client's own
+// concern, and a test packet would spend a
 // datagram per connection on a bug only the peer pays for.
 func appendVersionNegotiation(dst, dcid, scid []byte, versions ...uint32) []byte {
 	// §17.2.1: the seven bits under the header form are "set to an
@@ -193,9 +194,9 @@ func appendVersionNegotiation(dst, dcid, scid []byte, versions ...uint32) []byte
 	// Version Negotiation is no cost worth a second generator.
 	var unused [1]byte
 	_, _ = rand.Read(unused[:])                                         // never fails since Go 1.24
-	dst = append(dst, 0xc0|unused[0]&0x3f, 0, 0, 0, 0, byte(len(dcid))) //nolint:gosec // G115: a connection ID is at most 20 bytes; version 0 is what marks the packet
+	dst = append(dst, 0xc0|unused[0]&0x3f, 0, 0, 0, 0, byte(len(dcid))) //nolint:gosec // G115: an echoed connection ID is at most 255 bytes (RFC 8999 §5.1, foreignVersionCIDs); version 0 is what marks the packet
 	dst = append(dst, dcid...)
-	dst = append(dst, byte(len(scid))) //nolint:gosec // G115: a connection ID is at most 20 bytes
+	dst = append(dst, byte(len(scid))) //nolint:gosec // G115: an echoed connection ID is at most 255 bytes (RFC 8999 §5.1)
 	dst = append(dst, scid...)
 	for _, v := range versions {
 		dst = append(dst, byte(v>>24), byte(v>>16), byte(v>>8), byte(v)) //nolint:gosec // G115: big-endian serialisation keeps the low octet of each shift

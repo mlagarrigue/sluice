@@ -1,7 +1,9 @@
 package quic
 
 import (
+	"bytes"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -39,7 +41,8 @@ type sendOpts struct {
 	// deadline bounds that wait (Stream.SetWriteDeadline); zero waits
 	// without bound.
 	deadline time.Time
-	// recheck is asked, after every wake from that wait, whether the
+	// recheck is asked, after every wake from that wait — and from the
+	// wait for keys (awaitSealLocked), which releases mu too — whether the
 	// payload is still owed; a non-nil answer abandons the send and is
 	// what the caller returns. The wait releases mu, so the state the
 	// caller checked before building the frame may be gone by the time the
@@ -114,13 +117,32 @@ func (c *Conn) maxStreamChunk() int {
 
 // sendPacketLocked seals payload as one packet in space's level and writes it
 // as one datagram. Callers hold mu.
+//
+// sendPacketLocked runs in this order: send nothing once the connection is
+// closing or draining; wait for the space's keys, rechecking what the caller
+// built if it waited; wait for the congestion window and the pacer when the
+// caller asks; read the clock once; put the acknowledgement this space owes in
+// front, unless the packet leaves off the path in use; append the grants and
+// control frames owed in the application space; then seal and write the
+// datagram (writePacketLocked).
 func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error {
 	if c.draining || c.closeSent {
 		return errClosed
 	}
 	sp := &c.spaces[space]
+	waited := !c.canSealLocked(sp, space)
 	if err := c.awaitSealLocked(sp, space); err != nil {
 		return err
+	}
+	if waited && opts.recheck != nil {
+		// The wait for keys releases mu as the wait for the window below
+		// does, and the caller's frame was built before it: a Reset in
+		// between declared the final size at the bytes written so far, and
+		// this frame would go past it (RFC 9000 §19.4, FINAL_SIZE_ERROR at
+		// the peer).
+		if err := opts.recheck(); err != nil {
+			return err
+		}
 	}
 
 	if opts.waitCwnd {
@@ -173,6 +195,13 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 				if err := opts.recheck(); err != nil {
 					return err
 				}
+			}
+			// The datagram size may have fallen while this waited — a
+			// black hole detected, a migration, a Rebind — and a payload
+			// cut for the old size would leave larger than the path was
+			// just found to carry (§14.2). The caller cuts it again.
+			if c.packetOverhead(space)+len(payload) > c.maxDatagram {
+				return errRefit
 			}
 		}
 	}
@@ -238,7 +267,19 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 		// The chunk is not cut, so a full chunk stays one packet; the
 		// extra datagram is the price of the peer's gaps. One not yet owed
 		// simply stays behind for its timer.
-		if len(payload) > 0 && c.packetOverhead(space)+len(ack)+len(payload) > c.maxDatagram {
+		//
+		// The same holds for the congestion window (RFC 9002 §7): the gates
+		// that let this packet through — the writer's above, the
+		// retransmission and CRYPTO passes — counted the payload and 64
+		// bytes of header, tag and slack, which a short ACK fits in and a
+		// gapped one does not. An ACK-only packet is not in flight, so
+		// leaving ahead keeps the flight under the window; a packet over
+		// the window without its ACK is cwnd-exempt (a probe, a grant
+		// flush) and keeps it. The application space only: a client's
+		// Initial is padded to 1200 bytes whatever it carries, and the
+		// handshake spaces' ACKs stay short.
+		size := c.packetOverhead(space) + len(ack) + len(payload)
+		if len(payload) > 0 && (size > c.maxDatagram || space == spaceApplication && c.ackOverflowsWindowLocked(size, len(ack))) {
 			if owed {
 				_ = c.writePacketLocked(sp, space, sp.ack.appendAck(nil, now), nil, sendOpts{ackOnly: true}, now)
 			}
@@ -247,8 +288,8 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 	}
 	retransPart := payload
 	if space == spaceApplication && !opts.noRetrans && (len(c.grants) > 0 || len(c.control) > 0) {
-		room := c.maxDatagram - c.shortPacketOverhead() - len(ack) - len(payload)
-		if queued := c.takeQueuedLocked(room, len(payload)); len(queued) > 0 {
+		room := c.maxDatagram - c.packetOverhead(space) - len(ack) - len(payload)
+		if queued := c.takeQueuedLocked(room, len(ack)+len(payload)); len(queued) > 0 {
 			retransPart = append(queued, payload...)
 			// Control frames are cheap to lose only if someone resends
 			// them; they carry window and stream grants, so they are
@@ -268,6 +309,16 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 	return c.writePacketLocked(sp, space, payload, retransPart, opts, now)
 }
 
+// ackOverflowsWindowLocked reports whether a packet of size bytes, ack of
+// them its ACK frame, would fit the congestion window without the ACK and
+// does not with it. Read off the window, not through canSend: the payload
+// leaves either way, so this is no refusal for §7.8 to count. Callers hold
+// mu.
+func (c *Conn) ackOverflowsWindowLocked(size, ack int) bool {
+	room := c.cc.window() - c.cc.bytesInFlight()
+	return size > room && size-ack <= room
+}
+
 // shortPacketOverhead is what a 1-RTT packet costs on the wire beyond its
 // payload: the short header, the packet number and the AEAD tag.
 func (c *Conn) shortPacketOverhead() int {
@@ -275,12 +326,26 @@ func (c *Conn) shortPacketOverhead() int {
 	return 1 + len(c.dcid) + pnLen + 16
 }
 
+// sendsEarlyLocked reports whether an application packet sent now leaves in
+// 0-RTT: a DialEarly client before its 1-RTT keys (writePacketLocked).
+// Callers hold mu.
+func (c *Conn) sendsEarlyLocked() bool {
+	return c.spaces[spaceApplication].sealer == nil && c.earlySealer != nil
+}
+
+// errRefit is sendPacketLocked's answer to a waiting writer whose payload no
+// longer fits the datagram size it woke to: nothing was sent, and the
+// writer builds its frame again for the size now in force.
+var errRefit = errors.New("quic: the datagram size fell while the packet waited")
+
 // packetOverhead is what a packet of space costs on the wire beyond its
 // payload: its header, the packet number and the AEAD tag. A long header's
 // Length field is counted at two bytes, which covers any packet under
-// maxDatagram.
+// maxDatagram. An application packet sent in 0-RTT carries a long header,
+// sixteen bytes or so more than the short one it is counted at otherwise.
+// Callers hold mu.
 func (c *Conn) packetOverhead(space int) int {
-	if space == spaceApplication {
+	if space == spaceApplication && !c.sendsEarlyLocked() {
 		return c.shortPacketOverhead()
 	}
 	const pnLen = 4
@@ -353,36 +418,43 @@ func cutFrames(q []byte, room int) (n, retires, newCIDs int) {
 // the full datagram reaches 1200 bytes (RFC 9000 §14.1), given the header
 // already written, the packet number's width, and the payload's length
 // before padding — all excluding the length field and the 16-byte AEAD tag,
-// which this adds itself.
+// which this adds itself. Alone in its datagram, a packet's header is far
+// too short for the padding to leave its Length field without a consistent
+// width (initialPaddingAfter), so the width is the minimal one and dropped.
 func initialPadding(headerLen, pnLen, payloadLen int) int {
-	return initialPaddingAfter(0, headerLen, pnLen, payloadLen)
+	pad, _ := initialPaddingAfter(0, headerLen, pnLen, payloadLen)
+	return pad
 }
 
 // initialPaddingAfter is initialPadding for a packet that closes a datagram
 // already holding before bytes of other packets (§12.2 coalescing): the
-// padding tops the whole datagram up to 1200, not this packet alone.
+// padding tops the whole datagram up to 1200, not this packet alone. It also
+// returns the width the Length field is to be encoded on, which sealLocked
+// honours.
 //
 // The length field's own width depends on what it is about to describe,
 // which depends on how much padding closes the gap to 1200 — a circularity
-// solved by a fixed point: guess a width, size the padding against it, and
-// re-check the width the padded total would actually need. There is at most
-// one varint threshold (64, 16384, ...) between "no padding" and 1200
-// bytes, so this settles in at most two passes; the loop bounds it anyway
-// rather than trust that argument blindly.
-func initialPaddingAfter(before, headerLen, pnLen, payloadLen int) int {
-	width := varintBytes(uint64(pnLen + payloadLen + 16)) //nolint:gosec // G115: a sum of packet lengths, positive
-	for range 4 {
-		pad := max(1200-(before+headerLen+width+pnLen+payloadLen+16), 0)
-		if got := varintBytes(uint64(pnLen + payloadLen + pad + 16)); got != width { //nolint:gosec // G115: a sum of packet lengths, positive
-			width = got
-			continue
-		}
-		return pad
+// solved in two steps: size the padding against the width the unpadded
+// length needs, and if the padded length crossed a varint threshold (64,
+// 16384, ...), widen the field and shrink the padding by as much. There is
+// at most one threshold between "no padding" and 1200 bytes, so one step
+// back is all it takes — and the shrunk padding may land the length right
+// under the threshold again, where no width is consistent with its own
+// padding (before + headerLen = 1135 with a closing packet of 43 payload
+// bytes or fewer: width 1 pads the length to 64, width 2 to 63). The wider
+// field then stays, encoded on more bytes than its value needs: RFC 9000 §16
+// allows every field but the frame type to be, and the datagram still
+// lands on 1200 exactly. A fixed-point loop here panicked on that input.
+func initialPaddingAfter(before, headerLen, pnLen, payloadLen int) (pad, lengthWidth int) {
+	lengthWidth = varintBytes(uint64(pnLen + payloadLen + 16)) //nolint:gosec // G115: a sum of packet lengths, positive
+	pad = max(1200-(before+headerLen+lengthWidth+pnLen+payloadLen+16), 0)
+	if got := varintBytes(uint64(pnLen + payloadLen + pad + 16)); got > lengthWidth { //nolint:gosec // G115: a sum of packet lengths, positive
+		lengthWidth = got
+		pad = max(1200-(before+headerLen+lengthWidth+pnLen+payloadLen+16), 0)
 	}
-	panic("quic: initialPadding did not converge")
+	return pad, lengthWidth
 }
 
-// pendingPacket is a packet built but not yet sealed: everything
 // takePNLocked consumes the next packet number of sp. In the application
 // space it leaves a number unused about once per congestion window (RFC
 // 9000 §21.4), so that a peer acknowledging numbers it never received
@@ -403,6 +475,7 @@ func (c *Conn) takePNLocked(sp *space, space int) uint64 {
 	return pn
 }
 
+// pendingPacket is a packet built but not yet sealed: everything
 // writePacketLocked decided — header up to the Length field, payload,
 // packet number, destination — waiting for the one thing it cannot know
 // alone, how much §14.1 padding it carries. When Initial and Handshake
@@ -478,23 +551,32 @@ func (c *Conn) cryptoRoomLocked() int {
 }
 
 // flushDatagramLocked seals the pending packet — with the §14.1 padding when
-// an Initial in the datagram requires it — and writes the datagram. Callers
-// hold mu.
+// an Initial in the datagram requires it — and writes the datagram. A
+// connection that entered draining since the packets were gathered drops
+// them instead: §10.2.2, "an endpoint in the draining state MUST NOT send
+// any packets", and a peer's CONNECTION_CLOSE coalesced behind an
+// ack-eliciting packet arrives after that packet's acknowledgement was
+// gathered. The guards of writePacketLocked and sendPacketLocked cannot
+// see a packet already built. Callers hold mu.
 func (c *Conn) flushDatagramLocked() {
 	if c.dgramPend == nil && len(c.dgram) == 0 {
+		return
+	}
+	if c.draining {
+		c.dgramPend, c.dgram, c.dgramPad = nil, c.dgram[:0], false
 		return
 	}
 	c.flushBatchLocked() // what was sent before leaves before
 	if p := c.dgramPend; p != nil {
 		c.dgramPend = nil
-		pad := 0
+		pad, lengthWidth := 0, 0
 		if c.dgramPad {
-			pad = initialPaddingAfter(len(c.dgram), len(p.prefix), 4, len(p.payload))
+			pad, lengthWidth = initialPaddingAfter(len(c.dgram), len(p.prefix), 4, len(p.payload))
 		}
 		// sealLocked fails only on Seal's invariant guards (a header
 		// sample too short), which the constant 4-byte packet number makes
 		// unreachable: there is no error here to handle.
-		c.dgram, _ = c.sealLocked(c.dgram, p, pad)
+		c.dgram, _ = c.sealLocked(c.dgram, p, pad, lengthWidth)
 	}
 	if len(c.dgram) > 0 {
 		_ = c.writeLocked(c.pc, c.dgram, c.peer, c.dgramECN)
@@ -544,33 +626,48 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 	// CONNECTION_CLOSE, which must leave now. Anything else first flushes
 	// what gathered, so order on the wire is the order of sending.
 	//
+	// Two packets of one level may share the datagram: each call here is a
+	// packet of its own, its acknowledgement in front, and a level's next
+	// send during the same pump — sendCrypto's next chunk cut to the room
+	// left, a Finished after the ACK of the server's flight — joins the
+	// datagram as a second packet, not as frames of the first. §12.2 has
+	// it the other way with a SHOULD: "An endpoint SHOULD include multiple
+	// frames in a single packet if they are to be sent at the same
+	// encryption level, instead of coalescing multiple packets at the same
+	// encryption level." Not applied here, during the handshake only (the
+	// 0-RTT case is ADR 0019's): merging would reopen the pending packet —
+	// its payload, the part loss recovery resends, the acknowledgement it
+	// carries — to save one header and one AEAD tag, some forty bytes,
+	// in two or three datagrams per handshake. TestHandshakeFlightsCoalesce
+	// logs what a loopback handshake sends: two Initial packets in the
+	// server's second datagram, two Handshake packets beside the client's
+	// Initial in its fourth.
+	//
 	// 0-RTT packets coalesce too, and for a reason of their own: they carry
 	// a long header, so they have a Length field and may precede another
 	// packet in the same datagram, which a short-header 1-RTT packet never
 	// can (§12.2 — it has no Length field, so it is always the last packet
-	// of its datagram). They coalesce only while another writer is inside
-	// [Stream.Write] or waiting for mu to get there (writersIn), because
-	// only then does the gathered datagram have a known closer: the last
-	// writer out flushes it. One writer on its own sends at once.
+	// of its datagram). They coalesce under gathering, as the Initial and
+	// Handshake packets do — gatherLocked(false) closes the datagram, and a
+	// Retry's resend of the 0-RTT flight (handleRetry) runs under it — and
+	// otherwise only while another writer is inside [Stream.Write] or
+	// waiting for mu to get there (writersIn), because only then does the
+	// gathered datagram have a known closer: the last writer out flushes
+	// it. One writer on its own sends at once.
 	//
-	// What that is worth, and what it cost not to do it. A client that
-	// opens many streams at once and writes a small request on each — 40
-	// requests the moment the connection opens, which is the QUIC Interop
-	// Runner's zerortt case and the shape of any multiplexed request
-	// burst — sent one datagram per write, and a second for the end of the
-	// stream: 138 datagrams of 214 bytes on average for a 10 KB request
-	// (measured on the runner, 2026-10-25, pass 40187114552). The path of
-	// that case queues 25 datagrams before it drops; a burst of eighty
-	// overran it, 23 datagrams were lost, and RFC 9001 §4.6.1 has their
-	// 0-RTT data resent in 1-RTT packets once the keys are there. The case
-	// counts what the client sends in 1-RTT and refuses more than
-	// 0.5 x FILENAMELEN x NUM_FILES of it: 7795 bytes against a bound of
-	// 5000, and the case failed against every peer that runs it — not for
-	// anything the peer did, but because the burst was shaped wrong. A
-	// conformant peer sees the same thing on any path with a queue: a
-	// sender that pays a datagram per frame loses the ones the queue has
-	// no room for, and pays for them twice.
-	gathering := !opts.close && ((c.gather && space != spaceApplication) ||
+	// What that is worth. A client that opens many streams at once and
+	// writes a small request on each — 40 requests the moment the
+	// connection opens, which is the QUIC Interop Runner's zerortt case and
+	// the shape of any multiplexed request burst — would otherwise send one
+	// datagram per write and a second for the end of each stream: some 140
+	// datagrams of about 200 bytes for 10 KB of requests. A path that queues
+	// 25 datagrams drops most of such a burst, and RFC 9001 §4.6.1 has the
+	// lost 0-RTT data resent in 1-RTT packets once the keys are there,
+	// which the zerortt case counts against the client (at most
+	// 0.5 x FILENAMELEN x NUM_FILES bytes in 1-RTT). Any path with a queue
+	// does the same: a sender that pays a datagram per frame loses the ones
+	// the queue has no room for, and pays for them twice.
+	gathering := !opts.close && ((c.gather && (space != spaceApplication || early)) ||
 		(early && c.writersIn.Load() > 1))
 	if !gathering {
 		c.flushDatagramLocked()
@@ -661,6 +758,23 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 			payload = append(payload, make([]byte, pad)...)
 		}
 	}
+	// RFC 9000 §10.3: every packet SHOULD be at least 22 bytes longer than
+	// the identifier this end asks the peer to send under, so that the
+	// peer's stateless reset — 21 bytes at the least — is never the
+	// shortest thing addressed here. A short header is 21 bytes with the
+	// peer's identifier, the packet number and the tag: a PING toward a
+	// peer with short identifiers fell under it. Long headers carry both
+	// identifiers and clear it. An ACK-only packet padded here stays out of
+	// the flight like any ACK-only packet: a few bytes, never acknowledged
+	// for their own sake (RFC 9002 §2 counts PADDING in flight so that a
+	// padded probe is congestion-controlled, which this is not). A copy:
+	// payload may be the head of a retransmission chunk whose tail shares
+	// its array.
+	if space == spaceApplication && !early {
+		if pad := 22 + len(c.scid) - (len(header) + pnLen + len(payload) + 16); pad > 0 {
+			payload = append(payload[:len(payload):len(payload)], make([]byte, pad)...)
+		}
+	}
 	// The datagram's size on the wire, for the amplification check: known
 	// exactly before sealing. While gathering, the padding a closing Initial
 	// will add is still to come — counted as the room it fills.
@@ -679,23 +793,7 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 	// authenticated packet, which only the peer can produce — not an
 	// amplification primitive.
 	if c.amplActive && onPath && c.amplSent+int64(size) > 3*c.amplRecv {
-		// The packet is withheld, not dropped. Handshake bytes exist only
-		// here — crypto/tls does not re-emit them — so losing them would
-		// kill every handshake whose first flight overflows the budget,
-		// which a real certificate chain does. The payload goes back to
-		// the front of the retransmission queue, and retransmitLocked
-		// sends it once the peer's next datagram raises amplRecv.
-		// Acknowledgements and probes regenerate from current state, so
-		// they are simply skipped. No packet number was consumed.
-		if !opts.ackOnly && !opts.noRetrans && len(retransPart) > 0 {
-			sp.retrans = append(sp.retrans, nil)
-			copy(sp.retrans[1:], sp.retrans)
-			if opts.own {
-				sp.retrans[0] = retransPart
-			} else {
-				sp.retrans[0] = append([]byte(nil), retransPart...)
-			}
-		}
+		withholdLocked(sp, retransPart, opts)
 		return nil
 	}
 	if budgeted && c.offPath.sent+int64(size) > 3*c.offPath.recv {
@@ -706,9 +804,10 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 	}
 	if oldBudgeted && c.pathProbe.oldSent+int64(size) > 3*c.pathProbe.oldRecv {
 		// Same for the unproven path left behind: the challenge is given
-		// up rather than sent past the budget. A legitimate peer still
+		// up rather than sent past the budget, which nothing raises again:
+		// oldRecv was counted up to the migration. A legitimate peer still
 		// there answers the one that did go, or sends from that address
-		// again, which raises the budget.
+		// again, which makes it the path in use, with its own books.
 		return nil
 	}
 
@@ -721,26 +820,14 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 		if c.closeErr == nil {
 			c.closeErr = err
 		}
-		go func() { _ = c.Close() }() // Close takes mu; it cannot run under it
+		c.closeAsyncLocked()
 		return err
 	}
 
-	// RFC 9001 §6.6: AES-GCM keys are spent after 2^23 sealed packets. At
-	// the 1-RTT level the sender MUST rotate before that (§6), which it
-	// may once the handshake is confirmed and a packet under the current
-	// keys was acknowledged (§6.1) — the §6.5 wait is a SHOULD, and the
-	// limit a MUST, so it does not apply here. Where rotation is not yet
-	// permitted, or at the levels whose keys never rotate, the connection
-	// ends with AEAD_LIMIT_REACHED instead of degrading the cipher. The
-	// check skips the CONNECTION_CLOSE itself (closeSent is set before it
-	// is written, and the refusal below reserved it a slot under the limit).
-	// §6.6 has an endpoint that reaches a limit "stop using the connection
-	// and only send stateless resets", and in the next sentence makes it
-	// RECOMMENDED to close with AEAD_LIMIT_REACHED before getting there:
-	// the second is what happens here, one CONNECTION_CLOSE under the keys
-	// in use and nothing more under them — the MUST describes the state of
-	// an endpoint that went past the limit without closing, which this one
-	// never does. The integrity limit (receive.go) reads §6.6 the same way.
+	// RFC 9001 §6.6: AES-GCM keys are spent after 2^23 sealed packets
+	// (atConfidentialityLimitLocked). The check skips the CONNECTION_CLOSE
+	// itself: closeSent is set before it is written, and the refusal
+	// reserved it a slot under the limit.
 	keys := sp.sealer
 	if early {
 		keys = c.earlySealer
@@ -753,16 +840,7 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 				return c.writePacketLocked(sp, space, payload, retransPart, opts, now)
 			}
 		}
-		err := &transportError{
-			code: transportAEADLimitReached,
-			err:  fmt.Errorf("%w: this key sealed its 2^23 packets and no key update was possible", ErrQUIC),
-		}
-		if c.closeErr == nil {
-			c.closeErr = err
-		}
-		c.sendCloseLocked(transportAEADLimitReached, false)
-		go func() { _ = c.Close() }() // Close takes mu; it cannot run under it
-		return err
+		return c.atConfidentialityLimitLocked()
 	}
 
 	if gathering {
@@ -776,7 +854,7 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 		}
 		if p := c.dgramPend; p != nil {
 			c.dgramPend = nil
-			c.dgram, _ = c.sealLocked(c.dgram, p, 0) // unreachable error, as in flushDatagramLocked
+			c.dgram, _ = c.sealLocked(c.dgram, p, 0, 0) // unreachable error, as in flushDatagramLocked
 		}
 		if c.dgramPend == nil && len(c.dgram) == 0 {
 			// The datagram's mark is decided when it opens; every packet
@@ -803,7 +881,7 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 		return c.batchLocked(&p, size)
 	}
 	c.flushBatchLocked()
-	pkt, err := c.sealLocked(c.pktScratch[:0], &p, 0)
+	pkt, err := c.sealLocked(c.pktScratch[:0], &p, 0, 0)
 	if err != nil {
 		return err
 	}
@@ -813,6 +891,61 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 		pc = opts.via
 	}
 	return c.writeLocked(pc, pkt, dest, p.ecn)
+}
+
+// withholdLocked puts back a packet the amplification limit stops (RFC
+// 9000 §8.1): withheld, not dropped. Handshake bytes exist only here —
+// crypto/tls does not re-emit them — so losing them would kill every
+// handshake whose first flight overflows the budget, which a real
+// certificate chain does. The payload goes back to the front of the
+// retransmission queue, and retransmitLocked sends it once the peer's next
+// datagram raises amplRecv. An ACK was settled when it was encoded, so its
+// debt is owed again (rearm) for the flush that follows that datagram. A
+// packet sent without retransmission — a PMTU probe, a PATH_CHALLENGE, a
+// PATH_RESPONSE — is skipped: what sends it again is its own timer, or the
+// peer's next challenge. No packet number was consumed. Callers hold mu.
+func withholdLocked(sp *space, retransPart []byte, opts sendOpts) {
+	if opts.ackOnly || opts.carriesAck {
+		sp.ack.rearm()
+	}
+	if !opts.ackOnly && !opts.noRetrans && len(retransPart) > 0 {
+		sp.retrans = append(sp.retrans, nil)
+		copy(sp.retrans[1:], sp.retrans)
+		if opts.own {
+			sp.retrans[0] = retransPart
+		} else {
+			sp.retrans[0] = append([]byte(nil), retransPart...)
+		}
+	}
+}
+
+// atConfidentialityLimitLocked ends the connection whose keys are spent and
+// cannot be rotated. RFC 9001 §6.6: AES-GCM keys are spent after 2^23
+// sealed packets. At the 1-RTT level the sender MUST rotate before that
+// (§6), which it may once the handshake is confirmed and a packet under the
+// current keys was acknowledged (§6.1) — the §6.5 wait is a SHOULD, and the
+// limit a MUST, so it does not apply here; writePacketLocked tries that
+// first. Where rotation is not yet permitted, or at the levels whose keys
+// never rotate, the connection ends with AEAD_LIMIT_REACHED instead of
+// degrading the cipher. §6.6 has an endpoint that reaches a limit "stop
+// using the connection and only send stateless resets", and in the next
+// sentence makes it RECOMMENDED to close with AEAD_LIMIT_REACHED before
+// getting there: the second is what happens here, one CONNECTION_CLOSE
+// under the keys in use and nothing more under them — the MUST describes
+// the state of an endpoint that went past the limit without closing, which
+// this one never does. The integrity limit (receive.go) reads §6.6 the same
+// way. Callers hold mu.
+func (c *Conn) atConfidentialityLimitLocked() error {
+	err := &transportError{
+		code: transportAEADLimitReached,
+		err:  fmt.Errorf("%w: this key sealed its 2^23 packets and no key update was possible", ErrQUIC),
+	}
+	if c.closeErr == nil {
+		c.closeErr = err
+	}
+	c.sendCloseLocked(transportAEADLimitReached, false)
+	c.closeAsyncLocked()
+	return err
 }
 
 // sealLocked finishes a built packet — Length field and packet number for a
@@ -826,14 +959,21 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 // packets are sealed long before their datagram leaves, and a write that
 // fails is a packet the network lost — recovery declares it so and resends
 // its payload, releasing the window it held, exactly as for a loss on the
-// wire. Nothing here is sized past maxDatagram (sendPacketLocked cuts the
-// queues to it), but maxDatagram is what the path search believes, not what
-// the outgoing interface will carry: a probe above the interface MTU comes
+// wire. No queued frame is sized past maxDatagram (sendPacketLocked cuts
+// the queues to it, under the packet's real header, and sends a waiting
+// writer back to cut its frame again when the size fell meanwhile); a
+// DPLPMTUD probe is, on purpose, padded to the size it tries. And
+// maxDatagram is what the path search believes, not what the outgoing
+// interface will carry: a probe above the interface MTU comes
 // back EMSGSIZE, since the socket forbids fragmenting (udp.Configure), and
 // that needs no special case either — the probe is never acknowledged, and
 // the search reads its loss and caps the path where the interface does
 // (pmtu.go).
-func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad int) ([]byte, error) {
+//
+// pad is the §14.1 padding to append to the payload, and lengthWidth the
+// width to encode the long header's Length field on when it is wider than
+// the value needs (initialPaddingAfter); zero means the minimal encoding.
+func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad, lengthWidth int) ([]byte, error) {
 	const pnLen = 4
 	sp := p.sp
 	sealer := sp.sealer
@@ -854,7 +994,12 @@ func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad int) ([]byte, error)
 	if p.space != spaceApplication || p.early {
 		// The length covers the packet number and the sealed payload, tag
 		// included.
-		header = varint.Append(header, uint64(pnLen+len(payload)+16))
+		length := uint64(pnLen + len(payload) + 16)
+		if lengthWidth > varintBytes(length) {
+			header = appendVarintOn(header, length, lengthWidth)
+		} else {
+			header = varint.Append(header, length)
+		}
 	}
 	pnOffset := len(header)
 	for i := pnLen - 1; i >= 0; i-- {
@@ -940,6 +1085,16 @@ func (c *Conn) sendCrypto(l tls.QUICEncryptionLevel, data []byte) error {
 	defer c.mu.Unlock()
 	for len(data) > 0 {
 		n := min(len(data), c.maxStreamChunk())
+		if space == spaceInitial && len(c.retryToken) > 0 {
+			// After a Retry the client's Initial carries the token, which
+			// maxStreamChunk's slack does not cover (§14.2).
+			n = min(n, c.maxStreamChunk()-varintBytes(uint64(len(c.retryToken)))-len(c.retryToken))
+			if n <= 0 {
+				// handleRetry takes no token this long (retryTokenFits);
+				// were one taken, no CRYPTO byte would fit beside it.
+				return fmt.Errorf("%w: a %d-byte Retry token leaves no room for CRYPTO data", ErrQUIC, len(c.retryToken))
+			}
+		}
 		// Beside a gathered Initial, a chunk cut to the room left fills the
 		// datagram the Initial would otherwise pad with zeros (§14.1): the
 		// ServerHello's Initial and the first of the certificate chain
@@ -1068,11 +1223,25 @@ func (c *Conn) armPaceLocked(until time.Time) {
 // that releases most of a large flight and declares the rest lost.
 // Nothing parks here: the read and timer loops are the callers.
 func (c *Conn) retransmitLocked() {
+	// The read loop calls this after every packet it receives, and almost
+	// always every queue is empty: then there is nothing to pace, and the
+	// clock read, the controller's rate and the bucket's refill below would
+	// be paid per packet for nothing. Skipping the refill changes nothing
+	// either — it credits the time elapsed since the last one, capped at
+	// the burst, so the next refill credits the same total.
+	if len(c.spaces[spaceInitial].retrans) == 0 && len(c.spaces[spaceHandshake].retrans) == 0 &&
+		len(c.spaces[spaceApplication].retrans) == 0 {
+		c.pruneResetIDsLocked()
+		return
+	}
 	rate := c.cc.pacingRate(c.rtt.current())
 	c.pacer.refill(time.Now(), rate)
 	for space := range c.spaces {
 		sp := &c.spaces[space]
-		if sp.discarded || sp.sealer == nil {
+		// canSealLocked, not the space's own keys: the 0-RTT payloads a
+		// Retry put back (handleRetry) go again in 0-RTT, before the 1-RTT
+		// keys exist.
+		if !c.canSealLocked(sp, space) {
 			continue
 		}
 		for len(sp.retrans) > 0 {
@@ -1113,12 +1282,12 @@ func (c *Conn) retransmitLocked() {
 // the rest (nil when it all fits). A payload sent under a larger datagram
 // size — before a black hole or a new path brought it back to 1200
 // (pmtu.go) — would otherwise be resent whole into the path that just lost
-// it. The frames of a stream reset since leave the payload first
-// (pruneResetLocked); a payload with nothing left comes back empty, and
-// the caller owes nothing for it. Callers hold mu.
+// it. The frames the connection's state has made stale since leave the
+// payload first (pruneStaleLocked); a payload with nothing left comes back
+// empty, and the caller owes nothing for it. Callers hold mu.
 func (c *Conn) fitLocked(space int, payload []byte) (now, rest []byte) {
-	if space == spaceApplication && len(c.resetIDs) > 0 {
-		if payload = c.pruneResetLocked(payload); len(payload) == 0 {
+	if space == spaceApplication {
+		if payload = c.pruneStaleLocked(payload); len(payload) == 0 {
 			return nil, nil
 		}
 	}
@@ -1135,10 +1304,16 @@ func (c *Conn) fitLocked(space int, payload []byte) (now, rest []byte) {
 // kept per packet or per stream: an acknowledged packet leaves the record,
 // a lost one puts its payload on the queue, and a payload a probe lifted
 // travels in the probe, which is tracked too; so a STREAM frame of s found
-// nowhere is a STREAM frame acknowledged. The walk costs a parse of a few
-// hundred frames on the rare event that asks, and nothing per packet or
-// per ACK. Callers hold mu.
+// nowhere is a STREAM frame acknowledged. The walk costs a parse of what
+// is tracked on the event that asks, and nothing per packet or per ACK; and
+// it is walked once per stream, since "Data Recvd" is terminal and the
+// verdict is kept (s.dataRecvd). A peer that holds its own direction open
+// may ask again with every STOP_SENDING, and each walk would cost the
+// whole flight. Callers hold mu.
 func (c *Conn) streamDataRecvdLocked(s *Stream) bool {
+	if s.dataRecvd {
+		return true
+	}
 	if !s.sendClosed || s.writeReset {
 		return false
 	}
@@ -1153,6 +1328,7 @@ func (c *Conn) streamDataRecvdLocked(s *Stream) bool {
 			return false
 		}
 	}
+	s.dataRecvd = true
 	return true
 }
 
@@ -1176,22 +1352,43 @@ func carriesStream(payload []byte, id uint64) bool {
 // noteResetLocked records that this end reset stream id, for the replay
 // filter: the mark is the next application packet number, so that every
 // packet that may carry a STREAM frame of the stream is older than it — the
-// RESET_STREAM itself leaves at the mark and carries none. Callers hold mu.
+// RESET_STREAM itself leaves at the mark and carries none.
+//
+// The control queue is filtered at the same moment: a STREAM_DATA_BLOCKED a
+// parked writer queued waits there for the congestion window, which the
+// RESET_STREAM does not wait for, and would leave after it — §3.3 forbids
+// the frame in "Reset Sent". Callers hold mu.
 func (c *Conn) noteResetLocked(id uint64) {
 	if c.resetIDs == nil {
 		c.resetIDs = make(map[uint64]uint64)
 	}
 	c.resetIDs[id] = c.spaces[spaceApplication].nextPN
+	c.control = c.pruneStaleLocked(c.control)
 }
 
-// pruneResetLocked drops from payload — a lost packet's frames, about to go
-// again — the STREAM and STREAM_DATA_BLOCKED frames of the streams this end
-// has reset since: after RESET_STREAM an endpoint ceases transmission and
-// retransmission of both (RFC 9000 §3.3, §19.4). Every other frame goes as
-// it was, the RESET_STREAM above all when that is what was lost. The
-// payload comes back untouched, without a copy, when nothing is dropped;
-// a payload that does not parse, which cannot happen, goes whole.
-func (c *Conn) pruneResetLocked(payload []byte) []byte {
+// pruneStaleLocked drops from payload — a lost packet's frames, about to go
+// again, or the control queue — the frames the connection's state has made
+// stale since they were written. Every other frame goes as it was, the
+// RESET_STREAM above all when that is what was lost. The payload comes back
+// untouched, without a copy, when nothing is dropped; a payload that does
+// not parse, which cannot happen, goes whole. Callers hold mu.
+//
+// What is stale (RFC 9000 §3.3, §13.3):
+//   - STREAM and STREAM_DATA_BLOCKED of a stream this end has reset: after
+//     RESET_STREAM an endpoint ceases transmission and retransmission of
+//     both (§3.3, §19.4);
+//   - STREAM_DATA_BLOCKED, DATA_BLOCKED and STREAMS_BLOCKED whose limit is
+//     no longer the one blocking: they "always include the limit that is
+//     causing blocking at the time that they are transmitted" (§13.3), and
+//     a stream whose sending part is closed or gone — "Data Sent", "Data
+//     Recvd", which §3.3 forbids the frame from — blocks on nothing;
+//   - MAX_STREAM_DATA once the receiving part is in "Size Known" or "Reset
+//     Recvd", or gone (§13.3 SHOULD stop; §3.3: the receiver sends it in
+//     "Recv" only);
+//   - STOP_SENDING once the receiving part is in "Data Recvd" or "Reset
+//     Recvd", or gone (§13.3: sent until then; §3.3: not after a
+//     RESET_STREAM was received).
+func (c *Conn) pruneStaleLocked(payload []byte) []byte {
 	var kept []byte
 	n := 0
 	for n < len(payload) {
@@ -1200,10 +1397,7 @@ func (c *Conn) pruneResetLocked(payload []byte) []byte {
 			return payload
 		}
 		l := len(payload) - n - len(tail)
-		drop := f.IsStream() || f.Type == frameStreamDataBlocked
-		if drop {
-			_, drop = c.resetIDs[f.StreamID]
-		}
+		drop := c.staleLocked(&f)
 		switch {
 		case drop && kept == nil:
 			kept = append(make([]byte, 0, len(payload)), payload[:n]...)
@@ -1216,6 +1410,43 @@ func (c *Conn) pruneResetLocked(payload []byte) []byte {
 		return payload
 	}
 	return kept
+}
+
+// staleLocked is pruneStaleLocked's verdict on one frame. Callers hold mu.
+func (c *Conn) staleLocked(f *Frame) bool {
+	switch {
+	case f.IsStream():
+		_, reset := c.resetIDs[f.StreamID]
+		return reset
+	case f.Type == frameStreamDataBlocked:
+		if _, reset := c.resetIDs[f.StreamID]; reset {
+			return true
+		}
+		s := c.streams[f.StreamID]
+		return s == nil || s.sendClosed || s.sendQ.avail() != 0 || s.sendQ.max != f.value
+	case f.Type == frameDataBlocked:
+		return c.connSend.avail() != 0 || c.connSend.max != f.value
+	case f.Type == frameStreamsBlocked, f.Type == frameStreamsBlocked|1:
+		opened, limit := c.localStreamCountersLocked(f.Type&1 != 0)
+		return *opened < *limit || *limit != f.value
+	case f.Type == frameMaxStreamData:
+		s := c.streams[f.StreamID]
+		if s == nil {
+			return true
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.fin || s.readReset
+	case f.Type == FrameStopSending:
+		s := c.streams[f.StreamID]
+		if s == nil {
+			return true
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.recvDone || s.readReset
+	}
+	return false
 }
 
 // pruneResetIDsLocked forgets the reset streams nothing in flight predates:
@@ -1505,18 +1736,34 @@ func (c *Conn) blockedResendInterval() time.Duration {
 // frame — deliberately past the once-per-limit flag, which governs the
 // immediate announcement, not the keepalive — and re-arms itself. When
 // nothing is blocked any more it disarms.
+//
+// A tick queues a frame only when the text asks for one: "when it has no
+// ack-eliciting packets in flight" — one in flight is already what keeps the
+// idle timers from expiring — and only if the same frame does not still
+// wait in the control queue, which a shut congestion window holds back:
+// a keepalive is one frame per limit, not one per tick. Without the second
+// condition, a peer announcing a one-millisecond max_idle_timeout (a tick
+// every 10 ms) while the window stayed shut grew the queue by six bytes per
+// limit per tick, without bound.
 func (c *Conn) resendBlockedFramesLocked(now time.Time) {
 	blocked := false
-	if c.connSend.avail() == 0 && c.connSend.blockedSent {
-		c.control = appendFrame(c.control, frameDataBlocked, c.connSend.max)
+	inFlight := c.elicitingInFlightLocked()
+	queue := func(frame []byte) {
 		blocked = true
+		if !inFlight && !c.controlHoldsLocked(frame) {
+			c.control = append(c.control, frame...)
+		}
+	}
+	if c.connSend.avail() == 0 && c.connSend.blockedSent {
+		queue(appendFrame(nil, frameDataBlocked, c.connSend.max))
 	}
 	for _, s := range c.streams {
-		// Not for a stream reset since: nothing waits for its credit any
-		// more, and §3.3 forbids the frame after RESET_STREAM.
-		if s.sendQ.avail() == 0 && s.sendQ.blockedSent && !s.writeReset {
-			c.control = appendFrame(c.control, frameStreamDataBlocked, s.id, s.sendQ.max)
-			blocked = true
+		// Not for a stream whose sending part is closed — reset since, or
+		// its FIN sent: nothing waits for its credit any more, §3.3 forbids
+		// the frame after RESET_STREAM and from "Data Recvd", and "Data
+		// Sent" has no need of it.
+		if s.sendQ.avail() == 0 && s.sendQ.blockedSent && !s.sendClosed {
+			queue(appendFrame(nil, frameStreamDataBlocked, s.id, s.sendQ.max))
 		}
 	}
 	if !blocked {
@@ -1525,6 +1772,35 @@ func (c *Conn) resendBlockedFramesLocked(now time.Time) {
 	}
 	c.flushControlLocked()
 	c.blockedResend = now.Add(c.blockedResendInterval())
+}
+
+// elicitingInFlightLocked reports whether an ack-eliciting packet of any
+// space still waits for its acknowledgement. Callers hold mu.
+func (c *Conn) elicitingInFlightLocked() bool {
+	for i := range c.spaces {
+		if sp := &c.spaces[i]; !sp.discarded {
+			if _, ok := sp.sent.oldestEliciting(); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// controlHoldsLocked reports whether frame, one encoded frame, waits in the
+// control queue as it is. Callers hold mu.
+func (c *Conn) controlHoldsLocked(frame []byte) bool {
+	for q := c.control; len(q) > 0; {
+		_, rest, err := parseFrame(q)
+		if err != nil {
+			return false
+		}
+		if bytes.Equal(q[:len(q)-len(rest)], frame) {
+			return true
+		}
+		q = rest
+	}
+	return false
 }
 
 // creditConsumed reports application-consumed stream bytes to flow control,
@@ -1613,7 +1889,7 @@ func (c *Conn) batchLocked(p *pendingPacket, size int) error {
 		c.batchN == maxBatchSegments || len(c.batch)+size > maxBatchBytes) {
 		c.flushBatchLocked() // one segmented write carries one ECN mark
 	}
-	out, err := c.sealLocked(c.batch, p, 0)
+	out, err := c.sealLocked(c.batch, p, 0, 0)
 	if err != nil {
 		return err
 	}

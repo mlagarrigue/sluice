@@ -221,3 +221,142 @@ func TestUnknownTLSEventIsCounted(t *testing.T) {
 		t.Errorf("UnhandledTLSEvents = %d, want %d", got, n)
 	}
 }
+
+// A handshake whose context is cancelled ends at once with the context's
+// cause, not with the socket's timeout: the cancellation sets the read
+// deadline to now, and the deadline that wakes the read is the context's.
+func TestDialCancelledEndsWithTheContextsCause(t *testing.T) {
+	cause := errors.New("the caller gave up")
+	ctx, cancel := context.WithCancelCause(context.Background())
+	pc := newScriptedPC() // the peer never answers
+	peer := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 2}
+	time.AfterFunc(50*time.Millisecond, func() { cancel(cause) })
+	done := make(chan error, 1)
+	go func() {
+		c, err := Dial(ctx, pc, peer, ClientTLSForTest(), DefaultParameters())
+		if c != nil {
+			_ = c.Close()
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, cause) {
+			t.Errorf("Dial = %v, want the context's cause", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Dial still running 5 s after its context was cancelled")
+	}
+}
+
+// refusingWritesPC is a scriptedPC whose every send is refused the way a
+// closed port's ICMP surfaces on a connected socket's next send.
+type refusingWritesPC struct{ *scriptedPC }
+
+func (p refusingWritesPC) WriteTo(b []byte, addr net.Addr) (int, error) {
+	_, _ = p.scriptedPC.WriteTo(b, addr)
+	return 0, &net.OpError{Op: "write", Net: "udp", Err: platformRefusal}
+}
+
+// Send-side refusals count toward handshakeRefusalLimit as read-side ones
+// do: a socket that refuses every send, with nothing ever read, ends Dial
+// with that refusal — not with a timeout, and not with no error at all.
+// Each refusal wakes the read so the count is re-taken at once; the wake is
+// not the deadline, and is read past while the context is alive.
+func TestSendRefusalsEndTheHandshakeWithTheRefusal(t *testing.T) {
+	if !isRefusal(platformRefusal) {
+		t.Skip("no send refusal is recognised on this platform")
+	}
+	pc := refusingWritesPC{newScriptedPC()}
+	peer := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 2}
+	done := make(chan error, 1)
+	go func() {
+		c, err := Dial(context.Background(), pc, peer, ClientTLSForTest(), DefaultParameters())
+		if c != nil {
+			_ = c.Close()
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, platformRefusal) {
+			t.Errorf("Dial = %v, want the send refusal", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Dial still running 5 s into a socket that refuses every send")
+	}
+}
+
+// heardThenRefusedPC delivers one datagram, then refuses every read, as a
+// socket does once the peer that answered went away.
+type heardThenRefusedPC struct {
+	*scriptedPC
+	reads atomic.Int64
+}
+
+func (p *heardThenRefusedPC) ReadFrom(b []byte) (int, net.Addr, error) {
+	if p.reads.Add(1) == 1 {
+		return copy(b, []byte{0x40, 1, 2, 3}), &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 2}, nil
+	}
+	return 0, nil, &net.OpError{Op: "read", Net: "udp", Err: syscall.ECONNREFUSED}
+}
+
+// Once something was heard, refusals no longer end the handshake (only its
+// deadline does), and consecutive ones are read past with a backoff: a
+// socket that refuses every read must not spin the handshake's goroutine.
+// Over a 300 ms handshake the backoff allows a handful of reads where a
+// loop without it makes hundreds of thousands.
+func TestRefusedReadsAfterADatagramAreBackedOff(t *testing.T) {
+	pc := &heardThenRefusedPC{scriptedPC: newScriptedPC()}
+	peer := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 2}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	c, err := Dial(ctx, pc, peer, ClientTLSForTest(), DefaultParameters())
+	if c != nil {
+		_ = c.Close()
+	}
+	if err == nil {
+		t.Fatal("Dial succeeded against a peer that never answered")
+	}
+	if n := pc.reads.Load(); n > 1000 {
+		t.Errorf("%d reads in a 300 ms handshake of refused reads: the backoff did not pace them", n)
+	}
+}
+
+// refuseFirstWritePC refuses its first send only.
+type refuseFirstWritePC struct {
+	*scriptedPC
+	refused atomic.Bool
+}
+
+func (p *refuseFirstWritePC) WriteTo(b []byte, addr net.Addr) (int, error) {
+	_, _ = p.scriptedPC.WriteTo(b, addr)
+	if p.refused.CompareAndSwap(false, true) {
+		return 0, &net.OpError{Op: "write", Net: "udp", Err: platformRefusal}
+	}
+	return len(b), nil
+}
+
+// The wake a single send refusal gives the read is not the deadline: with
+// the context alive and the deadline ahead, the read is taken again, and
+// the handshake ends at its context's deadline, not at the wake.
+func TestASendRefusalWakeIsNotTheDeadline(t *testing.T) {
+	if !isRefusal(platformRefusal) {
+		t.Skip("no send refusal is recognised on this platform")
+	}
+	pc := &refuseFirstWritePC{scriptedPC: newScriptedPC()}
+	peer := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 2}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	c, err := Dial(ctx, pc, peer, ClientTLSForTest(), DefaultParameters())
+	if c != nil {
+		_ = c.Close()
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Dial = %v after %v, want the context's deadline", err, time.Since(start))
+	}
+	if !pc.refused.Load() {
+		t.Fatal("precondition: no send was refused")
+	}
+}

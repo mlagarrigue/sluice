@@ -87,9 +87,10 @@ func Merge[T any](done Completion, streams ...Stream[T]) Stream[T] {
 		srcs := make([]source, len(streams))
 		// One deferred call for the whole set rather than one per source: the
 		// sources must be released together however this function returns —
-		// exhaustion, early stop, or a panic crossing the yield (S9). A source
-		// not yet pulled has a nil stop; iter.Pull's stop is idempotent, so one
-		// already released below is released again at no cost.
+		// exhaustion, early stop, or a panic crossing the yield (the
+		// architecture's S9). A source not yet pulled has a nil stop;
+		// iter.Pull's stop is idempotent, so one already released below is
+		// released again at no cost.
 		defer func() {
 			for _, src := range srcs {
 				if src.stop != nil {

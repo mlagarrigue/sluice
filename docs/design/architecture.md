@@ -127,9 +127,10 @@ an element can be valid, carry three warnings, and keep moving forward.
 >
 > Three of its decisions come from measurements rather than from taste. **The
 > pipeline is built once**, because building six operators per request is half
-> the 280 ns and thirteen allocations a request costs. **The store
-> is asked once per batch**, which is the whole thesis and measured at ×6.9
-> against a bounded backend. And **a rejected request is answered,
+> the 280 ns and thirteen allocations a request costs
+> ([measured](../benchmarks.md#the-architectures-figures)). **The store
+> is asked once per batch**, which is the whole thesis and measured at ×11.9
+> the throughput of one query per call against a bounded backend. And **a rejected request is answered,
 > never filtered out**: the gateway routes replies through the element itself,
 > so an element removed from the stream is a caller left waiting for its
 > context to expire.
@@ -152,8 +153,8 @@ responsibility. The other transport is `net/httpstream`, which brings the
 byte → Frame → Request boundary into the library's own table, under the
 caveat that writing protocol parsers exposed to hostile input is how CVEs are
 made — the risk the first transport leaves to the standard library.
-net/httpstream is supported — out of the experimental label since
-2026-10-10 and under the compatibility promise — and fuzzed in CI without
+net/httpstream is supported — outside the experimental label and
+under the compatibility promise — and fuzzed in CI without
 a public corpus; it has neither run in production nor had an outside
 security review. Its HTTP/3 runs on `net/quic`, which is still experimental.
 
@@ -230,8 +231,10 @@ type Batch[T any] struct {
 > into a panic.
 >
 > Cost was measured and is not the reason: a `context.Context` is an interface,
-> so the batch goes from 24 to 40 bytes, and a traversal of 1M elements is
-> unchanged, within 1% — including with cancellation checked per batch.
+> so the batch goes from 24 to 40 bytes, and a traversal of 1M elements
+> through four stages is unchanged, within 1% — 4.50 ns per element against
+> 4.55 without it, 4.52 with cancellation checked per batch
+> ([measured](../benchmarks.md#the-designs-turned-down)).
 > What a caller pays instead is 16 bytes per **element** when they do need
 > per-element context. That is a real trade, made where the caller knows they
 > need it. Rationale, alternatives, and what would reverse it:
@@ -280,10 +283,10 @@ remains to be verified with several batches alive simultaneously.*
 - Go has **no** monomorphization — generating a specialised copy of a generic function per type, which is how Rust makes generics free. Rust is a conceptual model, **not a cost
   model** — no "zero-cost" promise is made here.
 - `iter.Pull` (the standard function that turns an iterator into a `next()` call) costs a runtime coroutine — a suspended function the runtime resumes on demand — and a context switch **per value
-  pulled**: **53.3 ns/element measured** (×243 the ceiling), against 1.05 ns in
+  pulled**: **53.3 ns/element measured** (×243 the native loop, the ceiling), against 1.05 ns in
   direct push. It is reserved for lockstep joins and merge, and then **on
   batches** — never on elements. This is not a recommendation but an
-  **obligation**: see [Measurements](../benchmarks.md).
+  **obligation**: see [Measurements](../benchmarks.md#the-architectures-figures).
 
 All-batch amortizes the indirect call over ~1024 elements: the per-stage cost
 becomes negligible next to the useful work.
@@ -308,7 +311,7 @@ Contexts are **stratified**: the HTTP context exists up to the HTTP layer, the
 user/business context beyond it. An operator sees only the stratum that concerns
 it.
 
-### Three causes of stopping, not to be confused
+### Four causes of stopping, not to be confused
 
 | Cause | Origin | Mechanism |
 |---|---|---|
@@ -372,7 +375,8 @@ type Demand struct {
 > in key order publishing where it has got to, so the scan skips whole pages
 > instead of decoding rows it is about to discard: **64.4 µs against 445**,
 > **×6.9**. Smaller than DataFusion's ×22 because the simulated per-row work is
-> smaller; the ratio is what transposes.
+> smaller; the ratio is what transposes
+> ([measured](../benchmarks.md#the-architectures-figures)).
 >
 > Two decisions shape it. **The demand only tightens** — a limit falls, a bound
 > rises, never the reverse. A source that has already skipped a thousand rows
@@ -392,8 +396,10 @@ type Demand struct {
 > decoding a column on its own, and adding it then breaks nobody.
 >
 > **One operator was written, measured and removed.** A `Take` publishing its
-> remaining count measured a few percent slower than the core operator, and
-> faster nowhere — and the reason is structural: a source whose unit of work *is*
+> remaining count measured 10.27 µs against the core operator's 9.80 over the
+> same scan, inside each other's spread, and faster nowhere
+> ([measured](../benchmarks.md#the-designs-turned-down)) — and the reason is
+> structural: a source whose unit of work *is*
 > the batch it yields cannot do less than one batch for the last batch, and
 > checking a limit per row is the per-element cost this design refuses. Its
 > absence is documented in the package with the number that decided it. The
@@ -466,8 +472,11 @@ type Diagnostic struct {
 > in `diagnostics`, with `NewDiagnostic(severity, code, path)` for the three a
 > diagnostic cannot be useful without and `With…` methods returning copies for
 > the rest. The value receiver is what makes a diagnostic safe to hold as a
-> template — measured no slower than a pointer receiver when it was chosen, so
-> the size the linter flags is not a cost.
+> template, and it has a price: building one from a template costs 7.70 ns
+> against 4.68 through a pointer, ×1.65, neither allocating
+> ([measured](../benchmarks.md#the-designs-turned-down)). Three nanoseconds
+> per diagnostic, off the per-element path, buys a template no caller can
+> change by accident; that is the size the linter flags, and it is kept.
 >
 > Affordances are a separate type ([below](#affordances--the-gap-to-fill)):
 > an `Affordance` carries its own `Path`, and a remedy is matched to a problem
@@ -557,7 +566,7 @@ nothing costs 12 allocations and 3× the time to fill a 1000-entry report,
 because every doubling copies. The storage is therefore reserved up to a small
 cap and grows into its limit beyond it: 2 KB and one allocation for the first
 `Add` at any ceiling, and past the ceiling a counter increment at 1.24 ns with no
-allocation at all.
+allocation at all ([measured](../benchmarks.md#the-architectures-figures)).
 
 **Conditional trace capture**: `runtime.Callers` is expensive and Go's `errors`
 package captures nothing. Trace only if `Severity >= Error` or in debug mode.
@@ -570,7 +579,7 @@ package captures nothing. Trace only if `Severity >= Error` or in debug mode.
 |---|---|
 | `[]Diagnostic` carried by the element | **business** diagnostic — never interrupts |
 | the element type itself | the element **could not** be produced — the caller's own field, see below |
-| `Source.Err()` outside the stream | **setup / teardown** failure and **stop cause** ([Three causes of stopping, not to be confused](#three-causes-of-stopping-not-to-be-confused), [Errors outside the stream](#errors-outside-the-stream)) |
+| `Source.Err()` outside the stream | **setup / teardown** failure and **stop cause** ([Four causes of stopping, not to be confused](#four-causes-of-stopping-not-to-be-confused), [Errors outside the stream](#errors-outside-the-stream)) |
 
 > **No `Result[T]` wrapper, no `OrFail` operator, no `Stream.Err()`.**
 > `Stream[T]` is a named `iter.Seq[Batch[T]]` with no methods, so the stop
@@ -716,7 +725,8 @@ operators *are* that point.
 > no error anywhere. Documentation cannot prevent that, because the operators
 > doing the copying are correct.
 >
-> Measured at 5.43 ns/element (1024-element windows), above the per-stage
+> [Measured](../benchmarks.md#the-architectures-figures) at 5.43 ns/element
+> (1024-element windows), above the per-stage
 > budget for the reason `distinct.By` is: every element pays a caller callback
 > returning a 24-byte `time.Time` and two time comparisons. Calling
 > `time.Truncate` per element — a 64-bit division — cost twice that; testing the
@@ -806,7 +816,7 @@ Never build an implicit unbounded tee.
 Rayon (Rust) parallelizes because its sources are *splittable* (`split_at`). An
 opaque `iter.Seq` **is not**. Our only option is per-batch fan-out, hence:
 
-- either loss of ordering (`parallel.Ordered`), or an O(k) reordering buffer;
+- either loss of ordering (`parallel.Unordered`), or an O(k) reordering buffer (`parallel.Ordered`);
 - local loss of native traces → enrich the error context at the crossing;
 - `parallel.Ordered` with one worker must be an explicit no-op, never a silent concurrent path.
 
@@ -847,12 +857,12 @@ coordination cost is amortized.
 > allocating the workspace per batch). All three share one worker core and so
 > one ordering, shutdown and panic contract.
 >
-> **The input batch is copied at the hand-off (S14).** The operator retains
-> each incoming batch while a worker reads it, and upstream operators
-> legitimately reuse their output buffers — composed, those two facts are a
-> data race with silent value corruption. `Items` is copied into a per-slot
-> buffer at the retention point; the slots are recycled, so the copy costs no
-> allocation in steady state.
+> **The input batch is copied at the hand-off (S14).** The operator retains each
+> incoming batch while a worker reads it, and upstream operators legitimately
+> reuse their output buffers — composed, a data race with silent corruption.
+> `Items` is copied into a recycled per-slot buffer at the retention point, at
+> no allocation in steady state and 0.0512 ns per element, 3% of the per-stage
+> budget ([measured](../benchmarks.md#the-designs-turned-down)).
 
 ---
 
@@ -871,9 +881,10 @@ joining pairs elements on a key, merging combines sequences.
 | `join.Merge` | ordered merge of sorted streams | **O(1)**, O(m) per run repeated on both sides | sorted |
 | `join.ZipLongest` | positional pairs, goes to the longest | O(1) | positional |
 | `Coalesce` | recombines batches to a target size | O(k) | preserved |
-| ~~unsorted `Union`/`Intersect`/`Except`~~ | HashSet deduplication | **O(distinct)** | — |
+| unsorted `Union`/`Intersect`/`Except` (not provided) | HashSet deduplication | **O(distinct)** | — |
 
-The last three **do not exist** as stream operators: an unbounded HashSet
+Unsorted `Union`, `Intersect` and `Except` **do not exist** as stream
+operators: an unbounded HashSet
 violates S1. They are provided only in a sorted variant, derived from
 `join.Merge` ([join.Merge](#joinmerge--the-central-primitive)) — this is the sort-merge strategy of SQL engines.
 
@@ -952,9 +963,9 @@ In single-goroutine pull, a fair merge **at the element level** is impossible
 without a buffer or `iter.Pull`. At **batch** grain, it becomes trivial: one
 `iter.Pull` per source, and you alternate.
 
-**Measured**: merging two streams costs **53.2 ns/element** tuple-at-a-
-time against **0.295 ns/element** per batch of 1024 — a factor of **180**. At 1.3×
-the ceiling, the operator is essentially free in batch, and unusable without it.
+**[Measured](../benchmarks.md#the-architectures-figures)**: merging two streams costs **53.2 ns/element** tuple-at-a-
+time against **0.295 ns/element** per batch of 1024 — a factor of **180**. At 1.3× the native
+loop, the operator is essentially free in batch, and unusable without it.
 
 > Tuple-at-a-time, this cost is prohibitive and `Merge` would require an inversion
 > of control. **It is all-batch that makes the operator possible**, not merely
@@ -971,7 +982,7 @@ the ceiling, the operator is essentially free in batch, and unusable without it.
 > yielding a, b and 1, 2 the output is a, 1, b, 2 — which is what makes it
 > usable in a test and worth relying on when a fair share per source is what
 > the caller needs. Under `WhenAll`, an exhausted source drops out of the
-> rotation and the rest carry on. Measured at 0.305 ns/element from two
+> rotation and the rest carry on. [Measured](../benchmarks.md#the-architectures-figures) at 0.305 ns/element from two
 > sources and 0.349 from eight, within the eight-source run's spread: the pull
 > count per element does not change with the source count.
 
@@ -1005,9 +1016,9 @@ recombine small batches after a selective filter or a join.
 func Coalesce[T any](s Stream[T], targetSize int) Stream[T]
 ```
 
-> **Rule.** Place a `Coalesce` after any selective operator — `Filter`, inner
-> join, `Split`/Partition — on pain of propagating tiny batches that cancel out
-> the benefit of vectorization.
+> **Rule.** Place a `Coalesce` after a selective operator — `Filter`, inner
+> join, `Split`/Partition — when several stages follow it: each of them would
+> otherwise pay its per-batch cost on batches that hold a few elements.
 
 **Target size: measured.** The plateau starts at 8 elements and does not degrade
 up to 1M ([Batch size](#batch-size-1024-by-default)). The gap with DuckDB (2048) and DataFusion (8192) has no effect
@@ -1316,9 +1327,9 @@ reflection works **row by row and field by field**, which breaks vectorization.
 
 - a generated hydration function **per entity**, looping over the 1024 rows
   internally — one indirection per batch, not per row;
-- ~~**columnar decoding**: the loop over 1024 values of the same type is
-  monomorphic and predictable — the X100 principle applied to hydration~~
-  **— measured false, see the note below;**
+- **row-major decoding**, not columnar: the loop over 1024 values of one
+  type — the X100 principle applied to hydration — was measured and loses
+  here, see the note below;
 - **zero `interface{}`** in the hot path; **binary** format mandatory;
 - pre-allocation at batch size, buffer reuse between batches.
 
@@ -1329,7 +1340,8 @@ reflection works **row by row and field by field**, which breaks vectorization.
 > per-type plan, typed setters, nothing boxed — reflection costs **×1.9** the
 > same hydration written by hand, with the same one allocation per row: 56.7
 > against 29.6 ns/row (`BenchmarkHydrateReflect` against
-> `BenchmarkHydrateRowMajor` in `database/postgres`). ×1.9 on the hydration
+> `BenchmarkHydrateRowMajor` in `database/postgres`;
+> [Measurements](../benchmarks.md#the-architectures-figures)). ×1.9 on the hydration
 > step, with by-name binding and bind-time type checks on top, still justifies
 > a generator. Columnar decoding does not pay. One scanner
 > per column then a pass to assemble measures **36.7 ns/row against row-major's 29.6**,
@@ -1360,7 +1372,8 @@ reflection works **row by row and field by field**, which breaks vectorization.
 > generated code that lives only on the machine that ran the generator is code
 > nobody reviews and nothing compiles. Drift fails the build.
 >
-> Measured at 54 ns/row on a six-column entity with a nullable string — a
+> [Measured](../benchmarks.md#joins-and-hydration-in-isolation) at 54 ns/row
+> on a six-column entity with a nullable string — a
 > different entity from the figures above, so not comparable to them. What the
 > number does say directly: **a nullable `*T` field costs an
 > allocation per row**, because the pointer the generated code takes escapes to
@@ -1456,8 +1469,9 @@ thrashing*.
 >
 > **The default table is not `map[K][]B`.** That shape allocates a slice per
 > distinct key, which dominates on a build side with many keys: measured over
-> 65536 keys against a flat value slice with an index chain, it took 2.6× the
-> time and 110× the allocations. The chain addresses values with `int32`, so `MaxEntries` is
+> 65536 keys against a flat value slice with an index chain, it took ×1.48 the
+> time and ×113 the allocations, 128.1 against 86.8 ns per key built and probed
+> ([measured](../benchmarks.md#the-designs-turned-down)). The chain addresses values with `int32`, so `MaxEntries` is
 > capped accordingly and a larger one is refused at construction rather than
 > left to overflow.
 
@@ -1476,8 +1490,8 @@ makes the problem non-existent — a clear advantage over SQL engines.
 
 > **The gap between the first two rows is larger than the table conveys.** On
 > 65536 rows a side, joining one-to-one, the merge join measured **19
-> ns/element and 25 KB** against the hash join's **83 ns and 8.4 MB** — four
-> times the speed and three hundred times less memory (`BenchmarkJoinMerge`
+> ns/element and 25 KB** against the hash join's **93 ns and 8.4 MB** — four
+> to five times the speed and three hundred times less memory (`BenchmarkJoinMerge`
 > and `BenchmarkJoinHash`, six runs of one second, medians;
 > [Measurements](../benchmarks.md#joins-and-hydration-in-isolation)). "O(1)
 > versus O(build)"
@@ -1514,7 +1528,9 @@ lying to the user.
 > join's cursor, with the timestamp as its key) and sentinel (`ErrUnsorted`)
 > as `join.Merge`. Ordering is what makes eviction safe without guessing
 > lateness: a row dies the moment the other side's clock passes the last
-> instant that could match it. This also settles **what a timestamp is in
+> instant that could match it.
+>
+> This also settles **what a timestamp is in
 > this library** — an event time extracted per element as `time.Time`, with
 > ordering as the operator's requirement — and `window.Tumbling` inherits
 > the convention, though not the whole requirement: a window is closed by an
@@ -1524,14 +1540,16 @@ lying to the user.
 > than that window's start meets a policy (`window.LateFail`,
 > `window.LateDrop`) — measured on the first consumer built on the library,
 > where one client's clock a second behind panicked up through a `gateway`
-> and left every later call failing. Two additions: the S1 bound is a required
+> and left every later call failing.
+>
+> Two additions: the S1 bound is a required
 > `join.BuildLimit` counting both sides' retained rows (`Fail` | `DropNewest`,
 > the first drop reported once through `Report`), because
 > O(throughput × interval) is a class, not a bound; and the measured class is
-> the hash join's, not the merge join's — **82.5 ns/element on a zero-width
-> window against 93.5 for the hash join and 21.8 for the merge join** in the
-> same runs (`BenchmarkIntervalJoinNarrow`; 141 ns on a ±2 s window;
-> [Measurements](../benchmarks.md#the-architectures-figures)) — since the per-element map
+> the hash join's, not the merge join's — **82.8 ns/element on a zero-width
+> window against 93.2 for the hash join and 19.0 for the merge join** in the
+> same runs (`BenchmarkIntervalJoinNarrow`; 140 ns on a ±2 s window;
+> [Measurements](../benchmarks.md#joins-and-hydration-in-isolation)) — since the per-element map
 > is the same dominant term. Verified
 > against a brute-force oracle over pseudo-random ordered inputs, eviction
 > and compaction included.
@@ -1580,13 +1598,14 @@ answer would then arrive as a second one. What is guaranteed instead is that
 no caller waits on a pipeline that is gone.
 
 **The value is I/O amortization, and it only exists against a bounded
-backend.** Measured: **×6.9** against one query per request, **×8.2** with
-`parallel.Unordered` inside the pipeline. The same benchmark against an
-unbounded backend reports the gateway ×65 *slower* — correctly, and that
-figure is recorded beside the other, because it is the one that says when not
-to use this.
+backend.** Measured: **×11.9** the throughput of one query per request,
+**×15.4** with `parallel.Unordered` inside the pipeline. With nothing behind
+it the gateway only costs — one call every 3.7 µs at best, where a direct
+call is free — and that figure is recorded beside the other, because it is
+the one that says when not to use this
+([measured](../benchmarks.md#the-gateway-against-a-bounded-backend)).
 
-**Batch = 1 is measured, not assumed.** A pipeline built per request costs
+**Batch = 1 is [measured](../benchmarks.md#the-architectures-figures), not assumed.** A pipeline built per request costs
 280 ns and 13 allocations against 1.98 ns and none for the same six steps
 hand-written: about 1% of the cheapest possible request, so the claim
 survives, and all-batch buys nothing at that size. Two findings follow: the
@@ -1600,7 +1619,8 @@ per-request-pipeline shape is the expensive one, and it is the one everybody
 writes first.
 
 No HTTP adapter ships with the gateway, deliberately: the handler that joins
-`net/http` to it is eight explicit lines, and an adapter taking decode and
+`net/http` to it is a few explicit lines — decode, run, pick the status,
+encode — and an adapter taking decode and
 encode functions would save three of them while hiding the two decisions that
 matter — the status code and the encoding. `net/http` also stays the protocol
 parser: rewriting a parser exposed to hostile input is how CVEs are
@@ -1663,20 +1683,35 @@ nested calls, so a chain would break exactly where a pipeline does its work.
 
 | # | Guarantee | Verification |
 |---|---|---|
-| S1 | No unbounded allocation. A zero is never the absence of a bound: either it stands for a safe default named in the field's comment (`httpstream.Config`, [ADR 0018](adr/0018-zero-values-and-mandatory-bounds.md)), or it is refused at construction where no default suits every caller (`join.BuildLimit`, `gateway.Config`, `postgres.CopyConfig.RowsPerTx`). `diagnostics.NewCollector(0)` keeps nothing and counts every diagnostic as truncated. Two named exceptions, `MaxConns` and `MaxConnsPerIP`, have no bound at zero, because they are the deployer's memory budget (ADR 0018). | Overflow → error, not OOM; a refused zero → a panic or an error naming the field: `TestJoinLimitCeilingIsNamed`, `TestCopyRequiresRowsPerTx`, `TestDiagnosticsZeroValue`; ADR 0018's lists held to the fields' documentation: `TestADR0018ListsMatchConfig` |
-| S2 | No `panic` crosses a public boundary while data flows, other than the documented sentinels that `Try` converts into an error ([ADR 0006](adr/0006-sentinel-panics-and-try.md)). A constructor's panic on a programming error — a nil function, a size that is not positive — is outside it: raised when the pipeline is built, before any data, and documented on the constructor (CONTRIBUTING, "A constructor panics on a programming error"). | Fuzzing of the parsers, where a panic fails the fuzz: `FuzzParseRequest`, `FuzzH2Connection`, `FuzzParseLongHeader`, `FuzzReaderNext`, `FuzzPathJSONPointerRoundTrip`; every sentinel goes through one constructor and `Try` knows them all: `TestTryKnowsEverySentinel` |
-| S3 | Restrictive default limits. | The values are chosen by review; that zero takes them is tested: `TestADR0018ListsMatchConfig`, `TestServeBoundsHeaderReadsAndIdleConnectionsByDefault` |
+| S1 | No unbounded allocation: a zero is a safe default or a refusal, never the absence of a bound ([ADR 0018](adr/0018-zero-values-and-mandatory-bounds.md)); two named exceptions, below. | Overflow → error, not OOM: `TestJoinLimitCeilingIsNamed`, `TestCopyRequiresRowsPerTx`, `TestDiagnosticsZeroValue`, `TestADR0018ListsMatchConfig` |
+| S2 | No `panic` crosses a public boundary while data flows, other than the sentinels `Try` converts ([ADR 0006](adr/0006-sentinel-panics-and-try.md)). | Fuzzed parsers, where a panic fails the fuzz (`FuzzParseRequest`, `FuzzH2Connection`, `FuzzParseLongHeader`, `FuzzReaderNext`, `FuzzPathJSONPointerRoundTrip`); `TestTryKnowsEverySentinel` |
+| S3 | Restrictive default limits. | The values are fixed in the code, each beside its field; that zero takes them is tested: `TestADR0018ListsMatchConfig`, `TestServeBoundsHeaderReadsAndIdleConnectionsByDefault`, and that zero takes the value each field's comment names: `TestZeroConfigResolvesToTheDefaultsItsCommentsName` |
 | S4 | `unsafe` forbidden except under a named audit. One exception: `net/quic/udp/configure_windows.go`, for the input buffer of `syscall.WSAIoctl`. | `scripts/check-hygiene.sh` fails on any import of `unsafe` outside the audited list |
 | S5 | Mandatory timeouts on all I/O. | Silent connection → released: `TestSilentConnectionHasReadTimeoutToSpeak` (httpstream), `TestIdleTimeoutEndsASilentConnection` (QUIC) |
-| S6 | No goroutine leak. | A `synctest` bubble that fails while a goroutine is still blocked: `TestParallelLeavesNoGoroutines`, `TestConnectionsLeaveNoGoroutines`, `TestH2ConnectionsLeaveNoGoroutines` |
+| S6 | No goroutine leak. | A `synctest` bubble that fails while a goroutine is still blocked: `TestParallelLeavesNoGoroutines`, `TestConnectionsLeaveNoGoroutines` (QUIC); for `httpstream`, whose connections run on real sockets, no goroutine of the package left once they close, checked by name: `TestH2ConnectionsLeaveNoGoroutines` |
 | S7 | Internal errors do not leak to the client. | **Guaranteed by structure**: `cause` unexported ([The model adopted](#the-model-adopted)); exercised by `TestDiagnosticCauseIsWrappedNotExported`, `TestAuthenticateDoesNotLeakWhyItFailed` |
 | S8 | Every network input is bounded before allocation. | Fuzzing: `FuzzParseRequest`, `FuzzParseFrame`, `FuzzHPACKDecode`, `FuzzQPACKDecode`, `FuzzParseLongHeader`, `FuzzReaderNext` |
 | S9 | Every internal `iter.Pull` calls `stop()` on all paths. | Test with injected panic: `TestMergeReleasesOnPanic`, `TestSplitReleasesSourceOnPanic`, `TestPullingOperatorsReleaseBothInputsOnPanic` (`join.Merge`, `ZipLongest`, `join.Interval`), `TestAsyncConsumerPanicReleasesProducer` |
-| S10 | Every operator propagates `false` and lets the generator unwind. | One table drives the operators: `TestOperatorsPropagateEarlyStop`; `join.Merge`, which fills a batch before it yields, has its own: `TestMergeJoinByEarlyStopEveryBranch` |
-| S11 | No unbounded buffer between two operators. | Pressure test: `TestParallelBoundsReadAhead`, `TestSplitBounds` |
+| S10 | Every operator propagates `false` and lets the generator unwind. | One table drives the operators, `probe.Probe` included: `TestOperatorsPropagateEarlyStop`; `join.Merge`, which fills a batch before it yields, has its own: `TestMergeJoinByEarlyStopEveryBranch` |
+| S11 | No unbounded buffer between two operators. | Pressure test: `TestParallelBoundsReadAhead`, `TestSplitBounds`; a `Split` branch that would overwrite an undrained slot stalls instead: `TestSplitStalls` |
 | **S12** | **Diagnostics ceiling per element and per batch.** `web/stream`'s `Exchange.Diagnostics` has no ceiling of its own: it holds what the pipeline's stages report for the element, a number set by the stages the program built, not by the input. | Pathological batch → counted truncation: `TestDiagnosticsCeiling` |
 | **S13** | **No value travels through SQL text.** | `TestSetLocalNeverPutsTheValueIntoSQL`, `TestSavepointRejectsHostileNames` |
 | **S14** | **An operator that retains a batch beyond the call that received it copies it first.** | `-race` composition test with a buffer-reusing upstream (`Convert \|> X`), per goroutine-crossing operator: `TestParallelCopiesInputBatch`, `TestAsyncCopiesInputBatch`, `TestParallelUnorderedCopiesInputBatch`, `TestParallelInitCopiesInputBatch`; the reuse contract itself: `TestBufferReuseContract` |
+
+**S1** — a zero stands for a safe default named in the field's comment
+(`httpstream.Config`), or is refused at construction where no default suits
+every caller (`join.BuildLimit`, `gateway.Config`,
+`postgres.CopyConfig.RowsPerTx`), with a panic or an error naming the field.
+`diagnostics.NewCollector(0)` keeps nothing and counts every diagnostic as
+truncated. The two exceptions, `MaxConns` and `MaxConnsPerIP`, have no bound
+at zero because they are the deployer's memory budget (ADR 0018), whose
+lists `TestADR0018ListsMatchConfig` holds to the fields' documentation.
+
+**S2** — a constructor's panic on a programming error — a nil function, a
+size that is not positive — is outside it: raised when the pipeline is
+built, before any data, and documented on the constructor (CONTRIBUTING, "A
+constructor panics on a programming error"). Every sentinel goes through one
+constructor, which is how `Try` knows them all.
 
 **S9** — if the sequence is not exhausted and `stop()` is not called, the
 coroutine **never** terminates.
@@ -1700,7 +1735,7 @@ credit; any unbounded buffer reintroduces this bug.
 
 ### Dependencies — the exact rule
 
-[ADR 0002](adr/0002-one-dependency.md) records the decision: every
+[ADR 0002](adr/0002-dependency-graph.md) records the decision: every
 production dependency is a recorded decision, and the graph is as small as
 the job allows. Today:
 

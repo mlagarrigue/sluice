@@ -7,8 +7,11 @@ import (
 	"net"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 	"unsafe"
+
+	"github.com/mlagarrigue/sluice/internal/dgram"
 )
 
 func ackFrameFor(t *testing.T, tracker *ackTracker) Frame {
@@ -450,7 +453,8 @@ func BenchmarkProcessAck(b *testing.B) {
 
 // The pacer's bucket: starts full at one initial window, spends below zero,
 // refills at the controller's rate — NewReno's is 5/4 of its window per
-// smoothed round trip, doubled in slow start — and prices a deficit in time,
+// smoothed round trip, twice its window in slow start, CUBIC's 2.5 times
+// there — and prices a deficit in time,
 // with sub-granularity deficits released immediately, since the timer could
 // not honour them anyway.
 func TestPacerBucket(t *testing.T) {
@@ -464,8 +468,13 @@ func TestPacerBucket(t *testing.T) {
 		t.Fatalf("NewReno paces at %v B/s, want 5/4 × 12000 per 100ms = 150000", rate)
 	}
 	cc.ssthresh = 1 << 30
-	if r := cc.pacingRate(srtt); r != 2*rate {
-		t.Fatalf("NewReno paces slow start at %v B/s, want twice the avoidance rate", r)
+	if r := cc.pacingRate(srtt); r != 240000 {
+		t.Fatalf("NewReno paces slow start at %v B/s, want 2 × 12000 per 100ms = 240000", r)
+	}
+	cu := newCubic(1200)
+	cu.hs.disarm() // the standard slow start, not HyStart++'s conservative one
+	if r := cu.pacingRate(srtt); r != 300000 {
+		t.Fatalf("CUBIC paces slow start at %v B/s, want 2.5 × 12000 per 100ms = 300000", r)
 	}
 
 	p.refill(now, rate)
@@ -1067,52 +1076,77 @@ func TestShortWriteIsApplicationLimited(t *testing.T) {
 // A writer that pauses longer than a pacing slot between writes leaves the
 // window unused for that long, and each write after a pause opens a new
 // application-limited phase (§4.1.2.4); writes that follow each other at
-// once open none after the first.
+// once open none after the first. Under synctest the clock moves only when
+// every goroutine waits, so "at once" and "after a pause" are exact, and
+// the count is strict.
 func TestSpacedWritesAreApplicationLimited(t *testing.T) {
-	client, _ := plainPair(t)
-	s, err := client.OpenStream(t.Context())
+	synctest.Test(t, func(t *testing.T) {
+		client, _ := memPair(t)
+		s, err := client.OpenStream(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		marks := func() int {
+			client.mu.Lock()
+			defer client.mu.Unlock()
+			return client.appLimitedMarks
+		}
+		for range 3 {
+			if _, err := s.Write(make([]byte, 100)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := marks(); got != 1 {
+			t.Fatalf("%d marks over three writes in a row, want 1", got)
+		}
+		for i := range 3 {
+			time.Sleep(20 * time.Millisecond) // well past a slot: the window has room, nothing to send
+			if _, err := s.Write(make([]byte, 100)); err != nil {
+				t.Fatal(err)
+			}
+			if got, want := marks(), 1+i+1; got != want {
+				t.Fatalf("%d marks after %d spaced writes, want %d", got, i+1, want)
+			}
+		}
+	})
+}
+
+// memPair is plainPair over an in-memory datagram pair, for a test that
+// runs under synctest: no socket, so every wait is one synctest can see.
+func memPair(t *testing.T) (client, server *Conn) {
+	t.Helper()
+	clientPC, serverPC := dgram.Pair()
+	l, err := NewListener(serverPC, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	marks := func() int {
-		client.mu.Lock()
-		defer client.mu.Unlock()
-		return client.appLimitedMarks
-	}
-	// "In a row" is a clock reading, not a promise: the rule opens a phase
-	// after a gap past granularity, and a Windows runner stalled between
-	// two writes for longer than that (2026-10-22, twice). Each write's
-	// span is measured; a pair of writes whose spans, end to end, stayed
-	// within granularity can open no phase, and each pair that did not may
-	// open one.
-	var allowed int
-	var prevStart time.Time
-	for i := range 3 {
-		start := time.Now()
-		if _, err := s.Write(make([]byte, 100)); err != nil {
-			t.Fatal(err)
+	accepted := make(chan *Conn, 1)
+	go func() {
+		c, err := l.Accept()
+		if err != nil {
+			t.Error(err)
+			close(accepted)
+			return
 		}
-		if i > 0 && time.Since(prevStart) > granularity {
-			allowed++
-		}
-		prevStart = start
+		accepted <- c
+	}()
+	client = dialInternal(t, clientPC, serverPC.LocalAddr())
+	server = <-accepted
+	if server == nil {
+		t.Fatal("no server connection")
 	}
-	base := marks()
-	if base < 1 || base > 1+allowed {
-		t.Fatalf("%d marks over three writes in a row, want 1 (and up to %d more for the writes the clock saw apart)", base, allowed)
-	}
-	// Counted from what the writes in a row left, which may be one more
-	// than 1 on a stalled runner (2026-10-22, a third time): each spaced
-	// write opens exactly one phase.
-	for i := range 3 {
-		time.Sleep(20 * time.Millisecond) // well past a slot: the window has room, nothing to send
-		if _, err := s.Write(make([]byte, 100)); err != nil {
-			t.Fatal(err)
-		}
-		if got, want := marks(), base+i+1; got != want {
-			t.Fatalf("%d marks after %d spaced writes, want %d", got, i+1, want)
-		}
-	}
+	// In order, so that nothing in the bubble is left waiting: the server's
+	// closing state ends (three probe timeouts, on the bubble's clock)
+	// before the listener that forgets it closes, then the sockets.
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = server.Close()
+		<-server.gone
+		_ = l.Close()
+		_ = clientPC.Close()
+		_ = serverPC.Close()
+	})
+	return client, server
 }
 
 // plainPair is a client and a server connection over loopback, handshake
@@ -1120,6 +1154,31 @@ func TestSpacedWritesAreApplicationLimited(t *testing.T) {
 func plainPair(t *testing.T) (client, server *Conn) {
 	t.Helper()
 	return plainPairOver(t, loopbackSocket(t))
+}
+
+// peerSends has peer send payload's frames to its other end in one 1-RTT
+// packet, and waits for the packet's acknowledgement. It is how a test
+// hands frames to a live connection: the packet is read and acted on by the
+// receiving connection's own read loop, where calling its frames method
+// from the test's goroutine would race that loop over the state it alone
+// touches (parseScratch, batchScratch, rxProgress). The acknowledgement
+// says the frames were read, so a test that then watches for nothing
+// happening watches after they arrived.
+func peerSends(t *testing.T, peer *Conn, payload []byte) {
+	t.Helper()
+	peer.mu.Lock()
+	err := peer.sendPacketLocked(spaceApplication, payload, sendOpts{})
+	peer.mu.Unlock()
+	if err != nil {
+		t.Fatalf("the peer's packet: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for peer.Stats().BytesInFlight > 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the peer's packet was never acknowledged")
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // plainPairOver is plainPair with the client's socket supplied, for a test

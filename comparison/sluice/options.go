@@ -194,7 +194,7 @@ func contractEnv(fs *flag.FlagSet, getenv func(string) string) error {
 }
 
 // validate refuses what the binary cannot serve as asked. Every refusal names
-// the axis whose brief will lift it: nothing here falls back to R.
+// the axis that is missing: nothing here falls back to R.
 func (o options) validate() error {
 	switch o.transport {
 	case transportNetHTTPH1, transportHTTPStreamH1:

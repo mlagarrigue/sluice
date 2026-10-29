@@ -21,7 +21,7 @@ import (
 func TestPacketInfoAnswersFromDestination(t *testing.T) {
 	for _, tc := range []struct{ network, bind, client, peer, second string }{
 		{"udp4", "0.0.0.0:0", "udp4", "127.0.0.1", "127.0.0.2"},
-		{"udp", ":0", "udp4", "127.0.0.1", "127.0.0.2"}, // dual-stack AF_INET6: IPv4 reported as mapped
+		{"udp", ":0", "udp4", "127.0.0.1", "127.0.0.2"}, // dual-stack AF_INET6: IPv4 reported plain, on every system
 		{"udp6", "[::]:0", "udp6", "::1", "fd00::2"},
 	} {
 		t.Run(tc.network, func(t *testing.T) {
@@ -57,8 +57,12 @@ func TestPacketInfoAnswersFromDestination(t *testing.T) {
 			if !ok {
 				t.Fatalf("no destination in %d control bytes", oobn)
 			}
-			if dst.Unmap() != second {
-				t.Fatalf("destination %v, want %v", dst, second)
+			// One form, everywhere: plain IPv4 for IPv4 traffic, on a
+			// dual-stack socket too, where Linux and macOS hand it over
+			// mapped. Until 2026-10-29 they reported it mapped and Windows
+			// plain, and a caller had to Unmap to compare.
+			if dst != second {
+				t.Fatalf("destination %v, want %v exactly", dst, second)
 			}
 			if ifindex <= 0 {
 				t.Errorf("ifindex %d, want the loopback interface's", ifindex)

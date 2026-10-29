@@ -23,7 +23,8 @@ type ReplicationConfig struct {
 	Slot string
 
 	// Publications names the publications whose tables are streamed
-	// (CREATE PUBLICATION). At least one is required.
+	// (CREATE PUBLICATION). At least one is required. A name, like Slot,
+	// is at most 63 bytes, where PostgreSQL truncates one.
 	Publications []string
 
 	// Start is the position to stream from. Zero means the slot's
@@ -34,19 +35,25 @@ type ReplicationConfig struct {
 	// BatchChanges is the most changes one batch holds. Zero means
 	// [sluice.DefaultBatchSize]; a negative value is refused. A batch also
 	// ends as soon as the next message is not already received, so a
-	// change is never held back waiting for the one after it.
+	// change is never held back waiting for the one after it. A Truncate,
+	// one Change per relation it names, is split across batches when it
+	// names more than the batch has room for.
 	BatchChanges int
 
 	// BatchBytes bounds the message payloads one batch keeps, in bytes.
-	// Zero means the same default as [QueryConfig.BatchBytes]; a negative
-	// value, or one above the same ceiling, is refused.
+	// Zero means 64 MiB, the default of [QueryConfig.BatchBytes]; a negative
+	// value, or one above its ceiling of 1 GiB, is refused.
 	//
 	// It is the bound that makes a batch end: the values a change carries
 	// borrow the payload they were decoded from, so the batch holds every
-	// payload it has read. Without it a server could grow that store
-	// without ever producing a change — three pgoutput messages carry none
-	// (Type, Origin, and a Relation redescribing a relation already known)
-	// — and the batch, holding nothing, would never close.
+	// payload it has read. The message that crosses it is kept and the
+	// batch closes after it, as with QueryConfig.BatchBytes, so a batch
+	// holds at most BatchBytes plus one message. Without it a server could
+	// grow that store without ever producing a change — a Relation carries
+	// none, and one redescribing a relation already known costs the table
+	// nothing new — and the batch, holding nothing, would never close; a
+	// batch that reaches the bound without a change closes empty, and the
+	// stream goes on.
 	BatchBytes int
 
 	// StatusInterval is how often, at most, the position acknowledged
@@ -70,10 +77,12 @@ type Replication struct {
 	interval   time.Duration
 
 	// acked is the highest position the consumer acknowledged; sent is the
-	// one last reported to the server, and sentAt when.
-	acked  atomic.Uint64
-	sent   LSN
-	sentAt time.Time
+	// one last reported to the server, and sentAt when. serverEnd is the end
+	// of WAL the server last announced (ServerWALEnd).
+	acked     atomic.Uint64
+	serverEnd atomic.Uint64
+	sent      LSN
+	sentAt    time.Time
 
 	started atomic.Bool
 	done    bool // the server left copy mode, or the stream stopped
@@ -89,11 +98,15 @@ type Replication struct {
 	spans   []tupleSpans
 	vals    []Value
 	scratch []byte
+	// carry holds the changes past BatchChanges that the last batch's final
+	// message brought — only a Truncate brings more than one — for the next
+	// batch to open with. They hold no tuple, so nothing of the arena.
+	carry []Change
 	// kept is the payload bytes this batch has copied into the arena, the
-	// figure BatchBytes bounds; small counts the batches in a row that
-	// fitted the retained size, for giving an oversized arena back.
-	kept  int
-	small int
+	// figure BatchBytes bounds; arenaKeep decides when an oversized arena goes
+	// back.
+	kept      int
+	arenaKeep retention
 }
 
 // Replicate opens a logical replication connection and starts streaming the
@@ -108,20 +121,20 @@ type Replication struct {
 // has not acknowledged through [Replication.Ack], and a stream that stops
 // and starts again resumes after the last acknowledged position; what came
 // after it is delivered again.
-func Replicate(ctx context.Context, dial DialFunc, cfg Config, rc ReplicationConfig) (*Replication, error) {
-	sql, err := startReplicationSQL(rc)
+func Replicate(ctx context.Context, dial DialFunc, cfg Config, rcfg ReplicationConfig) (*Replication, error) {
+	sql, err := startReplicationSQL(rcfg)
 	if err != nil {
 		return nil, err
 	}
-	batch := rc.BatchChanges
+	batch := rcfg.BatchChanges
 	if batch == 0 {
 		batch = sluice.DefaultBatchSize
 	}
-	batchBytes := rc.BatchBytes
+	batchBytes := rcfg.BatchBytes
 	if batchBytes == 0 {
 		batchBytes = defaultBatchBytes
 	}
-	interval := rc.StatusInterval
+	interval := rcfg.StatusInterval
 	if interval == 0 {
 		interval = defaultStatusInterval
 	}
@@ -139,8 +152,8 @@ func Replicate(ctx context.Context, dial DialFunc, cfg Config, rc ReplicationCon
 		_ = c.Close()
 		return nil, err
 	}
-	r := &Replication{c: c, batch: batch, batchBytes: batchBytes, interval: interval, sent: rc.Start, sentAt: time.Now()}
-	r.acked.Store(uint64(rc.Start))
+	r := &Replication{c: c, batch: batch, batchBytes: batchBytes, interval: interval, sent: rcfg.Start, sentAt: time.Now()}
+	r.acked.Store(uint64(rcfg.Start))
 	return r, nil
 }
 
@@ -149,6 +162,9 @@ func Replicate(ctx context.Context, dial DialFunc, cfg Config, rc ReplicationCon
 func startReplicationSQL(rc ReplicationConfig) (string, error) {
 	if rc.Slot == "" {
 		return "", errors.New("postgres: ReplicationConfig.Slot is empty — the slot is created by the caller, with pg_create_logical_replication_slot")
+	}
+	if err := checkNameLength("ReplicationConfig.Slot", rc.Slot); err != nil {
+		return "", err
 	}
 	if len(rc.Publications) == 0 {
 		return "", errors.New("postgres: ReplicationConfig.Publications is empty — pgoutput streams the tables of at least one publication")
@@ -167,6 +183,9 @@ func startReplicationSQL(rc ReplicationConfig) (string, error) {
 		if p == "" {
 			return "", errors.New("postgres: ReplicationConfig.Publications holds an empty name")
 		}
+		if err := checkNameLength("ReplicationConfig.Publications", p); err != nil {
+			return "", err
+		}
 		pubs[i] = quoteIdent(p)
 	}
 	sql := "START_REPLICATION SLOT " + quoteIdent(rc.Slot) + " LOGICAL " + rc.Start.String() +
@@ -175,6 +194,21 @@ func startReplicationSQL(rc ReplicationConfig) (string, error) {
 		return "", err
 	}
 	return sql, nil
+}
+
+// maxIdentifierBytes is where PostgreSQL truncates an identifier:
+// NAMEDATALEN − 1 bytes.
+const maxIdentifierBytes = 63
+
+// checkNameLength refuses a name the server would truncate: two names that
+// differ only past the 63rd byte would silently become one — two LISTEN
+// channels one subscription — which validIdentifier refuses for a savepoint
+// for the same reason. field is the configuration field, for the message.
+func checkNameLength(field, name string) error {
+	if len(name) > maxIdentifierBytes {
+		return fmt.Errorf("postgres: %s holds %q, %d bytes; PostgreSQL truncates a name at %d, so two that differ after that would silently become one", field, name, len(name), maxIdentifierBytes)
+	}
+	return nil
 }
 
 // quoteIdent writes name as a quoted identifier, its case and characters kept.
@@ -210,7 +244,14 @@ func (c *Conn) startReplication(sql string) error {
 			// The server follows its refusal with ReadyForQuery; the
 			// connection is closed by the caller either way.
 			return e
-		case pgwire.BackendNoticeResponse, pgwire.BackendParameterStatus:
+		case pgwire.BackendParameterStatus:
+			// Recorded as every read loop here records it: a client_encoding
+			// nobody asked for ends the connection (recordParameter) rather
+			// than have text values read as UTF-8.
+			if err := c.recordParameter(m.Body); err != nil {
+				return c.breakConn(err)
+			}
+		case pgwire.BackendNoticeResponse:
 		default:
 			return c.breakConn(fmt.Errorf("%w: message %q while starting replication", ErrProtocol, m.Type))
 		}
@@ -257,7 +298,7 @@ func (r *Replication) Changes(ctx context.Context) sluice.Source[Change] {
 				r.err = context.Cause(ctx)
 			}
 		}()
-		for !r.done {
+		for !r.done || len(r.carry) > 0 {
 			b, err := r.readBatch()
 			if err != nil {
 				r.err = err
@@ -273,8 +314,10 @@ func (r *Replication) Changes(ctx context.Context) sluice.Source[Change] {
 				return
 			}
 			if r.done {
-				// The server left copy mode: nothing more may be sent in it.
-				return
+				// The server left copy mode: nothing more may be sent in
+				// it, and what a Truncate carried past the last batch's
+				// bound is all that is left to yield.
+				continue
 			}
 			if err := r.report(false); err != nil {
 				r.err = err
@@ -288,12 +331,24 @@ func (r *Replication) Changes(ctx context.Context) sluice.Source[Change] {
 // Close closes the connection. Call it once the stream has ended.
 func (r *Replication) Close() error { return r.c.Close() }
 
+// ServerWALEnd is the end of WAL the server last announced, in a WAL data
+// message or a keepalive; zero before the first. Its distance to the
+// position the consumer acknowledged ([Replication.Ack]) is how far behind
+// the consumer is — the figure an operator of logical replication watches.
+// It may be read from any goroutine while the stream runs.
+func (r *Replication) ServerWALEnd() LSN { return LSN(r.serverEnd.Load()) }
+
 // readBatch reads until a batch is full, or holds something and the next
 // message is not already received.
 func (r *Replication) readBatch() (sluice.Batch[Change], error) {
 	r.changes, r.spans, r.vals = r.changes[:0], r.spans[:0], r.vals[:0]
 	r.resetArena()
-	for len(r.changes) < r.batch && r.kept < r.batchBytes &&
+	r.changes = append(r.changes, r.carry...)
+	for range r.carry {
+		r.spans = append(r.spans, tupleSpans{})
+	}
+	r.carry = r.carry[:0]
+	for !r.done && len(r.changes) < r.batch && r.kept < r.batchBytes &&
 		(len(r.changes) == 0 || r.c.r.Buffered()) {
 		m, err := r.c.r.Next()
 		if err != nil {
@@ -323,51 +378,39 @@ func (r *Replication) readBatch() (sluice.Batch[Change], error) {
 				return sluice.Batch[Change]{}, r.c.breakConn(perr)
 			}
 			return sluice.Batch[Change]{}, r.c.breakConn(e)
-		case pgwire.BackendNoticeResponse, pgwire.BackendParameterStatus:
+		case pgwire.BackendParameterStatus:
+			// See startReplication: the text values of a TupleData ('t') are read as
+			// UTF-8, so an encoding change mid-stream ends it.
+			if err := r.c.recordParameter(m.Body); err != nil {
+				return sluice.Batch[Change]{}, r.c.breakConn(err)
+			}
+		case pgwire.BackendNoticeResponse:
 		default:
 			return sluice.Batch[Change]{}, r.c.breakConn(fmt.Errorf("%w: message %q during replication", ErrProtocol, m.Type))
 		}
 	}
-	if r.kept > 0 && r.kept >= r.batchBytes && len(r.changes) == 0 {
-		// A whole batch's worth of payload read and not one change in it.
-		// The loop's other exit — "the next message is not already
-		// received" — is short-circuited while the batch holds nothing, so
-		// before this bound existed the read had no stopping condition at
-		// all: a server sending an uninterrupted run of messages that carry
-		// no change (Type, Origin, or a Relation redescribing a relation
-		// already known, none of which the decoder counts) grew the arena at
-		// whatever rate it chose, and the batch could never close. A server
-		// that fills a batch without producing a change is not serving data.
-		return sluice.Batch[Change]{}, r.c.breakConn(fmt.Errorf(
-			"%w: %d bytes of replication messages carrying no change, the batch bound (ReplicationConfig.BatchBytes)",
-			ErrProtocol, r.kept))
-	}
+	// A batch that reached BatchBytes without a change closes empty, the
+	// message that crossed the bound kept, as QueryConfig.BatchBytes keeps
+	// the row that crosses its own. pgoutput sends a table's Relation
+	// before its first change, and a Relation wider than a small bound is
+	// conformant: refusing the changeless batch broke such a stream. The
+	// empty batch is not yielded (Changes), the position is reported, and
+	// the next batch starts with a fresh arena, so a server that only ever
+	// sends changeless messages costs one batch's bound at a time, as
+	// keepalives would.
 	return r.materialize(), nil
 }
 
 // resetArena empties the batch's payload store, keeping its chunks for the
-// next batch — unless they outgrew what an ordinary batch needs and
-// rowsShrinkAfter batches in a row have fitted the retained size, in which
-// case they are given back and the next batch starts small. It is the rule
-// [Rows.reset] keeps, for the same reason: a connection that once met a
-// large batch kept its peak for good, and a pool of them held that peak
-// times the pool. Only a connection that met a large batch pays the check's
-// body.
+// next batch — unless [retention] gives them back, in which case the next
+// batch starts small.
 func (r *Replication) resetArena() {
 	held := 0
 	for _, c := range r.arena {
 		held += cap(c)
 	}
-	switch {
-	case held <= rowsRetainBytes:
-		r.small = 0
-	case r.kept <= rowsRetainBytes:
-		r.small++
-		if r.small >= rowsShrinkAfter {
-			r.arena, r.small = nil, 0
-		}
-	default:
-		r.small = 0
+	if r.arenaKeep.giveBack(held > rowsRetainBytes, r.kept <= rowsRetainBytes) {
+		r.arena = nil
 	}
 	r.chunk, r.kept = 0, 0
 	if len(r.arena) > 0 {
@@ -387,6 +430,7 @@ func (r *Replication) copyData(p []byte) error {
 			return fmt.Errorf("%w: XLogData of %d bytes", ErrProtocol, len(p))
 		}
 		at := LSN(binary.BigEndian.Uint64(p[1:9]))
+		r.serverEnd.Store(binary.BigEndian.Uint64(p[9:17]))
 		var err error
 		r.changes, r.spans, r.vals, err = r.dec.decode(r.keep(p[25:]), at, r.changes, r.spans, r.vals)
 		return err
@@ -394,6 +438,7 @@ func (r *Replication) copyData(p []byte) error {
 		if len(p) != 18 {
 			return fmt.Errorf("%w: keepalive of %d bytes", ErrProtocol, len(p))
 		}
+		r.serverEnd.Store(binary.BigEndian.Uint64(p[1:9]))
 		if p[17] == 1 {
 			return r.report(true)
 		}
@@ -429,6 +474,15 @@ func (r *Replication) keep(p []byte) []byte {
 // materialize points each change at its tuples, now that the value slab no
 // longer grows.
 func (r *Replication) materialize() sluice.Batch[Change] {
+	// The count is compared between messages, and one pgoutput Truncate
+	// adds a Change per relation it names: a batch one short of
+	// BatchChanges took a Truncate of two hundred tables whole, two
+	// hundred past the bound its documentation gives as the maximum. What
+	// passes the bound waits for the next batch, which opens with it.
+	if len(r.changes) > r.batch {
+		r.carry = append(r.carry[:0], r.changes[r.batch:]...)
+		r.changes, r.spans = r.changes[:r.batch], r.spans[:r.batch]
+	}
 	for i, sp := range r.spans {
 		if sp.hasOld {
 			r.changes[i].Old = Tuple(r.vals[sp.old[0]:sp.old[1]:sp.old[1]])
@@ -495,8 +549,12 @@ func (r *Replication) drain() error {
 				return r.c.breakConn(perr)
 			}
 			return e
+		case pgwire.BackendParameterStatus:
+			if err := r.c.recordParameter(m.Body); err != nil {
+				return r.c.breakConn(err)
+			}
 		case pgwire.BackendCopyData, pgwire.BackendCopyDone, pgwire.BackendCommandComplete,
-			pgwire.BackendNoticeResponse, pgwire.BackendParameterStatus, pgwire.BackendRowDescription, pgwire.BackendDataRow:
+			pgwire.BackendNoticeResponse, pgwire.BackendRowDescription, pgwire.BackendDataRow:
 		default:
 			return r.c.breakConn(fmt.Errorf("%w: message %q while leaving replication", ErrProtocol, m.Type))
 		}

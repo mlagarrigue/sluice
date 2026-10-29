@@ -35,11 +35,18 @@ repeated here; a term used in several places is.
   the other is the *probe* side.
 - **Window** — a group of elements from one slice of time.
 - **Connector** — the code that speaks an external system's protocol
-  (PostgreSQL) to read it as a stream.
+  (PostgreSQL) to read it as a stream, or to write a stream into it.
+- **Source, sink, provider, consumer** — two pairs for one picture: what a
+  stream comes from is its source (or provider), what reads it to the end
+  is its sink (or consumer). The documents use the first pair for a
+  pipeline and the second for a connector's two sides; `Source`, the type,
+  is a source paired with its errors (below).
 - **Hydration** — filling a Go struct from a result row.
 - **Wire protocol** — the exact shape of the bytes exchanged with a server.
-- **Sentinel** — a named error, raised by panic for lack of another channel
-  in an iterator, which `Try` knows how to convert.
+- **Sentinel** — an exported error value, always the same one
+  (`ErrOverflow`, `postgres.ErrAuth`), that code finds with `errors.Is`
+  rather than by reading a message. The core's are also raised by panic,
+  for lack of another channel in an iterator, and `Try` converts them back.
 - **S1 … S14** — the fourteen verifiable security guarantees listed in the
   [Security section](design/architecture.md#security--verifiable-properties)
   of the architecture, which refers to them by number.
@@ -69,6 +76,38 @@ repeated here; a term used in several places is.
   object); a result describes its columns' types by OID.
 - **QUIC** — the transport over UDP that HTTP/3 runs on (RFC 9000):
   encrypted, with several independent streams per connection.
+- **TLS** — the encryption layer HTTPS and QUIC run under; the handshake is
+  where the two ends agree on keys and check certificates.
+- **Frame** — the unit HTTP/2, HTTP/3 and QUIC cut their bytes into, each
+  with a type (DATA, HEADERS, ACK). `END_STREAM` is the flag on the last
+  frame of a stream; `CONTINUATION` the frame that carries the rest of a
+  header block too large for one.
+- **GREASE** — values a protocol reserves to be sent at random, so that a
+  peer that chokes on unknown values is found before a real extension
+  needs them.
+- **RTT** — round-trip time: how long a packet takes to reach the peer and
+  its answer to come back.
+- **MTU** — the largest packet a link carries in one piece; a datagram
+  larger than the path's MTU is fragmented or dropped.
+- **AQM** — active queue management: a router that marks or drops packets
+  before its queue is full, so that senders slow down early.
+- **File descriptor** — the number the operating system gives an open file
+  or socket; a process has a limited supply.
+- **CDN** — content delivery network: servers in front of a service that
+  answer from a copy near the client.
+- **Prepared statement** — a query PostgreSQL has parsed and planned once,
+  run again with new parameters; the **plan** is how the server decided to
+  read the tables.
+- **WAL** — PostgreSQL's write-ahead log: every change, written before the
+  data files; logical replication reads it as a stream of changes.
+- **`defer`** — Go's statement that runs a call when the surrounding
+  function returns, whichever way it returns.
+- **h2spec** — a public test suite that sends an HTTP/2 server the cases of
+  RFC 9113 and checks each answer.
+- **0dep** — "zero dependencies": the standard library and the recorded
+  `golang.org/x` modules only (ADR 0002), nothing else.
+- **TVP** — table-valued parameter: SQL Server's way of passing a whole
+  table as one query parameter.
 - **Terminal** — a function that reads a stream to its end and returns a
   result (`Collect`, `Count`); it is what makes the stream flow.
 - **ETL** — a job that extracts data from a source, transforms it and loads

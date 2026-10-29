@@ -8,31 +8,6 @@ import (
 	"time"
 )
 
-// Type OIDs of the types this package encodes. They are the numbers a Parse
-// message carries and a RowDescription reports, and naming them is what keeps
-// a switch on 1184 from being unreadable.
-const (
-	OIDBool        uint32 = 16
-	OIDBytea       uint32 = 17
-	OIDName        uint32 = 19
-	OIDInt8        uint32 = 20
-	OIDInt2        uint32 = 21
-	OIDInt4        uint32 = 23
-	OIDText        uint32 = 25
-	OIDFloat4      uint32 = 700
-	OIDFloat8      uint32 = 701
-	OIDBPChar      uint32 = 1042 // char(n): text, blank-padded to n
-	OIDVarchar     uint32 = 1043
-	OIDDate        uint32 = 1082
-	OIDTimestamp   uint32 = 1114
-	OIDTimestampTZ uint32 = 1184
-	OIDUUID        uint32 = 2950
-	OIDUUIDArray   uint32 = 2951
-	OIDInt4Array   uint32 = 1007
-	OIDInt8Array   uint32 = 1016
-	OIDTextArray   uint32 = 1009
-)
-
 // ErrCodec reports a value whose bytes do not match the type they were read
 // as: the wrong width, a truncated array header, a boolean that is neither.
 //
@@ -380,7 +355,7 @@ func DecodeUUID(b []byte) ([16]byte, error) {
 // The array encoding is what makes `= ANY($1)` possible, and `= ANY($1)` is
 // what makes a batch worth assembling: a thousand keys travel as one parameter
 // in one round trip, with zero injection surface because no value ever touches
-// SQL text (§8.8).
+// SQL text (architecture, "Security by construction").
 
 // arrayHeaderSize is ndim + flags + element OID, then one dimension's length
 // and lower bound. This package writes one-dimensional arrays only, which is
@@ -512,11 +487,9 @@ func DecodeTextArray(dst []string, b []byte) ([]string, error) {
 	return dst, nil
 }
 
-// AppendUUIDArray appends a one-dimensional uuid[] with no NULLs.
-//
-// uuid[] is here and float8[] is not because this list is about keys: a batch
-// of identifiers travelling as one parameter is what `= ANY($1)` is for, and a
-// batch of floating-point numbers is not something anything is keyed by.
+// AppendUUIDArray appends a one-dimensional uuid[] with no NULLs, the form a
+// batch of identifiers takes to travel as one parameter of `= ANY($1)`. An
+// array that holds NULLs is [AppendNullableUUIDArray]'s.
 func AppendUUIDArray(dst []byte, values [][16]byte) []byte {
 	dst = appendArrayHeader(dst, OIDUUID, len(values))
 	for _, v := range values {
@@ -590,6 +563,10 @@ func arrayBody(b []byte, elem uint32) (body []byte, n int, err error) {
 		// input; any other value means the stream is being read at the wrong
 		// offset, and the rest of the header would be believed from there.
 		return nil, 0, fmt.Errorf("%w: array flags are %#x, want 0 or 1", ErrCodec, flags)
+	case ndim == 0 && len(b) != 12:
+		// A byte past an empty array's header means the stream is read at the
+		// wrong offset, as a byte past any other value does.
+		return nil, 0, fmt.Errorf("%w: %d bytes after an empty array's header", ErrCodec, len(b)-12)
 	case ndim == 0:
 		return nil, 0, nil // the empty array, which the server sends as zero dimensions
 	case ndim != 1:

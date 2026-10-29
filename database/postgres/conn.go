@@ -389,19 +389,35 @@ func (c *Conn) emitRows(ctx context.Context, rows *Rows, items []Row, deliver fu
 // client_encoding in its Params: a later announcement of any encoding other
 // than UTF8 breaks it.
 //
-// Its statement cache has the default bound, 512 statements. A connection
-// that needs another bound, or none, is built by [Connect] with
-// [Config.StatementCacheSize]: its [DialFunc] may return any
-// io.ReadWriteCloser, a scripted server included.
+// cfg is read for what still applies once the startup is past:
+// [Config.StatementCacheSize], [Config.MaxMessage] and [Config.Logger], with
+// the defaults their zero values name, so a connection built here differs
+// from one [Connect] builds by its defaults, never by what it can be set
+// to. The other fields are the startup's, already done, and are not read.
+// NewConn panics on a MaxMessage [Config.Validate] refuses: a value written
+// in the code is a programmer's mistake.
 //
 // rw is read on one goroutine while it is written on another during a
 // [Copier]'s COPY, as a [net.Conn] allows: the server's notices and errors
 // are read while the rows go out.
-func NewConn(rw io.ReadWriteCloser) *Conn {
-	return &Conn{
-		rw: rw, r: pgwire.NewReaderSize(rw, readBufferSize), w: pgwire.NewWriter(rw),
-		stmts: newStmtCache(defaultStatementCacheBound),
+func NewConn(rw io.ReadWriteCloser, cfg Config) *Conn {
+	if m := cfg.MaxMessage; m != 0 && (m < maxStartupMessage || m > maxMaxMessage) {
+		panic(fmt.Sprintf("postgres: NewConn: Config.MaxMessage %d is outside %d..%d bytes", m, maxStartupMessage, maxMaxMessage))
 	}
+	c := &Conn{
+		rw: rw, r: pgwire.NewReaderSize(rw, readBufferSize), w: pgwire.NewWriter(rw),
+		stmts: newStmtCache(defaultStatementCacheBound), logger: cfg.Logger,
+	}
+	switch n := cfg.StatementCacheSize; {
+	case n < 0:
+		c.stmts = nil
+	case n > 0:
+		c.stmts = newStmtCache(n)
+	}
+	if cfg.MaxMessage != 0 {
+		c.r.SetMaxMessage(cfg.MaxMessage)
+	}
+	return c
 }
 
 // readBufferSize is how much of the stream a connection pulls in one read.
@@ -425,7 +441,9 @@ func NewConn(rw io.ReadWriteCloser) *Conn {
 const readBufferSize = 64 << 10
 
 // Close closes the underlying connection, sending a Terminate first when the
-// protocol position still allows it.
+// protocol position still allows it. A Conn is not safe for concurrent use:
+// call Close from the goroutine that uses it, once its last stream has ended,
+// and end a stream that is still running through its context.
 func (c *Conn) Close() error {
 	if c.broken == nil {
 		c.w.Terminate()
@@ -599,8 +617,8 @@ func batchBounds(cfg QueryConfig) (rows, size int, err error) {
 // their siblings), with its type beside it.
 //
 //	params := []postgres.Param{
-//		{OID: postgres.OIDInt8, Value: postgres.AppendInt8(nil, id)},
-//		{Value: postgres.AppendText(nil, name)}, // the server infers the type
+//		{OID: pgtype.OIDInt8, Value: pgtype.AppendInt8(nil, id)},
+//		{Value: pgtype.AppendText(nil, name)}, // the server infers the type
 //	}
 //
 // A nil Value is NULL: the protocol tells a missing value from an empty one,
@@ -636,6 +654,30 @@ func (c *Conn) declaredOIDs(params []Param) []uint32 {
 	return oids
 }
 
+// maxStmtName is the longest name prepare.go gives a statement.
+const maxStmtName = "sluice_18446744073709551615"
+
+// maxOutgoing is the bound checkBindLen holds a Bind to: the wire layer's,
+// a variable so that a test can lower it.
+var maxOutgoing = pgwire.MaxOutgoingMessage
+
+// checkBindLen refuses, before anything is buffered, a Bind the wire layer
+// would refuse at Flush: a parameter past what a server accepts. Found at
+// Flush, the refusal comes after the statement cache and the query's state
+// have moved for a batch that never leaves, and the connection is broken
+// for a stream that is intact. The statement name is counted at its
+// longest, so the answer does not depend on the cache.
+func checkBindLen(params []Param) error {
+	n := pgwire.BindLen("", maxStmtName, nil)
+	for _, p := range params {
+		n += 4 + len(p.Value)
+	}
+	if n > maxOutgoing {
+		return fmt.Errorf("%w: a %d-byte Bind, over the %d bytes a server accepts in one message", pgwire.ErrOutgoingTooLarge, n, maxOutgoing)
+	}
+	return nil
+}
+
 // writeBind queues a Bind of the unnamed portal to stmt with the values of
 // params. The scratch is cleared once the values are buffered, so the
 // connection does not keep the caller's bytes alive until its next query.
@@ -650,7 +692,7 @@ func (c *Conn) writeBind(stmt string, params []Param) {
 }
 
 // QueryConfig states the bounds a query runs under. They are the caller's,
-// per S1: none has a value that suits every result.
+// per the architecture's S1: none has a value that suits every result.
 type QueryConfig struct {
 	// BatchRows is how many rows a batch holds, and — because the server is
 	// asked for exactly that many at a time — what bounds the rows in flight.
@@ -813,9 +855,9 @@ type QueryConfig struct {
 //	if err := src.Err(); err != nil { ... }
 //
 // That shape is the point of this package: a thousand keys leave as one
-// parameter in one round trip, no value ever touches SQL text (§8.8), and the
-// rows come back as batches the rest of the library already knows how to
-// operate on.
+// parameter in one round trip, no value ever touches SQL text (architecture,
+// "Security by construction"), and the rows come back as batches the rest of
+// the library already knows how to operate on.
 //
 // # What ctx stops, and what it does not
 //
@@ -860,10 +902,11 @@ type QueryConfig struct {
 //
 // # Errors
 //
-// A [github.com/mlagarrigue/sluice.Source] carries them, which is what it exists for (§4.7): a query that
-// fails to start produced no row to attach an error to, and one that fails at
-// the end has already produced all of them. Consume, then check
-// [sluice.Source.Err]. A server error arrives as [*Error] with its SQLSTATE.
+// A [github.com/mlagarrigue/sluice.Source] carries them, which is what it
+// exists for (architecture, "Errors outside the stream"): a query that fails to
+// start produced no row to attach an error to, and one that fails at the end
+// has already produced all of them. Consume, then check [sluice.Source.Err]. A
+// server error arrives as [*Error] with its SQLSTATE.
 //
 // An early stop is safe: the connection is resynchronised to the next
 // ReadyForQuery before Query's stream returns, so the connection stays usable.
@@ -1041,6 +1084,15 @@ func (q *query) recordRows(err error) {
 	c.stmts.entries[q.entry].lastRows = n
 }
 
+// run executes one query and hands its rows to yield, in this order: refuse
+// what cannot be written (parameter count, SQL text, bind length) and a
+// demand that already wants nothing; mark the connection busy; ask the
+// statement cache what to bind against and decide the fetch; write Parse,
+// Bind, Describe and the first Execute in one flush; settle a ReadyForQuery
+// the previous read left owed; arm the resync that puts the connection back
+// at a known position on every way out; then loop, one batch per turn —
+// readChunk, the context checked at the boundary, the demand read and the
+// portal re-bound or the next batches asked for.
 func (q *query) run(sql string, params []Param, yield func(sluice.Batch[Row]) bool) (err error) {
 	c := q.conn
 
@@ -1050,6 +1102,9 @@ func (q *query) run(sql string, params []Param, yield func(sluice.Batch[Row]) bo
 		return err
 	}
 	if err := checkSQLText(sql); err != nil {
+		return err
+	}
+	if err := checkBindLen(params); err != nil {
 		return err
 	}
 	// A consumer that already wants nothing costs the server nothing: no
@@ -1083,10 +1138,10 @@ func (q *query) run(sql string, params []Param, yield func(sluice.Batch[Row]) bo
 		}
 	}
 
-	// Parse, Bind, Describe and the first Execute leave together: §8.5's
-	// pipelining, and the reason a query costs two round trips rather than
-	// eleven. No Sync yet — Sync ends the sequence, and the portal must stay
-	// open for the Executes that follow.
+	// Parse, Bind, Describe and the first Execute leave together: the
+	// pipelining of the architecture's "Pipelining and COPY", and the reason a
+	// query costs two round trips rather than eleven. No Sync yet — Sync ends
+	// the sequence, and the portal must stay open for the Executes that follow.
 	if needsParse {
 		c.w.Parse(stmt, sql, q.oids)
 	}
@@ -1833,13 +1888,28 @@ func (c *Conn) noteTxStatus(body []byte) {
 	}
 }
 
+// joinSender waits for the goroutine that flushes a pipelined write
+// (Tx.Pipeline, Tx.Savepoints) to return what Flush said. A read that broke
+// the connection first closes the socket under the sender: a server that
+// stopped reading leaves Flush blocked on a full send buffer — on any
+// transport, and at once on an unbuffered one — and nothing else would
+// release it, whatever ctx says, since a ctx that cannot end or a backend
+// with no cancel key arms no watch. Callers hold the busy guard.
+func (c *Conn) joinSender(sent <-chan error) error {
+	if c.broken != nil {
+		_ = c.rw.Close()
+	}
+	return <-sent
+}
+
 // breakConn records why the connection can no longer be used and returns that
 // reason, so a caller cannot keep going by ignoring one error.
 func (c *Conn) breakConn(cause error) error {
 	if c.broken == nil {
 		if errors.Is(cause, pgwire.ErrMessageTooLarge) {
 			// The one break the caller can configure away, so the error
-			// names the field rather than leaving a number to look up.
+			// names the field rather than leaving a number to look up. Only
+			// the read side: ErrOutgoingTooLarge is a bound no setting moves.
 			cause = fmt.Errorf("%w; Config.MaxMessage raises the limit", cause)
 		}
 		c.broken = fmt.Errorf("%w: %w", ErrConnBroken, cause)

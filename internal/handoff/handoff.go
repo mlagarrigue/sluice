@@ -2,13 +2,13 @@
 // its batches to the consumer through a fixed set of recycled slots: the
 // producer that [parallel.Async] and [window.CoalesceWithin] share.
 //
-// One implementation, because the order of the producer's exits is the
-// subtle part and was written out twice: the panic is recorded before the
-// data channel closes, so a consumer that sees the close can look at it;
-// the data channel closes before done, which releases Stop. Every path out
-// of the consumer goes through Stop, so no goroutine outlives the operator
-// (S6), and a panic the source died from is raised on the consumer's
-// goroutine, with the producer's stack (batch.Panic).
+// One implementation, because the order of the producer's exits is the subtle
+// part and was written out twice: the panic is recorded before the data channel
+// closes, so a consumer that sees the close can look at it; the data channel
+// closes before done, which releases Stop. Every path out of the consumer goes
+// through Stop, so no goroutine outlives the operator (the architecture's S6),
+// and a panic the source died from is raised on the consumer's goroutine, with
+// the producer's stack ([Panic]).
 //
 // [parallel.Async]: https://pkg.go.dev/github.com/mlagarrigue/sluice/parallel#Async
 // [window.CoalesceWithin]: https://pkg.go.dev/github.com/mlagarrigue/sluice/window#CoalesceWithin
@@ -38,7 +38,7 @@ type Producer[T any] struct {
 	done chan struct{}
 	// Written by the producer before done closes, read after: the close
 	// orders the two.
-	panicked batch.Panic
+	panicked Panic
 }
 
 // Start runs s on a new goroutine. depth is how many filled slots may wait
@@ -65,7 +65,7 @@ func Start[T any](s sluice.Stream[T], depth, slots int, skipEmpty bool) *Produce
 		// LIFO: the recover runs first, then data closes, then done.
 		defer close(p.done)
 		defer close(data)
-		defer func() { p.panicked = batch.Recovered(recover()) }()
+		defer func() { p.panicked = Recovered(recover()) }()
 		s(func(b sluice.Batch[T]) bool {
 			if skipEmpty && len(b.Items) == 0 {
 				return true

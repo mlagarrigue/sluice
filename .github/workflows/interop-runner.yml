@@ -57,6 +57,18 @@ jobs:
           echo "include=$include" >> "$GITHUB_OUTPUT"
           echo "$include" | jq -r '.[] | "\(.peer) \(.side)"'
 
+  # The peers left out of the matrix because their registry stopped serving
+  # their image (UNPULLABLE in the script) are tried again on every pass; a
+  # red here names the one served again and what to do. A job of its own, so
+  # that the pairs run either way.
+  unpullable:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - run: scripts/interop-runner.sh --unpullable
+
   interop:
     needs: pairs
     name: ${{ matrix.peer }} (sluice ${{ matrix.side }})
@@ -73,14 +85,12 @@ jobs:
       # The runner's compose file names its interfaces, which needs a Docker
       # Engine 28.1 or later; the hosted runner ships an older one.
       #
-      # Held at v5.5.0: v5.6.0 (#19, merged 2026-10-24) left the simulator's
-      # two networks without a route, and the first scheduled pass after it
-      # lost 29 of the 31 peer-directions to "network is unreachable",
-      # nroutes=0 — every pair that crosses the simulator, while the three
-      # that do not passed. The pass of 2026-10-22 ran the same matrix on
-      # v5.5.0 and was green. A bump is accepted again when a dispatched
-      # pass on one peer is green on it.
-      - uses: docker/setup-docker-action@2bf61fb9464cc67f0cbdeabed6aa0380accd1c70 # v5.5.0
+      # The daemon log this action prints after the job holds "Waiting for
+      # route to send NA ... network is unreachable" lines in green and red
+      # jobs alike: they are not a failure. Run 40174427329 (2026-10-25, on
+      # v5.6.0) played every case in every direction; its red jobs were the
+      # expected-results gaps, not the network.
+      - uses: docker/setup-docker-action@7ec28a010822b4626af4874f9448a4b05ac6f3e5 # v5.6.0
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
@@ -132,7 +142,10 @@ jobs:
   # A complete pass — the Sunday one, or one started by hand for every peer
   # and every case — is also published on the interop-results branch, the
   # address docs/README.md links: its README.md is the table, cases.jsonl
-  # the runner's word for each case. The branch holds the latest pass only.
+  # the runner's word for each case, history.jsonl the last eight passes'.
+  # The branch is one commit, rewritten each pass; the history rides in it,
+  # and the random cases are judged over it once the pass is published
+  # (scripts/interop-random-history.sh).
   aggregate:
     needs: interop
     if: always() && needs.interop.result != 'skipped'
@@ -154,7 +167,13 @@ jobs:
             input_filename as $f
             | (.results[0] // [])[] as $r
             | { server: .servers[0], client: .clients[0], name: $r.name, result: $r.result, first: $r.first }
-          ' {} + > matrix/cases.jsonl || true
+          ' {} + > matrix/cases.jsonl
+          # A join that found nothing — artefacts missing, a format changed —
+          # must not publish a header-only table over the last real pass.
+          if [ ! -s matrix/cases.jsonl ]; then
+            echo "no case joined from the passes' results; nothing is published" >&2
+            exit 1
+          fi
           {
             echo "# QUIC Interop Runner: sluice against every implementation"
             echo
@@ -185,11 +204,23 @@ jobs:
       - name: Publish a complete pass
         if: github.event_name == 'schedule' || (inputs.peer == 'all' && inputs.tests == '' && inputs.image == '')
         run: |
+          # The passes before this one, as the branch holds them; none yet
+          # (no branch, or one from before the history) starts it empty.
+          if git fetch -q --depth 1 origin interop-results 2>/dev/null &&
+            git show FETCH_HEAD:history.jsonl >matrix/history.jsonl 2>/dev/null; then :; else
+            : >matrix/history.jsonl
+          fi
+          scripts/interop-random-history.sh append matrix/history.jsonl matrix/cases.jsonl \
+            "$(date -u +%Y-%m-%d)" "${GITHUB_SHA::7}"
           cd matrix
           git init -q -b interop-results
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add README.md cases.jsonl
+          git add README.md cases.jsonl history.jsonl
           git commit -q -m "ci: interop pass at ${GITHUB_SHA::7}"
           git push -q --force \
             "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" interop-results
+          # Published first, judged second: a red here keeps the pass on
+          # record and names the random case that stopped succeeding.
+          cd ..
+          scripts/interop-random-history.sh check matrix/history.jsonl

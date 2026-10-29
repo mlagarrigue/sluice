@@ -66,7 +66,7 @@ func copyPayload(t *testing.T, srv *fakeServer) []byte {
 // transaction around them.
 func TestCopyFrom(t *testing.T) {
 	srv := &fakeServer{responses: txCycle()}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	cp, err := conn.CopyFrom(t.Context(), "COPY orders (id, name) FROM STDIN WITH (FORMAT BINARY)",
 		CopyConfig{RowsPerTx: 100})
@@ -121,7 +121,7 @@ func TestCopyCutsIntoTransactions(t *testing.T) {
 	script = append(script, txCycle()...)
 	script = append(script, txCycle()...)
 	srv := &fakeServer{responses: script}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	cp, err := conn.CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)", CopyConfig{RowsPerTx: 2})
 	if err != nil {
@@ -154,7 +154,7 @@ func TestCopyCutsIntoTransactions(t *testing.T) {
 // end of that call. The doc on CopyConfig.RowsPerTx promises exactly this.
 func TestCopyRowsPerTxIsAFloorNotACap(t *testing.T) {
 	srv := &fakeServer{responses: txCycle()}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	cp, err := conn.CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)", CopyConfig{RowsPerTx: 2})
 	if err != nil {
 		t.Fatal(err)
@@ -179,7 +179,7 @@ func TestCopyRowsPerTxIsAFloorNotACap(t *testing.T) {
 // reason the parameter exists is that the obvious default is a defect at
 // scale.
 func TestCopyRequiresRowsPerTx(t *testing.T) {
-	conn := NewConn(&fakeServer{})
+	conn := NewConn(&fakeServer{}, Config{})
 	for _, n := range []int{0, -1} {
 		if _, err := conn.CopyFrom(t.Context(), "COPY t FROM STDIN", CopyConfig{RowsPerTx: n}); err == nil {
 			t.Errorf("RowsPerTx %d was accepted", n)
@@ -192,7 +192,7 @@ func TestCopyRequiresRowsPerTx(t *testing.T) {
 // as one message rather than one per row.
 func TestCopyBatchesRowsIntoMessages(t *testing.T) {
 	srv := &fakeServer{responses: txCycle()}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	cp, err := conn.CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)",
 		CopyConfig{RowsPerTx: 1000, ChunkBytes: 1 << 20})
 	if err != nil {
@@ -222,7 +222,7 @@ func TestCopyServerRefuses(t *testing.T) {
 		append(beErrorResponse("42P01", `relation "nope" does not exist`), beReadyForQuery()...),
 		append(beCommandComplete("ROLLBACK"), beReadyForQuery()...),
 	}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	cp, err := conn.CopyFrom(t.Context(), "COPY nope FROM STDIN WITH (FORMAT BINARY)", CopyConfig{RowsPerTx: 10})
 	if err != nil {
 		t.Fatal(err)
@@ -257,7 +257,7 @@ func TestCopyRefusesATextFormatCopy(t *testing.T) {
 		append(beErrorResponse("57014", "COPY from stdin failed"), beReadyForQuery()...),
 		append(beCommandComplete("ROLLBACK"), beReadyForQuery()...),
 	}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	cp, err := conn.CopyFrom(t.Context(), "COPY t FROM STDIN", CopyConfig{RowsPerTx: 10})
 	if err != nil {
 		t.Fatal(err)
@@ -287,7 +287,7 @@ func TestCopyAbort(t *testing.T) {
 		append(beErrorResponse("57014", "COPY from stdin failed"), beReadyForQuery()...),
 		append(beCommandComplete("ROLLBACK"), beReadyForQuery()...),
 	}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	cp, err := conn.CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)", CopyConfig{RowsPerTx: 10})
 	if err != nil {
 		t.Fatal(err)
@@ -325,7 +325,7 @@ func TestCopyAbort(t *testing.T) {
 // never used leaves no trace on the server.
 func TestCopyCloseWithoutRows(t *testing.T) {
 	srv := &fakeServer{}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	cp, err := conn.CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)", CopyConfig{RowsPerTx: 10})
 	if err != nil {
 		t.Fatal(err)
@@ -391,7 +391,7 @@ func TestCopyServerHangsUpMidLoad(t *testing.T) {
 		srv := &fakeServer{responses: [][]byte{
 			append(beCommandComplete("BEGIN"), beReadyForQuery()...),
 		}}
-		conn := NewConn(srv)
+		conn := NewConn(srv, Config{})
 		cp, err := conn.CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)", CopyConfig{RowsPerTx: 10})
 		if err != nil {
 			t.Fatalf("CopyFrom = %v, want it to defer to the first write", err)
@@ -412,7 +412,7 @@ func TestCopyServerHangsUpMidLoad(t *testing.T) {
 			// The client sends CopyDone and waits for ReadyForQuery. Nothing
 			// comes.
 		}}
-		conn := NewConn(srv)
+		conn := NewConn(srv, Config{})
 		cp, err := conn.CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)", CopyConfig{RowsPerTx: 10})
 		if err != nil {
 			t.Fatal(err)
@@ -432,7 +432,7 @@ func TestCopyServerHangsUpMidLoad(t *testing.T) {
 // NULL *element* is a length of -1 inside it.
 func TestCopyWithNullBearingArray(t *testing.T) {
 	srv := &fakeServer{responses: txCycle()}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	cp, err := conn.CopyFrom(t.Context(), "COPY t (id, tags) FROM STDIN WITH (FORMAT BINARY)",
 		CopyConfig{RowsPerTx: 100})
@@ -540,7 +540,7 @@ func TestCopyDirectAndBufferedPathsAgree(t *testing.T) {
 
 	// One call whose payload exceeds ChunkBytes: the direct path.
 	direct := &fakeServer{responses: txCycle()}
-	dconn := NewConn(direct)
+	dconn := NewConn(direct, Config{})
 	dcp, err := dconn.CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)",
 		CopyConfig{RowsPerTx: 1000, ChunkBytes: 64})
 	if err != nil {
@@ -557,7 +557,7 @@ func TestCopyDirectAndBufferedPathsAgree(t *testing.T) {
 	// The same rows one at a time under a bound they never reach: the
 	// buffered path.
 	buffered := &fakeServer{responses: txCycle()}
-	bconn := NewConn(buffered)
+	bconn := NewConn(buffered, Config{})
 	bcp, err := bconn.CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)",
 		CopyConfig{RowsPerTx: 1000, ChunkBytes: 1 << 20})
 	if err != nil {
@@ -585,7 +585,7 @@ func TestCopyDirectAndBufferedPathsAgree(t *testing.T) {
 // bytes must already be gone — not retained for a later flush.
 func TestCopyDirectPathDoesNotRetainTheCallersBuffer(t *testing.T) {
 	srv := &fakeServer{responses: txCycle()}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	cp, err := conn.CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)",
 		CopyConfig{RowsPerTx: 1000, ChunkBytes: 16})
 	if err != nil {
@@ -628,7 +628,7 @@ func TestCopyDirectPathDoesNotRetainTheCallersBuffer(t *testing.T) {
 // queue: the rows would reach the server out of order.
 func TestCopyDirectPathDoesNotOvertakeBufferedRows(t *testing.T) {
 	srv := &fakeServer{responses: txCycle()}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	cp, err := conn.CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)",
 		CopyConfig{RowsPerTx: 1000, ChunkBytes: 128})
 	if err != nil {
@@ -681,7 +681,7 @@ func TestCopyRefusedWithAnUnreadableReasonKeepsTheConnection(t *testing.T) {
 		append(beCommandComplete("ROLLBACK"), beReadyForQuery()...),
 		append(beCommandComplete("SELECT 1"), beReadyForQuery()...),
 	}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	cp, err := conn.CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)", CopyConfig{RowsPerTx: 10})
 	if err != nil {
 		t.Fatal(err)
@@ -716,7 +716,7 @@ func TestCopyFailedCommitRollsBackAndLeavesTheConnectionUsable(t *testing.T) {
 		append(beCommandComplete("ROLLBACK"), beReadyForQuery()...),
 		append(beCommandComplete("BEGIN"), beReadyForQuery()...),
 	}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	cp, err := conn.CopyFrom(t.Context(), "COPY orders FROM STDIN WITH (FORMAT BINARY)", CopyConfig{RowsPerTx: 10})
 	if err != nil {
 		t.Fatal(err)
@@ -763,7 +763,7 @@ func TestCopyToleratesAsyncMessagesBeforeCopyInResponse(t *testing.T) {
 		append(beCommandComplete("COPY 1"), beReadyForQuery()...),
 		append(beCommandComplete("COMMIT"), beReadyForQuery()...),
 	}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	cp, err := conn.CopyFrom(t.Context(), "COPY t (id, name) FROM STDIN WITH (FORMAT BINARY)",
 		CopyConfig{RowsPerTx: 100})
@@ -796,7 +796,7 @@ func TestExecRefusesCopyFromStdinAndKeepsTheConnection(t *testing.T) {
 		append(beErrorResponse("57014", "COPY from stdin failed"), beReadyForQuery()...), // answers the CopyFail
 		append(beCommandComplete("SELECT 1"), beReadyForQuery()...),
 	}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	err := conn.Exec(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)")
 	if err == nil || !strings.Contains(err.Error(), "CopyFrom") {
@@ -832,7 +832,7 @@ func TestExecFailsCopyToStdoutInsteadOfDiscardingIt(t *testing.T) {
 		first,
 		append(beCommandComplete("SELECT 1"), beReadyForQuery()...),
 	}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	err := conn.Exec(t.Context(), "COPY t TO STDOUT")
 	if err == nil {
@@ -853,7 +853,7 @@ func TestExecFailsCopyToStdoutInsteadOfDiscardingIt(t *testing.T) {
 // default is asked for.
 func TestCopyRefusesANegativeChunkBytes(t *testing.T) {
 	srv := &fakeServer{}
-	_, err := NewConn(srv).CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)",
+	_, err := NewConn(srv, Config{}).CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)",
 		CopyConfig{RowsPerTx: 1, ChunkBytes: -1})
 	if err == nil || !strings.Contains(err.Error(), "CopyConfig.ChunkBytes") {
 		t.Errorf("CopyFrom with ChunkBytes -1 returned %v, want an error naming ChunkBytes", err)

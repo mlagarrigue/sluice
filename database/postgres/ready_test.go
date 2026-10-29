@@ -23,7 +23,7 @@ func newScriptedPipe(t *testing.T) (*scriptedPipe, *Conn) {
 	t.Helper()
 	client, server := net.Pipe()
 	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
-	return &scriptedPipe{t: t, conn: server, buf: make([]byte, 64<<10)}, NewConn(client)
+	return &scriptedPipe{t: t, conn: server, buf: make([]byte, 64<<10)}, NewConn(client, Config{})
 }
 
 // read returns the types of the messages in the client's next write.

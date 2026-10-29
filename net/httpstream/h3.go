@@ -82,9 +82,9 @@ type h3Frame struct {
 // before parsing again. Nothing of it is buffered and no bound applies to its
 // length: the work it costs is one pass over the bytes the peer actually
 // sent, and the stream's own bound (rawStreamBound) still holds what is kept.
-// Until 2026-10-21 an unknown frame longer than maxFrame was refused like a
-// DATA frame of that size; a peer that greases with a long frame is
-// conforming, and §7.2.8 says to ignore it.
+// An unknown frame longer than maxFrame is not refused like a DATA frame of
+// that size: a peer that greases with a long frame is conforming, and
+// §7.2.8 says to ignore it.
 func parseH3Frames(dst []h3Frame, buf []byte, maxFrame int) (frames []h3Frame, rest []byte, skip uint64, err error) {
 	for len(buf) > 0 {
 		typ, after, err := varint.Read(buf)

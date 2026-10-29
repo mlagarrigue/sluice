@@ -22,9 +22,9 @@ and two of the Go project's own modules, explained below.
 > version 1. See [Status and limits](#status-and-limits).
 
 The guides describe the `main` branch, which carries the changes grouped
-for the next minor release; the last one published, v0.3.0, has a different
-API ([Migrating from v0.2.2](docs/migration.md) lists what changed). Until
-that release, install `main`:
+for the next minor release; the last one published, v0.3.0, differs from it
+by the breaking changes [Migrating to main](docs/migration.md#since-v030)
+lists. Until that release, install `main`:
 
 ```sh
 go get github.com/mlagarrigue/sluice@main
@@ -108,7 +108,7 @@ stop it with `break`, and the stop reaches the source, which releases its
 resources immediately. The `[T any]` means `T` is the type of your
 elements, whichever you like.
 
-> **In plain terms: why batches?** Handling elements one by one costs a
+> **In plain words: why batches?** Handling elements one by one costs a
 > small fixed price per element at every stage. Handling them a thousand at
 > a time amortises that price: it is paid once per thousand elements. And a
 > function that can handle a thousand elements can handle one; the converse
@@ -144,7 +144,7 @@ group's, which are experimental.
 | `sluice/diagnostics` | errors, warnings and remedies that travel with the data without stopping the stream |
 | `sluice/web` | an HTTP request's path over `net/http`: bounded reading, authentication, authorisation, clean shutdown |
 | `sluice/gateway` | simultaneous calls grouped into one batch |
-| `sluice/probe` | counters to find the stage that makes the others wait |
+| `sluice/probe` | counters between stages: how many elements each let through, and, across a `parallel.Async`, which side is the slower |
 | `sluice/pushdown` | the reader tells the source what it no longer needs; the PostgreSQL connector listens |
 
 #### Talking to PostgreSQL and to HTTP clients
@@ -163,7 +163,7 @@ group's, which are experimental.
 | `sluice/web/stream` | the request path for the native transport |
 | `sluice/net/quic` · `net/quic/udp` | QUIC version 1 (RFC 9000/9001/9002) and its UDP socket |
 
-> **In plain terms: "experimental".** The code exists, is tested and
+> **In plain words: "experimental".** The code exists, is tested and
 > measured, but nothing promises it will keep this shape, and it has not
 > been confronted with other implementations. The
 > [Experimental](docs/guide/experimental.md) guide says exactly what is
@@ -201,7 +201,8 @@ flowchart LR
 Requests that arrive together leave together. The code that handles one
 request does not change. **64 requests, 1 connection, <!-- figure: BenchmarkWebDBSluiceOneConn -->898 µs<!-- /figure -->** — against
 <!-- figure: BenchmarkWebDBPgxOneConn -->12.9 ms<!-- /figure --> for pgx (the reference PostgreSQL driver in Go) on one connection,
-and <!-- figure: BenchmarkWebDBPgxPool64 -->1.28 ms<!-- /figure --> for pgx on a pool of 64 connections, one per request.
+and <!-- figure: BenchmarkWebDBPgxPool64 -->1.28 ms<!-- /figure --> for pgx on a pool of 64 connections, one per request
+([measured](docs/benchmarks.md#the-gateway-with-a-database-behind-it) on one laptop under WSL2, session of 2026-08-21).
 → [`example/orders`](example/orders), run by
 `go test ./example/orders -run TestIntegration -v` against the PostgreSQL the
 `SLUICE_PG` variables name (the test skips without one).
@@ -283,18 +284,18 @@ preparation** — scenarios, method and results will be published together.
 ## Status and limits
 
 - **Nothing has run in production**, and the v0 API will change.
-- **net/httpstream is supported — out of the experimental label since
-  2026-10-10 and under the compatibility promise — and fuzzed in CI without
+- **net/httpstream is supported — outside the experimental label and
+  under the compatibility promise — and fuzzed in CI without
   a public corpus; it has neither run in production nor had an outside
   security review.**
 - **PostgreSQL only** for now; SCRAM-SHA-256 (password authentication that
   never sends the password), cleartext and trust
   authentication; codecs for the common types (no `money`, `tsvector`,
   ranges, composites).
-- **QUIC is experimental**: confronted with two other implementations
-  (quic-go and ngtcp2, in the QUIC Interop Runner, run by hand: the last
-  results are in the run log), with no external cryptographic review;
-  HTTP/3 runs over it.
+- **QUIC is experimental**: crossed every Sunday with the other
+  implementations of the QUIC Interop Runner, each case judged against a
+  written record ([the detail](docs/guide/limits.md#the-interop-runner-in-detail)),
+  with no external cryptographic review; HTTP/3 runs over it.
 - **No resumption of a long job** after the process dies
   ([architecture](docs/design/architecture.md#a-stage-is-not-a-phase)).
 
@@ -314,7 +315,7 @@ sluice/                 the core: Stream, Batch, Source, stateless operators
 ├── net/quic/           QUIC v1 (experimental)
 ├── pushdown/ probe/    upstream demand · instrumentation
 ├── cmd/sluicegen/      generator of hydration code
-├── example/            orders (supported path) · vertical (native path)
+├── example/            orders (supported path) · vertical (native path) · settings
 ├── internal/           shared machinery, measurement harness, wire protocol
 ├── interop/            confrontation with other implementations (own module)
 ├── benchmarks/         measurements against other libraries (own module)
@@ -336,7 +337,9 @@ runnable example per operator. Two complete examples:
 PostgreSQL (`go test ./example/orders -run TestIntegration -v`), and
 [`example/vertical`](example/vertical), the same over the native transport
 (`go test ./example/vertical -run TestVerticalEndToEnd -v`); both take their
-PostgreSQL from the `SLUICE_PG` variables and skip without one.
+PostgreSQL from the `SLUICE_PG` variables and skip without one. A third,
+[`example/settings`](example/settings), reads a deployment's settings from
+its environment and refuses a bad value before it opens a socket.
 
 Inspired by the Volcano model, MonetDB/X100, Akka Streams, Flink, and the
 FHIR and SARIF diagnostic models — sources cited in the architecture.

@@ -70,7 +70,7 @@ func TestStreamedBodyPastMaxBodyBytes(t *testing.T) {
 }
 
 // A chunked body whose chunks exceed MaxBodyBytes streams, its trailer
-// section is checked and dropped, and the connection carries on.
+// section is checked, and the connection carries on.
 func TestStreamedChunkedBody(t *testing.T) {
 	addr, _ := serveTest(t, streamCfg(), readAllHandler)
 	c := dial(t, addr)
@@ -208,9 +208,53 @@ func TestStreamingKeepsSmallBodiesBatched(t *testing.T) {
 
 // A stream kept past the handler's return refuses to read.
 func TestStreamedBodyAfterReturn(t *testing.T) {
-	b := &bodyStream{closed: true}
+	b := &bodyStream{}
+	b.closed.Store(true)
 	if _, err := b.next(); !errors.Is(err, errBodyAfterReturn) {
 		t.Errorf("read after return: %v", err)
+	}
+}
+
+// The reader errBodyAfterReturn exists for is a handler that handed the
+// stream to a goroutine of its own and returned: that goroutine gets the
+// error, and the race detector has nothing to say about the package while
+// the connection goes on to its next request.
+func TestStreamedBodyReadFromAnotherGoroutineAfterReturn(t *testing.T) {
+	late := make(chan error, 1)
+	returned := make(chan struct{})
+	handler := func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		out := make([]Response, b.Len())
+		for i := range b.Items {
+			if string(b.Items[i].Method) != "POST" {
+				out[i] = Response{Status: 200}
+				continue
+			}
+			src := b.Items[i].Stream()
+			go func() {
+				<-returned
+				for range src.Stream() {
+				}
+				late <- src.Err()
+			}()
+			out[i] = Response{Status: 202}
+		}
+		return sluice.Batch[Response]{Items: out}
+	}
+	addr, _ := serveTest(t, streamCfg(), handler)
+	c := dial(t, addr)
+	br := bufio.NewReader(c)
+	if _, err := c.Write([]byte("POST /up HTTP/1.1\r\nHost: x\r\nContent-Length: 5000\r\n\r\nabc")); err != nil {
+		t.Fatal(err)
+	}
+	readFields(t, br)
+	close(returned)
+	select {
+	case err := <-late:
+		if !errors.Is(err, errBodyAfterReturn) {
+			t.Errorf("a read after the handler returned ended with %v, want errBodyAfterReturn", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the late reader never finished")
 	}
 }
 

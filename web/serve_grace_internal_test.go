@@ -91,3 +91,48 @@ func TestServeZeroGraceIsTheDefault(t *testing.T) {
 		synctest.Wait()
 	})
 }
+
+// A listener that breaks after it has served still has connections behind
+// it: the drain that follows is bounded by grace like the one a cancelled
+// context starts, not left to wait for a request that never finishes.
+func TestServeListenerFailureDrainIsBounded(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ln := newPipeListener()
+		release := make(chan struct{})
+		entered := make(chan struct{})
+		srv := &http.Server{ReadHeaderTimeout: DefaultReadHeaderTimeout, Handler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			close(entered)
+			<-release
+		})}
+		const grace = 3 * time.Second
+		done := make(chan error, 1)
+		go func() { done <- serve(t.Context(), srv, grace, func() error { return srv.Serve(ln) }) }()
+
+		client := ln.dial()
+		go func() {
+			_, _ = client.Write([]byte("GET / HTTP/1.1\r\nHost: x\r\n\r\n"))
+			_, _ = bufio.NewReader(client).ReadString('\n')
+		}()
+		<-entered
+
+		// The accept loop breaks: Serve returns an error that is not
+		// ErrServerClosed, with the request still running.
+		_ = ln.Close()
+		start := time.Now()
+		select {
+		case err := <-done:
+			if took := time.Since(start); took != grace {
+				t.Errorf("Serve returned %v after the listener broke, want the %v grace", took, grace)
+			}
+			if !errors.Is(err, net.ErrClosed) {
+				t.Errorf("Serve = %v, want the listener's error", err)
+			}
+		case <-time.After(2 * grace):
+			close(release)
+			t.Fatalf("Serve still draining %v after the listener broke: the drain is unbounded", 2*grace)
+		}
+		close(release)
+		_ = client.Close()
+		synctest.Wait()
+	})
+}

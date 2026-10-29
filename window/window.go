@@ -125,7 +125,7 @@ func (l Late) String() string {
 // travelled up through a [github.com/mlagarrigue/sluice/gateway] and left
 // every later call failing.
 //
-// What keeps the state at one window is unchanged: nothing before the open
+// What keeps the state at one window: nothing before the open
 // window's start is ever buffered, so window indices never decrease and a new
 // index means every earlier window is complete. Memory is O(elements in one
 // window), which is why maxPerWindow bounds that count.
@@ -141,14 +141,15 @@ func (l Late) String() string {
 //
 // # Bound and overflow
 //
-// maxPerWindow bounds the elements held for the open window, per S1, and policy says what
-// happens when it is reached: [sluice.Fail] panics with [sluice.ErrOverflow], [sluice.DropNewest]
-// discards the arriving element and keeps the window as it stands — a pane
-// that is short, never one that is wrong. [sluice.DropOldest] is rejected at
+// maxPerWindow bounds the elements held for the open window, per the
+// architecture's S1, and policy says what happens when it is reached:
+// [sluice.Fail] panics with [sluice.ErrOverflow], [sluice.DropNewest] discards
+// the arriving element and keeps the window as it stands — a pane that is
+// short, never one that is wrong. [sluice.DropOldest] is rejected at
 // construction rather than accepted: dropping the oldest element of an open
 // window would silently mutilate a pane from its front, which no caller can
-// mean, and accepting a policy that behaves like sluice.DropNewest would offer a
-// choice that does nothing.
+// mean, and accepting a policy that behaves like sluice.DropNewest would offer
+// a choice that does nothing.
 //
 // Each closed pane is emitted as its own batch. A pane is already an aggregate
 // of many elements, so the per-batch transport cost is amortized by the pane's

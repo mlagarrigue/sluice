@@ -99,12 +99,14 @@ func TestECNStateMarksTestPacketsThenWaits(t *testing.T) {
 // than departures fail it; and a frame that does not raise the largest
 // acknowledged number never fails it, whatever it carries.
 func TestECNValidationOutcomes(t *testing.T) {
-	ack := func(counts [3]uint64, withCounts bool) Frame {
+	// The frame's Largest Acknowledged is what "raises the largest" reads:
+	// each frame below names its own.
+	ack := func(largest uint64, counts [3]uint64, withCounts bool) Frame {
 		c := [3]uint64{}
 		if withCounts {
 			c = counts
 		}
-		f, _, err := parseFrame(appendAckFrame(nil, []pnRange{{5, 9}}, 0, c))
+		f, _, err := parseFrame(appendAckFrame(nil, []pnRange{{5, largest}}, 0, c))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -119,7 +121,7 @@ func TestECNValidationOutcomes(t *testing.T) {
 	acked := ackOutcome{raisedLargest: true, newlyAckedECT0: 5}
 
 	c := fresh(5)
-	if newCE := c.validateECNLocked(spaceApplication, ack([3]uint64{5, 0, 0}, true), acked); newCE != 0 {
+	if newCE := c.validateECNLocked(spaceApplication, ack(9, [3]uint64{5, 0, 0}, true), acked); newCE != 0 {
 		t.Fatalf("matching counts reported %d new CE marks, want 0", newCE)
 	}
 	if c.ecn.phase != ecnCapable || c.spaces[spaceApplication].ecnLast != [3]uint64{5, 0, 0} {
@@ -128,7 +130,7 @@ func TestECNValidationOutcomes(t *testing.T) {
 	// CE marks stand in for ECT(0) ones: the network remarked, not cleared,
 	// and the two marks are the congestion signal the controller hears.
 	c = fresh(5)
-	if newCE := c.validateECNLocked(spaceApplication, ack([3]uint64{3, 0, 2}, true), acked); newCE != 2 {
+	if newCE := c.validateECNLocked(spaceApplication, ack(9, [3]uint64{3, 0, 2}, true), acked); newCE != 2 {
 		t.Fatalf("ECT(0)+CE covering the packets reported %d new CE marks, want 2", newCE)
 	}
 	if c.ecn.phase != ecnCapable {
@@ -136,43 +138,45 @@ func TestECNValidationOutcomes(t *testing.T) {
 	}
 	// The same counts again, under an unchanged largest: old news, no
 	// second signal. Then one more mark in a frame that raises it: one.
-	if newCE := c.validateECNLocked(spaceApplication, ack([3]uint64{3, 0, 2}, true), ackOutcome{}); newCE != 0 {
+	if newCE := c.validateECNLocked(spaceApplication, ack(9, [3]uint64{3, 0, 2}, true), ackOutcome{}); newCE != 0 {
 		t.Fatalf("a frame that does not raise the largest reported %d new CE marks, want 0", newCE)
 	}
 	c.spaces[spaceApplication].ecnSent = 10
-	if newCE := c.validateECNLocked(spaceApplication, ack([3]uint64{7, 0, 3}, true), acked); newCE != 1 {
+	if newCE := c.validateECNLocked(spaceApplication, ack(10, [3]uint64{7, 0, 3}, true), acked); newCE != 1 {
 		t.Fatalf("one more CE mark reported as %d, want 1", newCE)
 	}
 	// Decreasing counts, on a path already validated: failed, no signal.
 	c = fresh(20)
-	c.validateECNLocked(spaceApplication, ack([3]uint64{5, 0, 0}, true), acked)
+	c.validateECNLocked(spaceApplication, ack(9, [3]uint64{5, 0, 0}, true), acked)
 	c.spaces[spaceApplication].ecnSent = 20
-	if newCE := c.validateECNLocked(spaceApplication, ack([3]uint64{4, 0, 1}, true), acked); newCE != 0 || c.ecn.phase != ecnFailed {
+	if newCE := c.validateECNLocked(spaceApplication, ack(10, [3]uint64{4, 0, 1}, true), acked); newCE != 0 || c.ecn.phase != ecnFailed {
 		t.Fatalf("decreasing counts: phase %d, %d new CE marks, want failed and 0", c.ecn.phase, newCE)
 	}
 	c = fresh(5)
-	c.validateECNLocked(spaceApplication, ack([3]uint64{}, false), acked)
+	c.validateECNLocked(spaceApplication, ack(9, [3]uint64{}, false), acked)
 	if c.ecn.phase != ecnFailed {
 		t.Fatalf("no counts for marked packets: phase %d", c.ecn.phase)
 	}
 	c = fresh(5)
-	c.validateECNLocked(spaceApplication, ack([3]uint64{4, 0, 0}, true), acked)
+	c.validateECNLocked(spaceApplication, ack(9, [3]uint64{4, 0, 0}, true), acked)
 	if c.ecn.phase != ecnFailed {
 		t.Fatalf("one mark cleared: phase %d", c.ecn.phase)
 	}
 	c = fresh(5)
-	c.validateECNLocked(spaceApplication, ack([3]uint64{5, 1, 0}, true), acked)
+	c.validateECNLocked(spaceApplication, ack(9, [3]uint64{5, 1, 0}, true), acked)
 	if c.ecn.phase != ecnFailed {
 		t.Fatalf("ECT(1) never applied: phase %d", c.ecn.phase)
 	}
 	c = fresh(5)
-	c.validateECNLocked(spaceApplication, ack([3]uint64{6, 0, 0}, true), acked)
+	c.validateECNLocked(spaceApplication, ack(9, [3]uint64{6, 0, 0}, true), acked)
 	if c.ecn.phase != ecnFailed {
 		t.Fatalf("more arrivals than departures: phase %d", c.ecn.phase)
 	}
-	// Reordered news: the same bad frames change nothing.
-	for _, f := range []Frame{ack([3]uint64{}, false), ack([3]uint64{1, 1, 1}, true)} {
+	// Reordered news — a frame below the largest already read: the same
+	// bad frames change nothing.
+	for _, f := range []Frame{ack(9, [3]uint64{}, false), ack(9, [3]uint64{1, 1, 1}, true)} {
 		c = fresh(5)
+		c.spaces[spaceApplication].ecnLargest, c.spaces[spaceApplication].ecnSawAck = 20, true
 		c.validateECNLocked(spaceApplication, f, ackOutcome{newlyAckedECT0: 5})
 		if c.ecn.phase != ecnTesting {
 			t.Fatalf("a frame that did not raise the largest acknowledged changed the phase to %d", c.ecn.phase)
@@ -180,7 +184,7 @@ func TestECNValidationOutcomes(t *testing.T) {
 	}
 	// A plain ACK of unmarked packets — before any test packet — is fine.
 	c = fresh(0)
-	c.validateECNLocked(spaceApplication, ack([3]uint64{}, false), ackOutcome{raisedLargest: true})
+	c.validateECNLocked(spaceApplication, ack(9, [3]uint64{}, false), ackOutcome{raisedLargest: true})
 	if c.ecn.phase != ecnTesting {
 		t.Fatalf("a plain ACK of unmarked packets changed the phase to %d", c.ecn.phase)
 	}
@@ -240,5 +244,65 @@ func TestECNValidatesBehindAccept(t *testing.T) {
 	client.mu.Unlock()
 	if phase != ecnCapable {
 		t.Fatalf("client ECN phase %d after the handshake, want %d (capable)", phase, ecnCapable)
+	}
+}
+
+// RFC 9000 §13.4.2.1 gates ECN validation on an ACK frame that increases
+// "the largest acknowledged packet number" — the frame's field — and RFC
+// 9002 §7.3.3 has a rise of the CE count enter recovery. This end tracks
+// ack-eliciting packets only, so a frame whose largest is one of its
+// ACK-only packets, and which newly acknowledges nothing tracked, still
+// raises the field: its CE increase is read on it, and stored, so the next
+// frame does not report it again.
+func TestECNReadsACEIncreaseOnAFrameThatAcknowledgesOnlyAnACKOnlyPacket(t *testing.T) {
+	ackFrame := func(t *testing.T, largest uint64, counts [3]uint64) Frame {
+		t.Helper()
+		f, _, err := parseFrame(appendAckFrame(nil, []pnRange{{0, largest}}, 0, counts))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	now := time.Now()
+	var s sentTracker
+	// Packets 0..2 ack-eliciting and tracked; packet 3 ACK-only, never
+	// recorded in the flight.
+	for pn := range uint64(3) {
+		s.record(sentPacket{pn: pn, sentAt: now.Add(time.Duration(pn) * time.Millisecond), size: 1200, ackEliciting: true, ect0: true})
+	}
+	c := &Conn{}
+	c.ecn.reset(true)
+	c.spaces[spaceApplication].ecnSent = 5
+
+	outA, err := s.markAcked(2, []byte{0, 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newCE := c.validateECNLocked(spaceApplication, ackFrame(t, 2, [3]uint64{3, 0, 0}), outA); newCE != 0 || c.ecn.phase != ecnCapable {
+		t.Fatalf("frame A: %d new CE marks, phase %d; want 0 and capable", newCE, c.ecn.phase)
+	}
+	s.release(now, &rttEstimator{}, nil, nil, &outA)
+
+	// Frame B: Largest Acknowledged 3, the ACK-only packet, remarked CE.
+	outB, err := s.markAcked(3, []byte{0, 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outB.newlyAckedCount != 0 {
+		t.Fatalf("frame B newly acknowledges %d tracked packets, want 0; the case under test is not reached", outB.newlyAckedCount)
+	}
+	if newCE := c.validateECNLocked(spaceApplication, ackFrame(t, 3, [3]uint64{3, 0, 1}), outB); newCE != 1 {
+		t.Fatalf("frame B raises Largest Acknowledged from 2 to 3 with one more CE mark; %d new marks read on it, want 1", newCE)
+	}
+
+	// Frame C newly acknowledges a tracked packet with the same CE count:
+	// nothing new.
+	s.record(sentPacket{pn: 4, sentAt: now.Add(5 * time.Millisecond), size: 1200, ackEliciting: true, ect0: true})
+	outC, err := s.markAcked(4, []byte{0, 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newCE := c.validateECNLocked(spaceApplication, ackFrame(t, 4, [3]uint64{4, 0, 1}), outC); newCE != 0 {
+		t.Fatalf("frame C reports %d new CE marks for the one frame B already reported", newCE)
 	}
 }

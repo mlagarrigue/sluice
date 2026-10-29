@@ -116,3 +116,33 @@ func TestVersionNegotiationEmptyOrTruncatedIsIgnored(t *testing.T) {
 		t.Errorf("a well-formed Version Negotiation without version 1 left the connection with %v, want ErrVersionNegotiation", err)
 	}
 }
+
+// RFC 9000 §17.2.5: a Retry answers the client's Initial, so its
+// Destination Connection ID is the Source Connection ID that Initial
+// carried. One addressed to another identifier answers some other
+// connection, or none: it is discarded, and the Retry that does name the
+// client is still honoured after it.
+func TestRetryAddressedToAnotherSCIDIsDiscarded(t *testing.T) {
+	pcA, pcB := newLoopbackPair(t)
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	defer c.Close()
+	c.mu.Lock()
+	c.initialDCID = []byte("dcid0000")
+	c.mu.Unlock()
+	retried := func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.retried
+	}
+
+	stray := appendRetryPacket(nil, []byte("other000"), []byte("server-scid-xyz"), []byte("dcid0000"), []byte("a-token"))
+	_ = c.receive(stray, pcB.LocalAddr())
+	if retried() {
+		t.Fatal("a Retry addressed to another connection ID was honoured")
+	}
+	retry := appendRetryPacket(nil, []byte("scid0000"), []byte("server-scid-xyz"), []byte("dcid0000"), []byte("a-token"))
+	_ = c.receive(retry, pcB.LocalAddr())
+	if !retried() {
+		t.Fatal("the Retry addressed to this client was not honoured after the stray one")
+	}
+}

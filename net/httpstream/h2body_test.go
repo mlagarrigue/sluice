@@ -179,6 +179,73 @@ func TestH2UnreadStreamedBodyIsResetAfterTheResponse(t *testing.T) {
 	}
 }
 
+// A well-formed streamed request whose handler answered without reading the
+// body is not malformed at its END_STREAM: the bytes dropped after the
+// handler's return still count toward the content-length check (RFC 9113
+// §8.1.1), since the client, which has not yet seen the RST_STREAM(NO_ERROR)
+// sent after the response, finishes its body as §8.1 expects. Counted
+// short, the request was reset PROTOCOL_ERROR — a second RST_STREAM on a
+// stream closed both ways, or, with the response waiting for credit, the
+// response lost. A client that sends more or less than declared after the
+// handler's return is still refused.
+func TestAnUnreadStreamedBodyIsCountedToItsEnd(t *testing.T) {
+	t.Run("queue", func(t *testing.T) {
+		q := newBodyQueue(Config{MaxBodyBytes: 1 << 10, MaxStreamedBodyBytes: 1 << 20}, 1, nil, 2000, false)
+		q.window, q.initial = 1<<20, 1<<20
+		q.add(make([]byte, 1000))
+		q.close() // the handler returned without reading
+		q.add(make([]byte, 1000))
+		if err := q.end(); err != nil {
+			t.Fatalf("end after close, 2000 bytes sent against content-length 2000: %v", err)
+		}
+	})
+	t.Run("queue still checks the sum", func(t *testing.T) {
+		q := newBodyQueue(Config{MaxBodyBytes: 1 << 10, MaxStreamedBodyBytes: 1 << 20}, 1, nil, 2000, false)
+		q.window, q.initial = 1<<20, 1<<20
+		q.add(make([]byte, 1000))
+		q.close()
+		q.add(make([]byte, 1500))
+		if err := q.end(); !errors.Is(err, ErrMalformed) {
+			t.Fatalf("end after close, 2500 bytes sent against content-length 2000: %v, want ErrMalformed", err)
+		}
+	})
+	t.Run("h2", func(t *testing.T) {
+		addr, _ := serveH2(t, h2StreamCfg(), func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+			out := make([]Response, b.Len())
+			for i := range out {
+				out[i] = Response{Status: 200, Body: []byte("not read")}
+			}
+			return sluice.Batch[Response]{Items: out}
+		})
+		c := dialH2(t, addr)
+		// A zero window holds the response back until the body's end has
+		// been read: the order that lost the response.
+		c.frame(h2Frame{Type: frameSettings, Payload: settingsPayload([2]uint32{settingInitialWindowSize, 0})})
+		c.frame(h2Frame{
+			Type: frameHeaders, Flags: flagEndHeaders, StreamID: 1,
+			Payload: headBlock("POST", "/", [2]string{"content-length", "2000"}),
+		})
+		c.data(1, pattern(1000), false)
+		c.flush()
+		c.pump(func() bool { _, ok := c.heads[1]; return ok })
+		if _, ok := c.heads[1]; !ok {
+			t.Fatal("no response head")
+		}
+		c.data(1, pattern(1000), true)
+		c.frame(h2Frame{Type: framePing, Payload: make([]byte, 8)})
+		c.flush()
+		before := c.pings
+		c.pump(func() bool { return c.pings > before || c.sawGoAway })
+		if code, ok := c.resets[1]; ok && code != errNoError {
+			t.Errorf("stream 1 reset with %#x for a body of exactly its content-length, handler answered (ended=%v answer=%q)",
+				code, c.ended[1], c.got[1])
+		}
+		if c.sawGoAway {
+			t.Errorf("the connection ended: GOAWAY %x", c.goAway)
+		}
+	})
+}
+
 // A client that resets its stream midway: the handler reading the body
 // learns it from Err, as a broken HTTP/1.1 body says it.
 func TestH2StreamedBodyResetByTheClient(t *testing.T) {

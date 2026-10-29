@@ -14,9 +14,9 @@ import (
 // consume's success path — HEADERS that complete in one frame, no window
 // updates — never touches s.w, so a writer that is never run is enough to
 // benchmark the frame-to-request path in isolation from the socket.
-func newBenchH2Server(cfg Config) *h2Server {
+func newBenchH2Server(cfg Config) *h2Conn {
 	cfg = cfg.mustResolve()
-	return &h2Server{
+	return &h2Conn{
 		cfg: cfg,
 		handler: func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			return sluice.Batch[Response]{}
@@ -35,7 +35,7 @@ func newBenchH2Server(cfg Config) *h2Server {
 // is consume's own rather than the constructor's. The HPACK decoder needs no
 // reset: h2HeadersFrame encodes without incremental indexing, so decoding
 // leaves no dynamic-table state behind.
-func resetBenchH2Server(s *h2Server) {
+func resetBenchH2Server(s *h2Conn) {
 	clear(s.streams)
 	clear(s.closed)
 	s.open.Store(0)
@@ -100,6 +100,59 @@ func BenchmarkH2Consume(b *testing.B) {
 	}
 }
 
+// BenchmarkH2ConsumeLongConn is consume on a connection that has served more
+// than MaxConcurrentStreams requests, the steady state of a long-lived one:
+// each retirement pushes the oldest remembered stream out of the reader's
+// memory and tells the writer to forget it too (h2Writer.evict, under w.mu),
+// which BenchmarkH2Consume never reaches, starting every round from an empty
+// memory. Identifiers climb across rounds as on the wire, every request is
+// answered before the next round as the writer would answer it, and the run
+// starts over on a fresh connection when the identifiers are spent.
+func BenchmarkH2ConsumeLongConn(b *testing.B) {
+	const depth, rounds = 8, 512
+	frames := make([]h2Frame, 0, depth*rounds)
+	for i := range depth * rounds {
+		raw := h2HeadersFrame(uint32(2*i+1), fmt.Sprintf("/orders/%d", i)) //nolint:gosec // G115: 2i+1 for i < 4096
+		parsed, _, err := parseFrame(raw, defaultMaxFrameSize)
+		if err != nil {
+			b.Fatal(err)
+		}
+		frames = append(frames, parsed)
+	}
+
+	s := newBenchH2Server(Config{})
+	next := 0
+	b.ReportAllocs()
+	for b.Loop() {
+		if next == rounds {
+			resetBenchH2Server(s)
+			next = 0
+		}
+		round := frames[next*depth : (next+1)*depth]
+		ready, _, err := s.consume(round)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(ready) != depth {
+			b.Fatalf("consumed %d requests, want %d", len(ready), depth)
+		}
+		for _, f := range round {
+			benchAnswered(s.w, f.StreamID)
+		}
+		s.inFlight.Store(0)
+		next++
+	}
+	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*depth), "ns/request")
+}
+
+// benchAnswered is the writer's own record of an answer that reached
+// END_STREAM, as fill makes it. Without the lock fill already holds for a
+// whole batch of jobs: one goroutine runs the benchmark.
+func benchAnswered(w *h2Writer, id uint32) {
+	delete(w.windows, id)
+	w.noteEndedLocked(id)
+}
+
 // countingConn wraps memConn to count the write syscalls a benchmark would
 // otherwise have to infer from timing alone — the number candidate 3 of the
 // performance pass is measured against directly.
@@ -145,7 +198,7 @@ func BenchmarkH2StreamBody(b *testing.B) {
 			w := newH2Writer(conn, cfg)
 			w.connWind = 1 << 30
 			go w.run()
-			s := &h2Server{cfg: cfg, w: w}
+			s := &h2Conn{cfg: cfg, w: w}
 
 			spent := int32(chunksPerBatch * len(payload)) //nolint:gosec // G115: a few KB
 			b.ReportAllocs()

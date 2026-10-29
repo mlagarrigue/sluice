@@ -30,13 +30,13 @@ import (
 // acceptOne serves the first connection that reaches pc, through a
 // [quic.Listener] closed with the test. It gives up after ten seconds, so a
 // client that never dials fails the test rather than hanging it.
-func acceptOne(t *testing.T, pc net.PacketConn, cfg *tls.Config, params quic.TransportParameters) (*quic.Conn, error) {
-	t.Helper()
+func acceptOne(tb testing.TB, pc net.PacketConn, cfg *tls.Config, params quic.TransportParameters) (*quic.Conn, error) {
+	tb.Helper()
 	l, err := quic.NewListener(pc, cfg, params, quic.ListenerConfig{})
 	if err != nil {
 		return nil, err
 	}
-	t.Cleanup(func() { _ = l.Close() })
+	tb.Cleanup(func() { _ = l.Close() })
 	timer := time.AfterFunc(10*time.Second, func() { _ = l.Close() })
 	defer timer.Stop()
 	return l.Accept()
@@ -279,6 +279,12 @@ func TestH3RefusesMalformedRequests(t *testing.T) {
 			{[]byte(":scheme"), []byte("ht\rtps")},
 			{[]byte(":authority"), []byte("h")},
 		}},
+		{"a :scheme that is a token but no URI scheme", []Header{
+			{[]byte(":method"), []byte("GET")},
+			{[]byte(":path"), []byte("/x")},
+			{[]byte(":scheme"), []byte("a_b")},
+			{[]byte(":authority"), []byte("h")},
+		}},
 		{"a :path with a control character", []Header{
 			{[]byte(":method"), []byte("GET")},
 			{[]byte(":path"), []byte("/x\ry")},
@@ -443,10 +449,7 @@ func TestH3OverARealConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Write(h3Request("GET", "/orders/7")); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.CloseWrite(); err != nil {
+	if _, err := s.WriteFinal(h3Request("GET", "/orders/7")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -480,11 +483,11 @@ func TestH3OverARealConnection(t *testing.T) {
 	}
 }
 
-func h3ServerTLS(t *testing.T) *tls.Config {
-	t.Helper()
+func h3ServerTLS(tb testing.TB) *tls.Config {
+	tb.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
@@ -496,7 +499,7 @@ func h3ServerTLS(t *testing.T) *tls.Config {
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	return &tls.Config{
 		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
@@ -997,10 +1000,7 @@ func TestH3ResetsOneStreamAndServesTheRest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := good.Write(h3Request("GET", "/good")); err != nil {
-		t.Fatal(err)
-	}
-	if err := good.CloseWrite(); err != nil {
+	if _, err := good.WriteFinal(h3Request("GET", "/good")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1047,6 +1047,7 @@ func TestServeH3RefusesTransportParametersItCannotServe(t *testing.T) {
 		{"a stream limit past its cap", func(p *quic.TransportParameters) { p.InitialMaxStreamsBidi = h3MaxServeStreams + 1 }, "InitialMaxStreamsBidi"},
 		{"fewer than three unidirectional streams", func(p *quic.TransportParameters) { p.InitialMaxStreamsUni = 2 }, "InitialMaxStreamsUni"},
 		{"no credit on unidirectional streams", func(p *quic.TransportParameters) { p.InitialMaxStreamDataUni = 0 }, "InitialMaxStreamDataUni"},
+		{"more unidirectional streams than are read", func(p *quic.TransportParameters) { p.InitialMaxStreamsUni = maxUniStreams + 1 }, "InitialMaxStreamsUni"},
 	} {
 		t.Run(tt.name, func(t *testing.T) { refusesH3Params(t, tt.mutate, tt.want) })
 	}
@@ -1231,10 +1232,11 @@ func TestH3StarvedStreamDoesNotBlockOtherResponses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := large.Write(h3Request("GET", "/large")); err != nil {
-		t.Fatal(err)
-	}
-	if err := large.CloseWrite(); err != nil {
+	// Request and FIN in one call: a server may answer a complete request
+	// and stop reading its stream with H3_NO_ERROR before the FIN (RFC 9114
+	// §4.1.1), and a FIN sent after that is refused — a race the test is not
+	// about, which failed it once in CI.
+	if _, err := large.WriteFinal(h3Request("GET", "/large")); err != nil {
 		t.Fatal(err)
 	}
 	// The large request is handled — its batch is the responder's — before
@@ -1250,10 +1252,7 @@ func TestH3StarvedStreamDoesNotBlockOtherResponses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := small.Write(h3Request("GET", "/small")); err != nil {
-		t.Fatal(err)
-	}
-	if err := small.CloseWrite(); err != nil {
+	if _, err := small.WriteFinal(h3Request("GET", "/small")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1420,19 +1419,13 @@ func TestH3StreamProducerPanicResetsOneStream(t *testing.T) {
 		t.Fatalf("the server: %v", err)
 	}
 
+	// askH3, not a copy of it: the server answers a GET from its HEADERS and
+	// may stop reading with H3_NO_ERROR before the FIN leaves (RFC 9114
+	// §4.1.1), which a copy that failed on the refused FIN read as an error
+	// (red on 2026-10-25 and 2026-10-28).
 	ask := func(path string) *quic.Stream {
 		t.Helper()
-		s, err := conn.OpenStream(t.Context())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := s.Write(h3Request("GET", path)); err != nil {
-			t.Fatal(err)
-		}
-		if err := s.CloseWrite(); err != nil {
-			t.Fatal(err)
-		}
-		return s
+		return askH3(t, conn, h3Request("GET", path))
 	}
 	// readAll reads a stream to its end, under a bound: quic.Stream has no
 	// read deadline of its own.
@@ -1495,6 +1488,21 @@ func TestH3StreamProducerPanicResetsOneStream(t *testing.T) {
 	}
 	if err := conn.Err(); err != nil {
 		t.Errorf("the connection ended over one producer panic: %v", err)
+	}
+}
+
+// :scheme is a URI scheme (RFC 3986 §3.1): a letter, then letters, digits,
+// "+", "-" and ".". A token is wider, and its extra characters are refused.
+func TestIsSchemeIsRFC3986Scheme(t *testing.T) {
+	for _, s := range []string{"https", "http", "a+b.c-d", "z39.50r", "H2"} {
+		if !isScheme([]byte(s)) {
+			t.Errorf("isScheme(%q) = false, want true", s)
+		}
+	}
+	for _, s := range []string{"", "a_b", "a!b", "1x", "+a", "a b", "ht\rtps", "é"} {
+		if isScheme([]byte(s)) {
+			t.Errorf("isScheme(%q) = true, want false", s)
+		}
 	}
 }
 
@@ -1819,10 +1827,7 @@ func TestServeH3ShutdownDrainsRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Write(h3Request("GET", "/slow")); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.CloseWrite(); err != nil {
+	if _, err := s.WriteFinal(h3Request("GET", "/slow")); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -2001,10 +2006,7 @@ func TestServeH3ServesARequestSentBeforeTheGoAway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Write(h3Request("GET", "/early")); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.CloseWrite(); err != nil {
+	if _, err := s.WriteFinal(h3Request("GET", "/early")); err != nil {
 		t.Fatal(err)
 	}
 	cancel()
@@ -2072,7 +2074,7 @@ func h3StreamOf(t *testing.T, c *quic.Conn, id uint64) *quic.Stream {
 // check.
 func TestH3RefusesRequestFieldsAndAMalformedDate(t *testing.T) {
 	for _, tc := range []struct{ name, value string }{
-		{"host", "example.test"}, {"te", "trailers"}, {"expect", "100-continue"}, {"date", "yesterday"},
+		{"host", "example.test"}, {"te", "trailers"}, {"expect", "100-continue"}, {"early-data", "1"}, {"date", "yesterday"},
 	} {
 		res := Response{Status: 200, Headers: []Header{{Name: []byte(tc.name), Value: []byte(tc.value)}}}
 		if _, err := appendH3ResponseBasic(nil, res); !errors.Is(err, ErrMalformed) {

@@ -22,6 +22,7 @@ linters:
     - makezero
     - nilerr
     - godot          # doc comments end in a period, as go/doc expects
+    - funlen         # no production function past 300 lines, comments included
 
   settings:
     errorlint:
@@ -40,6 +41,13 @@ linters:
         # receiver would let one caller's change reach another's copy. Measured
         # at 5.69 ns either way, so the check reports a size rather than a cost.
         - hugeParam
+    funlen:
+      # From func to closing brace, comments inside counted: a function
+      # that long no longer reads in one sitting. Statements are not
+      # counted; a frame switch is long by nature, not by accident.
+      lines: 300
+      statements: -1
+      ignore-comments: false
     godot:
       scope: declarations
       exclude:

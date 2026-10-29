@@ -4,13 +4,16 @@
 #
 #   scripts/interop-runner.sh [peer]      # default peer: quic-go
 #   scripts/interop-runner.sh --matrix [peer|all]
+#   scripts/interop-runner.sh --unpullable
 #
 # SIDE=server or SIDE=client runs one direction only, sluice in that role;
 # the default runs both. --matrix prints, as JSON, the {peer, side} pairs a
 # full pass crosses: every implementation in the runner's list at
 # RUNNER_REF, on each side its role allows (a server-only peer meets
 # sluice as a client, a client-only one meets it as a server). It reads the
-# list over HTTPS and needs only curl and jq.
+# list over HTTPS and needs only curl and jq. --unpullable tries to pull the
+# image of every peer UNPULLABLE names, and fails naming those the registry
+# serves again: they belong back in the matrix. It needs curl, jq and docker.
 #
 # Needs docker (with compose), python3, tshark 4.5 or newer, jq and git.
 # The runner is cloned into RUNNER_DIR (default: a directory under the
@@ -28,10 +31,12 @@
 # red case is a failure only where the file expects it green, a 127 is an
 # unsupported case the runner records as such, and a case that turns green
 # where the file says otherwise fails too, until the file records it. A peer
-# the file has no entry for is reported and not judged: the weekly matrix
-# crosses every peer, and only those whose results someone has read and
-# written down can regress. The logs of every case stay in RUNNER_DIR/logs
-# for reading.
+# the file has no entry for fails as well: the matrix is read at the pinned
+# RUNNER_REF, so a new peer arrives with a deliberate bump of that commit,
+# and its results are read and written down in the same change.
+# INTEROP_UNJUDGED=<reason> reports such a peer without judging it, for a
+# first look, and prints the reason. The logs of every case stay in
+# RUNNER_DIR/logs for reading.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -43,6 +48,13 @@ RUNNER_REF=${RUNNER_REF:-ab039a4a4b43ae2e21bb5704c9fad1f8fe6257d6}
 TESTS=${TESTS:-handshake,transfer,longrtt,chacha20,multiplexing,retry,resumption,zerortt,http3,blackhole,keyupdate,ecn,amplificationlimit,handshakeloss,transferloss,handshakecorruption,transfercorruption,ipv6,v2,rebind-port,rebind-addr,connectionmigration}
 image=${IMAGE:-sluice-interop:local}
 SIDE=${SIDE:-both}
+# Peers of the runner's list whose image its registry no longer serves:
+# every case against them fails before reaching sluice, so --matrix leaves
+# them out and a run names them. mvfst: ghcr.io answers 403 for
+# mvfst-interop:latest since October 2026 (run 40779702220), where an image
+# beside it answers 200. Space separated; a peer leaves the list when its
+# image is served again, with its record written back.
+UNPULLABLE=${UNPULLABLE-mvfst}
 
 fail() {
   echo "interop-runner: $*" >&2
@@ -52,13 +64,34 @@ fail() {
 if [ "${1:-}" = "--matrix" ]; then
   want=${2:-all}
   curl -fsSL "https://raw.githubusercontent.com/quic-interop/quic-interop-runner/$RUNNER_REF/implementations_quic.json" |
-    jq -c --arg want "$want" '
-      [ to_entries[]
+    jq -c --arg want "$want" --arg unpullable "$UNPULLABLE" '
+      ($unpullable | split(" ") | map(select(. != ""))) as $gone
+      | [ to_entries[]
         | select(.key != "sluice" and ($want == "all" or .key == $want))
+        | select(.key as $k | $gone | index($k) | not)
         | .key as $peer | .value.role as $role
         | (if $role != "server" then {peer: $peer, side: "server"} else empty end),
           (if $role != "client" then {peer: $peer, side: "client"} else empty end) ]
-      | if length == 0 then error("no implementation named \($want) in the runner list") else . end'
+      | if length == 0 then error("no implementation named \($want) in the runner list, or its image is not served (UNPULLABLE)") else . end'
+  exit
+fi
+
+# The reader of UNPULLABLE's promise: without it a peer whose image is
+# served again would stay out of the matrix with nothing to say so.
+if [ "${1:-}" = "--unpullable" ]; then
+  list=$(curl -fsSL "https://raw.githubusercontent.com/quic-interop/quic-interop-runner/$RUNNER_REF/implementations_quic.json")
+  served=''
+  for peer in $UNPULLABLE; do
+    peer_image=$(echo "$list" | jq -r --arg p "$peer" '.[$p].image // empty')
+    [ -n "$peer_image" ] || fail "UNPULLABLE names $peer, which the runner list at $RUNNER_REF does not hold; take it out of the list"
+    if docker pull -q "$peer_image" >/dev/null 2>&1; then
+      echo "$peer: $peer_image is served again"
+      served="$served $peer"
+    else
+      echo "$peer: $peer_image is still not served"
+    fi
+  done
+  [ -z "$served" ] || fail "served again:$served; take each out of UNPULLABLE in scripts/interop-runner.sh, run a pass against it and write its record in interop/expected-results.json"
   exit
 fi
 
@@ -99,6 +132,16 @@ impls="$RUNNER_DIR/implementations_quic.json"
 jq --arg image "$image" '. + {sluice: {image: $image, url: "https://github.com/mlagarrigue/sluice", role: "both"}}' \
   "$impls" >"$impls.tmp" && mv "$impls.tmp" "$impls"
 
+# The peer's image, pulled before any case: one the registry no longer
+# serves would fail every case before reaching sluice, and the runner's own
+# output says so only in a compose error per case.
+peer_image=$(jq -r --arg p "$peer" '.[$p].image // empty' "$impls")
+[ -n "$peer_image" ] || fail "no implementation named $peer in the runner list at $RUNNER_REF"
+case " $UNPULLABLE " in
+*" $peer "*) fail "the image of $peer ($peer_image) is listed as not served (UNPULLABLE); its cases cannot run" ;;
+esac
+docker pull -q "$peer_image" >/dev/null || fail "the image of $peer ($peer_image) cannot be pulled: the registry does not serve it, and every case would fail before reaching sluice; list it in UNPULLABLE"
+
 # run <server> <client>: one direction, with the runner's debug output,
 # which is the only place each container's own output and the compliance
 # check's verdict appear (the runner keeps no log of a case it skipped).
@@ -109,8 +152,18 @@ run() {
   (
     cd "$RUNNER_DIR"
     # The runner refuses a log directory that exists: one per direction.
-    rm -rf "logs/$1_$2" "logs/$1_$2-again"
+    rm -rf "logs/$1_$2" "logs/$1_$2-first" "logs/$1_$2-again"
     .venv/bin/python run.py -d -s "$1" -c "$2" -t "$TESTS" -l "logs/$1_$2" -j "results_$1_$2.json" || true
+    # A direction that wrote no results at all is run once more: a tool the
+    # runner drives can crash mid-direction and leave no file (tshark, from
+    # a PPA that keeps no older build to pin, exited 255 on 2026-10-27). A
+    # second direction without results is refused below, as a first one
+    # was; the first try's logs stay under -first.
+    if [ ! -f "results_$1_$2.json" ]; then
+      echo "## server $1, client $2: no results, once more"
+      if [ -d "logs/$1_$2" ]; then mv "logs/$1_$2" "logs/$1_$2-first"; fi
+      .venv/bin/python run.py -d -s "$1" -c "$2" -t "$TESTS" -l "logs/$1_$2" -j "results_$1_$2.json" || true
+    fi
     # A failed case is run once more and keeps both results: the runner's
     # own capture sometimes misses a handshake both ends completed
     # ("Expected exactly one version. Got []", a quarter-size pcap on one
@@ -170,6 +223,9 @@ if jq -e --arg peer "$peer" 'has($peer)' interop/expected-results.json >/dev/nul
   if [ "$SIDE" != server ]; then CASES_CLIENT=$TESTS; fi
   export CASES_SERVER CASES_CLIENT
   scripts/interop-expect.sh "$peer" "$asServer" "$asClient"
+elif [ -n "${INTEROP_UNJUDGED:-}" ]; then
+  echo "interop-runner: no expected results for $peer: reported, not judged ($INTEROP_UNJUDGED)"
 else
-  echo "interop-runner: no expected results for $peer: reported, not judged"
+  # interop-expect.sh refuses a peer the file does not list, and says so.
+  scripts/interop-expect.sh "$peer" "$asServer" "$asClient"
 fi

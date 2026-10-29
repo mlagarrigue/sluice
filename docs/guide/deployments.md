@@ -5,7 +5,7 @@ place in the code that decides it. This page gathers them: what is supported
 as it is, what is only supported behind something else, what is not
 supported yet.
 
-> **In plain terms.** "Supported" means here: the code makes this choice
+> **In plain words.** "Supported" means here: the code makes this choice
 > explicitly, a test covers it, and the section says where to read the
 > reason. It takes nothing away from the *experimental* label of `net/quic`
 > ([What "experimental" means](experimental.md#what-experimental-means)):
@@ -164,8 +164,9 @@ Where it is decided: [ADR 0019](../design/adr/0019-quic-early-data.md);
 
 ## TLS in front
 
-The package does not terminate TLS
-([ADR 0014](../design/adr/0014-tls-stays-in-front.md)): `crypto/tls` wraps
+On the `net/http` path, `web.ServeTLS` serves TLS and HTTP/2
+([web](web.md#over-tls-and-http2)). The `httpstream` package does not
+terminate TLS ([ADR 0014](../design/adr/0014-tls-stays-in-front.md)): `crypto/tls` wraps
 the listener, and `Serve` reads the decrypted stream as it would read a
 bare socket.
 
@@ -203,15 +204,16 @@ The library reads no environment variable and no command-line flag: your
 program reads its settings, with `os.LookupEnv`, `flag` or `encoding/json`,
 and puts them in the `Config` types. A field left at zero takes the default
 the tables give. Before listening, call `Validate` (`httpstream.Config`,
-`gateway.Config`): a value the server would refuse stops the program at
-start, naming the field, before it takes its port.
+`gateway.Config`, `postgres.Config`, `quic.ListenerConfig`,
+`quic.TransportParameters`): a value the server would refuse stops the
+program at start, naming the field, before it takes its port.
 [`example/settings`](../../example/settings/settings.go) does it for the
 gateway and the HTTP timeouts. The tables:
 [PostgreSQL](postgres.md#connection-settings),
 [gateway](web.md#gateway-settings),
 [token verifier](web.md#verifier-settings),
 [`net/quic`](experimental.md#netquic-settings) and
-[`net/httpstream`](experimental.md#nethttpstream-settings).
+[`net/httpstream`](httpstream.md#nethttpstream-settings).
 
 > **In plain words:** your settings come from wherever you like; check
 > them with `Validate`, and only then open the port.

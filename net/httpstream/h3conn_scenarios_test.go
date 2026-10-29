@@ -75,7 +75,7 @@ func TestH3BodyOverManyDatagramsPastMaxBodyBytesIsRefused(t *testing.T) {
 // request refused rather than the connection lost once a server is at its
 // limit, and H3Assembler enforces it as [Config.MaxConcurrentStreams] —
 // concurrently open, unfinished request streams, not a lifetime total. The
-// default is 100 (httpstream.go's withDefaults, the floor RFC 9114 §6.1
+// default is 100 (httpstream.go's Config.resolve, the floor RFC 9114 §6.1
 // recommends and the transport's own MAX_STREAMS grant), so the 101st
 // distinct stream opened while the other 100 are still unfinished is the
 // one that must be refused. MaxRequestsPerBatch is deliberately set to its
@@ -388,33 +388,88 @@ func TestH3ControlIdentifiersAreChecked(t *testing.T) {
 // identifier an answer, and ServeH3Conn finishes a draining connection the
 // moment nothing is in flight. The two agree only if admitting a stream and
 // counting it in flight cannot interleave with the drain's reading of the
-// count: a stream admitted but not yet counted when the drain looked was
-// served into a connection already finishing. Here streams are admitted on
-// one goroutine while the drain is decided on another, many times over; if
-// the drain ever finds nothing in flight, nothing may be in flight after it.
-func TestH3DrainNeverFinishesOverAnAdmittedStream(t *testing.T) {
-	head := h3Request("GET", "/x") // no FIN: the stream stays in flight
-	for round := range 2000 {
-		a := testAssembler(Config{MaxConcurrentStreams: 1 << 16})
-		a.Finish = func() {}
-		start := make(chan struct{})
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			<-start
-			for id := uint64(0); id < 16*4; id += 4 {
-				if _, _, _, err := a.Frames([]quic.Frame{streamFrame(id, head, false)}); err != nil {
-					t.Error(err)
-					return
-				}
-			}
-		}()
-		close(start)
-		_, idle := a.beginDrain()
-		<-done
-		if n := a.inFlight.Load(); idle && n != 0 {
-			t.Fatalf("round %d: the drain found nothing in flight, yet %d request streams are in flight after it", round, n)
-		}
+// count. They cannot when admit counts the stream before it lets go of the
+// lock beginDrain reads the count under; a stream admitted but counted after
+// admit returned left a window, too narrow for goroutines racing two
+// thousand times to hit, where the drain saw nothing in flight and finished
+// the connection over it.
+func TestH3AStreamIsCountedWhenItIsAdmitted(t *testing.T) {
+	a := testAssembler(Config{})
+	a.Finish = func() {}
+	if got := a.admit(8); got != admitted {
+		t.Fatalf("a first request stream was not admitted: %v", got)
+	}
+	if n := a.inFlight.Load(); n != 1 {
+		t.Fatalf("admit let go of its lock with %d streams in flight, want 1: a drain deciding then finds nothing and finishes over the stream", n)
+	}
+	if _, idle := a.beginDrain(); idle {
+		t.Error("the drain finished the connection over an admitted stream")
+	}
+}
+
+// A client that has opened the last request stream QUIC allows, 2^62−4,
+// leaves no next identifier: the GOAWAY names that one, a varint, rather
+// than 2^62, which none carries.
+func TestH3DrainAfterTheLastStreamIdentifierStaysAVarint(t *testing.T) {
+	a := testAssembler(Config{})
+	if got := a.admit(h3MaxServerGoAway); got != admitted {
+		t.Fatalf("admit(2^62-4) = %v, want admitted", got)
+	}
+	from, _ := a.beginDrain()
+	if from > 1<<62-1 {
+		t.Errorf("the GOAWAY would carry %d, past the largest varint", from)
+	}
+}
+
+// Once a drain has found nothing in flight and finished the connection, a
+// request stream below the GOAWAY's identifier that arrives late — streams
+// arrive in any order, 8 before 4 here — is rejected REQUEST_REJECTED, as
+// §5.2 lets a server reject requests below the identifier it announced. It
+// was admitted, being below the identifier, into a connection already
+// closing: served, then cut.
+func TestH3AStreamArrivingAfterTheDrainFinishedIsRejected(t *testing.T) {
+	a := testAssembler(Config{})
+	a.Finish = func() {}
+	head := h3Request("GET", "/x")
+	if _, _, _, err := a.Frames([]quic.Frame{streamFrame(8, head, false)}); err != nil {
+		t.Fatal(err)
+	}
+	a.retire() // stream 8 leaves: nothing is in flight
+	if from, idle := a.beginDrain(); from != 12 || !idle {
+		t.Fatalf("the drain decided GOAWAY(%d), idle %v; want GOAWAY(12) with nothing in flight", from, idle)
+	}
+	batch, _, failed, err := a.Frames([]quic.Frame{streamFrame(4, head, true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.Len() != 0 || len(failed) != 1 || failed[0].StreamID != 4 || failed[0].Code != h3RequestRejected {
+		t.Errorf("stream 4 after the drain finished: %d requests delivered, refusals %+v; want it rejected REQUEST_REJECTED", batch.Len(), failed)
+	}
+	if n := a.inFlight.Load(); n != 0 {
+		t.Errorf("%d request streams in flight in a finished connection", n)
+	}
+}
+
+// A streamed body's first delivery may carry the head and the body's start
+// together, as large as the stream window. It was held, before the head was
+// even parsed, to the raw bound of a whole body (MaxBodyBytes,
+// MaxHeaderBytes and the frame slack) and refused EXCESSIVE_LOAD:
+// TestH3StreamedUploadsInParallel lost an upload so under a loaded
+// check.sh (2026-10-28), when the transport delivered more than the bound
+// before the reader ran. Bounded after drain, on what stays in the buffer,
+// the request streams.
+func TestH3AStreamedBodyMayArriveWithItsHead(t *testing.T) {
+	a := testAssembler(Config{BodyDelivery: BodyStreamed, MaxBodyBytes: 16 << 10, MaxStreamedBodyBytes: 8 << 20})
+	a.CreditConn = func(uint64) {}
+	a.CreditStream = func(uint64, uint64) {}
+	req := h3Request("POST", "/up")
+	for len(req) <= a.rawStreamBound() {
+		req = appendH3Frame(req, h3Data, make([]byte, 16<<10))
+	}
+	batch, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, req, false)})
+	if err != nil || len(failed) != 0 || batch.Len() != 1 {
+		t.Fatalf("a head and %d bytes of streamed body in one delivery (raw bound %d): %d requests, refusals %+v, %v; want the request, its body streaming",
+			len(req), a.rawStreamBound(), batch.Len(), failed, err)
 	}
 }
 
@@ -447,10 +502,10 @@ func TestH3RequestTrailersReachTheHandler(t *testing.T) {
 	if got := r.Get("x-sum"); got != nil {
 		t.Errorf("a trailer field reached the headers as %q", got)
 	}
-	if len(r.Trailers) != 2 ||
-		string(r.Trailers[0].Name) != "x-sum" || string(r.Trailers[0].Value) != "ok" ||
-		string(r.Trailers[1].Name) != "x-sig" || string(r.Trailers[1].Value) != "a b" {
-		t.Errorf("Trailers = %q, want x-sum: ok, x-sig: a b", r.Trailers)
+	if len(r.Trailers()) != 2 ||
+		string(r.Trailers()[0].Name) != "x-sum" || string(r.Trailers()[0].Value) != "ok" ||
+		string(r.Trailers()[1].Name) != "x-sig" || string(r.Trailers()[1].Value) != "a b" {
+		t.Errorf("Trailers = %q, want x-sum: ok, x-sig: a b", r.Trailers())
 	}
 	if len(r.Headers) != cap(r.Headers) {
 		t.Errorf("Headers has room for %d more fields: an append would overwrite the trailers", cap(r.Headers)-len(r.Headers))
@@ -517,6 +572,9 @@ func TestH3FramingFaultsAreConnectionErrors(t *testing.T) {
 		{"a dynamic-table reference", appendH3Frame(nil, h3Headers, []byte{0x00, 0x00, 0x80}), qpackDecompressionFailed},
 		{"a static index past the table", appendH3Frame(nil, h3Headers, []byte{0x00, 0x00, 0xff, 0x7f}), qpackDecompressionFailed},
 		{"a required insert count of one", appendH3Frame(nil, h3Headers, []byte{0x01, 0x00}), qpackDecompressionFailed},
+		// §7.1: a payload that ends before the field §7.2.2 identifies.
+		{"HEADERS with an empty payload", appendH3Frame(nil, h3Headers, nil), h3FrameError},
+		{"trailers with an empty payload", append(append([]byte(nil), head...), appendH3Frame(nil, h3Headers, nil)...), h3FrameError},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			a := testAssembler(Config{})
@@ -1075,5 +1133,78 @@ func TestH3AnnouncedFieldSectionLimitOfZeroIsALimit(t *testing.T) {
 	}
 	if _, err := appendH3Response(nil, res, nil, a.peerMaxFieldSection(), &h3Scratch{}, testDate); err == nil {
 		t.Error("a response was encoded for a peer that announced a field-section limit of zero")
+	}
+}
+
+// RFC 9114 §4.1.1: a client that cancels a request sends RESET_STREAM for
+// its direction and STOP_SENDING for the server's, often in one packet, and
+// the transport hands both up. A cancellation is charged once per stream
+// against the rapid-reset allowance, whatever the order of its two frames:
+// charged once per frame, the allowance countCancel documents (four times
+// MaxConcurrentStreams) was half that for every cancelled request.
+func TestH3ATwoFrameCancellationIsOneCharge(t *testing.T) {
+	reset := quic.Frame{Type: quic.FrameResetStream, StreamID: 0}
+	stop := quic.Frame{Type: quic.FrameStopSending, StreamID: 0}
+	for _, tc := range []struct {
+		name   string
+		head   []byte
+		fin    bool
+		frames [][]quic.Frame
+	}{
+		{"reset then stop, one packet", h3Request("POST", "/u", [2]string{"content-length", "16"}), false, [][]quic.Frame{{reset, stop}}},
+		{"stop then reset, one packet", h3Request("POST", "/u", [2]string{"content-length", "16"}), false, [][]quic.Frame{{stop, reset}}},
+		{"stop then reset, two packets", h3Request("POST", "/u", [2]string{"content-length", "16"}), false, [][]quic.Frame{{stop}, {reset}}},
+		// Complete, so in the handler's hands and out of assembly: the
+		// charge is remembered past the stream's assembly state.
+		{"a complete request, stop then reset", h3Request("GET", "/g"), true, [][]quic.Frame{{stop}, {reset}}},
+		{"a complete request, reset then stop", h3Request("GET", "/g"), true, [][]quic.Frame{{reset}, {stop}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := testAssembler(Config{BodyDelivery: BodyWhole})
+			if _, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, tc.head, tc.fin)}); err != nil || len(failed) != 0 {
+				t.Fatalf("the request's head: %v, failed %v", err, failed)
+			}
+			for _, frames := range tc.frames {
+				if _, _, _, err := a.Frames(frames); err != nil {
+					t.Fatalf("the cancellation: %v", err)
+				}
+			}
+			if a.cancelled != 1 {
+				t.Fatalf("one cancelled request charged %d times, want once", a.cancelled)
+			}
+		})
+	}
+}
+
+// RFC 9114 §4.1, §7.2.3, §7.2.4, §7.2.5, §7.2.6, §7.2.7: SETTINGS, GOAWAY,
+// MAX_PUSH_ID and CANCEL_PUSH belong on the control stream, and a client
+// never sends PUSH_PROMISE; on a request stream each is a connection error
+// of type H3_FRAME_UNEXPECTED, whatever length it declares. Declared over
+// the frame bound, each used to be refused for its size on the stream alone
+// (H3_EXCESSIVE_LOAD): the length was judged before the type. Only the
+// frame header is sent — the refusal is on the declaration.
+func TestH3AMisplacedControlFrameOverTheBoundIsAConnectionError(t *testing.T) {
+	cfg := Config{MaxBodyBytes: 1 << 10, BodyDelivery: BodyWhole}.mustResolve()
+	for _, c := range []struct {
+		name string
+		typ  uint64
+	}{
+		{"SETTINGS", h3Settings},
+		{"GOAWAY", h3GoAway},
+		{"MAX_PUSH_ID", h3MaxPushID},
+		{"CANCEL_PUSH", h3CancelPush},
+		{"PUSH_PROMISE", h3PushPromise},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			a := testAssembler(cfg)
+			frame := varint.Append(nil, c.typ)
+			frame = varint.Append(frame, uint64(cfg.MaxBodyBytes)+1)
+			_, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, frame, false)})
+			ce, ok := errors.AsType[h3ConnectionError](err)
+			if !ok || ce.Code != h3FrameUnexpected {
+				t.Fatalf("a %s frame declaring %d bytes on a request stream gave err=%v, failed=%v; want a connection error of type H3_FRAME_UNEXPECTED (%#x)",
+					c.name, cfg.MaxBodyBytes+1, err, failed, h3FrameUnexpected)
+			}
+		})
 	}
 }

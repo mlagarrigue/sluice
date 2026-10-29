@@ -1,0 +1,25 @@
+name: Question or feedback
+description: A question about using Sluice.go, or what using it taught you — what worked, what got in the way
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The guides may already answer: docs/README.md sorts them by what
+        you want to do. Feedback from using the library, even short, is
+        what a v0 project lacks most: say what you tried and how it went.
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question or your feedback
+    validations:
+      required: true
+  - type: textarea
+    id: building
+    attributes:
+      label: What you are building
+      description: Optional. The shape of the pipeline, the systems it talks to.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Optional. What `go list -m github.com/mlagarrigue/sluice` prints.

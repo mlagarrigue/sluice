@@ -200,3 +200,162 @@ func TestResetStreamResendsNoBlockedFrame(t *testing.T) {
 		t.Fatalf("resent %d STREAM_DATA_BLOCKED for a reset stream", blocked)
 	}
 }
+
+// RFC 9000 §3.3: "A sender MUST NOT send a STREAM or STREAM_DATA_BLOCKED
+// frame for a stream in the 'Reset Sent' state". A writer parked on the
+// stream's credit queues STREAM_DATA_BLOCKED, which waits for the
+// congestion window; the RESET_STREAM leaves outside it. Once the window
+// reopens, the queued frame of the reset stream does not follow.
+func TestNoStreamDataBlockedLeavesAfterTheReset(t *testing.T) {
+	c := newResetReplayConn(t)
+	s, err := c.Stream(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	s.sendQ.max, s.sendQ.sent = 10, 10
+	c.reno().inFlight = c.reno().cwnd // the window shut
+	c.sendBlockedFramesLocked(s)
+	queued := len(c.control)
+	c.mu.Unlock()
+	if queued == 0 {
+		t.Fatal("no STREAM_DATA_BLOCKED queued behind the shut window; the case under test is not reached")
+	}
+	if err := s.Reset(7); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	sp := &c.spaces[spaceApplication]
+	from := len(sp.sent.packets)
+	c.reno().inFlight = 0 // an acknowledgement reopens the window
+	c.flushControlLocked()
+	if _, blocked, _ := framesOfStream(t, sp, from, 0); blocked != 0 {
+		t.Fatalf("%d STREAM_DATA_BLOCKED left after the stream's RESET_STREAM", blocked)
+	}
+}
+
+// §3.3 again, for the periodic re-announcement of §4.1: a stream whose
+// sending part is closed — its FIN sent after a blocked write gave up, so in
+// "Data Sent" and then "Data Recvd" — is not announced as blocked any more,
+// however long it stays in the table.
+func TestNoStreamDataBlockedIsResentForAClosedSendingPart(t *testing.T) {
+	c := newResetReplayConn(t)
+	s, err := c.Stream(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	s.sendQ.max, s.sendQ.sent, s.sendQ.blockedSent = 10, 10, true
+	s.sendClosed = true
+	if _, ok := c.streams[0]; !ok {
+		t.Fatal("the stream is not in the table; the case under test is not reached")
+	}
+	c.control = nil
+	c.resendBlockedFramesLocked(time.Now())
+	sp := &c.spaces[spaceApplication]
+	if _, blocked, _ := framesOfStream(t, sp, 0, 0); blocked != 0 || len(c.control) != 0 {
+		t.Fatalf("STREAM_DATA_BLOCKED announced again for a stream whose sending part is closed (%d sent, %d bytes queued)", blocked, len(c.control))
+	}
+}
+
+// A lost control frame goes again only while what it says still holds (RFC
+// 9000 §3.3, §13.3). Until 2026-10-29 a lost payload went again byte for
+// byte, filtered only for the streams this end had reset: a
+// STREAM_DATA_BLOCKED left from "Data Recvd", which §3.3 forbids, a
+// DATA_BLOCKED or STREAMS_BLOCKED with a limit no longer blocking, a
+// MAX_STREAM_DATA after "Size Known" and a STOP_SENDING after the peer's
+// RESET_STREAM. The same frame whose state still holds goes again.
+func TestALostControlFrameGoesAgainOnlyWhileItHolds(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		frame []byte
+		set   func(c *Conn, s *Stream)
+		stale bool
+	}{
+		{
+			"STREAM_DATA_BLOCKED from Data Recvd", appendFrame(nil, frameStreamDataBlocked, 0, 10),
+			func(c *Conn, s *Stream) { s.sendQ.max, s.sendQ.sent, s.sendClosed, s.dataRecvd = 10, 10, true, true }, true,
+		},
+		{
+			"STREAM_DATA_BLOCKED with credit", appendFrame(nil, frameStreamDataBlocked, 0, 10),
+			func(c *Conn, s *Stream) { s.sendQ.max, s.sendQ.sent = 50, 10 }, true,
+		},
+		{
+			"STREAM_DATA_BLOCKED still blocked", appendFrame(nil, frameStreamDataBlocked, 0, 10),
+			func(c *Conn, s *Stream) { s.sendQ.max, s.sendQ.sent = 10, 10 }, false,
+		},
+		{
+			"DATA_BLOCKED with credit", appendFrame(nil, frameDataBlocked, 1000),
+			func(c *Conn, s *Stream) { c.connSend.max, c.connSend.sent = 5000, 1000 }, true,
+		},
+		{
+			"DATA_BLOCKED at a newer limit", appendFrame(nil, frameDataBlocked, 1000),
+			func(c *Conn, s *Stream) { c.connSend.max, c.connSend.sent = 5000, 5000 }, true,
+		},
+		{
+			"DATA_BLOCKED still blocked", appendFrame(nil, frameDataBlocked, 1000),
+			func(c *Conn, s *Stream) { c.connSend.max, c.connSend.sent = 1000, 1000 }, false,
+		},
+		{
+			"STREAMS_BLOCKED with credit", appendFrame(nil, frameStreamsBlocked, 10),
+			func(c *Conn, s *Stream) { c.openedBidi, c.peerMaxStreamsBidi = 10, 20 }, true,
+		},
+		{
+			"STREAMS_BLOCKED still blocked", appendFrame(nil, frameStreamsBlocked, 10),
+			func(c *Conn, s *Stream) { c.openedBidi, c.peerMaxStreamsBidi = 10, 10 }, false,
+		},
+		{
+			"MAX_STREAM_DATA in Size Known", appendFrame(nil, frameMaxStreamData, 0, 1<<20),
+			func(c *Conn, s *Stream) { s.mu.Lock(); s.fin, s.finAt = true, 3; s.mu.Unlock() }, true,
+		},
+		{
+			"MAX_STREAM_DATA in Recv", appendFrame(nil, frameMaxStreamData, 0, 1<<20),
+			func(c *Conn, s *Stream) {}, false,
+		},
+		{
+			"STOP_SENDING after the peer's reset", appendFrame(nil, FrameStopSending, 0, 7),
+			func(c *Conn, s *Stream) { s.mu.Lock(); s.readReset, s.recvDone = true, true; s.mu.Unlock() }, true,
+		},
+		{
+			"STOP_SENDING in Recv", appendFrame(nil, FrameStopSending, 0, 7),
+			func(c *Conn, s *Stream) {}, false,
+		},
+	} {
+		c := newResetReplayConn(t)
+		s, err := c.Stream(0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, _, err := parseFrame(tc.frame)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.mu.Lock()
+		tc.set(c, s)
+		sp := &c.spaces[spaceApplication]
+		sp.retrans = append(sp.retrans, tc.frame)
+		from := len(sp.sent.packets)
+		c.retransmitLocked()
+		sent := 0
+		for _, p := range sp.sent.packets[from:] {
+			fs, err := parseFrames(nil, p.payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range fs {
+				if f.Type == want.Type {
+					sent++
+				}
+			}
+		}
+		c.mu.Unlock()
+		if tc.stale && sent != 0 {
+			t.Errorf("%s: the lost frame went again (%d)", tc.name, sent)
+		}
+		if !tc.stale && sent != 1 {
+			t.Errorf("%s: the lost frame went again %d times, want once", tc.name, sent)
+		}
+	}
+}

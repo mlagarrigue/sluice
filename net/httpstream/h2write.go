@@ -45,11 +45,12 @@ import (
 // rather than an omission — see ADR 0008.
 //
 // The buffered bodies of every batch the writer holds interleave: a batch is
-// queued whole and the responder moves on to the next without waiting for
-// the wire, so a stream waiting for its window holds nobody else behind it.
-// A streamed body does not interleave with another streamed body: its producer is pulled by the responder, one at a time, and
-// a batch's buffers may not be retained past the call that received them (S14).
-// The ADR records that trade and what would reverse it.
+// queued whole and the responder moves on to the next without waiting for the
+// wire, so a stream waiting for its window holds nobody else behind it. A
+// streamed body does not interleave with another streamed body: its producer is
+// pulled by the responder, one at a time, and a batch's buffers may not be
+// retained past the call that received them (the architecture's S14). The ADR
+// records that trade and what would reverse it.
 
 // errStreamGone reports a stream that ended — reset by the peer, or given up
 // on — while a response for it was still queued. It is not a connection
@@ -179,7 +180,27 @@ type h2Writer struct {
 	connWind int32
 	windows  map[uint32]int32
 	gone     []uint32 // streams forgotten lately, newest last (see forget)
-	initial  int32
+	// ended is the streams whose answer reached END_STREAM and that the
+	// reader still remembers; evicted is the streams the reader forgot
+	// while their answer was still being written. See responded and evict.
+	//
+	// The set costs 5% of consume on BenchmarkH2ConsumeLongConn (a
+	// connection past MaxConcurrentStreams requests, each answered; paired
+	// A/B, ab.sh, SLOWER +4.9% in 2 wins of 19) against a ring of the last
+	// 256 answers, which is cheaper because it forgets. The CPU profile
+	// says where: three hash operations per stream — the insert when its
+	// answer ends (1.7% of the run), the lookup and the delete when the
+	// reader forgets it (2.5%) — and evict's lock (under 1%). That is the price
+	// of an exact set, spread over pieces each under 2%, which is why no
+	// single one can be taken back measurably: one hash instead of two in
+	// evict, the evictions handed over once per frame batch instead of
+	// once per stream, and a sliding bitmap of the recent identifiers
+	// (h2Conn.opened's shape) all measure as noise. The map stays, the
+	// simplest exact set. BenchmarkH2Consume, whose rounds never fill the
+	// reader's memory, sees no difference.
+	ended   map[uint32]struct{}
+	evicted map[uint32]struct{}
+	initial int32
 	// maxFrame is the largest payload a frame leaves with: the peer's
 	// SETTINGS_MAX_FRAME_SIZE, capped by setMaxFrame.
 	maxFrame int
@@ -215,6 +236,8 @@ func newH2Writer(c net.Conn, cfg Config) *h2Writer {
 		cfg:       cfg,
 		done:      make(chan struct{}),
 		windows:   make(map[uint32]int32),
+		ended:     make(map[uint32]struct{}),
+		evicted:   make(map[uint32]struct{}),
 		connWind:  defaultInitialWindow,
 		initial:   defaultInitialWindow,
 		maxFrame:  defaultMaxFrameSize,
@@ -325,6 +348,7 @@ func (w *h2Writer) expire() {
 		}
 		w.settle(j, fmt.Errorf("%w: stream %d", errWriteStalled, j.id))
 		delete(w.windows, j.id)
+		delete(w.evicted, j.id)
 		// CANCEL rather than a code that blames the peer: it granted less
 		// than we wanted, which it is entitled to do, and we are the side
 		// that stopped waiting. A frame this end built cannot fail to frame,
@@ -392,6 +416,7 @@ func (w *h2Writer) fill() []*h2Job {
 				// The stream is over on this side; its window is nobody's to
 				// spend now.
 				delete(w.windows, j.id)
+				w.noteEndedLocked(j.id)
 			}
 			if j.closes && j.resetAfter {
 				// Behind the response's END_STREAM, in the same write. A
@@ -908,10 +933,6 @@ func (w *h2Writer) waitCtrlLocked() error {
 	return w.err
 }
 
-// control32 and appendCtrl32 queue a control frame whose payload is one
-// 32-bit word — RST_STREAM's code, WINDOW_UPDATE's increment — from a stack
-// array: AppendFrame copies the payload into ctrl, so nothing needs the heap
-// slice a per-frame make would cost.
 // reset sends RST_STREAM with code on id, unless the stream was forgotten
 // already — reset by the peer or finished — in which case RFC 9113 §5.1
 // forbids the frame and nothing goes out.
@@ -926,6 +947,10 @@ func (w *h2Writer) reset(id, code uint32) error {
 	return w.controlLocked(h2Frame{Type: frameRSTStream, StreamID: id, Payload: p[:]})
 }
 
+// control32 and appendCtrl32 queue a control frame whose payload is one
+// 32-bit word — RST_STREAM's code, WINDOW_UPDATE's increment — from a stack
+// array: AppendFrame copies the payload into ctrl, so nothing needs the heap
+// slice a per-frame make would cost.
 func (w *h2Writer) control32(typ byte, id, v uint32) error {
 	var p [4]byte
 	be32put(p[:], v)
@@ -958,12 +983,56 @@ func (w *h2Writer) open(id uint32) {
 	}
 }
 
+// responded reports whether id's answer has been written to its END_STREAM.
+// For a stream whose request ended too, that is RFC 9113 §5.1's "closed": the
+// reader asks before it resets a late frame on a half-closed stream. Safe
+// from the read goroutine.
+func (w *h2Writer) responded(id uint32) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_, ok := w.ended[id]
+	return ok
+}
+
+// noteEndedLocked records that id's answer reached END_STREAM, unless the
+// reader has already forgotten the stream (evict). Callers hold w.mu.
+func (w *h2Writer) noteEndedLocked(id uint32) {
+	if _, gone := w.evicted[id]; gone {
+		delete(w.evicted, id)
+		return
+	}
+	w.ended[id] = struct{}{}
+}
+
+// evict is the reader forgetting a retired stream (h2Conn.remember): its
+// END_STREAM, written or to come, is no longer anyone's question. An
+// answer already ended is dropped from ended; one still being written is
+// marked, so that its END_STREAM is not recorded for nobody to clear. A
+// stream with neither — reset, or stalled — leaves nothing behind. So
+// ended holds only streams the reader still knows, open or remembered, and
+// responded is exact for every one of them: a set bounded by the reader's
+// own memory, where a ring of the last 256 answers made a stream answered
+// longer ago than that look half-closed and drew the RST_STREAM §5.1
+// forbids on a closed stream. Safe from the read goroutine.
+func (w *h2Writer) evict(id uint32) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, ok := w.ended[id]; ok {
+		delete(w.ended, id)
+		return
+	}
+	if _, pending := w.windows[id]; pending {
+		w.evicted[id] = struct{}{}
+	}
+}
+
 // forget drops a stream: whatever was queued for it is answered errStreamGone,
 // which is how a peer's RST_STREAM reaches a handler still producing a body.
 func (w *h2Writer) forget(id uint32) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	delete(w.windows, id)
+	delete(w.evicted, id)
 	// Remembered so that a late failure on this stream — a head that cannot
 	// be framed, a producer that panicked — does not send a RST_STREAM to a
 	// stream the peer already closed (RFC 9113 §5.1). A short ring: the

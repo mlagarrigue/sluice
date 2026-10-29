@@ -13,9 +13,9 @@ go test -run='^$' -bench=. ./...    # the comparisons
 
 The root's `go test ./...` does not see this directory, and three tests in the
 root module keep the arrangement honest: `go.mod` must require nothing outside
-the allowlist (`golang.org/x/crypto` and the `golang.org/x/sys` it brings), its
-`go` line must match the oldest version CI builds, and this module must still
-`replace` the root with the working tree rather than a published tag.
+the allowlist (`golang.org/x/crypto`, the `golang.org/x/sys` it brings, and
+`golang.org/x/text`), its `go` line must match the oldest version CI builds,
+and this module must still `replace` the root with the working tree rather than a published tag.
 
 ## Two rules
 
@@ -24,9 +24,9 @@ A nested module is excluded from the root's `./...`, so such an import would
 have to become a real `require` in the root `go.mod` to compile at all — where
 both the CI `deps` job and `TestGoModRequiresOnlyTheAllowlist` catch it.
 
-**Versions are pinned, recorded, and never bumped by a bot.** A figure without
-the version it was measured against is not a claim. Updates are deliberate and
-they re-run the comparison.
+**Versions are pinned and recorded; a bot bumps one only on a security
+advisory.** A figure without the version it was measured against is not a
+claim. A deliberate update re-runs the comparison.
 
 ## What is pinned
 
@@ -35,8 +35,8 @@ they re-run the comparison.
 | `github.com/jackc/pgx/v5` | v5.10.0 |
 | `github.com/lib/pq` | v1.12.3 |
 | `github.com/gin-gonic/gin` | v1.12.0 |
-| `github.com/labstack/echo/v4` | v4.15.4 |
-| `github.com/go-chi/chi/v5` | v5.3.2 |
+| `github.com/labstack/echo/v4` | v4.16.1 |
+| `github.com/go-chi/chi/v5` | v5.4.0 |
 | `github.com/gofiber/fiber/v2` | v2.52.15 |
 
 Six direct dependencies pull **51 modules** of transitive graph. That number is
@@ -120,19 +120,28 @@ Same statuses and same body on every side, asserted by
 `TestWebContendersAgree` before any figure is believed. Each framework is
 written the way its own documentation writes it.
 
-One pinned core, `GOMAXPROCS=1`, three runs of 300 ms:
+One pinned core, `GOMAXPROCS=1`, six runs of 300 ms, median, 2026-10-28,
+go1.26.9:
 
 | | ns/op | B/op | allocs/op |
 |---|---|---|---|
-| `net/http` (no framework) | **1 745** | 1 928 | 21 |
-| `gin` v1.12.0 | 1 770 | 1 864 | 19 |
-| **sluice** | 1 880 | 1 952 | 22 |
-| `echo` v4.15.4 | 1 970 | 1 896 | 21 |
-| `chi` v5.3.2 | 2 075 | 2 584 | 23 |
+| `net/http` (no framework) | **1 677** | 1 928 | 21 |
+| `gin` v1.12.0 | 1 743 | 1 864 | 19 |
+| `echo` v4.16.1 | 1 892 | 1 896 | 21 |
+| **sluice** | 1 998 | 2 032 | 25 |
+| `chi` v5.4.0 | 2 073 | 2 584 | 23 |
 
 Nobody wins by much, which is the honest shape of this comparison: all five are
 doing the same JSON decode and encode, and that is most of the time. sluice
-sits 8% above hand-written `net/http` and between `gin` and `echo`.
+sits 19% above hand-written `net/http`, between `echo` and `chi`. Its four
+allocations more than `net/http` are each something the hand-written handler
+does not do: a body of `null` told apart from an empty one, the document
+encoded whole before the status is committed, a `Content-Length`, and the
+`X-Content-Type-Options: nosniff` every JSON answer carries. A fifth, the
+check that nothing follows the document, now reads one token instead of
+decoding the rest; paired against the allocation it removed (`ab.sh`,
+sixteen rounds), it read +4.5% under one code layout and noise under
+another (9 of 15), which is how the regression gate reads a layout effect.
 
 **The harness was wrong first.** Measured through `httptest.NewRecorder`, all
 five came out within 15% of each other at ~3 400 ns and 8 184 B/op — forty
@@ -156,7 +165,7 @@ keep-alive. This is the row that says how much the table above matters.
 | `fiber` (fasthttp) | 190 µs | **6 720** | **82** |
 
 **Everything is within 8% of everything else.** The in-process table spreads
-those same five frameworks over 18% — 1 745 ns to 2 075 ns — and a loopback
+those same five frameworks over 24% — 1 677 ns to 2 073 ns — and a loopback
 socket costs 175 µs, so the whole spread lands inside the noise of one round
 trip. On a real network it would disappear entirely.
 
@@ -266,9 +275,9 @@ hand-off, and a batch that usually holds one element.
 
 | | per request |
 |---|---|
-| sluice, direct handler | 1 880 ns |
-| sluice through a gateway, **one caller at a time** | 1 140 000 ns |
-| sluice through a gateway, **64 concurrent callers** | ~19 300 ns |
+| sluice, direct handler | 1 998 ns |
+| sluice through a gateway, **one caller at a time** | 1 113 000 ns |
+| sluice through a gateway, **64 concurrent callers** | ~20 500 ns |
 
 **Read the serial figure carefully — it is mostly not the framework.** The
 gateway was configured with `Within: 200µs`, and a lone call waits for that
@@ -287,9 +296,9 @@ the clock rather than the code. Observed under WSL2, where Linux neither sees
 nor controls the host clock; it may differ elsewhere, which is why it is a test
 that reruns rather than a number written into a document.
 
-The mechanism's own cost is what is left: **five more allocations per request**
-(27 against 22) and, under the concurrency it is designed for, ~19 µs per
-request against 1.9 µs direct. Whether that pays is arithmetic this table
+The mechanism's own cost is what is left: **four more allocations per request**
+(29 against 25) and, under the concurrency it is designed for, ~20 µs per
+request against 2.0 µs direct. Whether that pays is arithmetic this table
 cannot finish: it pays when the round trips saved exceed it, and the round trip
 is exactly what has not been measured yet.
 

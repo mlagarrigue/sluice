@@ -1,5 +1,6 @@
 // Package probe counts what flows through the points of a pipeline: how many
-// batches and elements each point has delivered downstream.
+// batches and elements each point has delivered downstream, kept as two
+// running counts per point and nothing else.
 //
 //	var in, out probe.Counter
 //	s := probe.Probe(source, &in)
@@ -8,7 +9,7 @@
 //
 // # What the difference between two probes says
 //
-// The lag between two probes — in.Elems() minus out.Elems(), read at any
+// The lag between two probes — in.Elements() minus out.Elements(), read at any
 // moment by any goroutine — is the number of elements that entered the stage
 // between them and have not come out of it. What that number means depends on
 // whether the stage crosses a goroutine boundary.
@@ -60,8 +61,8 @@ type Counter struct {
 // Batches reports how many batches have been accepted downstream of the probe.
 func (c *Counter) Batches() int64 { return c.batches.Load() }
 
-// Elems reports how many elements have been accepted downstream of the probe.
-func (c *Counter) Elems() int64 { return c.elems.Load() }
+// Elements reports how many elements have been accepted downstream of the probe.
+func (c *Counter) Elements() int64 { return c.elems.Load() }
 
 // Probe counts the batches and elements passing a point in the pipeline. It
 // is a pass-through: the stream it returns yields exactly what s yields, in

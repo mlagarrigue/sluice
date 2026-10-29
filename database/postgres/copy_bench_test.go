@@ -85,7 +85,7 @@ func BenchmarkCopyWriteTuples(b *testing.B) {
 		append(beCommandCompleteBench("COPY 0"), beReadyForQueryBench()...),
 		append(beCommandCompleteBench("COMMIT"), beReadyForQueryBench()...),
 	}, hold: 2, copyDone: make(chan struct{}, 1), release: make(chan struct{})}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	b.Cleanup(func() { _ = conn.Close() })
 
 	cp, err := conn.CopyFrom(b.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)",

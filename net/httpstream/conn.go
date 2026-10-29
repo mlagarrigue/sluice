@@ -44,7 +44,7 @@ func Requests(c net.Conn, cfg Config) sluice.Source[Request] {
 // newRequestReader is Requests with the shutdown's view of the connection attached,
 // which [Serve] has and a caller of Requests does not. cfg is resolved.
 func newRequestReader(c net.Conn, st *connState, cfg Config) sluice.Source[Request] {
-	r := &reader{conn: c, cfg: cfg, state: st}
+	r := &h1Conn{conn: c, cfg: cfg, state: st}
 	r.held, _ = c.(interface{ buffered() bool })
 	return sluice.NewSource(sluice.Stream[Request](r.stream), func() error { return r.err })
 }
@@ -59,7 +59,10 @@ func (c Config) maxBuffer() int {
 	return c.MaxRequestLineBytes + c.MaxHeaderBytes + c.MaxBodyBytes
 }
 
-type reader struct {
+// h1Conn is one HTTP/1.1 connection's state: the socket, the buffer its
+// requests are read from, and whether the last one left its body unread.
+// h2Conn and h3Assembler are the same for HTTP/2 and HTTP/3.
+type h1Conn struct {
 	conn   net.Conn
 	cfg    Config
 	buf    []byte
@@ -112,13 +115,21 @@ type reader struct {
 	// restarting it — see chunkProgress. It indexes buf, and consume keeps
 	// it pointed at the same request as the buffer shifts under it.
 	progress chunkProgress
+	// head is how far the head at the front of buf, short of its blank
+	// line, has been scanned (headScan); consume ends the scan.
+	head headScan
+	// shortParses counts the parses that found the request at the front of
+	// buf short of its end. A head dripped a byte per read is parsed a
+	// couple of times before its blank line arrives, whatever its length;
+	// the tests hold next to that. Raised on the short path only.
+	shortParses int
 
 	// body is the streamed body of the batch just handed over, if it has
 	// one: the next request cannot be read before it has ended.
 	body *bodyStream
 }
 
-func (r *reader) stream(yield func(sluice.Batch[Request]) bool) {
+func (r *h1Conn) stream(yield func(sluice.Batch[Request]) bool) {
 	for {
 		batch, ok := r.next()
 		if !ok {
@@ -129,7 +140,7 @@ func (r *reader) stream(yield func(sluice.Batch[Request]) bool) {
 		}
 		if body := r.body; body != nil {
 			r.body = nil
-			body.closed = true
+			body.closed.Store(true)
 			if !body.done {
 				// Unread or broken, the body still stands between the
 				// connection and its next request: nothing more is read.
@@ -145,7 +156,7 @@ func (r *reader) stream(yield func(sluice.Batch[Request]) bool) {
 // keepAlive reports whether the connection may serve another batch. The last
 // request of the batch decides, since responses go back in order and anything
 // after a Connection: close would have nobody to read it.
-func (r *reader) keepAlive(batch []Request) bool {
+func (r *h1Conn) keepAlive(batch []Request) bool {
 	if len(batch) == 0 || !batch[len(batch)-1].KeepAlive {
 		return false
 	}
@@ -175,7 +186,7 @@ func refusedMethod(err error) []byte {
 }
 
 // next fills the buffer and parses everything complete in it.
-func (r *reader) next() ([]Request, bool) {
+func (r *h1Conn) next() ([]Request, bool) {
 	for {
 		if r.pending > 0 {
 			r.consume(r.pending)
@@ -188,15 +199,30 @@ func (r *reader) next() ([]Request, bool) {
 		}
 		// Parse first: the previous read may have left whole requests behind
 		// the one it completed, which is what pipelining looks like from here.
-		batch, used, err := r.parseBuffered()
-		if err != nil {
-			r.err = err
-			return nil, false
-		}
-		if len(batch) > 0 {
-			r.pending = used
-			r.served += len(batch)
-			return batch, true
+		// An empty buffer has nothing to parse, and a head an earlier read
+		// left short of its blank line is scanned for it, not parsed again
+		// (headPending): parsing it on every read cost the square of its
+		// length for a peer that sends it a byte at a time.
+		// The scan sits here, beside the read, and
+		// not in parseBuffered or parseRequest, which a head whole in its
+		// first read — the common case — reaches with nothing in front: a
+		// check there measured +3% to +29% on BenchmarkReadPipelined.
+		if r.n > 0 && !headStillShort(r.buf[:r.n], &r.cfg, &r.head) {
+			batch, used, err := r.parseBuffered()
+			if err != nil {
+				r.err = err
+				return nil, false
+			}
+			if len(batch) > 0 {
+				r.pending = used
+				r.served += len(batch)
+				return batch, true
+			}
+			// Nothing taken: the front of the buffer is a request short of
+			// its end, and if that is its head, how far it holds no blank
+			// line.
+			r.shortParses++
+			noteShortHead(r.buf[:r.n], &r.cfg, &r.progress, &r.head)
 		}
 		if err := r.fill(); err != nil {
 			r.err = err
@@ -207,7 +233,7 @@ func (r *reader) next() ([]Request, bool) {
 
 // parseBuffered takes as many complete requests as the buffer holds, stopping
 // at the batch bound.
-func (r *reader) parseBuffered() (batch []Request, used int, err error) {
+func (r *h1Conn) parseBuffered() (batch []Request, used int, err error) {
 	r.batch, r.headers, r.bounds = r.batch[:0], r.headers[:0], r.bounds[:0]
 	// A batch may not serve more than the connection has left, and it may
 	// not carry a request beyond one that already said Connection: close —
@@ -319,14 +345,14 @@ func (r *reader) parseBuffered() (batch []Request, used int, err error) {
 	for i, b := range r.bounds {
 		r.batch[i].Headers = r.headers[b[0]:b[1]:b[1]]
 		if b[2] > b[1] {
-			r.batch[i].Trailers = r.headers[b[1]:b[2]:b[2]]
+			r.batch[i].trailers = r.headers[b[1]:b[2]:b[2]]
 		}
 	}
 	return r.batch, used, nil
 }
 
 // fill reads once, growing the buffer toward the ceiling but never past it.
-func (r *reader) fill() error {
+func (r *h1Conn) fill() error {
 	limit := r.cfg.maxBuffer()
 	if r.n >= limit {
 		// The buffer is full and nothing in it parsed, so the request at its
@@ -409,7 +435,7 @@ func (r *reader) fill() error {
 // waiting for this before it sends the body, and this package is waiting for
 // the body — both sides blocking would be a deadlock broken only by the read
 // deadline, well after RFC 9110 §10.1.1 says to send the interim response.
-func (r *reader) write100Continue() error {
+func (r *h1Conn) write100Continue() error {
 	if err := r.conn.SetWriteDeadline(time.Now().Add(r.cfg.WriteTimeout)); err != nil {
 		return err
 	}
@@ -418,9 +444,10 @@ func (r *reader) write100Continue() error {
 }
 
 // consume drops what was parsed, keeping the tail that has not been.
-func (r *reader) consume(used int) {
+func (r *h1Conn) consume(used int) {
 	copy(r.buf, r.buf[used:r.n])
 	r.n -= used
+	r.head.n = 0
 	// The pending request's saved walk indexes the buffer; it shifted down
 	// with everything else. It cannot sit inside what was consumed — that
 	// was whole requests, and a whole request clears its progress.

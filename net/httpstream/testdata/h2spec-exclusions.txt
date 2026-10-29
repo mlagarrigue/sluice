@@ -3,7 +3,9 @@
 # runs the suite in clear text and behind TLS; an entry applies to both
 # unless it starts with "clear:" or "tls:". Every entry names the RFC
 # passage and the reason; an entry that starts passing fails the script so
-# the list cannot go stale.
+# the list cannot go stale. One prefix is not a mode: "random:" marks a
+# case whose outcome follows the order in which two of h2spec's writes
+# reach the server, which the script accepts either way.
 #
 # h2spec v2.6.0 encodes RFC 7540. RFC 9113 obsoletes it: it dropped the
 # self-dependency rule (5.3.1/1, 5.3.1/2) and the two "closed" cases below
@@ -24,20 +26,39 @@ http2/3.5/2
 # any other type of frame on a closed stream as a connection error".
 # RFC 7540 made the stream error mandatory; this server takes the other
 # branch of the MAY and tolerates the frame for a while, because the
-# RST_STREAM and the DATA may have crossed on the wire (h2conn.go, retire).
+# RST_STREAM and the DATA may have crossed on the wire (h2read.go, retire).
 http2/5.1/8
 http2/5.1/9
 
-# RFC 9113 §5.1, "closed": same MAY. The case closes a stream by
-# END_STREAM both ways and sends HEADERS again; this server answers with a
-# stream error STREAM_CLOSED (RST_STREAM) rather than the connection error
-# RFC 7540 required. One misbehaving stream costs that stream, and it is
-# charged against the rapid-reset allowance like any other reset.
+# RFC 9113 §5.1, "closed": same MAY. The cases close a stream by
+# END_STREAM both ways and send DATA (5.1/11) or HEADERS (5.1/12) again;
+# this server counts the DATA against the connection window, decodes the
+# HEADERS block for the HPACK table, and drops either, sending nothing —
+# §5.1 forbids any frame but PRIORITY on a closed stream — rather than the
+# connection error RFC 7540 required (h2read.go, data and reset; h2write.go,
+# responded; TestH2NoResetOnAStreamClosedByBothEndStreams).
+http2/5.1/11
 http2/5.1/12
 
 # RFC 9113 §5.3.2 deprecates the priority scheme and §6.2/§6.3 no longer
 # say that a stream cannot depend on itself: the dependency fields are
-# skipped, unread (h2conn.go, headers; frame, PRIORITY). ADR 0008 on
+# skipped, unread (h2read.go, headers; frame, PRIORITY). ADR 0008 on
 # the connection records that RFC 9218 is not implemented either.
 http2/5.3.1/1
 http2/5.3.1/2
+
+# RFC 9113 §5.1, "half-closed (remote)" (5.1/5, 5.1/6), §6.1 (6.1/2) and
+# §6.3 (6.3/2): h2spec sends a request with END_STREAM, then a DATA, a
+# HEADERS or a PRIORITY of the wrong length on the same stream, in a second
+# write. When both writes reach the server in one read, the stream is still
+# half-closed and the server answers STREAM_CLOSED or FRAME_SIZE_ERROR, as
+# h2spec wants. When the second comes later, the response has already gone
+# out with END_STREAM, the stream is closed both ways, and §5.1 forbids any
+# frame but PRIORITY on it: the server says nothing (h2write.go, responded),
+# and h2spec reads the response's DATA first. Red on CI on 2026-10-28: 5.1/6
+# twice and 6.3/2 once in ten runs, 5.1/5 once (run 40695068915), 6.1/2 once
+# (run 40698994351); green in six local runs.
+random:http2/5.1/5
+random:http2/5.1/6
+random:http2/6.1/2
+random:http2/6.3/2

@@ -11,7 +11,7 @@
 // streamed HTTP/2 response — the one path whose flow control is pulled a
 // batch at a time — crosses a wire a real client reads.
 //
-// With -tls it serves behind the TLS configuration docs/guide/experimental.md
+// With -tls it serves behind the TLS configuration docs/guide/deployments.md
 // recommends — TLS 1.2 floor, AEAD suites, ALPN h2 then http/1.1 — on a
 // certificate it signs for itself at start-up, so that the clients above
 // also exercise ALPN, the way a browser reaches HTTP/2.
@@ -128,7 +128,7 @@ func serveH3(listen string) {
 	}
 }
 
-// tlsConfig is the configuration docs/guide/experimental.md recommends,
+// tlsConfig is the configuration docs/guide/deployments.md recommends,
 // verbatim, on a throwaway certificate: the script's clients skip
 // verification, and what is under test is the handshake's outcome — version,
 // suite, ALPN — not the trust chain.
@@ -164,9 +164,9 @@ func tlsConfig() *tls.Config {
 }
 
 // handle answers each request with its target, /stream with a streamed
-// body, /trailers with the same body and a trailer field after it, and
-// /echo with the request's own body: one response per request, in order, as
-// every httpstream handler.
+// body, /trailers with the same body and a trailer field after it, /echo
+// with the request's own body, and /slow with a body that takes two
+// seconds: one response per request, in order, as every httpstream handler.
 func handle(_ context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 	out := make([]httpstream.Response, 0, b.Len())
 	for i := range b.Items {
@@ -188,6 +188,9 @@ func handle(_ context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[
 			// only as a copy.
 			out = append(out, httpstream.Response{Status: 200, Body: append([]byte(nil), r.Body...)})
 			continue
+		case "/slow":
+			out = append(out, httpstream.Response{Status: 200, Stream: slow})
+			continue
 		}
 		out = append(out, httpstream.Response{
 			Status: 200,
@@ -199,6 +202,17 @@ func handle(_ context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[
 
 // checksum is the trailer /trailers sends after its body.
 var checksum = []httpstream.Header{{Name: []byte("x-checksum"), Value: []byte("three batches")}}
+
+// slow yields a line, waits two seconds and yields another: a response
+// still in flight when scripts/interop-proxy.sh stops the server, which a
+// graceful stop finishes.
+func slow(yield func(sluice.Batch[[]byte]) bool) {
+	if !yield(sluice.Batch[[]byte]{Items: [][]byte{[]byte("slow 1\n")}}) {
+		return
+	}
+	time.Sleep(2 * time.Second)
+	yield(sluice.Batch[[]byte]{Items: [][]byte{[]byte("slow 2\n")}})
+}
 
 // streamed yields three batches of one line each. The client sees the
 // concatenation; what the transport sees is three pulls, each framed when

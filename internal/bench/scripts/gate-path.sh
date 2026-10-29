@@ -62,8 +62,17 @@ GATED='BenchmarkTransferClean$|BenchmarkTransferLoss1pct$|BenchmarkTransferBurst
 # The same rule per controller: a name whose median does not hold within 5%
 # of itself on an identical tree under that controller leaves its gate, and
 # only its gate. Measured 2026-10-16, eight rounds each: Reno 0.978-1.012,
-# CUBIC 0.991-1.011, BBR 0.990-1.013: every controller keeps the eight
-# names, and the list of those it leaves out is empty today.
+# CUBIC 0.991-1.011, BBR 0.990-1.013: every controller kept the eight names.
+#
+# UNSTABLE lists, per controller, a name this rule takes out; none today.
+# Reno's Bottleneck was out from 2026-10-28 to the same day's evening: the
+# transfer was bimodal (86 of 160 in 824-875 ms, 74 in 950-1026), passes of
+# eight read 0.927 to 1.159, and no bound short of 20% held it. Traced: the
+# slow start's one loss event halved a window of ~160 kB or ~230 kB
+# depending on which round overflowed the five-millisecond buffer, under a
+# slow-start pacing of 2.5 times the window; at twice the window
+# (newReno.pacingRate), 80 transfers of 80 within 816-856 ms, so no two
+# medians differ by more than 4.8%, and the name is back under 6%.
 UNSTABLE=''
 GATED="$(tr '|' '\n' <<<"$GATED" | grep -vxF -f <(tr '|' '\n' <<<"$UNSTABLE") | paste -sd'|')"
 
@@ -107,21 +116,11 @@ PATHEFFECT="${PATHEFFECT:-0.06}"
 # window halved leaves TwoFlows at 1.018 and turns the job red four times
 # over on the rows that keep 6% — Clean 1.094, RTT80 1.109, BurstLoss 1.080,
 # Loss1pct 1.076 — while the restored tree passes.
-# Reno reads Bottleneck the same way, and it took a commit that cannot have
-# regressed anything to show it: 3f05f83, whose whole diff is two workflow
-# files, read 1.093 and then — rerun, same binaries, same base — 1.064,
-# while the seven other names sat within 0.994-1.004 in both passes
-# (2026-10-25). Two concordant reds on an identical tree is the same
-# bimodality CUBIC's campaign traced to where HyStart++ exits, on the same
-# benchmark; the band is widened on that evidence and on that campaign's 160
-# transfers, without a new one under Reno, which is what this comment says
-# so the next reader does not take it for measured here. Nothing is lost:
-# the seven other names keep 6% under Reno, and the injection above reddens
-# them, not this one.
+# Reno read Bottleneck as bimodal too, and its cause was traced and removed
+# (UNSTABLE, above): Reno keeps 6% on all eight names.
 case "$CC" in
   cubic) WIDE='BenchmarkTransferBottleneck$|BenchmarkTransferTwoFlows$' ;;
   bbr) WIDE='BenchmarkTransferTwoFlows$' ;;
-  reno) WIDE='BenchmarkTransferBottleneck$' ;;
   *) WIDE='' ;;
 esac
 WIDEEFFECT="${WIDEEFFECT:-0.10}"

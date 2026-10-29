@@ -1,7 +1,7 @@
 # ADR 0018 — Zero is the safe default, the bound is mandatory
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-10-21, 2026-10-22 (`MaxConnsPerIP` and `LingerTimeout` in the lists, held to the code by a test), 2026-10-23 (`MaxStreamedBodyBytes` in the HTTP/1.1 list, then in an HTTP/1.1 and HTTP/2 list, out of the lists once HTTP/3 streams), 2026-10-24 (a zero that is not a size: `BodyDelivery`, and why the field was split)
+- **Revised:** 2026-10-28 (written in the present tense; the rule's reader across every configuration); 4 earlier, from 2026-10-21, in its `git log`
 - **Theme:** httpstream
 
 ## Problem
@@ -47,6 +47,12 @@ never removed.**
    return an error naming the field, the value and what zero would have
    meant, all errors joined (`errors.Join`).
 
+   The rule holds for every configuration the module exports:
+   `TestConfigZeroValuesAreNamed` reads each numeric field and requires its
+   comment to say what its zero is worth, or that it is required; the
+   fields whose zero is the protocol's own value (QUIC's transport
+   parameters) are named in the test.
+
    A default may depend on another field: `LingerTimeout` at zero is one
    second, or `ReadTimeout` if shorter; `MaxStreamedBodyBytes` at zero is
    `MaxBodyBytes`; a value set is kept as is. There is
@@ -57,11 +63,10 @@ never removed.**
    value, `BodyStreamed`, is the default form a request body arrives in,
    and `BodyWhole` the other; a value that names neither is refused like
    any other out of range. One field cannot carry both a switch and a
-   bound once the default inverts: `MaxStreamedBodyBytes` used to mean
-   "stream, and here is the bound", so its zero had to mean "do not
-   stream" — and a default that streams would have left no value for "hold
-   it whole". The field was therefore split rather than reinterpreted, and
-   each half has a zero of its own.
+   bound when the default streams: a `MaxStreamedBodyBytes` meaning
+   "stream, and here is the bound" would need its zero to mean "do not
+   stream", leaving no value for the default. So the switch and the bound
+   are two fields, each with a zero of its own.
 
 2. **The bound is mandatory.** No field removes a bound by its absence.
    The exceptions are named: `MaxConns` and `MaxConnsPerIP`, whose zero

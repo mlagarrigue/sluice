@@ -39,9 +39,9 @@ type earlyGate struct {
 	window   time.Duration
 
 	mu sync.Mutex
-	// spent is the ticket identifiers already admitted, each kept for a
-	// window from its admission — at least as long as the ticket itself
-	// stays young enough — and refusing rather than forgetting when full.
+	// spent is the ticket identifiers already admitted, each kept until
+	// the ticket itself is too old (its time of issue plus the window, on
+	// the wall clock) and refusing rather than forgetting when full.
 	spent spentTokens
 }
 
@@ -64,9 +64,23 @@ func (g *earlyGate) ticketExtra(now time.Time) []byte {
 
 // eligible reports whether a resumption whose ticket carries extra may have
 // its 0-RTT accepted at now — a ticket of this instance, young enough, not
-// spent — and returns the ticket's identifier for take. It spends nothing:
-// crypto/tls reports the resumption whether or not the client offers 0-RTT,
-// and a resumption without it must not cost the ticket its 0-RTT.
+// spent, and room in the register — and reserves it: the ticket is spent
+// here, when crypto/tls asks (QUICResumeSession), so that its answer is the
+// right one. A ticket another connection reserved first (a replay racing
+// the original) and a full register (spentTokens.failClosed) both come back
+// as not eligible, and crypto/tls answers without early_data: every refusal
+// is a TLS refusal, after which no 0-RTT packet is read (RFC 9001 §4.6.2).
+// Spent later, in installEarly once the 0-RTT is accepted, the ticket
+// would find a full register or a lost race with early_data already
+// announced, and the connection would keep no key: its 0-RTT packets
+// dropped, which the client sees as loss and resends in 1-RTT after a probe
+// timeout instead of the refusal ADR 0019 promises.
+//
+// crypto/tls asks before it checks the PSK binder and before it knows
+// whether the client offered 0-RTT at all, so a reservation may go unused:
+// release gives it back when the handshake ends without the early keys, or
+// the connection does. The identifier returned is what release takes; a
+// refusal returns none, since the reservation it names is not the caller's.
 func (g *earlyGate) eligible(extra [][]byte, now time.Time) ([]byte, bool) {
 	for _, e := range extra {
 		if len(e) != earlyTicketLen || !bytes.HasPrefix(e, earlyTicketMagic) {
@@ -77,24 +91,41 @@ func (g *earlyGate) eligible(extra [][]byte, now time.Time) ([]byte, bool) {
 			return nil, false
 		}
 		issued := time.Unix(0, int64(binary.BigEndian.Uint64(e[32:]))) //nolint:gosec // G115: written by ticketExtra from a positive time
-		if age := now.Sub(issued); age < 0 || age >= g.window {
+		// One clock for the age and for the spent entry: the wall clock,
+		// the ticket's own, since its time of issue must survive a
+		// restart. An entry timed on the monotonic reading time.Now
+		// carries would expire a window after the admission, and a wall
+		// clock stepped back meanwhile would leave the ticket young once
+		// its entry was gone: admitted twice, against RFC 9846 §8. On the
+		// ticket's clock the entry lives exactly as long as the ticket is
+		// young.
+		wall := now.Round(0)
+		if age := wall.Sub(issued); age < 0 || age >= g.window {
 			return nil, false
 		}
 		id := e[16:32]
 		g.mu.Lock()
-		spent := g.spent.has(id, now)
+		ok := g.spent.consumeUntil(id, wall, issued.Add(g.window))
 		g.mu.Unlock()
-		return id, !spent
+		if !ok {
+			// Refused, the identifier is not this connection's to give
+			// back: the entry it names may be another connection's
+			// admission, and a release of it would let the ticket in again.
+			return nil, false
+		}
+		return id, true
 	}
 	return nil, false
 }
 
-// take records the ticket id as spent and reports whether it was not yet:
-// RFC 8446 §8's "at most once" on the instance that issued it. Called when
-// the 0-RTT is actually accepted; of two connections that found the same
-// ticket eligible — a replay racing the original — only one takes it.
-func (g *earlyGate) take(id []byte, now time.Time) bool {
+// release gives back a reservation eligible made that the connection did
+// not use — no 0-RTT offered, or a handshake that failed before the early
+// keys — so that the ticket's 0-RTT, and the register's slot, are intact.
+// RFC 9846 §8's "at most once" holds: a 0-RTT handshake with this ticket
+// was never accepted here. Nothing happens for a ticket whose 0-RTT was
+// accepted (installEarly), or for one released already.
+func (g *earlyGate) release(id []byte) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.spent.consume(id, now)
+	g.spent.forget(id)
 }

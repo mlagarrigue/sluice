@@ -20,8 +20,8 @@ func TestProbeCounts(t *testing.T) {
 	if c.Batches() != 3 {
 		t.Errorf("Batches() = %d, want 3", c.Batches())
 	}
-	if c.Elems() != 7 {
-		t.Errorf("Elems() = %d, want 7", c.Elems())
+	if c.Elements() != 7 {
+		t.Errorf("Elements() = %d, want 7", c.Elements())
 	}
 }
 
@@ -37,8 +37,8 @@ func TestProbeCountsAcceptedOnly(t *testing.T) {
 	if c.Batches() != 2 {
 		t.Errorf("Batches() = %d, want 2 — the refused batch must not count", c.Batches())
 	}
-	if c.Elems() != 4 {
-		t.Errorf("Elems() = %d, want 4", c.Elems())
+	if c.Elements() != 4 {
+		t.Errorf("Elements() = %d, want 4", c.Elements())
 	}
 }
 
@@ -49,8 +49,8 @@ func TestProbeCountsEmptyBatches(t *testing.T) {
 	var c Counter
 	filtered := sluice.Filter(sluice.Of([]int{1, 2, 3, 4}, 2), func(int) bool { return false })
 	sluice.Collect(Probe(filtered, &c))
-	if c.Batches() != 2 || c.Elems() != 0 {
-		t.Errorf("Batches, Elems = %d, %d, want 2, 0", c.Batches(), c.Elems())
+	if c.Batches() != 2 || c.Elements() != 0 {
+		t.Errorf("Batches, Elements = %d, %d, want 2, 0", c.Batches(), c.Elements())
 	}
 }
 
@@ -67,7 +67,7 @@ func TestProbeConcurrentReads(t *testing.T) {
 				return
 			default:
 				_ = c.Batches()
-				_ = c.Elems()
+				_ = c.Elements()
 			}
 		}
 	})
@@ -76,8 +76,8 @@ func TestProbeConcurrentReads(t *testing.T) {
 	close(done)
 	wg.Wait()
 
-	if c.Elems() != 1<<12 {
-		t.Errorf("Elems() = %d, want %d", c.Elems(), 1<<12)
+	if c.Elements() != 1<<12 {
+		t.Errorf("Elements() = %d, want %d", c.Elements(), 1<<12)
 	}
 }
 

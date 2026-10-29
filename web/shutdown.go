@@ -69,6 +69,15 @@ type Server interface {
 // of the process, which is worse than closing under a request that was not
 // going to finish anyway.
 //
+// ctx also bounds every closer that stops the same way, by a
+// Shutdown(context.Context) error method, as
+// [github.com/mlagarrigue/sluice/gateway.Gateway] has: such a closer is shut
+// down under ctx rather than closed. A gateway whose pipeline sits in a call
+// to a back end that never answers would otherwise keep its Close waiting,
+// and the closer after it — the connection whose close is what releases
+// that pipeline — would never run. A closer with Close alone is run to its
+// return; ctx does not bound it.
+//
 // The closers are **always** run, and their failures are joined with the
 // server's. A shutdown that abandons half its cleanup because the first step
 // timed out is the shape of bug this function exists to remove.
@@ -92,7 +101,11 @@ func Shutdown(ctx context.Context, srv Server, closers ...io.Closer) error {
 		if c == nil {
 			continue
 		}
-		if err := c.Close(); err != nil {
+		stop := c.Close
+		if s, ok := c.(Server); ok {
+			stop = func() error { return s.Shutdown(ctx) }
+		}
+		if err := stop(); err != nil {
 			errs = append(errs, fmt.Errorf("closing %d: %w", i, err))
 		}
 	}
@@ -355,26 +368,35 @@ func serve(ctx context.Context, srv *http.Server, grace time.Duration, listen fu
 		listenErr <- err
 	}()
 
-	select {
-	case err := <-listenErr:
-		// The listener failed before anything asked it to stop — a port in
-		// use, a permission refused. The closers still run: whatever was
-		// opened before the listen attempt is open now.
-		return errors.Join(err, Shutdown(context.Background(), srv, closers...))
-	case <-ctx.Done():
-	}
-
-	drain := context.Background()
+	// The drain is bounded by grace, counted from the moment it starts, on
+	// both ways out: a listener that fails after it has served still has
+	// connections to wait for, and an unbounded wait is what grace exists to
+	// prevent.
 	if grace == 0 {
 		grace = DefaultShutdownGrace
 	}
-	if grace > 0 {
-		var cancel context.CancelFunc
-		drain, cancel = context.WithTimeout(drain, grace)
-		defer cancel()
+	drain := func() (context.Context, context.CancelFunc) {
+		if grace > 0 {
+			return context.WithTimeout(context.Background(), grace)
+		}
+		return context.Background(), func() {}
 	}
+
+	select {
+	case err := <-listenErr:
+		// The listener failed before anything asked it to stop — a port in
+		// use, a permission refused, an accept that broke. The closers still
+		// run: whatever was opened before is open now.
+		dctx, cancel := drain()
+		defer cancel()
+		return errors.Join(err, Shutdown(dctx, srv, closers...))
+	case <-ctx.Done():
+	}
+
+	dctx, cancel := drain()
+	defer cancel()
 	// The shutdown error and the listener's, joined: ListenAndServe has
 	// already returned or is about to, and losing its reason because the drain
 	// also had one is how a port-in-use turns into a mysterious timeout.
-	return errors.Join(Shutdown(drain, srv, closers...), <-listenErr)
+	return errors.Join(Shutdown(dctx, srv, closers...), <-listenErr)
 }

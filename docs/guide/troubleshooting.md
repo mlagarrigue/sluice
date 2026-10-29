@@ -15,21 +15,23 @@ Three habits first:
   protocol position is lost (PostgreSQL, HTTP), the only safe move is to
   close that connection and open another.
 
-> **In plain terms: a sentinel.** A sentinel is an exported error value,
+> **In plain words: a sentinel.** A sentinel is an exported error value,
 > always the same one (`ErrOverflow`), that code compares against rather
 > than reading its message. `errors.Is(err, sluice.ErrOverflow)` finds it
 > even wrapped inside another error that adds context; comparing the text
 > breaks the day the message changes a word.
 
-To find which stage of a pipeline makes the others wait, rather than which
-one failed, see the `probe` package.
+To see where elements stop in a pipeline — a stage that filters or
+accumulates — or which side of a `parallel.Async` waits for the other, see
+the `probe` package. Which stage costs the time on a single goroutine is a
+question for a CPU profile: no counter can answer it.
 
 ## The core: `sluice`, `parallel`
 
 | Error | When | What to do |
 |---|---|---|
 | `sluice.ErrOverflow` | A bounded operator reached its bound under the `Fail` policy. Panicked; `Try` returns it. | Raise the bound, or choose a policy that drops (`DropOldest`, `DropNewest`) knowingly. |
-| `sluice.ErrSplitStalled` | A `Split` branch cannot advance because a sibling holds a batch it has not drained. A wiring mistake. | Read the branches together (one goroutine each, or in lock-step); see the operators guide, "Split". |
+| `sluice.ErrSplitStalled` | A `Split` branch cannot advance because a sibling holds a batch it has not drained. A wiring mistake. | Read the branches in turn, on the same goroutine (`iter.Pull` on each, then a `next` on one, a `next` on the other); two goroutines make a data race. See the operators guide, "Split". |
 | `sluice.ErrSplitDrained` | A `Split` branch was read after a sibling had drained the source, which is read once. | Attach every branch before reading any. |
 | `sluice.ErrUnsorted` | An operator that needs ordered input saw its key go backwards (`join.Merge`, `join.Interval`), or `window.Tumbling` under `LateFail` saw an element older than its open window. | Sort the input, or use an operator that does not need order (`join.StreamTable`); for a window, pass `window.LateDrop` to step over a late element instead. |
 | `parallel.ErrState` | The state factory of `OrderedWithState` failed. Panicked, like `ErrOverflow`. | Fix what the factory needs (a connection, a file); `Try` gives you its error. |
@@ -41,7 +43,7 @@ one failed, see the `probe` package.
 | `postgres.ErrAuth` | The authentication exchange was refused by this client (a server signature that does not verify, a nonce or an iteration count outside what a client should accept). Distinct from a wrong password, which the server reports as an `*Error`. | Check the server's identity and TLS; the message names the step. |
 | `postgres.ErrAuthUnsupported` | The server asked for a method this package does not implement (md5, for one). The error names it. | Use SCRAM-SHA-256 for the role, or cleartext over TLS with `Config.AllowCleartextPassword`. |
 | `postgres.ErrProtocolVersion` | The server settled on a protocol version below `Config.MinProtocol`. | Lower `MinProtocol`, or upgrade the server. |
-| `postgres.ErrProtocol` | A backend message could not be parsed. The connection is finished. | Close and reconnect; if it repeats, report it with the server version. |
+| `postgres.ErrProtocol` | A backend message could not be parsed, arrived where none of its kind belongs, or, before the answer to LISTEN, came with more notifications than are kept. The connection is finished. | Close and reconnect; if it repeats, report it with the server version. |
 | `postgres.ErrMessageTooLarge` | A message exceeded `Config.MaxMessage`. The connection is finished. | Raise `Config.MaxMessage` if the value is legitimate (a large `bytea`, a long text). |
 | `postgres.ErrMalformedMessage` | A message length field cannot be right. The connection is finished. | Close and reconnect; check what sits between you and the server. |
 | `postgres.ErrConnBroken` | The connection's position in the protocol is no longer known: a malformed message, a failed write, a read stopped mid-message — or the server closed it after saying why ("connection closed by the server"; `errors.As` finds its `*postgres.Error`: 57P01 terminated, 57P05 idle session, 25P03 idle in transaction). | Close it and open another; nothing more can be sent on it. If the server closed it on a timeout, raise that timeout or keep the session busy. |
@@ -79,7 +81,7 @@ one failed, see the `probe` package.
 | `httpstream.ErrMalformed` | A request this package will not parse. The server answers with a status and closes. | Fix the client; a request whose framing is in doubt cannot be resynchronised. |
 | `httpstream.ErrTooLarge` | A request past one of `Config`'s bounds. The server answers it (413, or 414 for the request line, 431 for headers) before any handler runs. | Raise the matching `Config` field if the size is legitimate; for large uploads, raise `Config.MaxStreamedBodyBytes`, which bounds a body that streams. |
 | `httpstream.ErrHeaderInjection` | A response header carries CR, LF or another control byte; it is not written. | Remove the control bytes from the value your handler sets. |
-| `httpstream.ErrHPACK` | An HTTP/2 header block this package will not decode. The connection ends. | Fix the client's HTTP/2 encoder; one rule set per sentinel: HPACK here. |
+| `httpstream.ErrHPACK` | An HTTP/2 header block this package will not decode. The connection ends. | Fix the client's HTTP/2 encoder. |
 | `httpstream.ErrH2Protocol` | An HTTP/2 frame sequence this package will not accept. The connection ends. | Fix the client's HTTP/2 framing. |
 | `httpstream.ErrH3Protocol` | An HTTP/3 frame or request this package will not accept. | Fix the client's HTTP/3 framing. |
 | `httpstream.ErrShutdownForced` | `Config.ShutdownGrace` passed before the requests in flight were answered; returned by `Serve`, `ServeH2Conn`, `ServeH3Conn`. | Raise `ShutdownGrace`, or make handlers honour their context. |

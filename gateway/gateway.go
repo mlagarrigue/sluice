@@ -1,6 +1,6 @@
 // Package gateway turns concurrent request/reply calls into batched stream
 // processing: many goroutines call, one pipeline serves them a batch at a
-// time.
+// time, and each call is held until its reply comes back.
 //
 // It exists for one reason, and the reason is not CPU. A handler that answers
 // one request per database round trip spends its life waiting on the network;
@@ -298,8 +298,10 @@ type Gateway[In, Out any] struct {
 // treat it as the long-lived object it is, one per route or per service, built
 // at startup rather than per request.
 //
-// New panics if pipeline is nil, if Size is not positive, or if Within is
-// not positive.
+// New panics if pipeline is nil, or on any configuration [Config.Validate]
+// refuses: a Size that is not positive, and a Within that is not positive —
+// or, under Eager, one that is not zero, since an eager gateway holds no
+// call for company.
 func New[In, Out any](cfg Config, pipeline func(sluice.Stream[*Call[In, Out]])) *Gateway[In, Out] {
 	if pipeline == nil {
 		panic("gateway: New requires a non-nil pipeline")
@@ -395,12 +397,12 @@ func (g *Gateway[In, Out]) run(pipeline func(sluice.Stream[*Call[In, Out]])) {
 			// No "did they all answer?" sweep here, deliberately. Returning
 			// from yield means the batch was accepted downstream, not that it
 			// was handled: an asynchronous operator — [parallel.Async],
-			// [parallel.Unordered] — returns as soon as a worker has
-			// taken it, with the replies still to come. Checking here would
-			// fail calls the pipeline is about to answer correctly, and the
-			// answer that followed would then panic as a second one. The only
-			// safe moment is after the pipeline returns, and by S6 that is
-			// after every worker it started has stopped.
+			// [parallel.Unordered] — returns as soon as a worker has taken it,
+			// with the replies still to come. Checking here would fail calls
+			// the pipeline is about to answer correctly, and the answer that
+			// followed would then panic as a second one. The only safe moment
+			// is after the pipeline returns, and by the architecture's S6 that
+			// is after every worker it started has stopped.
 			//
 			// A fresh slice per batch, because the batch may now outlive this
 			// call: an asynchronous operator holds it while the loop moves on,
@@ -562,18 +564,29 @@ func (g *Gateway[In, Out]) Do(ctx context.Context, in In) (Out, error) {
 	}
 }
 
-// Close stops the gateway and waits for the pipeline to finish.
+// Shutdown stops the gateway and waits for the pipeline to finish, or for
+// ctx to end, whichever comes first: the contract of
+// [net/http.Server.Shutdown].
 //
 // Calls already accepted are answered — with their result if the pipeline
-// gets to them, with [ErrNoReply] if it does not. Calls submitted after Close
-// fail with [ErrClosed]. Close is idempotent and safe to call from any
-// goroutine.
-func (g *Gateway[In, Out]) Close() error {
+// gets to them, with [ErrNoReply] if it does not. Calls submitted once
+// Shutdown has begun fail with [ErrClosed]. When ctx ends first, Shutdown
+// returns ctx's error and stops waiting, nothing more: the pipeline runs on
+// until it returns, and each call still waiting is released then or when
+// its own ctx ends. That is what lets the caller go on to close the
+// connection a blocked pipeline waits on — the close that unblocks it —
+// which web.Shutdown does with the closers after the gateway. Shutdown is
+// idempotent and safe to call from any goroutine.
+func (g *Gateway[In, Out]) Shutdown(ctx context.Context) error {
 	g.closeOnce.Do(func() {
 		g.closed.Store(true)
 		close(g.closing)
 	})
-	<-g.drained
+	select {
+	case <-g.drained:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	g.sweepIn()
 
 	g.mu.Lock()
@@ -582,4 +595,13 @@ func (g *Gateway[In, Out]) Close() error {
 		return nil // the ordinary end: the pipeline stopped because it was asked to
 	}
 	return g.fatal
+}
+
+// Close is [Gateway.Shutdown] without a deadline: it waits for the pipeline
+// however long that takes. A pipeline inside a call to a back end that never
+// answers keeps Close waiting with it, and the connection whose close would
+// release it is never reached; where that can happen, stop the gateway with
+// Shutdown and a deadline instead, as web.Shutdown does.
+func (g *Gateway[In, Out]) Close() error {
+	return g.Shutdown(context.Background())
 }

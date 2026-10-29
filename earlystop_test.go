@@ -8,10 +8,12 @@ import (
 	"github.com/mlagarrigue/sluice/distinct"
 	"github.com/mlagarrigue/sluice/join"
 	"github.com/mlagarrigue/sluice/parallel"
+	"github.com/mlagarrigue/sluice/probe"
 	"github.com/mlagarrigue/sluice/window"
 )
 
-// S10 — every operator propagates false and lets the generator unwind.
+// The architecture's S10 — every operator propagates false and lets the
+// generator unwind.
 //
 // The specification calls this streaming's problem number one, ahead of
 // performance, and says it is a tested invariant rather than a convention. It
@@ -37,6 +39,10 @@ func TestOperatorsPropagateEarlyStop(t *testing.T) {
 			return sluice.FlatMap(s, func(dst []int, v int) []int { return append(dst, v) })
 		}},
 		{"sluice.Peek", func(s sluice.Stream[int]) sluice.Stream[int] { return sluice.Peek(s, func(int) {}) }},
+		{"sluice.Convert", func(s sluice.Stream[int]) sluice.Stream[int] {
+			return sluice.Convert(s, func(v int) int { return v })
+		}},
+		{"probe.Probe", func(s sluice.Stream[int]) sluice.Stream[int] { return probe.Probe(s, &probe.Counter{}) }},
 		{"sluice.Scan", func(s sluice.Stream[int]) sluice.Stream[int] {
 			return sluice.Scan(s, 0, func(a, v int) int { return a + v })
 		}},

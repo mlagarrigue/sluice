@@ -25,7 +25,7 @@ import (
 // wasted round trip, not a resynchronisation, not a byte.
 func TestQueryRefusesACancelledContextWithoutSpeaking(t *testing.T) {
 	srv := &fakeServer{}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -84,7 +84,7 @@ func TestQueryCancelledBetweenBatchesKeepsTheConnection(t *testing.T) {
 			second,
 			beReadyForQuery(),
 		}}
-		conn := NewConn(srv)
+		conn := NewConn(srv, Config{})
 
 		ctx, cancel := context.WithCancel(t.Context())
 		src := conn.Query(ctx, "SELECT id", nil, QueryConfig{BatchRows: 1})
@@ -160,7 +160,7 @@ func TestQueryCancelledInsideTheLastBatchStillSucceeds(t *testing.T) {
 	script = append(script, beCommandComplete("SELECT 1")...)
 
 	srv := &fakeServer{responses: [][]byte{script, beReadyForQuery()}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	ctx, cancel := context.WithCancel(t.Context())
 	src := conn.Query(ctx, "SELECT id", nil, QueryConfig{BatchRows: 16})
@@ -173,7 +173,7 @@ func TestQueryCancelledInsideTheLastBatchStillSucceeds(t *testing.T) {
 
 func TestCopyFromRefusesACancelledContext(t *testing.T) {
 	srv := &fakeServer{}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -198,7 +198,7 @@ func TestCopyCancelledStillRollsBack(t *testing.T) {
 		append(beErrorResponse("57014", "COPY from stdin failed"), beReadyForQuery()...),
 		append(beCommandComplete("ROLLBACK"), beReadyForQuery()...),
 	}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cp, err := conn.CopyFrom(ctx, "COPY t FROM STDIN WITH (FORMAT BINARY)", CopyConfig{RowsPerTx: 10})
@@ -249,7 +249,7 @@ func TestStartupKeepsTheCancelKey(t *testing.T) {
 // A Conn that never saw a startup exchange has no key, and must say so rather
 // than offer a zero one that cancels backend 0.
 func TestNewConnHasNoCancelKey(t *testing.T) {
-	if conn := NewConn(&fakeServer{}); conn.CancelKey().Known() {
+	if conn := NewConn(&fakeServer{}, Config{}); conn.CancelKey().Known() {
 		t.Error("a Conn from NewConn reports a cancellation key it never received")
 	}
 }
@@ -428,7 +428,7 @@ func newPipeServer(t *testing.T) (*pipeServer, *Conn) {
 			}
 		}
 	}()
-	conn := NewConn(client)
+	conn := NewConn(client, Config{})
 	// Run before the close above: a read that ended the test with its
 	// ReadyForQuery owed leaves the script writing it on a pipe, which waits
 	// for a reader.
@@ -720,6 +720,9 @@ func TestAnUnconfirmedCancellationBreaksTheConnection(t *testing.T) {
 			t.Errorf("conn.Err() = %v, want ErrConnBroken", conn.Err())
 		}
 		attrs := logs.warning(t, testSecret)
+		if msg := logs.recs[0].Message; !strings.Contains(msg, "not confirmed") {
+			t.Errorf("the warning says %q, want it to say the cancellation was not confirmed", msg)
+		}
 		if done := attrs["statement_completed"]; done.Kind() != slog.KindBool || done.Bool() {
 			t.Errorf("statement_completed = %v, want false", done)
 		}
@@ -857,7 +860,7 @@ func TestARecipeReturningTheMainConnectionIsRefused(t *testing.T) {
 // Nothing is armed without a key, a dialer or a context that can end: no
 // goroutine, no dial.
 func TestCancelWatchIsNotArmedWithoutItsThreeInputs(t *testing.T) {
-	conn := NewConn(&fakeServer{})
+	conn := NewConn(&fakeServer{}, Config{})
 	dial := func(context.Context) (io.ReadWriteCloser, error) {
 		t.Error("the recipe was called")
 		return nil, errors.New("called")
@@ -1190,5 +1193,117 @@ func TestReadsOnly(t *testing.T) {
 		if got := readsOnly(sql); got != want {
 			t.Errorf("readsOnly(%q) = %v, want %v", sql, got, want)
 		}
+	}
+}
+
+// A confirmed cancellation followed by silence on the main connection still
+// ends the statement: CancelTimeout after the confirmation, the connection
+// is closed under it, and the call returns the context's error with
+// ErrConnBroken. Until 2026-10-28 the confirmation ended the watch's part,
+// and a server that confirmed and then said nothing held the statement, the
+// connection and its caller for as long as the socket lived.
+func TestAConfirmedCancellationThenSilenceStillEndsTheStatement(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, conn := newPipeServer(t)
+		conn.cancelKey = CancelKey{PID: 1, Secret: testSecret}
+		packets := make(chan []byte, 1)
+		conn.cancelDial = cancelHolding(0, packets) // confirms at once
+		conn.cancelTimeout = 2 * time.Second
+		logs := &recordHandler{}
+		conn.logger = slog.New(logs)
+		go func() { <-srv.read; <-packets }() // and never answers the statement
+
+		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		defer cancel()
+		start := time.Now()
+		res := make(chan error, 1)
+		go func() { res <- conn.Exec(ctx, "CALL slow()") }()
+		var err error
+		select {
+		case err = <-res:
+		case <-time.After(time.Minute):
+			_ = conn.rw.Close()
+			<-res
+			t.Fatal("Exec still blocked a minute after a confirmed cancellation, CancelTimeout 2 s")
+		}
+		if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrConnBroken) {
+			t.Fatalf("Exec returned %v, want the context's error with ErrConnBroken", err)
+		}
+		if took := time.Since(start); took < 2*time.Second || took > 3*time.Second {
+			t.Errorf("Exec returned %v after it began, want CancelTimeout after the confirmation", took)
+		}
+		logs.warning(t, testSecret)
+		if msg := logs.recs[0].Message; !strings.Contains(msg, "did not end the statement") || strings.Contains(msg, "not confirmed") {
+			t.Errorf("the warning says %q, want it to say the confirmed cancellation did not end the statement", msg)
+		}
+	})
+}
+
+// Conn.Exec, every Query, Tx.Pipeline and a Copier's WriteTuples were
+// watched, and the transaction's control statements were not: Begin,
+// Tx.Exec, Tx.Commit, Tx.Savepoint, Tx.Savepoints, Tx.RollbackTo and
+// Tx.Release checked ctx on entry and then read with no watch. Until
+// 2026-10-29 a server that took one of them and never answered held the
+// caller for as long as the socket lived, whatever ctx said — the COMMIT of a
+// batched pipeline included. Each now ends as a watched statement does: the
+// cancellation is sent when ctx ends, and the statement returns ctx's error.
+// Rollback, which takes no ctx, is bounded by CancelTimeout.
+func TestTxControlStatementsEndWithTheirContext(t *testing.T) {
+	begun := append(frame(pgwire.BackendCommandComplete, "BEGIN\x00"), frame(pgwire.BackendReadyForQuery, "T")...)
+	for _, tc := range []struct {
+		name string
+		run  func(ctx context.Context, conn *Conn, tx *Tx) error
+	}{
+		{"Tx.Commit", func(ctx context.Context, _ *Conn, tx *Tx) error { return tx.Commit(ctx) }},
+		{"Tx.Exec", func(ctx context.Context, _ *Conn, tx *Tx) error { return tx.Exec(ctx, "CALL slow()") }},
+		{"Tx.Savepoint", func(ctx context.Context, _ *Conn, tx *Tx) error { return tx.Savepoint(ctx, "sp") }},
+		{"Tx.Savepoints", func(ctx context.Context, _ *Conn, tx *Tx) error { return tx.Savepoints(ctx, "sp1", "sp2") }},
+		{"Tx.RollbackTo", func(ctx context.Context, _ *Conn, tx *Tx) error { return tx.RollbackTo(ctx, "sp") }},
+		{"Tx.Release", func(ctx context.Context, _ *Conn, tx *Tx) error { return tx.Release(ctx, "sp") }},
+		{"Begin", func(ctx context.Context, conn *Conn, _ *Tx) error {
+			_, err := conn.Begin(ctx, TxConfig{})
+			return err
+		}},
+		// Rollback takes no ctx: CancelTimeout stands in for one.
+		{"Tx.Rollback", func(_ context.Context, _ *Conn, tx *Tx) error { return tx.Rollback() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				srv, conn := newPipeServer(t)
+				conn.cancelKey = CancelKey{PID: 1, Secret: testSecret}
+				packets := make(chan []byte, 1)
+				conn.cancelDial = cancelHolding(0, packets) // confirms at once
+				conn.cancelTimeout = time.Second
+
+				var tx *Tx
+				if tc.name != "Begin" {
+					go func() { <-srv.read; srv.write(t, begun) }()
+					var err error
+					if tx, err = conn.Begin(t.Context(), TxConfig{}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				// The server reads the statement (the pipe server drains its
+				// reads) and answers nothing, ever.
+				ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+				defer cancel()
+				res := make(chan error, 1)
+				go func() { res <- tc.run(ctx, conn, tx) }()
+				var err error
+				select {
+				case err = <-res:
+				case <-time.After(time.Minute):
+					// A guard, not a measurement: the ctx ends at 100 ms and
+					// CancelTimeout is a second, so a watched statement is
+					// back long before.
+					_ = conn.rw.Close()
+					<-res
+					t.Fatalf("%s is still blocked a minute after its ctx ended", tc.name)
+				}
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("%s returned %v, want the ctx's error once the cancellation ran its course", tc.name, err)
+				}
+			})
+		})
 	}
 }

@@ -12,10 +12,14 @@
 #                    hash is taken from inside the PSS parameters, so this is
 #                    the one where a client and the server can disagree
 #                    (RFC 5929 §4.1).
-#   rsa-pss-maxsalt  The same with OpenSSL's default salt, the longest that
-#                    fits. crypto/x509 names a PSS signature only when the
-#                    salt is the hash length, so here the client reads the
-#                    hash from the parameters itself.
+#   rsa-pss-maxsalt  The same with the longest salt that fits, asked for by
+#                    name: OpenSSL 3.0 makes it the default, 3.1 and later
+#                    default to the hash length (auto-digestmax), which
+#                    turned this certificate into the rsa-pss one on a
+#                    runner whose OpenSSL moved. crypto/x509 names a PSS
+#                    signature only when the salt is the hash length, so
+#                    here the client reads the hash from the parameters
+#                    itself.
 #   ecdsa            P-256 key, ECDSA with SHA-256.
 #   ed25519          Ed25519 key: a signature with no hash of its own, for
 #                    which RFC 5929 §4.1 defines no binding at all.
@@ -36,7 +40,7 @@ ed25519) key=(-newkey ed25519) sign=() ;;
 # The salt length is the hash length, the only one crypto/x509 names
 # (SHA384-RSAPSS).
 rsa-pss) sign=(-sha384 -sigopt rsa_padding_mode:pss -sigopt rsa_pss_saltlen:digest) ;;
-rsa-pss-maxsalt) sign=(-sha384 -sigopt rsa_padding_mode:pss) ;;
+rsa-pss-maxsalt) sign=(-sha384 -sigopt rsa_padding_mode:pss -sigopt rsa_pss_saltlen:max) ;;
 *)
 	echo "pg-tls.sh: unknown certificate kind $kind" >&2
 	exit 2
@@ -71,6 +75,7 @@ for _ in $(seq 60); do
 			exit 1
 		fi
 		openssl x509 -in "$dir/server.crt" -noout -text | grep -m1 'Signature Algorithm'
+		openssl x509 -in "$dir/server.crt" -noout -text | grep -m1 'Salt Length' || true
 		exit 0
 	fi
 	sleep 1

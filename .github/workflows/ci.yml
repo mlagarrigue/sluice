@@ -58,6 +58,30 @@ jobs:
       - name: Test
         run: go test -race -shuffle=on ./...
 
+      # Two net/quic/udp tests skip on a host that lacks what they need, and
+      # a skip reads like a pass: the udp6 case of the packet-information
+      # test wants a second IPv6 address, the path MTU cache probe an
+      # unprivileged user namespace, which Ubuntu's AppArmor holds back.
+      # The host is given both, and the step refuses their skip.
+      - name: Packet information and the path MTU cache (Linux)
+        shell: bash
+        run: |
+          sudo ip -6 addr add fd00::2/128 dev lo
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          go test -count=1 -v -run '^(TestPacketInfoAnswersFromDestination|TestPathMTUCacheDoesNotRefuseMinimumDatagram)$' ./net/quic/udp/ | tee udp.log
+          if grep -- '--- SKIP' udp.log; then
+            echo "::error::a net/quic/udp test skipped although the host was given what it needs" >&2
+            exit 1
+          fi
+          for name in TestPacketInfoAnswersFromDestination/udp6 TestPathMTUCacheDoesNotRefuseMinimumDatagram; do
+            if ! grep -- "--- PASS: $name " udp.log; then
+              echo "::error::$name did not pass" >&2
+              exit 1
+            fi
+          done
+
       # The per-stage budget is a timing assertion, so it is skipped under
       # -race: the detector instruments every memory access and the measurement
       # would report the instrumentation rather than the code. It keeps the
@@ -161,6 +185,21 @@ jobs:
         run: |
           netsh interface ipv4 add address "Loopback Pseudo-Interface 1" 127.0.0.2 255.0.0.0
           netsh interface ipv6 add address "Loopback Pseudo-Interface 1" fd00::2
+      # The path MTU cache probe wants a host route of MTU 600 toward an
+      # address nobody serves: on macOS that route is where the kernel keeps
+      # the path MTU an ICMP Fragmentation Needed teaches it. Given here, and
+      # the probe's skip refused, as the Linux job does for its namespace.
+      - name: The path MTU cache (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          gw=$(route -n get default | awk '/gateway:/ {print $2}')
+          sudo route -n add -host 198.51.100.5 "$gw" -mtu 600
+          SLUICE_UDP_PMTU_DEST=198.51.100.5 go test -count=1 -v -run '^TestPathMTUCacheDoesNotRefuseMinimumDatagram$' ./net/quic/udp/ | tee udp.log
+          if ! grep -- '--- PASS: TestPathMTUCacheDoesNotRefuseMinimumDatagram ' udp.log; then
+            echo "::error::TestPathMTUCacheDoesNotRefuseMinimumDatagram did not pass" >&2
+            exit 1
+          fi
       - name: Test
         run: go test -race -shuffle=on -v ./net/quic/udp/...
       - name: Test net/quic and net/httpstream
@@ -333,7 +372,7 @@ jobs:
             echo "::error::SCRAM-SHA-256-PLUS did not pass against PostgreSQL $PG_MAJOR over direct TLS" >&2
             exit 1
           fi
-          for name in TestIntegrationProtocolNegotiated TestIntegrationMinProtocolRefusesAnOlderServer TestIntegrationDeclinedProtocolOption; do
+          for name in TestIntegrationProtocolNegotiated TestIntegrationMinProtocolRefusesAnOlderServer TestIntegrationDeclinedProtocolOption TestIntegrationReplicationDeliversTypeAndOrigin; do
             if ! grep -- "--- PASS: $name " test.log; then
               echo "::error::$name did not pass against PostgreSQL $PG_MAJOR" >&2
               exit 1
@@ -483,7 +522,7 @@ jobs:
   # graph) runs sluice's client against a quic-go server and the reverse —
   # handshake, an echo across flow-control windows, a close the peer sees —
   # and quic-go's HTTP/3 client against ServeH3.
-  # The QUIC Interop Runner is its own workflow, run by hand
+  # The QUIC Interop Runner is its own workflow, every Sunday
   # (interop-runner.yml, docs/guide/limits.md).
   interop-quic:
     runs-on: ubuntu-latest
@@ -499,8 +538,24 @@ jobs:
           cache-dependency-path: |
             go.sum
             interop/go.sum
+      # The tests that prove the interop gate refuses a departing pass skip
+      # without jq, and a skip reads like a pass: the job refuses the skip and
+      # wants each of them to pass.
       - name: sluice and quic-go, each side of the handshake
-        run: go test -race -count=1 ./...
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -race -count=1 -v ./... | tee test.log
+          if grep -F 'jq is not installed' test.log; then
+            echo "::error::the interop gate's tests skipped: jq is not installed" >&2
+            exit 1
+          fi
+          for name in TestExpectedResultsGuard TestExpectedResultsGuardTakesRandom TestPartialPassIsRefused; do
+            if ! grep -- "--- PASS: $name " test.log; then
+              echo "::error::$name did not pass" >&2
+              exit 1
+            fi
+          done
         working-directory: interop
 
   # Every production dependency is a recorded decision (ADR 0002): today the

@@ -1,7 +1,7 @@
 # ADR 0019 — 0-RTT: accepted once, delivered early, acted on when allowed
 
 - **Created:** 2026-10-23
-- **Revised:** —
+- **Revised:** 2026-10-27 (the ticket is entered when the resumption is checked, and given back if unused), 2026-10-28 (a full register is the one load signal, and why; the intermediary role is not this package's; three transport positions written)
 - **Theme:** quic
 
 ## Problem
@@ -12,7 +12,7 @@ ticket) before the handshake ends. The gain is one round trip per resumed
 connection; the price is replay: anyone who copies the client's first flight
 can send it again, and the server cannot tell the copy apart, since the
 client only authenticates with its Finished. `crypto/tls` decrypts 0-RTT but
-offers no replay protection, while RFC 8446 §8 requires a server instance to
+offers no replay protection, while RFC 9846 §8 requires a server instance to
 accept the 0-RTT of a given handshake at most once.
 
 Three more constraints. In 0-RTT the client applies the transport parameters
@@ -30,15 +30,42 @@ complete before processing it.
 that allow 0-RTT, as `SessionTickets` issues tickets that do not. The ticket
 carries, in `SessionState.Extra` (encrypted and authenticated with the
 ticket), an instance identifier drawn at random when the `Listener` is
-created, a random ticket identifier and the time of issue. On resumption the
+created, a random ticket identifier and the time of issue.
+
+On resumption the
 `Listener` accepts 0-RTT only if the instance identifier is its own, the
-ticket is younger than `EarlyDataWindow` (zero: 10 minutes), and the ticket
-identifier has never been used: it then records it in a register bounded by
-`MaxEarlyDataTickets` (zero: 16,384), where the entry lives until the window
-ends. With the register full, 0-RTT is refused and the connection resumes in
-1-RTT. The register is sized as the rate of 0-RTT connections times the
-window. Every refusal is a TLS refusal (`SessionState.EarlyData` set to
-false): no 0-RTT packet is then processed (RFC 9001 §4.6.2).
+ticket is younger than `EarlyDataWindow` (zero: 10 minutes), the ticket
+identifier has never been used, and the register bounded by
+`MaxEarlyDataTickets` (zero: 16,384) has room: the ticket is then entered in
+the register at once, when `crypto/tls` asks about the resumption, and the
+entry lives until the window ends. With the register full, or the ticket
+entered by another connection first (a replay racing the original), 0-RTT is
+refused and the connection resumes in 1-RTT. The register is sized as the
+rate of 0-RTT connections times the window. Every refusal is a TLS refusal
+(`SessionState.EarlyData` set to false): no 0-RTT packet is then processed
+(RFC 9001 §4.6.2).
+
+A full register is the one global refusal of 0-RTT: neither processor load
+nor the number of requests in flight makes it refuse, where RFC 8470 §6.3
+advises refusing early data under load. The reason: a request the
+predicate does not admit in 0-RTT is held until the handshake ends, and
+what is held is bounded by flow control and `MaxConcurrentStreams`; a
+replay never gets past the handshake; and load is not measured here in a
+way a threshold would make right. An operator who wants less 0-RTT under
+load turns `EarlyData` off or lowers `MaxEarlyDataTickets`.
+
+`crypto/tls` asks before it verifies the PSK binder and before it knows
+whether the client offered 0-RTT at all, so an entry may go unused — a
+resumption without 0-RTT, a handshake that fails — and is then given back,
+when the handshake completes without the early keys or the connection ends:
+the ticket's 0-RTT, and the slot, are intact, and "at most once" still
+holds, since no 0-RTT handshake with that ticket was accepted.
+
+Until 2026-10-27 the ticket was entered later, once the 0-RTT was accepted;
+a full register or a lost race was then found with `early_data` already
+announced, and the connection kept no early key: its 0-RTT packets were
+dropped, which the client saw as loss and resent in 1-RTT after a probe
+timeout.
 
 A `Listener` with `EarlyData` hands the connection to `Accept` as soon as
 its 0-RTT is accepted, before the handshake ends; `Conn.HandshakeComplete`
@@ -62,7 +89,10 @@ not complete is held until it is when the predicate does not allow it, and
 delivered at once when it does. The same predicate judges an HTTP/1.1 or
 HTTP/2 request carrying `Early-Data: 1` (an intermediary received it in
 early data): not allowed, it is answered 425 Too Early, because waiting does
-not make it safe (RFC 8470 §5.2).
+not make it safe (RFC 8470 §5.2). The intermediary's own duties in RFC 8470
+— adding `Early-Data: 1` to what it forwards, retrying on a 425 — are not
+this package's: it is a server, never a proxy. A handler's own
+`Early-Data` field in a response is refused, as §5.1 asks.
 
 **Client.** `quic.DialEarly` returns the connection as soon as the 0-RTT key
 is installed, when the ticket allows it, and otherwise when the handshake
@@ -73,12 +103,30 @@ with the ticket (RFC 9000 §7.4.1) and applies them to what it sends in
 replays, because RFC 9001 §4.6.2 requires resetting the application state
 bound to those streams, which the transport does not know.
 
+**Three positions around it.** A burst of writes in 0-RTT leaves as several
+0-RTT packets in one datagram, one packet per writer, where RFC 9000 §12.2
+would have frames of the same encryption level share one packet: a
+datagram per write lost most of a 40-request burst to a 25-datagram queue
+(the Interop Runner's zerortt case), and merging writers into one packet
+would hold each behind the others.
+
+The server bounds a ticket's age from
+its own issue time (`EarlyDataWindow`) and never compares it with the
+client's `obfuscated_ticket_age` (RFC 9846 §4.3.10): crypto/tls does not
+expose the client's figure, and the window bounds the same thing, more
+loosely. And a ticket goes to every client, including one that lists only
+`psk_ke` and not `psk_dhe_ke` (RFC 9846 §4.3.9, a SHOULD NOT): crypto/tls
+does not expose the modes either, and such a client's resumption fails
+into a full handshake, the cost the RFC itself names. Each is revisited
+when crypto/tls exposes what it hides, or when a measured burst fits one
+packet without the wait.
+
 ## Rationale
 
 The instance identifier makes replay across instances impossible by
 construction rather than asking the operator for a shared register: another
 instance, or the same one after a restart, refuses 0-RTT and resumes in
-1-RTT. The local register gives RFC 8446 §8's "at most once" on the instance
+1-RTT. The local register gives RFC 9846 §8's "at most once" on the instance
 that issued the ticket, and its bound fails closed: under load 0-RTT is
 lost, never the guarantee. What this costs: behind a balancer that does not
 bring a client back to the same instance, little 0-RTT; and a ticket older

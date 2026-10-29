@@ -180,14 +180,20 @@ func TestWrongKeyFailsTheStage(t *testing.T) {
 // stays under the SLO, and the cause published is the queue: the
 // generator limits, the stage is invalid, not a verdict on the server.
 // The stages before it are held, each with its own budget.
+//
+// At 300 req/s a loaded host can queue the stage before the ceiling: a few
+// replies slow enough to keep every slot busy at once (measured on
+// 2026-10-28, load 20 on 15 cores). That stage, when it queues, is held to
+// hostQueues, which says from a measurement whether the host was the
+// cause; only then is it skipped.
 func TestRampStopsWhereTheBudgetEnds(t *testing.T) {
 	protos(t, testRampStopsWhereTheBudgetEnds)
 }
 
 func testRampStopsWhereTheBudgetEnds(t *testing.T, proto string) { //nolint:thelper // a sub-test body
-	ceiling, last := 4, 1200
+	ceiling, slots, last := 4, 4, 1200
 	if proto != protoH1 {
-		ceiling, last = 1, 3200
+		ceiling, slots, last = 1, streamsPerConn, 3200
 	}
 	srv := sleepServer(t, proto, 5*time.Millisecond, nil)
 	c := testCampaign(t, proto, srv.URL, "-scenario", "unit", "-rates", "100,300,"+strconv.Itoa(last), "-duration", "1s",
@@ -202,6 +208,14 @@ func testRampStopsWhereTheBudgetEnds(t *testing.T, proto string) { //nolint:thel
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
 	t.Log(out.String())
+	if len(lines) == 2 {
+		var rep report
+		if json.Unmarshal([]byte(lines[1]), &rep) == nil && rep.Rate == 300 && rep.Cause == causeQueue {
+			if why, host := hostQueues(t, proto, srv.URL, 300, slots); host {
+				t.Skip(why)
+			}
+		}
+	}
 	if ok || len(lines) != 3 {
 		t.Fatalf("ok %v, %d stages, want 3 with the last invalid", ok, len(lines))
 	}
@@ -227,6 +241,44 @@ func testRampStopsWhereTheBudgetEnds(t *testing.T, proto string) { //nolint:thel
 	if n := srv.conns.Load(); n != int64(ceiling) {
 		t.Fatalf("the server accepted %d connections, the ceiling is %d", n, ceiling)
 	}
+}
+
+// hostQueues is the calibration a stage that queued under its budget is
+// held to. On a schedule at a constant interval, no more requests are in
+// flight than the slowest reply spans intervals, so slots slots queue
+// nothing unless a reply takes slots intervals or more. The same server at
+// the same rate, with slots to spare so that nothing queues, measures the
+// slowest reply this host gives now: at or past slots intervals, the host
+// queued the stage, and why says so with the measurement; under, the
+// budget did.
+func hostQueues(t *testing.T, proto, url string, rate, slots int) (why string, host bool) {
+	t.Helper()
+	spare := 16
+	if proto != protoH1 {
+		spare = 4
+	}
+	rep := runStage(t, testCampaign(t, proto, url, "-scenario", "unit", "-rate", strconv.Itoa(rate), "-duration", "1s",
+		"-conns", strconv.Itoa(spare), "-slo", "5s"))
+	span := float64(slots) * 1000 / float64(rate)
+	why = fmt.Sprintf("the host, not the budget: at %d req/s with connections to spare, its slowest reply took %.1f ms (queued %d), and %d slots cover %.1f ms",
+		rate, rep.TTLB.Max, rep.Queued, slots, span)
+	return why, rep.Queued > 0 || rep.TTLB.Max >= span
+}
+
+// hostHandshakes is the calibration TestFreshConnections' verdict is held
+// to. A tenth of that stage's requests open a connection, so its p99 falls
+// among them, near their own p90. A stage where every request opens one,
+// at the same rate of handshakes — a tenth of rate — measures that p90 on
+// this host now: past X, the host could not give the SLO with a handshake
+// in the delay, and why says so with the measurement; under, it could.
+func hostHandshakes(t *testing.T, proto, url string, rate int) (why string, host bool) {
+	t.Helper()
+	rep := runStage(t, testCampaign(t, proto, url, "-scenario", "unit", "-rate", strconv.Itoa(rate/10), "-duration", "2s",
+		"-conns", "8", "-new-conns", "100"))
+	x := rep.SLO + rep.RTT
+	why = fmt.Sprintf("the host, not the generator: with a handshake in every request at %d req/s, p90 is %.1f ms, past X = %.0f ms",
+		rate/10, rep.TTLB.P90, x)
+	return why, rep.TTLB.P90 > x
 }
 
 // TestStreamsPerConn is the ceiling of §3.5 seen from the server: under h2
@@ -322,7 +374,16 @@ func TestBudget(t *testing.T) {
 // TestFreshConnections: with -new-conns 10, about a tenth of the requests
 // open their own connection, whose handshake falls inside their delays
 // and is counted apart; the budget's connections are untouched, and no
-// connect fails on a loopback with a few hundred of them.
+// connect fails on a loopback with a few hundred of them. The stage is
+// held: its p99 under the unit scenario's 25 ms, with the handshakes
+// inside.
+//
+// A loaded host may not give that (2026-10-28): under a load of 20 on 15
+// cores and the race detector, the stage misses the SLO, then deadlines —
+// requests timed out, connections still opening at theirs. A stage that
+// fails only so is held to hostHandshakes, which says from a measurement
+// whether the host was the cause; only then is it skipped. Any other
+// failure — a refusal, a reset, the tester's own — fails the test.
 func TestFreshConnections(t *testing.T) {
 	protos(t, testFreshConnections)
 }
@@ -332,8 +393,15 @@ func testFreshConnections(t *testing.T, proto string) { //nolint:thelper // a su
 	c := testCampaign(t, proto, srv.URL, "-scenario", "unit", "-rate", "500", "-duration", "2s", "-conns", "8", "-new-conns", "10")
 	rep := runStage(t, c)
 	t.Logf("sent %d handshakes %d tester %d ttlb p50 %.3f p99 %.3f ms", rep.Sent, rep.Handshakes, rep.Tester, rep.TTLB.P50, rep.TTLB.P99)
+	if rep.Tester > 0 || rep.BadKey > 0 || rep.Errors != rep.ConnectTimeout {
+		t.Fatalf("errors %d (connect timeouts %d) bad_key %d tester %d", rep.Errors, rep.ConnectTimeout, rep.BadKey, rep.Tester)
+	}
 	if rep.Failed() || !rep.Held {
-		t.Fatalf("errors %d tester %d held %v cause %q", rep.Errors, rep.Tester, rep.Held, rep.Cause)
+		if why, host := hostHandshakes(t, proto, srv.URL, 500); host {
+			t.Skip(why)
+		}
+		t.Fatalf("timed out %d, connect timeouts %d, held %v cause %q ttlb p99 %.3f ms: want every request answered and the SLO held",
+			rep.TimedOut, rep.ConnectTimeout, rep.Held, rep.Cause, rep.TTLB.P99)
 	}
 	if rep.Handshakes < rep.Sent*7/100 || rep.Handshakes > rep.Sent*13/100 {
 		t.Fatalf("%d handshakes in %d requests, want about 10 %%", rep.Handshakes, rep.Sent)
@@ -400,11 +468,11 @@ func TestCheck(t *testing.T) {
 		{"unit truncated", unitRequest(0, 42, false), `{"id":42,"tot`, false},
 		{"unit full ok", unitRequest(0, 42, true), `{"label":"order-42","total":294,"id":42}`, true},
 		{"unit full wrong total", unitRequest(0, 42, true), `{"id":42,"total":293,"label":"order-42"}`, false},
-		{"list ok", listRequest(0, 10, false), `{"from":10,"limit":1000,"items":[{"id":11},{"id":12}]}`, true},
+		{"list ok", listRequest(0, 10, false), string(listPage(10, listLimit)), true},
 		{"list not increasing", listRequest(0, 10, false), `{"from":10,"items":[{"id":11},{"id":11}]}`, false},
 		{"list at bound", listRequest(0, 10, false), `{"from":10,"items":[{"id":10}]}`, false},
 		{"list empty", listRequest(0, 10, false), `{"from":10,"items":[]}`, false},
-		{"list full ok", listRequest(0, 10, true), `{"from":10,"items":[{"id":11,"total":77,"label":"order-11"}]}`, true},
+		{"list full ok", listRequest(0, 10, true), string(listPage(10, listLimit)), true},
 		{"list full wrong row", listRequest(0, 10, true), `{"from":10,"items":[{"id":11,"total":77,"label":"order-12"}]}`, false},
 		{"write ok", writeRequest(0, 5, true), `{"key":5}`, true},
 		{"write other key", writeRequest(0, 5, false), `{"key":6}`, false},
@@ -421,10 +489,12 @@ func TestCheck(t *testing.T) {
 	}
 }
 
-// CMP-01: a list drawn on the table's last key asks for ids above the
-// highest one, and its page is rightly empty — it used to be counted a
-// wrong key. Empty anywhere else is still a wrong answer.
-func TestAListFromTheLastKeyIsEmpty(t *testing.T) {
+// CMP-01: the list case is "N lignes par requête" (§2.2), and the table runs
+// one page past the keyspace so that a list drawn on any key, the last one
+// included, is a full page. A page short of listLimit rows, or empty, is a
+// wrong answer wherever it comes from: until 2026-10-29 the last key's
+// empty page was accepted, and a short page anywhere else.
+func TestEveryListIsAFullPage(t *testing.T) {
 	const keyspace = 50
 	draw := scenarios["list"].draw(10, keyspace)
 	var last, other request
@@ -438,12 +508,18 @@ func TestAListFromTheLastKeyIsEmpty(t *testing.T) {
 	if last.key != keyspace || other.key == 0 {
 		t.Fatalf("the draw gave no list from the last key (%d) or from another (%d)", last.key, other.key)
 	}
-	empty := func(from int64) []byte { return fmt.Appendf(nil, `{"from":%d,"items":[]}`, from) }
-	if err := check(last, empty(keyspace)); err != nil {
-		t.Errorf("the empty page from the last key was refused: %v", err)
-	}
-	if err := check(other, empty(other.key)); err == nil {
-		t.Errorf("an empty page from key %d was accepted", other.key)
+	for _, rq := range []request{last, other} {
+		for _, full := range []bool{false, true} {
+			rq.full = full
+			if err := check(rq, listPage(rq.key, listLimit)); err != nil {
+				t.Errorf("from %d, full validation %v: the full page was refused: %v", rq.key, full, err)
+			}
+			for _, n := range []int{0, 1, listLimit - 1} {
+				if err := check(rq, listPage(rq.key, n)); err == nil {
+					t.Errorf("from %d, full validation %v: a page of %d rows was accepted", rq.key, full, n)
+				}
+			}
+		}
 	}
 }
 
@@ -471,7 +547,7 @@ func TestCheckListRefusesWhatItMust(t *testing.T) {
 		ok   bool
 	}{
 		{"a full page", string(listPage(10, 1000)), true},
-		{"spaces after the colons", `{"from": 10, "items": [{"id": 11}, {"id": 12}]}`, true},
+		{"spaces after the colons", strings.ReplaceAll(string(listPage(10, listLimit)), `":`, `": `), true},
 		{"another bound", string(listPage(11, 3)), false},
 		{"ids that go back", `{"from":10,"items":[{"id":12},{"id":11}]}`, false},
 		{"an id at the bound", `{"from":10,"items":[{"id":10}]}`, false},
@@ -479,7 +555,7 @@ func TestCheckListRefusesWhatItMust(t *testing.T) {
 		{"no items", `{"from":10}`, false},
 		{"no bound", `{"items":[{"id":11}]}`, false},
 		{"cut short", string(listPage(10, 3)[:40]), false},
-		{"an id inside a label is not an id", `{"from":10,"items":[{"id":12,"label":"x\"id\":5"}]}`, true},
+		{"an id inside a label is not an id", strings.Replace(string(listPage(10, listLimit)), `"label":"order-11"`, `"label":"x\"id\":5"`, 1), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := check(rq, []byte(tc.body)); (err == nil) != tc.ok {

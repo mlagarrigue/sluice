@@ -27,7 +27,7 @@ func newCopyBackend(t *testing.T, script func(rd *pgwire.Reader, w net.Conn) err
 		done <- script(pgwire.NewReader(server), server)
 		_ = server.Close()
 	}()
-	return NewConn(client), done
+	return NewConn(client, Config{}), done
 }
 
 // expectQuery reads the next frontend message and checks it is the simple
@@ -201,7 +201,7 @@ func TestCopyRefusedRowFailsAWriteBeforeTheCommit(t *testing.T) {
 // refused before a byte is written, and the copy stays finishable.
 func TestExecRefusedWhileACopyIsOpen(t *testing.T) {
 	srv := &fakeServer{responses: txCycle()}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	cp, err := conn.CopyFrom(t.Context(), copyTestSQL, CopyConfig{RowsPerTx: 100})
 	if err != nil {
 		t.Fatal(err)
@@ -255,5 +255,94 @@ func TestAbandonedCopyLeavesNoGoroutineAfterClose(t *testing.T) {
 		}
 		// The bubble ends only when every goroutine started in it has: a
 		// reader left blocked on the pipe fails the test as a deadlock.
+	})
+}
+
+// A ParameterStatus can arrive at any point of a copy-in, and the reader
+// keeps it for endCopy, which records it once the COPY is over. What it
+// keeps is bounded as the connection's own record is — maxServerParameters
+// distinct names, maxServerParameterBytes of names and values, the last
+// value of a name winning — because a load runs for hours and nothing else
+// reads the socket meanwhile: until 2026-10-27 every body was queued as it
+// came, up to MaxMessage each, for the whole COPY.
+func TestCopyReaderBoundsTheParametersItQueues(t *testing.T) {
+	big := strings.Repeat("x", 1<<20)
+	readAll := func(t *testing.T, send func(w net.Conn) error) *copyReader {
+		t.Helper()
+		client, server := net.Pipe()
+		go func() {
+			defer server.Close()
+			if err := send(server); err != nil {
+				return // the reader stopped: the pipe refuses the rest
+			}
+			_, _ = server.Write(frame(pgwire.BackendReadyForQuery, "T"))
+		}()
+		rd := startCopyReader(pgwire.NewReader(client))
+		<-rd.done
+		_ = client.Close()
+		return rd
+	}
+	queued := func(rd *copyReader) (bodies, bytes int) {
+		for _, b := range rd.params {
+			bodies++
+			bytes += len(b)
+		}
+		return bodies, bytes
+	}
+
+	for _, tc := range []struct {
+		name string
+		send func(w net.Conn) error
+	}{
+		{"distinct names past maxServerParameters", func(w net.Conn) error {
+			for i := range 2 * maxServerParameters {
+				if _, err := w.Write(beParameterStatus(fmt.Sprintf("p%d", i), "v")); err != nil {
+					return err
+				}
+			}
+			return nil
+		}},
+		{"values past maxServerParameterBytes", func(w net.Conn) error {
+			for i := range maxServerParameterBytes>>20 + 1 {
+				if _, err := w.Write(beParameterStatus(fmt.Sprintf("big%d", i), big)); err != nil {
+					return err
+				}
+			}
+			return nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rd := readAll(t, tc.send)
+			bodies, n := queued(rd)
+			if !errors.Is(rd.broken, ErrProtocol) {
+				t.Fatalf("queued %d bodies, %d bytes, broken = %v: want ErrProtocol once the bound is passed", bodies, n, rd.broken)
+			}
+			if bodies > maxServerParameters || n > maxServerParameterBytes+2*maxServerParameters {
+				t.Errorf("queued %d bodies, %d bytes: past the bounds the connection keeps (%d, %d)", bodies, n, maxServerParameters, maxServerParameterBytes)
+			}
+		})
+	}
+
+	// Under the bounds, the last value of a name is what endCopy records:
+	// the same name twenty times, a megabyte each, is one body kept.
+	t.Run("same name folds", func(t *testing.T) {
+		rd := readAll(t, func(w net.Conn) error {
+			for i := range 20 {
+				if _, err := w.Write(beParameterStatus("search_path", fmt.Sprintf("%s%d", big, i))); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		bodies, n := queued(rd)
+		if rd.broken != nil {
+			t.Fatalf("broken = %v for twenty values of one name under the budget", rd.broken)
+		}
+		if bodies != 1 || n > 1<<20+32 {
+			t.Errorf("queued %d bodies, %d bytes: want the last value of the one name", bodies, n)
+		}
+		if rd.status == nil {
+			t.Error("the reader did not reach ReadyForQuery")
+		}
 	})
 }

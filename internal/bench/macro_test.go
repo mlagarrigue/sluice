@@ -162,20 +162,33 @@ func TestMacroOverlapDistinguishesTheTwoShapes(t *testing.T) {
 		t.Skipf("GOMAXPROCS=%d: two stages cannot work at once on one P", runtime.GOMAXPROCS(0))
 	}
 
-	_, _, _, calls1, serial := etlShape(batches, func(s sluice.Stream[int64]) sluice.Stream[int64] { return s })
-	_, _, _, calls2, async := etlShape(batches, func(s sluice.Stream[int64]) sluice.Stream[int64] { return parallel.Async(s, 4) })
+	// The serial shape must never overlap; the Async one must be able to,
+	// which one run cannot always show: under the whole suite with coverage
+	// a run of twelve batches has found no second thread to run on (CI
+	// 2026-10-28, peak 1). A few runs are asked for, and one overlap is
+	// enough; a serial overlap in any of them is a regression.
+	const attempts = 5
+	var serial, async int64
+	for range attempts {
+		_, _, _, calls1, s := etlShape(batches, func(s sluice.Stream[int64]) sluice.Stream[int64] { return s })
+		_, _, _, calls2, a := etlShape(batches, func(s sluice.Stream[int64]) sluice.Stream[int64] { return parallel.Async(s, 4) })
 
-	// The same work was done either way, which is what makes the two shapes
-	// comparable at all.
-	if want := [3]int64{batches, batches, batches}; calls1 != want || calls2 != want {
-		t.Fatalf("batches per stage (read, transform, write): serial %v, async %v, want %v each — "+
-			"they are not the same benchmark", calls1, calls2, want)
+		// The same work was done either way, which is what makes the two
+		// shapes comparable at all.
+		if want := [3]int64{batches, batches, batches}; calls1 != want || calls2 != want {
+			t.Fatalf("batches per stage (read, transform, write): serial %v, async %v, want %v each — "+
+				"they are not the same benchmark", calls1, calls2, want)
+		}
+		serial, async = max(serial, s), max(async, a)
+		if async >= 2 {
+			break
+		}
 	}
 	if serial != 1 {
 		t.Errorf("serial shape: %d stages worked at once, want 1 — a synchronous pull pipeline overlapped", serial)
 	}
 	if async < 2 {
-		t.Errorf("Async shape: %d stage worked at once, want at least 2 — Async bought nothing", async)
+		t.Errorf("Async shape: %d stage worked at once in %d runs, want at least 2 — Async bought nothing", async, attempts)
 	}
 	t.Logf("stages working at once: serial %d, async %d", serial, async)
 }

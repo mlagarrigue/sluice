@@ -1,5 +1,9 @@
 # Changelog
 
+Each breaking change below is listed by its commit subject; what it changes
+in your code, and what to write instead, is in the
+[migration guide](docs/migration.md).
+
 ## [0.3.0](https://github.com/mlagarrigue/sluice/compare/v0.2.2...v0.3.0) (2026-10-25)
 
 

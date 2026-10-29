@@ -27,7 +27,7 @@ import (
 // the per-stage budget, where the same operator element-wise would be two
 // orders of magnitude out (the arithmetic that disqualified iter.Pull per
 // element at 53 ns). On equal producer and consumer work the overlap
-// measured ×1.85 against the serial chain, of an ideal ×2
+// measured ×1.84 against the serial chain, of an ideal ×2
 // (BenchmarkAsyncOverlap).
 //
 // # Bounded, and blocking is the semantics

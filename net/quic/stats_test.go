@@ -132,10 +132,17 @@ func TestStatsCountsLostPackets(t *testing.T) {
 // estimator reads what the sender let the path carry: the line while the
 // window holds at least the bandwidth-delay product and keeps the
 // bottleneck's queue busy, the window per round trip once a late loss has
-// halved a Reno window below it. The floor is 0.8 of the lesser of the two,
-// the share of a sample interval the queue can stand empty after a loss;
-// the line bounds it above with only measurement noise, since nothing is
-// delivered faster than the line (draft-ietf-ccwg-bbr-06 §4.1.1.2.4).
+// halved a Reno window below it. The buffer holds 20 ms, the product
+// itself, so that a window halved from what overflows it still covers the
+// product and the path carries the line to the end: on a 5 ms buffer the
+// last sample depended on where the last loss fell — 0.56 and 0.70 of the
+// ceiling below once Reno paced its slow start at twice the window
+// (2026-10-28), a trajectory, not the estimator. The floor is 0.8 of the
+// lesser of the two, the share of a sample interval the queue can stand
+// empty after a loss; the line bounds it above with only measurement
+// noise, since nothing is delivered faster than the line
+// (draft-ietf-ccwg-bbr-06 §4.1.1.2.4). An interval read twice too long
+// reads 0.50.
 //
 // The transfer runs in a synctest bubble: the link is dgram.Pair and the
 // emulator's timers, so its clock is the bubble's, which only moves when
@@ -149,7 +156,7 @@ func TestDeliveryRateOnBottleneck(t *testing.T) {
 	const line = 50_000_000 / 8
 	var tr transfer
 	synctest.Test(t, func(t *testing.T) {
-		link := &netemLink{prof: netemProfile{owd: 10 * time.Millisecond, rate: line, queue: 5 * time.Millisecond}}
+		link := &netemLink{prof: netemProfile{owd: 10 * time.Millisecond, rate: line, queue: 20 * time.Millisecond}}
 		var err error
 		if tr, err = transferOnce(t, link, 4<<20); err != nil {
 			t.Fatal(err)
