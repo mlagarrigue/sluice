@@ -187,11 +187,14 @@ type h2Writer struct {
 	// The set costs 5 to 7% of consume on BenchmarkH2ConsumeLongConn (a
 	// connection past MaxConcurrentStreams requests, each answered; paired
 	// A/B, ab.sh) against a ring of the last 256 answers, which is cheaper
-	// because it forgets. The cost is the set's insert and delete per
-	// stream, not evict's lock: handing the reader's evictions over once per
-	// frame batch instead of once per stream measures as noise.
-	// BenchmarkH2Consume, whose rounds never fill the reader's memory, sees
-	// no difference.
+	// because it forgets. Neither of the two obvious suspects is that cost:
+	// handing the reader's evictions over once per frame batch instead of
+	// once per stream measures as noise, and so does replacing the map with
+	// a sliding bitmap of the recent identifiers, h2Conn.opened's shape,
+	// exact with a map for the identifiers left behind (7 wins in 15 paired
+	// rounds) — the insert and delete per stream are not what the ring
+	// saved. The map stays, the simplest exact set. BenchmarkH2Consume,
+	// whose rounds never fill the reader's memory, sees no difference.
 	ended   map[uint32]struct{}
 	evicted map[uint32]struct{}
 	initial int32
