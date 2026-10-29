@@ -266,9 +266,9 @@ type Rows struct {
 	// contract.
 	gen uint32
 
-	// small counts the batches in a row that fitted the retained sizes
-	// while the storage was larger (see Reset).
-	small int
+	// keep decides when storage past the retained sizes goes back (see
+	// reset).
+	keep retention
 }
 
 // What a [Rows] keeps for the life of its connection, and how many batches
@@ -281,6 +281,29 @@ const (
 	rowsRetainEnds  = 1 << 18 // int32 offsets: 1 MiB
 	rowsShrinkAfter = 256
 )
+
+// retention is that rule, shared by every batch store of this package that
+// outlives its batch: [Rows] and the replication arena.
+type retention struct {
+	small int // batches in a row that fitted the retained size while the storage was larger
+}
+
+// giveBack counts one batch and reports whether its storage goes back now:
+// oversized says the storage is past the retained size, fitted that the
+// batch just ended would have fitted within it. Only a store that met a
+// large batch pays more than this one comparison.
+func (k *retention) giveBack(oversized, fitted bool) bool {
+	if !oversized || !fitted {
+		k.small = 0
+		return false
+	}
+	k.small++
+	if k.small < rowsShrinkAfter {
+		return false
+	}
+	k.small = 0
+	return true
+}
 
 // maxRowBytes is how many bytes of values one batch may hold, bounded by the
 // int32 offsets in [Rows]. A variable rather than a constant so the guard can
@@ -334,25 +357,16 @@ func (r *Rows) start(desc []Field, maxRows, maxBytes int) {
 }
 
 // reset empties the accumulator, keeping its storage for the next batch —
-// unless that storage outgrew what an ordinary batch needs and
-// rowsShrinkAfter batches in a row have fitted the retained sizes, in which
-// case it is given back and the next batch starts small. Only the
-// connection that met a large batch pays the check's body; the steady state
-// is one comparison.
+// unless [retention] gives it back, in which case the next batch starts
+// small. An empty batch is not counted.
 //
 // The byte buffer is not cleared: every byte it hands out is covered by an
 // offset written when it was filled, so a stale tail is unreachable rather
 // than merely unlikely.
 func (r *Rows) reset() {
-	if r.rows > 0 && (cap(r.buf) > rowsRetainBytes || cap(r.ends) > rowsRetainEnds) {
-		if len(r.buf) <= rowsRetainBytes && len(r.ends) <= rowsRetainEnds {
-			r.small++
-			if r.small >= rowsShrinkAfter {
-				r.buf, r.ends, r.small = nil, nil, 0
-			}
-		} else {
-			r.small = 0
-		}
+	if r.rows > 0 && r.keep.giveBack(cap(r.buf) > rowsRetainBytes || cap(r.ends) > rowsRetainEnds,
+		len(r.buf) <= rowsRetainBytes && len(r.ends) <= rowsRetainEnds) {
+		r.buf, r.ends = nil, nil
 	}
 	r.buf = r.buf[:0]
 	r.ends = r.ends[:0]

@@ -103,10 +103,10 @@ type Replication struct {
 	// batch to open with. They hold no tuple, so nothing of the arena.
 	carry []Change
 	// kept is the payload bytes this batch has copied into the arena, the
-	// figure BatchBytes bounds; small counts the batches in a row that
-	// fitted the retained size, for giving an oversized arena back.
-	kept  int
-	small int
+	// figure BatchBytes bounds; arenaKeep decides when an oversized arena goes
+	// back.
+	kept      int
+	arenaKeep retention
 }
 
 // Replicate opens a logical replication connection and starts streaming the
@@ -402,28 +402,15 @@ func (r *Replication) readBatch() (sluice.Batch[Change], error) {
 }
 
 // resetArena empties the batch's payload store, keeping its chunks for the
-// next batch — unless they outgrew what an ordinary batch needs and
-// rowsShrinkAfter batches in a row have fitted the retained size, in which
-// case they are given back and the next batch starts small. It is the rule
-// [Rows.reset] keeps, for the same reason: a connection that once met a
-// large batch kept its peak for good, and a pool of them held that peak
-// times the pool. Only a connection that met a large batch pays the check's
-// body.
+// next batch — unless [retention] gives them back, in which case the next
+// batch starts small.
 func (r *Replication) resetArena() {
 	held := 0
 	for _, c := range r.arena {
 		held += cap(c)
 	}
-	switch {
-	case held <= rowsRetainBytes:
-		r.small = 0
-	case r.kept <= rowsRetainBytes:
-		r.small++
-		if r.small >= rowsShrinkAfter {
-			r.arena, r.small = nil, 0
-		}
-	default:
-		r.small = 0
+	if r.arenaKeep.giveBack(held > rowsRetainBytes, r.kept <= rowsRetainBytes) {
+		r.arena = nil
 	}
 	r.chunk, r.kept = 0, 0
 	if len(r.arena) > 0 {
