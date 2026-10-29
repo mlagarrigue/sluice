@@ -248,8 +248,10 @@ func ParseNumeric(s string) (Numeric, error) {
 			}
 		}
 	}
-	if len(fracPart) > math.MaxInt16 {
-		return Numeric{}, fmt.Errorf("%w: %d decimal places is past what numeric carries", ErrCodec, len(fracPart))
+	if len(fracPart) > numericMaxDscale {
+		// The bound DecodeNumeric holds a received value to: the server
+		// refuses more at Bind, so the refusal is here, before the query.
+		return Numeric{}, fmt.Errorf("%w: %d decimal places is past numeric's %d", ErrCodec, len(fracPart), numericMaxDscale)
 	}
 	n.Dscale = int16(len(fracPart)) //nolint:gosec // G115: checked above
 
