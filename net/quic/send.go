@@ -793,30 +793,7 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 	// authenticated packet, which only the peer can produce — not an
 	// amplification primitive.
 	if c.amplActive && onPath && c.amplSent+int64(size) > 3*c.amplRecv {
-		// The packet is withheld, not dropped. Handshake bytes exist only
-		// here — crypto/tls does not re-emit them — so losing them would
-		// kill every handshake whose first flight overflows the budget,
-		// which a real certificate chain does. The payload goes back to
-		// the front of the retransmission queue, and retransmitLocked
-		// sends it once the peer's next datagram raises amplRecv. An ACK
-		// was settled when it was encoded, so its debt is owed again
-		// (rearm) for the flush that follows that datagram. A packet sent
-		// without retransmission — a PMTU probe, a PATH_CHALLENGE, a
-		// PATH_RESPONSE — is skipped: what sends it again is its own
-		// timer, or the peer's next challenge. No packet number was
-		// consumed.
-		if opts.ackOnly || opts.carriesAck {
-			sp.ack.rearm()
-		}
-		if !opts.ackOnly && !opts.noRetrans && len(retransPart) > 0 {
-			sp.retrans = append(sp.retrans, nil)
-			copy(sp.retrans[1:], sp.retrans)
-			if opts.own {
-				sp.retrans[0] = retransPart
-			} else {
-				sp.retrans[0] = append([]byte(nil), retransPart...)
-			}
-		}
+		withholdLocked(sp, retransPart, opts)
 		return nil
 	}
 	if budgeted && c.offPath.sent+int64(size) > 3*c.offPath.recv {
@@ -847,22 +824,10 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 		return err
 	}
 
-	// RFC 9001 §6.6: AES-GCM keys are spent after 2^23 sealed packets. At
-	// the 1-RTT level the sender MUST rotate before that (§6), which it
-	// may once the handshake is confirmed and a packet under the current
-	// keys was acknowledged (§6.1) — the §6.5 wait is a SHOULD, and the
-	// limit a MUST, so it does not apply here. Where rotation is not yet
-	// permitted, or at the levels whose keys never rotate, the connection
-	// ends with AEAD_LIMIT_REACHED instead of degrading the cipher. The
-	// check skips the CONNECTION_CLOSE itself (closeSent is set before it
-	// is written, and the refusal below reserved it a slot under the limit).
-	// §6.6 has an endpoint that reaches a limit "stop using the connection
-	// and only send stateless resets", and in the next sentence makes it
-	// RECOMMENDED to close with AEAD_LIMIT_REACHED before getting there:
-	// the second is what happens here, one CONNECTION_CLOSE under the keys
-	// in use and nothing more under them — the MUST describes the state of
-	// an endpoint that went past the limit without closing, which this one
-	// never does. The integrity limit (receive.go) reads §6.6 the same way.
+	// RFC 9001 §6.6: AES-GCM keys are spent after 2^23 sealed packets
+	// (atConfidentialityLimitLocked). The check skips the CONNECTION_CLOSE
+	// itself: closeSent is set before it is written, and the refusal
+	// reserved it a slot under the limit.
 	keys := sp.sealer
 	if early {
 		keys = c.earlySealer
@@ -875,16 +840,7 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 				return c.writePacketLocked(sp, space, payload, retransPart, opts, now)
 			}
 		}
-		err := &transportError{
-			code: transportAEADLimitReached,
-			err:  fmt.Errorf("%w: this key sealed its 2^23 packets and no key update was possible", ErrQUIC),
-		}
-		if c.closeErr == nil {
-			c.closeErr = err
-		}
-		c.sendCloseLocked(transportAEADLimitReached, false)
-		c.closeAsyncLocked()
-		return err
+		return c.atConfidentialityLimitLocked()
 	}
 
 	if gathering {
@@ -935,6 +891,61 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 		pc = opts.via
 	}
 	return c.writeLocked(pc, pkt, dest, p.ecn)
+}
+
+// withholdLocked puts back a packet the amplification limit stops (RFC
+// 9000 §8.1): withheld, not dropped. Handshake bytes exist only here —
+// crypto/tls does not re-emit them — so losing them would kill every
+// handshake whose first flight overflows the budget, which a real
+// certificate chain does. The payload goes back to the front of the
+// retransmission queue, and retransmitLocked sends it once the peer's next
+// datagram raises amplRecv. An ACK was settled when it was encoded, so its
+// debt is owed again (rearm) for the flush that follows that datagram. A
+// packet sent without retransmission — a PMTU probe, a PATH_CHALLENGE, a
+// PATH_RESPONSE — is skipped: what sends it again is its own timer, or the
+// peer's next challenge. No packet number was consumed. Callers hold mu.
+func withholdLocked(sp *space, retransPart []byte, opts sendOpts) {
+	if opts.ackOnly || opts.carriesAck {
+		sp.ack.rearm()
+	}
+	if !opts.ackOnly && !opts.noRetrans && len(retransPart) > 0 {
+		sp.retrans = append(sp.retrans, nil)
+		copy(sp.retrans[1:], sp.retrans)
+		if opts.own {
+			sp.retrans[0] = retransPart
+		} else {
+			sp.retrans[0] = append([]byte(nil), retransPart...)
+		}
+	}
+}
+
+// atConfidentialityLimitLocked ends the connection whose keys are spent and
+// cannot be rotated. RFC 9001 §6.6: AES-GCM keys are spent after 2^23
+// sealed packets. At the 1-RTT level the sender MUST rotate before that
+// (§6), which it may once the handshake is confirmed and a packet under the
+// current keys was acknowledged (§6.1) — the §6.5 wait is a SHOULD, and the
+// limit a MUST, so it does not apply here; writePacketLocked tries that
+// first. Where rotation is not yet permitted, or at the levels whose keys
+// never rotate, the connection ends with AEAD_LIMIT_REACHED instead of
+// degrading the cipher. §6.6 has an endpoint that reaches a limit "stop
+// using the connection and only send stateless resets", and in the next
+// sentence makes it RECOMMENDED to close with AEAD_LIMIT_REACHED before
+// getting there: the second is what happens here, one CONNECTION_CLOSE
+// under the keys in use and nothing more under them — the MUST describes
+// the state of an endpoint that went past the limit without closing, which
+// this one never does. The integrity limit (receive.go) reads §6.6 the same
+// way. Callers hold mu.
+func (c *Conn) atConfidentialityLimitLocked() error {
+	err := &transportError{
+		code: transportAEADLimitReached,
+		err:  fmt.Errorf("%w: this key sealed its 2^23 packets and no key update was possible", ErrQUIC),
+	}
+	if c.closeErr == nil {
+		c.closeErr = err
+	}
+	c.sendCloseLocked(transportAEADLimitReached, false)
+	c.closeAsyncLocked()
+	return err
 }
 
 // sealLocked finishes a built packet — Length field and packet number for a
