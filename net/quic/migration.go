@@ -508,7 +508,55 @@ func (c *Conn) retirePeerCIDsBeforeLocked(retire uint64) error {
 		// identifier in the pool.
 		c.switchToFreshPeerCIDLocked()
 	}
+	c.reaimProbesLocked(time.Now())
 	return nil
+}
+
+// reaimProbesLocked moves a probe whose identifier a Retire Prior To has
+// just taken out of the pool onto a fresh one, never used on any path
+// (§9.5), or gives the probe up when there is none: §5.1.2, "upon receipt
+// of an increased Retire Prior To field, the peer MUST stop using the
+// corresponding connection IDs". Two probes hold an identifier of their
+// own beside the one in use — a client's of the server's preferred address
+// (pathProbe.target, or preferredCandidate after a Rebind), a server's
+// from its preferred socket (pathProbe.via) — and every resend, and the
+// move that follows an answer, would otherwise go under the retired one;
+// the move to the preferred address would then find it gone and send there
+// under the identifier the original path uses, two addresses under one
+// identifier. The answer is matched on the challenge data, not the
+// identifier, so a probe moved here is still the same probe. Given up, a
+// client's probe leaves the connection where it is (§9.6.2 lets it stay),
+// and a server's is abandoned as its timer abandons it. Callers hold mu.
+func (c *Conn) reaimProbesLocked(now time.Time) {
+	if p := &c.pathProbe; len(p.targetCID) > 0 && !c.pooledPeerCIDLocked(p.targetCID) {
+		switch cid, _, ok := c.pickFreshPeerCIDLocked(); {
+		case ok:
+			p.targetCID = cid
+		case p.via != nil:
+			c.abandonViaProbeLocked(now)
+		default:
+			p.pending = false
+			p.target, p.targetCID = nil, nil
+		}
+	}
+	if p := &c.preferredCandidate; p.pending && len(p.cid) > 0 && !c.pooledPeerCIDLocked(p.cid) {
+		if cid, _, ok := c.pickFreshPeerCIDLocked(); ok {
+			p.cid = cid
+		} else {
+			*p = preferredCandidate{}
+		}
+	}
+}
+
+// pooledPeerCIDLocked reports whether cid is still in the pool of peer
+// identifiers. Callers hold mu.
+func (c *Conn) pooledPeerCIDLocked(cid []byte) bool {
+	for i := range c.peerCIDs {
+		if bytes.Equal(c.peerCIDs[i].cid, cid) {
+			return true
+		}
+	}
+	return false
 }
 
 // queueRetireLocked queues one RETIRE_CONNECTION_ID, bounded. Every
@@ -1002,18 +1050,18 @@ func (c *Conn) probePreferredAddressLocked(now time.Time) {
 // preferred address once its probe is answered: sends go there, under the
 // offered identifier, with the path state reset (§9.4). Callers hold mu.
 func (c *Conn) adoptPreferredPathLocked(now time.Time) {
-	c.setPeerLocked(c.pathProbe.target)
+	target := c.pathProbe.target
 	previous := c.currentPeerSeq
-	for i := range c.peerCIDs {
-		e := &c.peerCIDs[i]
-		if bytes.Equal(e.cid, c.pathProbe.targetCID) {
-			e.used = true
-			c.dcid = e.cid
-			c.currentPeerSeq = e.seq
-			c.rollSpinLocked()
-		}
-	}
+	moved := c.adoptPeerCIDLocked(c.pathProbe.targetCID)
 	c.pathProbe.target, c.pathProbe.targetCID = nil, nil
+	if !moved {
+		// The identifier left the pool and reaimProbesLocked found none to
+		// replace it, which it gives the probe up for: should an answer
+		// still get here, the address in use keeps its own identifier
+		// rather than lend it to a second address (§9.5).
+		return
+	}
+	c.setPeerLocked(target)
 	c.retireLeftCIDLocked(previous, true)
 	c.migrations++
 	c.resetPathStateLocked(now)
@@ -1081,10 +1129,15 @@ func (c *Conn) sendPreferredCandidateLocked() {
 func (c *Conn) adoptPreferredCandidateLocked(now time.Time) {
 	p := c.preferredCandidate
 	c.preferredCandidate = preferredCandidate{}
+	previous := c.currentPeerSeq
+	if !c.adoptPeerCIDLocked(p.cid) {
+		// Its identifier gone from the pool (reaimProbesLocked): no move
+		// under the one the path in use sends under (§9.5), and the
+		// original address's validation goes on.
+		return
+	}
 	c.pathProbe.pending, c.pathProbe.fatal = false, false
 	c.setPeerLocked(p.to)
-	previous := c.currentPeerSeq
-	c.adoptPeerCIDLocked(p.cid)
 	c.retireLeftCIDLocked(previous, true)
 	c.migrations++
 	c.resetPathStateLocked(now)
@@ -1777,6 +1830,23 @@ func (c *Conn) handlePathResponse(f Frame, now time.Time) {
 	c.mu.Unlock()
 }
 
+// abandonViaProbeLocked gives up a server's probe from its preferred
+// socket: nothing moves, and the connection stays on the socket in use.
+// Unless the path in use is a migration still unproven: the probe replaced
+// the migration's own (preferredPathChallengeLocked starts one for a
+// challenge from the peer's new address), so its abandonment is that
+// migration's, and §9.3.2 falls back to the last validated path. Left
+// there, the server stayed on the new address under the amplification
+// limit with no probe left to lift it. Callers hold mu.
+func (c *Conn) abandonViaProbeLocked(now time.Time) {
+	c.pathProbe.pending = false
+	c.pathProbe.via, c.pathProbe.targetCID = nil, nil
+	c.pathProbe.viaValidated, c.pathProbe.viaNonProbing = false, false
+	if c.amplActive {
+		c.revertToValidatedLocked(now)
+	}
+}
+
 // pathProbeDeadlineLocked drives the challenge retransmission from the timer
 // loop: fires a fresh send on a probe-timeout backoff while the path stays
 // unvalidated, and after [pathProbeMaxRetransmits] unanswered resends stops
@@ -1803,18 +1873,7 @@ func (c *Conn) pathProbeDeadlineLocked(now time.Time) time.Time {
 			// never answered, while the client never moved either: the
 			// connection is where it always was, on the socket in use,
 			// and nothing is wrong (§9.6.2 lets the client stay).
-			c.pathProbe.via, c.pathProbe.targetCID = nil, nil
-			c.pathProbe.viaValidated, c.pathProbe.viaNonProbing = false, false
-			if c.amplActive {
-				// Unless the path in use is a migration still unproven: the
-				// probe replaced the migration's own (preferredPathChallengeLocked
-				// starts one for a challenge from the peer's new address), so
-				// its abandonment is that migration's, and §9.3.2 falls back
-				// to the last validated path. Left there, the server stayed on
-				// the new address under the amplification limit with no probe
-				// left to lift it.
-				c.revertToValidatedLocked(now)
-			}
+			c.abandonViaProbeLocked(now)
 			return time.Time{}
 		}
 		if !c.isClient {

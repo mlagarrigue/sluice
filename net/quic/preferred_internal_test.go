@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"slices"
@@ -1043,5 +1044,117 @@ func TestAbandonedPreferredProbeDoesNotStrandAnUnvalidatedMigration(t *testing.T
 	defer c.mu.Unlock()
 	if c.amplActive && !sameAddr(c.peer, a) {
 		t.Errorf("after the preferred probe was given up: on %v, still under the amplification limit, no probe pending %v; want the validated path %v", c.peer, !c.pathProbe.pending, a)
+	}
+}
+
+// RFC 9000 §5.1.2: "Upon receipt of an increased Retire Prior To field, the
+// peer MUST stop using the corresponding connection IDs." A probe of the
+// server's preferred address holds an identifier of its own, beside the one
+// in use; a Retire Prior To that takes it moves the probe onto a fresh
+// identifier, or, with none in the pool, gives it up. Until 2026-10-29
+// only the identifier in use was moved: the resends went under the retired
+// one, and the answer moved the client to the preferred address under the
+// identifier the original path had switched to — two addresses under one
+// identifier (§9.5).
+func TestRetirePriorToMovesThePreferredProbeOffTheRetiredIdentifier(t *testing.T) {
+	for _, fresh := range []bool{true, false} {
+		pref := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 2).To4(), Port: 4433}
+		c, pc := newPreferredClient(t, fmt.Sprint("rpt-pref-", fresh), pref)
+		c.mu.Lock()
+		if fresh {
+			c.peerCIDs = append(c.peerCIDs, peerCID{seq: 2, cid: []byte("srv-cid2")}, peerCID{seq: 3, cid: []byte("srv-cid3")})
+		}
+		c.confirmLocked() // the probe leaves for pref under "pref-cid" (sequence 1)
+		c.mu.Unlock()
+
+		// Sequences 0 and 1 retired: the path in use and the probe both lose theirs.
+		seq := uint64(2)
+		if fresh {
+			seq = 4
+		}
+		if err := c.frames(spaceApplication, ncidFrame(seq, 2, fmt.Appendf(nil, "srv-cid%d", seq), make([]byte, 16)), time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		c.mu.Lock()
+		inUse := string(c.dcid)
+		n := len(pc.recorded())
+		c.sendPathChallengeLocked() // what the probe timer does on a resend
+		data := c.pathProbe.data
+		c.mu.Unlock()
+		toPref := ""
+		for _, w := range pc.recorded()[n:] {
+			if sameAddr(w.to, pref) {
+				toPref = string(w.data[1:9])
+			}
+		}
+		switch {
+		case toPref == "pref-cid":
+			t.Errorf("fresh %v: the resend toward the preferred address names \"pref-cid\", retired by Retire Prior To 2", fresh)
+		case fresh && (toPref == "" || toPref == inUse):
+			t.Errorf("fresh %v: the resend went to the preferred address under %q, with %q in use; want an identifier never used", fresh, toPref, inUse)
+		case !fresh && toPref != "":
+			t.Errorf("fresh %v: the probe went on under %q with no fresh identifier; want it given up", fresh, toPref)
+		}
+
+		// The preferred address answers the latest challenge.
+		c.mu.Lock()
+		c.rxFrom = pref
+		c.mu.Unlock()
+		if err := c.frames(spaceApplication, append(varint.Append(nil, framePathResponse), data[:]...), time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		c.mu.Lock()
+		moved, dcid := sameAddr(c.peer, pref), string(c.dcid)
+		c.mu.Unlock()
+		if fresh && (!moved || dcid != toPref) {
+			t.Errorf("fresh %v: after the answer, at the preferred address %v under %q; want it under %q", fresh, moved, dcid, toPref)
+		}
+		if !fresh && moved {
+			t.Errorf("fresh %v: moved to the preferred address under %q, the identifier the original address sends under", fresh, dcid)
+		}
+	}
+}
+
+// The same for §9.6.3's preferred candidate, probed from a Rebind's new
+// socket under its own identifier: a Retire Prior To that takes it moves
+// the candidate onto a fresh one.
+func TestRetirePriorToMovesThePreferredCandidateOffTheRetiredIdentifier(t *testing.T) {
+	first := &recordingPC{addr: fakeFuzzAddr("rpt-cand:first")}
+	original, preferred := fakeFuzzAddr("rpt-cand:peer"), fakeFuzzAddr("rpt-cand:preferred")
+	c := newConn(first, original, []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+	defer c.Close()
+	installAppSealer(t, c)
+	c.mu.Lock()
+	c.handshakeConfirmed = true
+	for i := 1; i <= 5; i++ {
+		c.peerCIDs = append(c.peerCIDs, peerCID{seq: uint64(i), cid: fmt.Appendf(nil, "peercid%d", i)})
+	}
+	c.preferred = preferred
+	c.probePreferredAddressLocked(time.Now())
+	c.mu.Unlock()
+	if err := c.Rebind(&recordingPC{addr: fakeFuzzAddr("rpt-cand:second")}); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	before := string(c.preferredCandidate.cid)
+	c.mu.Unlock()
+	if before == "" {
+		t.Fatal("the Rebind started no preferred candidate; the case under test is not reached")
+	}
+	if err := c.frames(spaceApplication, ncidFrame(6, 4, []byte("peercid6"), make([]byte, 16)), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	after := string(c.preferredCandidate.cid)
+	if !c.preferredCandidate.pending || after == "" {
+		t.Fatalf("the candidate was given up with peercid5 fresh in the pool (it held %q)", before)
+	}
+	pooled := false
+	for _, e := range c.peerCIDs {
+		pooled = pooled || string(e.cid) == after
+	}
+	if !pooled || after == string(c.dcid) {
+		t.Errorf("the candidate probes under %q after Retire Prior To 4, with %q in use; want a pooled identifier never used", after, c.dcid)
 	}
 }
