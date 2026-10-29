@@ -174,9 +174,11 @@ func TestQuicGoZeroRTTAgainstSluiceServer(t *testing.T) {
 	}
 }
 
-// A ticket's 0-RTT is accepted once (RFC 9846 §8): presented a second time —
-// a replay of the client's first flight, as far as the server can tell —
-// it resumes the session in 1-RTT.
+// A ticket's 0-RTT is accepted once (RFC 9846 §8): presented again — a
+// replay of the client's first flight, as far as the server can tell — it
+// resumes the session in 1-RTT, the fourth time as the second. Until
+// 2026-10-29 a refused presentation's end gave back the entry the admitted
+// one held, and the third presentation had its 0-RTT accepted again.
 func TestSluiceAcceptsATicketsZeroRTTOnce(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -190,12 +192,14 @@ func TestSluiceAcceptsATicketsZeroRTTOnce(t *testing.T) {
 	if st := dialEarly(t, ctx, addr, cfg, false); !st.Used0RTT {
 		t.Fatal("the ticket's first 0-RTT was refused")
 	}
-	st := dialEarly(t, ctx, addr, cfg, false)
-	if !st.TLS.DidResume {
-		t.Error("the second presentation did not resume the session")
-	}
-	if st.Used0RTT {
-		t.Error("the same ticket had its 0-RTT accepted twice")
+	for i := 2; i <= 4; i++ {
+		st := dialEarly(t, ctx, addr, cfg, false)
+		if !st.TLS.DidResume {
+			t.Errorf("presentation %d did not resume the session", i)
+		}
+		if st.Used0RTT {
+			t.Errorf("presentation %d of the same ticket had its 0-RTT accepted again", i)
+		}
 	}
 }
 

@@ -79,7 +79,8 @@ func (g *earlyGate) ticketExtra(now time.Time) []byte {
 // crypto/tls asks before it checks the PSK binder and before it knows
 // whether the client offered 0-RTT at all, so a reservation may go unused:
 // release gives it back when the handshake ends without the early keys, or
-// the connection does. The identifier returned is what release takes.
+// the connection does. The identifier returned is what release takes; a
+// refusal returns none, since the reservation it names is not the caller's.
 func (g *earlyGate) eligible(extra [][]byte, now time.Time) ([]byte, bool) {
 	for _, e := range extra {
 		if len(e) != earlyTicketLen || !bytes.HasPrefix(e, earlyTicketMagic) {
@@ -106,7 +107,13 @@ func (g *earlyGate) eligible(extra [][]byte, now time.Time) ([]byte, bool) {
 		g.mu.Lock()
 		ok := g.spent.consumeUntil(id, wall, issued.Add(g.window))
 		g.mu.Unlock()
-		return id, ok
+		if !ok {
+			// Refused, the identifier is not this connection's to give
+			// back: the entry it names may be another connection's
+			// admission, and a release of it would let the ticket in again.
+			return nil, false
+		}
+		return id, true
 	}
 	return nil, false
 }

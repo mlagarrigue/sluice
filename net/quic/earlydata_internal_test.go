@@ -699,3 +699,44 @@ func TestARetrySendsThe0RTTFlightAgainIn0RTT(t *testing.T) {
 		t.Errorf("%d requests went again in %d datagrams: one each, nothing coalesced", streams, len(again))
 	}
 }
+
+// A ticket is admitted once however many connections present it: a
+// presentation the register refuses ends without touching the admitted
+// one's entry. Until 2026-10-29 eligible returned the ticket's identifier
+// beside its refusal, handleTLSEvent kept it, and the refused connection's
+// end released the entry the admitted connection held — the next copy of
+// the same ClientHello within the window was admitted again, against RFC
+// 9846 §8's "at most once" (ADR 0019).
+func TestATicketPresentedFourTimesIsAdmittedOnce(t *testing.T) {
+	g := newEarlyGate(10*time.Minute, 16)
+	ticket := g.ticketExtra(time.Now())
+	var admitted []string
+	var conns []*Conn
+	for _, name := range []string{"a", "b", "c", "d"} {
+		c := newConn(&fuzzSink{addr: fakeFuzzAddr("once:" + name)}, fakeFuzzAddr("once:peer"),
+			[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+		c.early = g
+		ss := &tls.SessionState{EarlyData: true, Extra: [][]byte{ticket}}
+		if _, err := c.handleTLSEvent(tls.QUICEvent{Kind: tls.QUICResumeSession, SessionState: ss}); err != nil {
+			t.Fatal(err)
+		}
+		if ss.EarlyData {
+			admitted = append(admitted, name)
+		} else {
+			// A refused connection ends at once: what QUICHandshakeDone
+			// and enterClosingLocked both run.
+			c.mu.Lock()
+			c.releaseEarlyTicketLocked()
+			c.mu.Unlock()
+		}
+		conns = append(conns, c)
+	}
+	for _, c := range conns {
+		c.mu.Lock()
+		c.releaseEarlyTicketLocked()
+		c.mu.Unlock()
+	}
+	if len(admitted) != 1 || admitted[0] != "a" {
+		t.Errorf("0-RTT admitted to %v; want the first presentation only (RFC 9846 §8: at most once)", admitted)
+	}
+}
