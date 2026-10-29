@@ -1,6 +1,7 @@
 package quic
 
 import (
+	"bytes"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -1658,11 +1659,26 @@ func (c *Conn) blockedResendInterval() time.Duration {
 // frame — deliberately past the once-per-limit flag, which governs the
 // immediate announcement, not the keepalive — and re-arms itself. When
 // nothing is blocked any more it disarms.
+//
+// A tick queues a frame only when the text asks for one: "when it has no
+// ack-eliciting packets in flight" — one in flight is already what keeps the
+// idle timers from expiring — and only if the same frame does not still
+// wait in the control queue, which a shut congestion window holds back:
+// a keepalive is one frame per limit, not one per tick. Without the second
+// condition, a peer announcing a one-millisecond max_idle_timeout (a tick
+// every 10 ms) while the window stayed shut grew the queue by six bytes per
+// limit per tick, without bound.
 func (c *Conn) resendBlockedFramesLocked(now time.Time) {
 	blocked := false
-	if c.connSend.avail() == 0 && c.connSend.blockedSent {
-		c.control = appendFrame(c.control, frameDataBlocked, c.connSend.max)
+	inFlight := c.elicitingInFlightLocked()
+	queue := func(frame []byte) {
 		blocked = true
+		if !inFlight && !c.controlHoldsLocked(frame) {
+			c.control = append(c.control, frame...)
+		}
+	}
+	if c.connSend.avail() == 0 && c.connSend.blockedSent {
+		queue(appendFrame(nil, frameDataBlocked, c.connSend.max))
 	}
 	for _, s := range c.streams {
 		// Not for a stream whose sending part is closed — reset since, or
@@ -1670,8 +1686,7 @@ func (c *Conn) resendBlockedFramesLocked(now time.Time) {
 		// the frame after RESET_STREAM and from "Data Recvd", and "Data
 		// Sent" has no need of it.
 		if s.sendQ.avail() == 0 && s.sendQ.blockedSent && !s.sendClosed {
-			c.control = appendFrame(c.control, frameStreamDataBlocked, s.id, s.sendQ.max)
-			blocked = true
+			queue(appendFrame(nil, frameStreamDataBlocked, s.id, s.sendQ.max))
 		}
 	}
 	if !blocked {
@@ -1680,6 +1695,35 @@ func (c *Conn) resendBlockedFramesLocked(now time.Time) {
 	}
 	c.flushControlLocked()
 	c.blockedResend = now.Add(c.blockedResendInterval())
+}
+
+// elicitingInFlightLocked reports whether an ack-eliciting packet of any
+// space still waits for its acknowledgement. Callers hold mu.
+func (c *Conn) elicitingInFlightLocked() bool {
+	for i := range c.spaces {
+		if sp := &c.spaces[i]; !sp.discarded {
+			if _, ok := sp.sent.oldestEliciting(); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// controlHoldsLocked reports whether frame, one encoded frame, waits in the
+// control queue as it is. Callers hold mu.
+func (c *Conn) controlHoldsLocked(frame []byte) bool {
+	for q := c.control; len(q) > 0; {
+		_, rest, err := parseFrame(q)
+		if err != nil {
+			return false
+		}
+		if bytes.Equal(q[:len(q)-len(rest)], frame) {
+			return true
+		}
+		q = rest
+	}
+	return false
 }
 
 // creditConsumed reports application-consumed stream bytes to flow control,

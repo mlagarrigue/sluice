@@ -712,6 +712,52 @@ func TestBlockedFramesResendPeriodicallyWhileParked(t *testing.T) {
 	}
 }
 
+// The periodic re-announcement of §4.1 is one frame per limit, and only
+// "when it has no ack-eliciting packets in flight". Until 2026-10-29 every
+// tick appended a fresh copy of each *_BLOCKED frame to the control queue:
+// with the congestion window shut nothing left, and under a peer's
+// one-millisecond max_idle_timeout (a tick every 10 ms) the queue grew by
+// six bytes per limit per tick — 6006 bytes after a thousand ticks, without
+// bound. A copy still waiting in the queue is now enough, and with an
+// ack-eliciting packet in flight the tick queues nothing and stays armed.
+func TestBlockedResendQueuesOneFramePerLimit(t *testing.T) {
+	c := newResetReplayConn(t)
+	s, err := c.Stream(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.connSend.max, c.connSend.sent, c.connSend.blockedSent = 1000, 1000, true
+	s.sendQ.max, s.sendQ.sent, s.sendQ.blockedSent = 10, 10, true
+	c.reno().inFlight = c.reno().cwnd // the window is shut: nothing but grants leaves
+	now := time.Now()
+	c.resendBlockedFramesLocked(now)
+	one := len(c.control)
+	if one == 0 {
+		t.Fatal("the first tick queued no *_BLOCKED frame; the case under test is not reached")
+	}
+	for range 1000 {
+		c.resendBlockedFramesLocked(now)
+	}
+	if got := len(c.control); got != one {
+		t.Errorf("control queue holds %d bytes after 1001 ticks, %d after the first: a tick owes one copy per limit", got, one)
+	}
+
+	// An ack-eliciting packet in flight keeps the idle timers alive by
+	// itself: the tick adds nothing, and re-arms for when it is gone.
+	c.control = nil
+	c.spaces[spaceApplication].sent.record(sentPacket{pn: 1, sentAt: now, ackEliciting: true})
+	c.blockedResend = now
+	c.resendBlockedFramesLocked(now)
+	if len(c.control) != 0 {
+		t.Errorf("a tick with an ack-eliciting packet in flight queued %d bytes of *_BLOCKED", len(c.control))
+	}
+	if !c.blockedResend.After(now) {
+		t.Error("the blocked-resend deadline did not re-arm while still parked")
+	}
+}
+
 // RFC 9000 §10.3.1: a datagram that routes nowhere but ends in a reset
 // token the peer announced is the peer's stateless reset — the connection
 // ends silently, now, instead of grinding to the idle timeout against a
