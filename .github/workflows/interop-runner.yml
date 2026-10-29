@@ -130,7 +130,10 @@ jobs:
   # A complete pass — the Sunday one, or one started by hand for every peer
   # and every case — is also published on the interop-results branch, the
   # address docs/README.md links: its README.md is the table, cases.jsonl
-  # the runner's word for each case. The branch holds the latest pass only.
+  # the runner's word for each case, history.jsonl the last eight passes'.
+  # The branch is one commit, rewritten each pass; the history rides in it,
+  # and the random cases are judged over it once the pass is published
+  # (scripts/interop-random-history.sh).
   aggregate:
     needs: interop
     if: always() && needs.interop.result != 'skipped'
@@ -189,11 +192,23 @@ jobs:
       - name: Publish a complete pass
         if: github.event_name == 'schedule' || (inputs.peer == 'all' && inputs.tests == '' && inputs.image == '')
         run: |
+          # The passes before this one, as the branch holds them; none yet
+          # (no branch, or one from before the history) starts it empty.
+          if git fetch -q --depth 1 origin interop-results 2>/dev/null &&
+            git show FETCH_HEAD:history.jsonl >matrix/history.jsonl 2>/dev/null; then :; else
+            : >matrix/history.jsonl
+          fi
+          scripts/interop-random-history.sh append matrix/history.jsonl matrix/cases.jsonl \
+            "$(date -u +%Y-%m-%d)" "${GITHUB_SHA::7}"
           cd matrix
           git init -q -b interop-results
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add README.md cases.jsonl
+          git add README.md cases.jsonl history.jsonl
           git commit -q -m "ci: interop pass at ${GITHUB_SHA::7}"
           git push -q --force \
             "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" interop-results
+          # Published first, judged second: a red here keeps the pass on
+          # record and names the random case that stopped succeeding.
+          cd ..
+          scripts/interop-random-history.sh check matrix/history.jsonl

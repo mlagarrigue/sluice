@@ -298,3 +298,78 @@ func firstCaseOnly(t *testing.T, results map[string]any) map[string]any {
 	cut["results"] = []any{[]any{resultList(t, results)[0]}}
 	return cut
 }
+
+// A random case is accepted either way pass by pass; over its history it
+// is not. scripts/interop-random-history.sh appends each pass and refuses a
+// random case that succeeded in none of the last six passes that ran it —
+// and only then: five failures are not enough, one success among six is,
+// and a pass that did not run the case does not count against it.
+func TestRandomCasesAreJudgedOverTheirHistory(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq is not installed")
+	}
+	dir := t.TempDir()
+	expected := filepath.Join(dir, "expected.json")
+	if err := os.WriteFile(expected, []byte(`{"quic-go": {"server": {"handshake": "random: the test's own", "transfer": "succeeded"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) (string, error) {
+		cmd := exec.Command("sh", append([]string{"../scripts/interop-random-history.sh"}, args...)...) //nolint:gosec // G204: the script is the repository's, the arguments this test's
+		cmd.Env = append(os.Environ(), "EXPECTED="+expected)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	// history appends one pass per letter: s or f for the random case, - for
+	// a pass that did not run it.
+	history := func(t *testing.T, passes string) string {
+		t.Helper()
+		h := filepath.Join(t.TempDir(), "history.jsonl")
+		for i, p := range passes {
+			line := `{"server":"sluice","client":"quic-go","name":"transfer","result":"succeeded"}` + "\n"
+			if p != '-' {
+				result := map[rune]string{'s': "succeeded", 'f': "failed"}[p]
+				line += `{"server":"sluice","client":"quic-go","name":"handshake","result":"` + result + `"}` + "\n"
+			}
+			cases := filepath.Join(t.TempDir(), "cases.jsonl")
+			if err := os.WriteFile(cases, []byte(line), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if out, err := run("append", h, cases, "pass-"+string(rune('a'+i)), "abc1234"); err != nil {
+				t.Fatalf("append: %v\n%s", err, out)
+			}
+		}
+		return h
+	}
+	for _, tc := range []struct {
+		passes string
+		refuse bool
+	}{
+		{"ffffff", true},
+		{"fffff", false},
+		{"sfffff", false},
+		{"sffffff", true},
+		{"ff-ff-ff", true},
+		{"fffffs", false},
+	} {
+		t.Run(tc.passes, func(t *testing.T) {
+			out, err := run("check", history(t, tc.passes))
+			switch {
+			case tc.refuse && err == nil:
+				t.Fatalf("passes %s: accepted\n%s", tc.passes, out)
+			case tc.refuse && !strings.Contains(out, "quic-go server handshake: no success in the last 6 passes"):
+				t.Fatalf("passes %s: refused without naming the case\n%s", tc.passes, out)
+			case !tc.refuse && err != nil:
+				t.Fatalf("passes %s: refused: %v\n%s", tc.passes, err, out)
+			}
+		})
+	}
+
+	// The history keeps the last eight passes.
+	b, err := os.ReadFile(history(t, "sssssssssss"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(b), "\n"); n != 8 {
+		t.Fatalf("the history holds %d passes, want the last 8", n)
+	}
+}

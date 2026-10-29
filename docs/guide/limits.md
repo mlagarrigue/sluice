@@ -532,6 +532,10 @@ of every failure, and a pass that departs from it fails the job. Green
 means every case of every peer went as the record says; a case the
 record marks `random`, whose outcome follows the losses the simulator
 draws, is accepted succeeded or failed, its cause written beside it.
+One pass does not judge it; its history does: the branch keeps the last
+eight passes, and a `random` case that succeeded in none of the last six
+that ran it fails the weekly job — a client that has stopped succeeding,
+where one pass cannot tell that from a bad draw.
 
 What the record holds against quic-go and ngtcp2. As a server, sluice
 passes handshake, transfer, longrtt, chacha20, multiplexing, retry,
