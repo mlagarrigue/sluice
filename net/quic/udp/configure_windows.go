@@ -11,6 +11,11 @@ import (
 const (
 	ipDontFragment = 14 // IP_DONTFRAGMENT (IPPROTO_IP)
 	ipv6DontFrag   = 14 // IPV6_DONTFRAG   (IPPROTO_IPV6)
+	// IP_MTU_DISCOVER and IPV6_MTU_DISCOVER, both 71, take a PMTUD_STATE;
+	// IP_PMTUDISC_PROBE is its fourth value.
+	ipMTUDiscover   = 71
+	ipv6MTUDiscover = 71
+	pmtudiscProbe   = 3
 
 	// SIO_UDP_CONNRESET (mstcpip.h): _WSAIOW(IOC_VENDOR, 12).
 	sioUDPConnReset = syscall.IOC_IN | syscall.IOC_VENDOR | 12 // 0x9800000C
@@ -38,13 +43,15 @@ func disableConnReset(h syscall.Handle) error {
 		nil, 0, &returned, nil, 0)
 }
 
-// configure disables SIO_UDP_CONNRESET, then sets IP_DONTFRAGMENT or
-// IPV6_DONTFRAG. Windows has no socket-level flow-label control, so §9.7
-// is left to the stack.
+// configure disables SIO_UDP_CONNRESET, then sets DF through
+// IP_MTU_DISCOVER or IPV6_MTU_DISCOVER at IP_PMTUDISC_PROBE, or through
+// IP_DONTFRAGMENT or IPV6_DONTFRAG where the stack lacks the first
+// (setDontFragment). Windows has no socket-level flow-label control, so
+// §9.7 is left to the stack.
 //
 // On a dual-stack socket (IPV6_V6ONLY off, which is how the standard
 // library opens network "udp") Winsock documents that IPv4-level options
-// apply to mapped traffic, so the IPv4 option is attempted too, best-effort.
+// apply to mapped traffic, so the IPv4 level is attempted too, best-effort.
 func configure(fd uintptr, v6 bool) error {
 	h := syscall.Handle(fd)
 	// Best-effort: the read loops already treat a stray reset as a
@@ -52,10 +59,27 @@ func configure(fd uintptr, v6 bool) error {
 	// discard per ICMP, not the socket.
 	_ = disableConnReset(h)
 	if v6 {
-		if err := syscall.SetsockoptInt(h, syscall.IPPROTO_IPV6, ipv6DontFrag, 1); err != nil {
+		if err := setDontFragment(h, syscall.IPPROTO_IPV6, ipv6MTUDiscover, ipv6DontFrag); err != nil {
 			return err
 		}
-		return ignoreOptionAbsent(syscall.SetsockoptInt(h, syscall.IPPROTO_IP, ipDontFragment, 1))
+		return ignoreOptionAbsent(setDontFragment(h, syscall.IPPROTO_IP, ipMTUDiscover, ipDontFragment))
 	}
-	return syscall.SetsockoptInt(h, syscall.IPPROTO_IP, ipDontFragment, 1)
+	return setDontFragment(h, syscall.IPPROTO_IP, ipMTUDiscover, ipDontFragment)
+}
+
+// setDontFragment sets DF at level, asking for the probe mode first. The
+// probe mode is Linux's, with the same reason: Winsock documents that, on a
+// datagram socket, IP_PMTUDISC_PROBE sets DF and refuses only a datagram
+// larger than the interface MTU, where IP_PMTUDISC_DO refuses one larger
+// than the path MTU the stack holds for the destination — a value an
+// unauthenticated ICMP writes, which RFC 9000 §14.2.1 forbids acting on
+// below 1200 bytes. The two options exclude each other: once either is set,
+// Winsock answers the other with WSAEINVAL (measured on the CI's Windows
+// runners), and the probe mode alone reads back DONTFRAG as 1. A stack
+// that refuses the probe mode gets DONTFRAG, as before the mode existed.
+func setDontFragment(h syscall.Handle, level, discover, dontFrag int) error {
+	if err := syscall.SetsockoptInt(h, level, discover, pmtudiscProbe); err == nil {
+		return nil
+	}
+	return syscall.SetsockoptInt(h, level, dontFrag, 1)
 }

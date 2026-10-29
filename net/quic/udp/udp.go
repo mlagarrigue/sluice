@@ -26,16 +26,23 @@
 //   - macOS: IP_DONTFRAG / IPV6_DONTFRAG. The kernel refuses, with
 //     EMSGSIZE at send time, a datagram larger than the outgoing interface
 //     MTU. No flow-label control exists; the label stays whatever the
-//     kernel chooses. Tested here. Not verified: whether a path MTU the
-//     kernel cached from an ICMP below 1200 bytes refuses the 1200-byte
-//     datagram, as Linux's DO mode does; no option like PROBE is set, and
-//     no test installs such a cache on this system.
+//     kernel chooses. Tested here. A path MTU the kernel holds for the
+//     destination below 1200 bytes — kept in its host route, where an ICMP
+//     Fragmentation Needed writes it — does not refuse the 1200-byte
+//     datagram, so no option like PROBE is needed: CI installs a host
+//     route of MTU 600 and sends through it (pmtu_cache_darwin_test.go).
 //   - Windows: IP_DONTFRAGMENT / IPV6_DONTFRAG. Winsock refuses, with
 //     WSAEMSGSIZE at send time, a datagram larger than the outgoing
 //     interface MTU. No flow-label control exists. SIO_UDP_CONNRESET is
 //     turned off, best-effort, so an ICMP port-unreachable for an earlier
 //     send no longer surfaces as WSAECONNRESET on the next read. Tested
-//     here. The path MTU cache is not verified either, as for macOS.
+//     here. DF is set through IP_MTU_DISCOVER / IPV6_MTU_DISCOVER at
+//     IP_PMTUDISC_PROBE, which Winsock documents as refusing only past the
+//     interface MTU and ignoring the path MTU it holds for the destination;
+//     IP_DONTFRAGMENT takes over on a stack without the mode. The mode is
+//     read back here; its effect on a cached path MTU is Winsock's
+//     documented one, not measured, since no route MTU stands in for the
+//     cache on Windows and filling it would take a forged ICMP.
 //   - Anything else: [Configure] returns [errors.ErrUnsupported] and
 //     changes nothing. The socket still works; it just may be fragmented,
 //     and the [quic] package then keeps its datagrams at 1200 bytes rather

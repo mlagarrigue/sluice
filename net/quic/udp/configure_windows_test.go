@@ -55,9 +55,47 @@ func setConnReset(t *testing.T, c *net.UDPConn, on uint32) {
 // Winsock names (ws2ipdef.h), spelled again here because the package's
 // copies are unexported.
 const (
-	ipDontFragment = 14 // IP_DONTFRAGMENT
-	ipv6DontFrag   = 14 // IPV6_DONTFRAG
+	ipDontFragment  = 14 // IP_DONTFRAGMENT
+	ipv6DontFrag    = 14 // IPV6_DONTFRAG
+	ipMTUDiscover   = 71 // IP_MTU_DISCOVER
+	ipv6MTUDiscover = 71 // IPV6_MTU_DISCOVER
+	pmtudiscProbe   = 3  // IP_PMTUDISC_PROBE
 )
+
+// RFC 9000 §14.2.1: a path MTU below 1200 bytes, which an unauthenticated
+// ICMP writes into the stack's destination cache, must not stop the
+// 1200-byte datagram. Winsock documents that IP_PMTUDISC_PROBE refuses a
+// datagram only past the interface MTU, ignoring that cache; Configure
+// asks for it, and Winsock reads it back. The cache itself cannot be
+// filled here without forging an ICMP — Windows has no route MTU to stand
+// in for it, as Linux and macOS do — so what is tested is the mode asked
+// for, and the documented meaning of the mode is relied on.
+func TestPathMTUCacheIsIgnoredByTheProbeMode(t *testing.T) {
+	v4, err := udp.Listen("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v4.Close()
+	if got := getsockopt(t, v4, syscall.IPPROTO_IP, ipMTUDiscover); got != pmtudiscProbe {
+		t.Errorf("udp4 IP_MTU_DISCOVER = %d, want IP_PMTUDISC_PROBE (%d)", got, pmtudiscProbe)
+	}
+	dual, err := udp.Listen("udp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dual.Close()
+	if got := getsockopt(t, dual, syscall.IPPROTO_IPV6, ipv6MTUDiscover); got != pmtudiscProbe {
+		t.Errorf("dual-stack IPV6_MTU_DISCOVER = %d, want IP_PMTUDISC_PROBE (%d)", got, pmtudiscProbe)
+	}
+	if got := getsockopt(t, dual, syscall.IPPROTO_IP, ipMTUDiscover); got != pmtudiscProbe {
+		t.Errorf("dual-stack IP_MTU_DISCOVER = %d, want IP_PMTUDISC_PROBE (%d) for mapped peers", got, pmtudiscProbe)
+	}
+	// A datagram of 1200 bytes still leaves: the mode refuses nothing the
+	// interface carries.
+	if _, err := v4.WriteTo(make([]byte, 1200), v4.LocalAddr()); err != nil {
+		t.Errorf("a 1200-byte datagram on the loopback: %v", err)
+	}
+}
 
 // What Configure claims to do on Windows, read back from Winsock: an
 // AF_INET socket carries IP_DONTFRAGMENT=1; an AF_INET6 one, dual-stack

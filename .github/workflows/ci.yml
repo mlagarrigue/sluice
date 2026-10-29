@@ -185,6 +185,21 @@ jobs:
         run: |
           netsh interface ipv4 add address "Loopback Pseudo-Interface 1" 127.0.0.2 255.0.0.0
           netsh interface ipv6 add address "Loopback Pseudo-Interface 1" fd00::2
+      # The path MTU cache probe wants a host route of MTU 600 toward an
+      # address nobody serves: on macOS that route is where the kernel keeps
+      # the path MTU an ICMP Fragmentation Needed teaches it. Given here, and
+      # the probe's skip refused, as the Linux job does for its namespace.
+      - name: The path MTU cache (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          gw=$(route -n get default | awk '/gateway:/ {print $2}')
+          sudo route -n add -host 198.51.100.5 "$gw" -mtu 600
+          SLUICE_UDP_PMTU_DEST=198.51.100.5 go test -count=1 -v -run '^TestPathMTUCacheDoesNotRefuseMinimumDatagram$' ./net/quic/udp/ | tee udp.log
+          if ! grep -- '--- PASS: TestPathMTUCacheDoesNotRefuseMinimumDatagram ' udp.log; then
+            echo "::error::TestPathMTUCacheDoesNotRefuseMinimumDatagram did not pass" >&2
+            exit 1
+          fi
       - name: Test
         run: go test -race -shuffle=on -v ./net/quic/udp/...
       - name: Test net/quic and net/httpstream
