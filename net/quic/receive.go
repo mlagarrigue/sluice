@@ -1089,24 +1089,7 @@ func (c *Conn) framesIn(space int, early bool, payload []byte, now time.Time) er
 	// packet that ended it — of no consequence, since the close follows.
 	// What it buys is the measure above: one ACK-only datagram per request
 	// gone. To revisit if a peer is found to act on such an ACK.
-	//
-	// RFC 9000 §13.2 (Table 3): ACK, PADDING and CONNECTION_CLOSE elicit no
-	// acknowledgement. parseFrames drops PADDING, so the two frame types
-	// left to skip are ACK and the close: a packet carrying nothing else is
-	// not ack-eliciting, and the close puts this end in the draining state,
-	// where nothing may leave anyway (§10.2.2).
-	eliciting := false
-	for _, f := range frames {
-		switch f.Type {
-		case frameACK, frameACK | 1, frameConnectionClose, frameConnectionClose | 1:
-			continue
-		}
-		eliciting = true
-		c.mu.Lock()
-		c.spaces[space].ack.onAckEliciting(space, now, c.rxECN == ecnCE)
-		c.mu.Unlock()
-		break
-	}
+	eliciting := c.oweAckFor(frames, space, now)
 	// RFC 9000 §21.9: an ack-eliciting packet none of whose frames moved
 	// this end's state is counted (Stats.NonProductivePackets says what is
 	// done with the count); the handlers set rxProgress when they move it.
@@ -1161,35 +1144,9 @@ func (c *Conn) framesIn(space int, early bool, payload []byte, now time.Time) er
 
 frames:
 	for _, f := range frames {
-		// RFC 9000 §12.4: Initial and Handshake packets may carry only
-		// PADDING, PING, ACK, CRYPTO and the transport CONNECTION_CLOSE.
-		// The table is not pedantry — Initial keys are public, so every
-		// frame admitted at that level is a frame anyone who saw the first
-		// datagram can forge: a HANDSHAKE_DONE there would make a client
-		// discard its Handshake keys mid-handshake, for good.
-		if early {
-			// RFC 9000 §12.4, Table 3: of the application frames, ACK,
-			// CRYPTO, NEW_TOKEN, PATH_RESPONSE, RETIRE_CONNECTION_ID and
-			// HANDSHAKE_DONE never appear in 0-RTT — the client has nothing
-			// of this connection's to acknowledge, answer or retire yet.
-			// RETIRE_CONNECTION_ID by the verified erratum EID 7365, which
-			// corrects its row to ___1, as §12.5's text always had it.
-			switch f.Type {
-			case frameACK, frameACK | 1, frameCrypto, frameNewToken, framePathResponse, frameRetireConnectionID, frameHandshakeDone:
-				return &transportError{
-					code: transportProtocolViolation,
-					err:  fmt.Errorf("%w: frame type %#x in a 0-RTT packet", ErrQUIC, f.Type),
-				}
-			}
-		}
-		if space != spaceApplication {
-			switch f.Type {
-			case framePing, frameCrypto, frameACK, frameACK | 1, frameConnectionClose:
-			default:
-				return &transportError{
-					code: transportProtocolViolation,
-					err:  fmt.Errorf("%w: frame type %#x at encryption level %d", ErrQUIC, f.Type, space),
-				}
+		if early || space != spaceApplication {
+			if err := admitFrame(space, early, f.Type); err != nil {
+				return err
 			}
 		}
 		switch {
@@ -1233,99 +1190,40 @@ frames:
 			}
 
 		case f.Type == FrameResetStream:
-			s, tolerated, err := c.streamFor(f.StreamID, space, false)
+			s, growth, err := c.handleResetStream(f, space)
 			if err != nil {
 				return err
 			}
-			if tolerated {
-				continue
+			if s != nil {
+				connGrowth += growth
+				batch = append(batch, Frame{Type: FrameResetStream, StreamID: f.StreamID, value: f.value})
+				ended = append(ended, s)
 			}
-			growth, neverConsumed, err := s.abandon(f.value, f.offset)
-			if err != nil {
-				return err
-			}
-			c.rxProgress = true
-			connGrowth += growth
-			if neverConsumed > 0 {
-				c.mu.Lock()
-				if c.connRecv.consume(neverConsumed) {
-					c.grants = appendFrame(c.grants, frameMaxData, c.connRecv.nextMax())
-				}
-				c.mu.Unlock()
-			}
-			batch = append(batch, Frame{Type: FrameResetStream, StreamID: f.StreamID, value: f.value})
-			ended = append(ended, s)
 
 		case f.Type == FrameStopSending:
-			s, tolerated, err := c.streamFor(f.StreamID, space, true)
+			s, err := c.handleStopSending(f, space)
 			if err != nil {
 				return err
-			}
-			if tolerated {
-				continue
-			}
-			c.mu.Lock()
-			stopped, sendErr := s.onStopSendingLocked(f.value)
-			c.mu.Unlock()
-			if sendErr != nil && !errors.Is(sendErr, errClosed) {
-				return sendErr
 			}
 			// Handed up even when it is all the packet carries: an
 			// application whose stream the peer refuses to read — HTTP/3's
 			// control stream, which RFC 9114 §6.2.1 makes a connection
 			// error — learns of it now, not at the next datagram that
 			// carries stream data.
-			if stopped {
-				c.rxProgress = true
+			if s != nil {
 				batch = append(batch, Frame{Type: FrameStopSending, StreamID: f.StreamID, value: f.value})
 				// Retired, if this ended its last direction, after the
 				// batch: see onStopSendingLocked.
 				ended = append(ended, s)
 			}
 
-		case f.Type == frameMaxData:
-			c.mu.Lock()
-			if c.connSend.grant(f.value) {
-				c.rxProgress = true
-				c.cond.Broadcast()
-			}
-			c.mu.Unlock()
+		case f.Type == frameMaxData, f.Type == frameMaxStreams, f.Type == frameMaxStreams|1:
+			c.handleLimitGrant(f)
 
 		case f.Type == frameMaxStreamData:
-			// Through streamFor rather than a bare map lookup: §3.2 says a
-			// MAX_STREAM_DATA for a peer-initiated stream this end has not
-			// seen yet opens it, and §19.10 makes one for a stream the peer
-			// could never grant on — a receive-only stream, or a
-			// locally-initiated one never opened — a STREAM_STATE_ERROR,
-			// not a frame to ignore.
-			s, tolerated, err := c.streamFor(f.StreamID, space, true)
-			if err != nil {
+			if err := c.handleMaxStreamData(f, space); err != nil {
 				return err
 			}
-			if !tolerated {
-				c.mu.Lock()
-				if s.sendQ.grant(f.value) {
-					c.rxProgress = true
-					c.cond.Broadcast()
-				}
-				c.mu.Unlock()
-			}
-
-		case f.Type == frameMaxStreams, f.Type == frameMaxStreams|1:
-			c.mu.Lock()
-			if f.Type == frameMaxStreams {
-				if f.value > c.peerMaxStreamsBidi {
-					c.peerMaxStreamsBidi = f.value
-					c.bidiBlockedTold = false
-					c.rxProgress = true
-				}
-			} else if f.value > c.peerMaxStreamsUni {
-				c.peerMaxStreamsUni = f.value
-				c.uniBlockedTold = false
-				c.rxProgress = true
-			}
-			c.cond.Broadcast()
-			c.mu.Unlock()
 
 		case f.Type == framePathChallenge:
 			// §8.2: must be answered, on pain of the peer concluding the
@@ -1341,20 +1239,10 @@ frames:
 		case f.Type == framePathResponse:
 			c.handlePathResponse(f, now)
 
-		// The client confirms the handshake here and nowhere else: RFC 9001
-		// §4.1.2 also lets it confirm on an acknowledged 1-RTT packet, which
-		// would drop the Handshake keys a round trip earlier at most, and
-		// HANDSHAKE_DONE always comes.
 		case f.Type == frameHandshakeDone:
-			if !c.isClient {
-				return &transportError{
-					code: transportProtocolViolation,
-					err:  fmt.Errorf("%w: a client sent HANDSHAKE_DONE", ErrQUIC),
-				}
+			if err := c.handleHandshakeDone(); err != nil {
+				return err
 			}
-			c.mu.Lock()
-			c.confirmLocked()
-			c.mu.Unlock()
 
 		case f.Type == frameConnectionClose || f.Type == frameConnectionClose|1:
 			c.rxProgress = true
@@ -1393,15 +1281,8 @@ frames:
 			}
 
 		case f.Type == frameNewToken:
-			// §19.7: only a server hands out tokens, and a server that
-			// receives one closes with PROTOCOL_VIOLATION. A client stores
-			// nothing — this package never spends a token — so the frame is
-			// legal and inert there.
-			if !c.isClient {
-				return &transportError{
-					code: transportProtocolViolation,
-					err:  fmt.Errorf("%w: a client sent a NEW_TOKEN frame", ErrQUIC),
-				}
+			if err := c.handleNewToken(); err != nil {
+				return err
 			}
 
 		case f.Type == frameStreamDataBlocked:
@@ -1453,6 +1334,191 @@ frames:
 			c.maybeRemoveLocked(s)
 		}
 		c.mu.Unlock()
+	}
+	return nil
+}
+
+// admitFrame refuses a frame its packet's level may not carry. RFC 9000
+// §12.4: Initial and Handshake packets may carry only PADDING, PING, ACK,
+// CRYPTO and the transport CONNECTION_CLOSE. The table is not pedantry —
+// Initial keys are public, so every frame admitted at that level is a frame
+// anyone who saw the first datagram can forge: a HANDSHAKE_DONE there would
+// make a client discard its Handshake keys mid-handshake, for good. Called
+// only for 0-RTT and the two handshake levels: a 1-RTT packet may carry
+// any frame.
+func admitFrame(space int, early bool, typ byte) error {
+	if early {
+		// RFC 9000 §12.4, Table 3: of the application frames, ACK,
+		// CRYPTO, NEW_TOKEN, PATH_RESPONSE, RETIRE_CONNECTION_ID and
+		// HANDSHAKE_DONE never appear in 0-RTT — the client has nothing
+		// of this connection's to acknowledge, answer or retire yet.
+		// RETIRE_CONNECTION_ID by the verified erratum EID 7365, which
+		// corrects its row to ___1, as §12.5's text always had it.
+		switch typ {
+		case frameACK, frameACK | 1, frameCrypto, frameNewToken, framePathResponse, frameRetireConnectionID, frameHandshakeDone:
+			return &transportError{
+				code: transportProtocolViolation,
+				err:  fmt.Errorf("%w: frame type %#x in a 0-RTT packet", ErrQUIC, typ),
+			}
+		}
+	}
+	if space != spaceApplication {
+		switch typ {
+		case framePing, frameCrypto, frameACK, frameACK | 1, frameConnectionClose:
+		default:
+			return &transportError{
+				code: transportProtocolViolation,
+				err:  fmt.Errorf("%w: frame type %#x at encryption level %d", ErrQUIC, typ, space),
+			}
+		}
+	}
+	return nil
+}
+
+// oweAckFor owes the packet's acknowledgement if any of its frames elicits
+// one, and reports whether one did. RFC 9000 §13.2 (Table 3): ACK, PADDING
+// and CONNECTION_CLOSE elicit no acknowledgement. parseFrames drops
+// PADDING, so the two frame types left to skip are ACK and the close: a
+// packet carrying nothing else is not ack-eliciting, and the close puts
+// this end in the draining state, where nothing may leave anyway
+// (§10.2.2).
+func (c *Conn) oweAckFor(frames []Frame, space int, now time.Time) bool {
+	for _, f := range frames {
+		switch f.Type {
+		case frameACK, frameACK | 1, frameConnectionClose, frameConnectionClose | 1:
+			continue
+		}
+		c.mu.Lock()
+		c.spaces[space].ack.onAckEliciting(space, now, c.rxECN == ecnCE)
+		c.mu.Unlock()
+		return true
+	}
+	return false
+}
+
+// handleResetStream ends the receive side of the stream a RESET_STREAM
+// names, and returns it with the connection flow-control growth its final
+// size brings; a nil stream is one the frame may name and that needs
+// nothing (streamFor's tolerated). The bytes the application never
+// consumed are credited back to the connection window at once.
+func (c *Conn) handleResetStream(f Frame, space int) (*Stream, uint64, error) {
+	s, tolerated, err := c.streamFor(f.StreamID, space, false)
+	if err != nil || tolerated {
+		return nil, 0, err
+	}
+	growth, neverConsumed, err := s.abandon(f.value, f.offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	c.rxProgress = true
+	if neverConsumed > 0 {
+		c.mu.Lock()
+		if c.connRecv.consume(neverConsumed) {
+			c.grants = appendFrame(c.grants, frameMaxData, c.connRecv.nextMax())
+		}
+		c.mu.Unlock()
+	}
+	return s, growth, nil
+}
+
+// handleStopSending acts on a STOP_SENDING, and returns the stream when
+// the frame stopped it — what the batch reports — or nil when it named a
+// tolerated stream or one already stopped.
+func (c *Conn) handleStopSending(f Frame, space int) (*Stream, error) {
+	s, tolerated, err := c.streamFor(f.StreamID, space, true)
+	if err != nil || tolerated {
+		return nil, err
+	}
+	c.mu.Lock()
+	stopped, sendErr := s.onStopSendingLocked(f.value)
+	c.mu.Unlock()
+	if sendErr != nil && !errors.Is(sendErr, errClosed) {
+		return nil, sendErr
+	}
+	if !stopped {
+		return nil, nil
+	}
+	c.rxProgress = true
+	return s, nil
+}
+
+// handleLimitGrant raises the connection's send window (MAX_DATA) or the
+// number of streams this end may open (MAX_STREAMS), and wakes whoever
+// waits on either.
+func (c *Conn) handleLimitGrant(f Frame) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch f.Type {
+	case frameMaxData:
+		if c.connSend.grant(f.value) {
+			c.rxProgress = true
+			c.cond.Broadcast()
+		}
+	case frameMaxStreams:
+		if f.value > c.peerMaxStreamsBidi {
+			c.peerMaxStreamsBidi = f.value
+			c.bidiBlockedTold = false
+			c.rxProgress = true
+		}
+		c.cond.Broadcast()
+	default: // MAX_STREAMS for unidirectional streams
+		if f.value > c.peerMaxStreamsUni {
+			c.peerMaxStreamsUni = f.value
+			c.uniBlockedTold = false
+			c.rxProgress = true
+		}
+		c.cond.Broadcast()
+	}
+}
+
+// handleMaxStreamData raises one stream's send window. Through streamFor
+// rather than a bare map lookup: §3.2 says a MAX_STREAM_DATA for a
+// peer-initiated stream this end has not seen yet opens it, and §19.10
+// makes one for a stream the peer could never grant on — a receive-only
+// stream, or a locally-initiated one never opened — a STREAM_STATE_ERROR,
+// not a frame to ignore.
+func (c *Conn) handleMaxStreamData(f Frame, space int) error {
+	s, tolerated, err := c.streamFor(f.StreamID, space, true)
+	if err != nil || tolerated {
+		return err
+	}
+	c.mu.Lock()
+	if s.sendQ.grant(f.value) {
+		c.rxProgress = true
+		c.cond.Broadcast()
+	}
+	c.mu.Unlock()
+	return nil
+}
+
+// handleHandshakeDone confirms the handshake on a client, the only end a
+// HANDSHAKE_DONE may reach. The client confirms here and nowhere else: RFC
+// 9001 §4.1.2 also lets it confirm on an acknowledged 1-RTT packet, which
+// would drop the Handshake keys a round trip earlier at most, and
+// HANDSHAKE_DONE always comes.
+func (c *Conn) handleHandshakeDone() error {
+	if !c.isClient {
+		return &transportError{
+			code: transportProtocolViolation,
+			err:  fmt.Errorf("%w: a client sent HANDSHAKE_DONE", ErrQUIC),
+		}
+	}
+	c.mu.Lock()
+	c.confirmLocked()
+	c.mu.Unlock()
+	return nil
+}
+
+// handleNewToken checks a NEW_TOKEN's direction. §19.7: only a server hands
+// out tokens, and a server that receives one closes with
+// PROTOCOL_VIOLATION. A client stores nothing — this package never spends a
+// token — so the frame is legal and inert there.
+func (c *Conn) handleNewToken() error {
+	if !c.isClient {
+		return &transportError{
+			code: transportProtocolViolation,
+			err:  fmt.Errorf("%w: a client sent a NEW_TOKEN frame", ErrQUIC),
+		}
 	}
 	return nil
 }
