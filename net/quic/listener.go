@@ -66,8 +66,9 @@ type ListenerConfig struct {
 	// Off is not defenseless: a new Initial must arrive in a 1200-byte
 	// datagram (§14.1) and decrypt under the keys its own destination
 	// identifier derives before any connection state exists for it, and
-	// once the pending-handshake table passes half of MaxPendingConns the
-	// listener switches to the Retry flow on its own — spoofed-source
+	// once the pending-handshake table holds MaxPendingConns/2 entries
+	// (rounded down, so that with a bound of one every Initial takes it)
+	// the listener switches to the Retry flow on its own — spoofed-source
 	// floods then cost the attacker a provable round trip per slot instead
 	// of filling the table for free.
 	AlwaysRetry bool

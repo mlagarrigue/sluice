@@ -418,8 +418,9 @@ func (c *Conn) handleRetireConnectionID(seq uint64) (bool, error) {
 // sequence (§10.3.2) and an identifier repeated under another sequence
 // (§19.15) are not looked for. Finding them is a scan of every active entry
 // per frame, and the repetition only confuses the peer's own resets and
-// retirements; the same sequence with other contents is refused (§19.15's
-// MUST).
+// retirements. The third case of the same MAY — a sequence number used for
+// another identifier — costs one lookup in the pool, and is taken: it is
+// refused as PROTOCOL_VIOLATION (§19.15).
 func (c *Conn) handleNewConnectionID(f Frame) error {
 	cid := f.Data[:len(f.Data)-16]
 	var token [16]byte
