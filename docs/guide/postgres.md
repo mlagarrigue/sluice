@@ -270,6 +270,26 @@ allocation `Null[T]` does not.
 > named: `n.Float64()` says what it does; `n.String()` renders `10.00`, not
 > `10`, because that is what an invoice prints.
 
+### The types not covered
+
+Every other built-in type of PostgreSQL 14 to 19, by family. A column of
+one of them still arrives: `Rows.Value` gives its raw binary bytes, for
+you to decode, or the query casts it to `text`.
+
+| Family | Types |
+|---|---|
+| Containers | multi-dimensional arrays; arrays of the types past the table's first thirteen (`json[]`, `jsonb[]`, `inet[]`, `interval[]`…); ranges (`int4range`, `int8range`, `numrange`, `tsrange`, `tstzrange`, `daterange`) and their multiranges (since 14); composite types and `record` |
+| Identifiers and positions | `oid`, `oid8` (19), the `reg*` aliases (`regclass`, `regtype`, `regproc`…, `regdatabase` in 19), `xid`, `xid8`, `cid`, `tid`, `pg_lsn`, `pg_snapshot`, `txid_snapshot`, `int2vector`, `oidvector` |
+| Text and search | `xml`, `jsonpath`, `tsvector`, `tsquery`, `refcursor`, `"char"`, and enums, whose OID each database chooses |
+| Geometry | `point`, `line`, `lseg`, `box`, `path`, `polygon`, `circle` |
+| Money | `money`, whose scale depends on a server setting (`lc_monetary`) |
+| Extensions | `hstore`, `citext`, `ltree`, `vector`, PostGIS's types — their OID too is chosen by each database |
+| Internal | `pg_node_tree`, `pg_ndistinct`, `pg_dependencies`, `pg_mcv_list`, the BRIN summaries: the planner's and the statistics' own |
+
+`aclitem` and `gtsvector` have no binary form at all: the server refuses to
+send them to a driver that asks for binary results, as this one does for
+every column. Cast them to `text` in the query.
+
 An error returned by the server is a `*postgres.Error` with its
 **SQLSTATE** (`Code`), a standardised five-character code, the only part
 stable across versions and languages, and the constraint concerned:
@@ -786,8 +806,10 @@ The design is in [ADR 0024](../design/adr/0024-listen-notify.md).
   at-least-once, and the resumption point lives in your schema.
 - **No `COPY ... TO STDOUT`**.
 - **`md5` authentication is refused.**
-- **Types**: no `money` or `tsvector`; arrays and column scanners for the
-  first thirteen types of the table above only.
+- **Types**: the table above and nothing else — no ranges, composites,
+  multi-dimensional arrays, geometry, `money`, `tsvector`, `oid` or
+  extension types ([the full list](#the-types-not-covered)); arrays and
+  column scanners for its first thirteen types only.
 
 The detail: [Limits](limits.md).
 

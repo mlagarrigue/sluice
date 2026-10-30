@@ -84,10 +84,14 @@ Three reasons come up, and the difference matters:
   Where this departs from RFC 5802 and RFC 4013, and why:
   [Authentication, in detail](#authentication-in-detail).
 - **Types**: the [PostgreSQL guide's table](postgres.md#the-codecs-in-one-table)
-  says which has what. **Missing**: `money` (its scale depends on a server
-  setting), `tsvector`, ranges, composite types, multi-dimensional arrays,
-  and what the table leaves without; each waits for a use that asks, and
-  needs vectors taken from a real server.
+  says which has what; [the types not covered](postgres.md#the-types-not-covered)
+  names every other built-in type, by family. **Missing**: multi-dimensional
+  arrays, arrays past the table's first thirteen types, ranges and
+  multiranges, composites, `oid` and the `reg*` aliases, `pg_lsn`, `xml`,
+  `tsvector`, geometry, `money`, extension types (`hstore`, `vector`…). Such
+  a column arrives as raw binary bytes through `Rows.Value`, or cast to
+  `text` in the query; `aclitem` and `gtsvector`, which have no binary form,
+  must be cast.
 - **Certificates are yours.** The connector opens the connection with
   the recipe you give it: `DialTCP`, `DialTLS` (which performs the
   SSLRequest peculiar to PostgreSQL), `DialTLSDirect` (direct TLS, since
