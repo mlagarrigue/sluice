@@ -116,7 +116,7 @@ it along.
 
 CI additionally runs `go vet` for Windows and macOS (`net/quic/udp` has
 per-OS files a Linux build never compiles), runs the integration tests against
-PostgreSQL 14 to 18 with the same `init.sql` as the devcontainer, and runs every
+PostgreSQL 14 to 19 (19 from its release candidate) with the same `init.sql` as the devcontainer, and runs every
 fuzz target each night, five minutes a target on Sundays; a failing input is
 uploaded as an artifact, and committing it under the package's
 `testdata/fuzz/` makes it a regression test. Test order is shuffled: a

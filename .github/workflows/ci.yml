@@ -294,13 +294,18 @@ jobs:
         # Every major the PostgreSQL project still supports. 14 to 16 take
         # TLS only after an SSLRequest; 17 also takes it directly, and speaks
         # protocol 3.0 only, negotiating a 3.2 request down; 18 speaks 3.2,
-        # and with it the long cancellation key.
-        postgres: ["14", "15", "16", "17", "18"]
+        # and with it the long cancellation key. 19 forces
+        # standard_conforming_strings on, and runs from its release
+        # candidate until it ships.
+        postgres: ["14", "15", "16", "17", "18", "19"]
+        include:
+          - postgres: "19"
+            tag: "19rc1"
     services:
       postgres:
         # Pinned majors: a new major changes catalogs and error texts, and
         # that should arrive as a reviewed bump, not overnight.
-        image: postgres:${{ matrix.postgres }}
+        image: postgres:${{ matrix.tag || matrix.postgres }}
         env:
           POSTGRES_PASSWORD: postgres
         ports:

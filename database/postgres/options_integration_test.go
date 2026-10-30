@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -31,17 +32,30 @@ func TestIntegrationSessionOptions(t *testing.T) {
 	param := []byte(`a\b`)
 	baseline := optionRow(t, addr, cfg, sql, param)
 
-	for _, opt := range []struct{ name, value string }{
-		{"DateStyle", "SQL, DMY"},
-		{"IntervalStyle", "postgres_verbose"},
-		{"extra_float_digits", "-15"},
-		{"bytea_output", "escape"},
-		{"standard_conforming_strings", "off"},
-		{"TimeZone", "Asia/Kolkata"}, // +05:30: half an hour off any whole-hour zone
+	for _, opt := range []struct{ name, value, refusedAs string }{
+		{"DateStyle", "SQL, DMY", ""},
+		{"IntervalStyle", "postgres_verbose", ""},
+		{"extra_float_digits", "-15", ""},
+		{"bytea_output", "escape", ""},
+		// PostgreSQL 19 forces it on and refuses off at startup: there is
+		// then no escape left for a parameter to be mistaken for.
+		{"standard_conforming_strings", "off", "0A000"},
+		{"TimeZone", "Asia/Kolkata", ""}, // +05:30: half an hour off any whole-hour zone
 	} {
 		t.Run(opt.name, func(t *testing.T) {
 			c := cfg
 			c.Params = map[string]string{opt.name: opt.value}
+			if opt.refusedAs != "" {
+				conn, err := postgres.Connect(t.Context(), postgres.DialTCP(addr), c)
+				var pgErr *postgres.Error
+				if errors.As(err, &pgErr) && pgErr.Code == opt.refusedAs {
+					t.Logf("the server refuses %s = %s (%s)", opt.name, opt.value, pgErr.Code)
+					return
+				}
+				if err == nil {
+					conn.Close()
+				}
+			}
 			// The server took the option, or the comparison below would
 			// hold for want of anything to resist.
 			if set := optionRow(t, addr, c, "SELECT current_setting($1)", []byte(opt.name)); string(set[0]) != opt.value {

@@ -463,7 +463,7 @@ latest stable release:
 
 | System | Architecture | What runs | Supported |
 |---|---|---|---|
-| Linux | amd64 | the whole suite under `-race`, PostgreSQL 14 to 18, QUIC and HTTP interop | yes |
+| Linux | amd64 | the whole suite under `-race`, PostgreSQL 14 to 19 (19 from its release candidate), QUIC and HTTP interop | yes |
 | Linux | arm64 | `net/quic/udp`, `net/quic`, `net/httpstream` under `-race` | yes for these packages; the rest is pure Go, not run |
 | Windows | amd64 | the same packages; all the code is vetted for Windows from the Linux runner (`GOOS=windows go vet`) | likewise |
 | macOS | arm64 | the same packages; all the code is vetted for macOS from the Linux runner (`GOOS=darwin go vet`) | likewise |
