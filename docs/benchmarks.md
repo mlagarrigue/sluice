@@ -1665,23 +1665,22 @@ benchmark's comment tells why.
 
 This table is measured apart from the rest of the page, by the same
 method on the same machine (core 14 pinned, `GOMAXPROCS=1`, 1 s × 3,
-median); the dated line inside its markers says when. That session ran
-~15% slower than the one of 2026-10-28: `StmtCacheHit` takes 18.6 ns at
-the commit of the previous measurement (`eaff6ce`) and at the head alike,
-paired A/B, against the 16 ns published that day — the machine, not the
-code. `PGPrepareOff` runs with the cache off since `aa67ba7`; off, it pays
-the parse on every query: 12% over the hit (836 against 743 ns).
+median); the dated line inside its markers says when. `PGPrepareOff` runs
+with the cache off since `aa67ba7`; off, it pays the parse on every query:
+14% over the hit (648 against 568 ns). `PGPrepareMissUnbounded` grows its
+table while it is measured, and its spread stays wide from one run to the
+next (±19% and ±22% in the last two).
 
 <!-- consolidate: statement-cache -->
-Measured apart from the session above, by the same method: 2026-10-29 23:37 UTC, go1.26.9, load 0.39.
+Measured apart from the session above, by the same method: 2026-10-30 08:00 UTC, go1.26.9, load 0.54.
 
 | benchmark | median | spread | B/op | allocs/op |
 |---|---|---|---|---|
-| `BenchmarkPGPrepareHit` | 743 ns | ±6% | 80 B | 5 |
-| `BenchmarkPGPrepareMissUnbounded` | 2169 ns | ±8% | 1010 B | 9 |
-| `BenchmarkPGPrepareOff` | 836 ns | ±2% | 80 B | 5 |
-| `BenchmarkStmtCacheChurn` | 166 ns | ±3% | 55 B | 3 |
-| `BenchmarkStmtCacheHit` | 19 ns | ±0% | 0 B | 0 |
+| `BenchmarkPGPrepareHit` | 568 ns | ±1% | 80 B | 5 |
+| `BenchmarkPGPrepareMissUnbounded` | 1852 ns | ±22% ** | 1127 B | 9 |
+| `BenchmarkPGPrepareOff` | 648 ns | ±0% | 80 B | 5 |
+| `BenchmarkStmtCacheChurn` | 125 ns | ±1% | 55 B | 3 |
+| `BenchmarkStmtCacheHit` | 15 ns | ±2% | 0 B | 0 |
 <!-- /consolidate -->
 
 ### Paired verdicts
