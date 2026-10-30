@@ -1,0 +1,26 @@
+# Fuzzing configuration — the only one. fuzz.sh, beside this file, reads it
+# locally, in CI and in reviews; nothing else starts go test -fuzz (a test
+# checks the repository).
+
+fuzz:
+  # Time per target, unless FUZZTIME says otherwise (CI's Sunday run).
+  fuzztime: 30s
+  # The most fuzzing workers (go test -parallel). fuzz.sh lowers it when the
+  # memory left under the container's limit cannot hold that many workers.
+  parallel: 4
+  # Resident memory of one worker, to size them: FuzzReceive, the heaviest
+  # target, added 841 MiB with 4 workers and 1,838 MiB with 8 (2026-10-30).
+  worker-kib: 262144
+
+sluice:
+  # Address-space cap of every process (ulimit -v, in KiB), as a base plus a
+  # part per worker: the coordinator maps a region for each worker.
+  # FuzzReceive runs under 4,500,000 with 4 workers and fails under
+  # 3,000,000; with 8 it runs under 6,000,000 and fails under 4,500,000. An
+  # input that makes a worker allocate without bound crashes that worker,
+  # a finding with its input saved, instead of the container.
+  memory-cap-kib: 3000000
+  memory-cap-per-worker-kib: 400000
+  # Memory kept free for everything else (editor, language server) when the
+  # script sizes the number of workers, in MiB.
+  memory-margin-mib: 1024

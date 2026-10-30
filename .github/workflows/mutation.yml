@@ -1,0 +1,93 @@
+name: Mutation
+
+# Mutation testing of the main module through scripts/mutation.sh, the only
+# way gremlins runs in this repository (configuration: scripts/mutation.yaml).
+# The same script runs locally first, on an idle machine; this workflow
+# repeats it on Saturdays and on demand. It reports and gates nothing: a
+# surviving mutant is read by a person, who writes the test or the reason.
+
+on:
+  schedule:
+    - cron: '17 1 * * 6'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Twelve shards, a file to each by a hash of its path: a GitHub runner holds
+  # two workers at the script's memory cap, and the slowest shard stays far
+  # from the six-hour bound of a job.
+  shard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      GOWORK: off
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: 'stable'
+      - name: Install the pinned gremlins
+        run: go install "github.com/go-gremlins/gremlins/cmd/gremlins@$(scripts/mutation.sh --print-version)"
+
+      # A file's result is reused while its package and the packages its tests
+      # build are unchanged (the key is computed by the script). A key per run,
+      # restored by prefix: each run saves what it holds and the next starts
+      # from it.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/mutation-cache
+          key: mutation-${{ matrix.shard }}-${{ github.run_id }}
+          restore-keys: mutation-${{ matrix.shard }}-
+
+      - name: Mutate shard ${{ matrix.shard }} of 12
+        env:
+          MUTATION_CACHE: ${{ runner.temp }}/mutation-cache
+          SHARD: ${{ matrix.shard }}
+        run: scripts/mutation.sh --wait 10 --shard "$SHARD/12" --out mutation-out
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: mutation-shard-${{ matrix.shard }}
+          path: mutation-out/
+          retention-days: 30
+
+  report:
+    needs: shard
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: mutation-shard-*
+          path: shards
+      - name: Merge the shards
+        run: |
+          scripts/mutation.sh --merge --out mutation shards/*
+          {
+            echo '## Mutation'
+            echo
+            echo "| File | Killed | Lived | Timed out | Not covered | Efficacy | Cached |"
+            echo "|---|---|---|---|---|---|---|"
+            tail -n +2 mutation/summary.tsv | sort -t$'\t' -k3,3nr | awk -F'\t' '{ printf "| %s | %s | %s | %s | %s | %s | %s |\n", $1, $2, $3, $4, $5, $6, $7 }'
+          } >>"$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutation
+          path: mutation/
+          retention-days: 30

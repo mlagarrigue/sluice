@@ -117,11 +117,37 @@ it along.
 CI additionally runs `go vet` for Windows and macOS (`net/quic/udp` has
 per-OS files a Linux build never compiles), runs the integration tests against
 PostgreSQL 14 to 18 with the same `init.sql` as the devcontainer, and runs every
-fuzz target for 30 seconds each night and five minutes on Sundays
-(`.github/scripts/fuzz.sh`, which also runs locally); a failing input is uploaded as an artifact, and committing it
-under the package's `testdata/fuzz/` makes it a regression test. Test order
-is shuffled: a failure that depends on order prints its seed, and
-`-shuffle=<seed>` reproduces it.
+fuzz target each night, five minutes a target on Sundays; a failing input is
+uploaded as an artifact, and committing it under the package's
+`testdata/fuzz/` makes it a regression test. Test order is shuffled: a
+failure that depends on order prints its seed, and `-shuffle=<seed>`
+reproduces it.
+
+**Fuzzing and mutation testing.** Both are heavy, and each runs one way only,
+locally as in CI: `scripts/fuzz.sh` with `scripts/fuzz.yaml`, and
+`scripts/mutation.sh` with `scripts/mutation.yaml`. The scripts wait until
+nothing else builds or tests, run one at a time, use no more workers than the
+memory left can hold, and cap the memory of every process. Run them locally
+first, on a machine doing nothing else; CI repeats them (fuzzing each night,
+mutation on Saturdays). A test refuses a file of the repository that starts
+either any other way.
+
+A mutation tool (gremlins) changes the code one small piece at a time — a
+comparison inverted, a `+` turned into a `-` — and runs the package's tests
+again: if they still pass, the mutant "survives", and that is behaviour no
+test checks. The script mutates one file at a time in a copy of `HEAD` and
+reuses a file's result while its package and what its tests build are
+unchanged.
+
+> **In plain words.** A surviving mutant is not a bug: it is a line whose
+> change would go unnoticed. Each survivor is read, and gets either the test
+> that kills it or the reason it does not deserve one.
+
+```
+scripts/fuzz.sh ./join                                  # a package's fuzz targets
+scripts/mutation.sh --out /tmp/mutation join            # a package
+scripts/mutation.sh --out /tmp/mutation net/quic/ack.go # a file
+```
 
 ## The development container
 

@@ -987,6 +987,58 @@ func TestH3SpecIsPinned(t *testing.T) {
 	}
 }
 
+// TestHeavyTestsRunThroughTheirScripts: mutation and fuzzing run beside
+// nothing else, with their workers sized to the memory left and every process
+// capped (scripts/alone.sh); started directly they have none of that, and
+// mutation run that way drove the development container to its memory limit
+// three times in an afternoon. scripts/mutation.sh is gremlins' one caller
+// (gremlins reads its configuration only from --config or the home
+// directory), scripts/fuzz.sh is go test -fuzz's, and every install of
+// gremlins names the version the mutation script requires.
+func TestHeavyTestsRunThroughTheirScripts(t *testing.T) {
+	script, err := os.ReadFile("scripts/mutation.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^GREMLINS_VERSION=(v\d+\.\d+\.\d+)$`).FindSubmatch(script)
+	if m == nil {
+		t.Fatal("scripts/mutation.sh: GREMLINS_VERSION is not a release tag")
+	}
+	pinned := string(m[1])
+	out, err := exec.Command("git", "ls-files").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := regexp.MustCompile(`(?m)\bgremlins[ \t]+(unleash|run)\b`)
+	// A command, not a comment that names it: no # before go on the line.
+	fuzz := regexp.MustCompile(`(?m)^[^#\n]*\bgo[ \t]+(-C[ \t]+\S+[ \t]+)?test\b[^\n#]*[ \t]-fuzz[= ]`)
+	install := regexp.MustCompile(`(?m)gremlins/cmd/gremlins@([^\s"']+)(.*)$`)
+	for _, f := range strings.Fields(string(out)) {
+		if f == "repo_test.go" {
+			continue
+		}
+		b, err := os.ReadFile(f) //nolint:gosec // G304: a tracked path, not input
+		if err != nil {
+			continue // a submodule or a file deleted in the working tree
+		}
+		if f != "scripts/mutation.sh" && call.Match(b) {
+			t.Errorf("%s calls gremlins directly; run scripts/mutation.sh, which holds the configuration", f)
+		}
+		if f != "scripts/fuzz.sh" && fuzz.Match(b) {
+			t.Errorf("%s starts go test -fuzz directly; run scripts/fuzz.sh, which holds the limits", f)
+		}
+		if f == "scripts/mutation.sh" {
+			continue // it names its own GREMLINS_VERSION in its messages
+		}
+		for _, v := range install.FindAllSubmatch(b, -1) {
+			got, rest := string(v[1]), string(v[2])
+			if got != pinned && !strings.Contains(got+rest, "mutation.sh --print-version") {
+				t.Errorf("%s installs gremlins@%s; scripts/mutation.sh requires %s", f, got, pinned)
+			}
+		}
+	}
+}
+
 // packageDirs lists the directory of every package of the root module, test
 // files included or not: go list stops at nested modules, which have their
 // own go.mod and their own reviews.

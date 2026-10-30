@@ -11,8 +11,8 @@ on:
   workflow_dispatch:
     inputs:
       fuzztime:
-        description: 'Time per fuzz target (go test -fuzztime)'
-        default: '30s'
+        description: 'Time per fuzz target (go test -fuzztime); empty: scripts/fuzz.yaml'
+        default: ''
 
 permissions:
   contents: read
@@ -38,8 +38,8 @@ jobs:
       - id: list
         run: |
           {
-            .github/scripts/fuzz.sh --list | cut -d' ' -f1 | sort -u | jq -R '{module: ".", package: .}'
-            MODULE=comparison/sluice .github/scripts/fuzz.sh --list | cut -d' ' -f1 | sort -u |
+            scripts/fuzz.sh --list | cut -d' ' -f1 | sort -u | jq -R '{module: ".", package: .}'
+            MODULE=comparison/sluice scripts/fuzz.sh --list | cut -d' ' -f1 | sort -u |
               jq -R '{module: "comparison/sluice", package: .}'
           } | jq -sc . > targets.json
           echo "targets=$(cat targets.json)" >> "$GITHUB_OUTPUT"
@@ -85,13 +85,15 @@ jobs:
         run: |
           echo "corpus at the start: $(find "$DIR" -type f 2>/dev/null | wc -l) inputs"
 
+      # scripts/fuzz.yaml sets the time per target and the limits, here as
+      # locally; only Sunday's run and a dispatch ask for another time.
       - name: Fuzz every target in ${{ matrix.package }}
         env:
-          FUZZTIME: ${{ inputs.fuzztime || (github.event.schedule == '43 2 * * 0' && '5m') || '30s' }}
+          FUZZTIME: ${{ inputs.fuzztime || (github.event.schedule == '43 2 * * 0' && '5m') || '' }}
           FUZZ_OUT: fuzz-failures
           MODULE: ${{ matrix.module }}
           PKG: ${{ matrix.package }}
-        run: .github/scripts/fuzz.sh "$PKG"
+        run: scripts/fuzz.sh --wait 10 "$PKG"
 
       # The reproducers only — the files the run added under testdata/fuzz.
       # Committing one turns it into a regression test that runs on every push.

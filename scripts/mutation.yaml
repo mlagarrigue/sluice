@@ -1,0 +1,36 @@
+# Mutation testing configuration — the only one. scripts/mutation.sh passes
+# this file to gremlins with --config, locally, in CI and in reviews. Started
+# any other way, gremlins does not read it (it looks in /etc and the home
+# directory, never here), which is why nothing calls gremlins but that script.
+
+unleash:
+  # The most mutants tested at once. scripts/mutation.sh lowers it when the
+  # memory left under the container's limit cannot hold that many processes
+  # at sluice.memory-cap-kib each.
+  workers: 2
+  # A mutant's test run is cut after this many times the duration of the
+  # coverage run of its package (gremlins' default is 3). The script runs one
+  # file at a time, so that duration is the package's own, compile included
+  # from a warm cache, while a mutant also recompiles and relinks: three times
+  # a two-second package flags as "timed out" mutants that only paid the
+  # build. Ten keeps a timeout for a mutant that really loops; such a mutant
+  # cannot grow past the memory cap below while it runs.
+  timeout-coefficient: 10
+
+# Not gremlins keys: read by scripts/mutation.sh only.
+sluice:
+  # Address-space cap of every process a mutant run starts (ulimit -v, in
+  # KiB): a mutant that loops while allocating dies at this size instead of
+  # driving the container to its memory limit. The whole test suite passes
+  # under 3,000,000 KiB without -race (2026-10-30); database/postgres fails
+  # under 2,400,000.
+  memory-cap-kib: 3000000
+  # Memory kept free for everything else (editor, language server) when the
+  # script sizes the number of workers, in MiB.
+  memory-margin-mib: 1024
+  # Files never mutated, as regular expressions on the path from the module
+  # root: examples and the benchmark harness are not the library, and a
+  # generated file is skipped on its "Code generated … DO NOT EDIT." header.
+  skip:
+    - ^example/
+    - ^internal/bench/
