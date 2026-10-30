@@ -14,6 +14,10 @@ services:
     volumes:
       - ..:/workspaces/sluice:cached
     command: sleep infinity
+    # A test killed by its timeout leaves its children to process 1; sleep
+    # never reaps them and they pile up as zombies (178 after one review,
+    # 2026-10-30). Docker's init reaps them.
+    init: true
     # The integration suite reads these; without them it skips, cleanly.
     environment:
       SLUICE_PG: postgres:5432
