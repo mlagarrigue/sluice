@@ -19,9 +19,14 @@
 #     enough for a mutant that loops while allocating to fill the memory;
 #   - a worktree of HEAD, so the working tree is never mutated (the code is
 #     HEAD's; this script and its configuration are read where they are);
-#   - an address-space cap on every process (sluice.memory-cap-kib), and as
-#     many workers as the memory left under the limit can hold at that cap,
-#     never more than unleash.workers;
+#   - as many workers as the memory left under the limit can hold at
+#     sluice.worker-kib each, never more than unleash.workers; a test process
+#     past sluice.rss-cap-kib resident is killed (the mutant counts as
+#     detected), and every process has an address-space cap
+#     (sluice.memory-cap-kib) behind it;
+#   - a timeout per package: its coverage time times a coefficient between
+#     timeout-coefficient-min and unleash.timeout-coefficient, the larger
+#     the faster the package;
 #   - running alone: before each file, no compile, link, *.test, go
 #     test/build/vet or other gremlins may run outside this script's own
 #     processes. At the start the one-minute load must also be under a
@@ -73,10 +78,16 @@ cfg=$here/mutation.yaml
 
 # --- Configuration ------------------------------------------------------------
 max_workers=$(yaml_value "$cfg" workers)
+coef_max=$(yaml_value "$cfg" timeout-coefficient)
+coef_min=$(yaml_value "$cfg" timeout-coefficient-min)
+target_s=$(yaml_value "$cfg" timeout-target-s)
+worker_kib=$(yaml_value "$cfg" worker-kib)
+rss_cap_kib=$(yaml_value "$cfg" rss-cap-kib)
 cap_kib=$(yaml_value "$cfg" memory-cap-kib)
 margin_mib=$(yaml_value "$cfg" memory-margin-mib)
-[[ $max_workers =~ ^[0-9]+$ && $cap_kib =~ ^[0-9]+$ && $margin_mib =~ ^[0-9]+$ ]] ||
-  die "mutation.yaml: unleash.workers, sluice.memory-cap-kib and sluice.memory-margin-mib must be integers"
+for v in "$max_workers" "$coef_max" "$coef_min" "$target_s" "$worker_kib" "$rss_cap_kib" "$cap_kib" "$margin_mib"; do
+  [[ $v =~ ^[0-9]+$ ]] || die "mutation.yaml: the workers, timeout and memory keys must be integers"
+done
 skip_re=$(awk '
   /^  skip:/ { on = 1; next }
   on && /^    - / { sub(/^    - /, ""); gsub(/"/, ""); r = r (r ? "|" : "") $0; next }
@@ -172,22 +183,70 @@ mkdir -p "$cache" "$out/units"
 out=$(cd "$out" && pwd)
 heavy_lock
 heavy_start "$wait_min"
-workers=$(heavy_workers "$cap_kib" "$max_workers" "$margin_mib")
+workers=$(heavy_workers "$worker_kib" "$max_workers" "$margin_mib")
 
 # --- A worktree of HEAD -------------------------------------------------------
 wt=${MUTATION_WORKTREE:-${TMPDIR:-/tmp}/sluice-mutation-wt}
 git -C "$root" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
 git -C "$root" worktree prune
 git -C "$root" worktree add --quiet --detach "$wt" HEAD
-trap 'git -C "$root" worktree remove --force "$wt" 2>/dev/null || true' EXIT
+gp=""
+trap '[ -n "$gp" ] && kill -KILL "$gp" 2>/dev/null; git -C "$root" worktree remove --force "$wt" 2>/dev/null || true' EXIT
 head_sha=$(git -C "$wt" rev-parse --short HEAD)
 
 mapfile -t todo < <(units)
-say "${#todo[@]} files at $head_sha, $workers worker(s), cap ${cap_kib} KiB a process, cache $cache"
+say "${#todo[@]} files at $head_sha, $workers worker(s), test processes killed past ${rss_cap_kib} KiB resident, cap ${cap_kib} KiB a process, cache $cache"
 {
-  printf 'head\t%s\nworkers\t%s\nmemory-cap-kib\t%s\nshard\t%s\nstarted\t%s\n' \
-    "$head_sha" "$workers" "$cap_kib" "${shard:-all}" "$(date -u +%FT%TZ)"
+  printf 'head\t%s\nworkers\t%s\nrss-cap-kib\t%s\nmemory-cap-kib\t%s\nshard\t%s\nstarted\t%s\n' \
+    "$head_sha" "$workers" "$rss_cap_kib" "$cap_kib" "${shard:-all}" "$(date -u +%FT%TZ)"
 } >"$out/run.tsv"
+
+# --- Timeout per package --------------------------------------------------------
+# The coverage run gremlins times covers the package and its subdirectories
+# (the whole module for the root); it is timed here once a package, the same
+# way, to choose the coefficient (mutation.yaml, timeout-target-s).
+declare -A coef=()
+package_coef() { # $1 = package directory, "." for the root
+  local d=$1 scope t0 ms prof
+  if [ -z "${coef[$d]:-}" ]; then
+    scope=./...
+    [ "$d" = . ] || scope=./$d/...
+    prof=$(mktemp)
+    t0=$(date +%s%N)
+    (ulimit -v "$cap_kib" && cd "$wt" && go test -count=1 -cover -coverprofile="$prof" "$scope" 9>&-) >/dev/null 2>&1 || true
+    ms=$((($(date +%s%N) - t0) / 1000000))
+    rm -f "$prof"
+    coef[$d]=$(awk -v t="$target_s" -v ms="$ms" -v lo="$coef_min" -v hi="$coef_max" \
+      'BEGIN { c = int((t * 1000 + ms - 1) / (ms > 0 ? ms : 1)); if (c < lo) c = lo; if (c > hi) c = hi; print c }')
+    printf 'timeout\t%s\tcoverage %d ms\tcoefficient %s\n' "$d" "$ms" "${coef[$d]}" >>"$out/run.tsv"
+  fi
+}
+
+# --- Resident memory of the test processes ------------------------------------------
+# Every half second, a *.test process under gremlins past rss-cap-kib is
+# killed: its run fails, gremlins counts the mutant as killed, and the count
+# goes to $2.
+rss_watch() { # $1 = gremlins' pid, $2 = file for the count
+  local n=0 victims
+  while kill -0 "$1" 2>/dev/null; do
+    victims=$(ps -eo pid=,ppid=,rss=,comm= | awk -v root="$1" -v cap="$rss_cap_kib" '
+      { parent[$1] = $2; rss[$1] = $3; comm[$1] = $4 }
+      END {
+        for (p in comm) {
+          if (comm[p] !~ /\.test$/ || rss[p] <= cap) continue
+          q = p
+          while (q in parent && q > 1) { if (q == root) { print p; break }; q = parent[q] }
+        }
+      }')
+    if [ -n "$victims" ]; then
+      # shellcheck disable=SC2086
+      kill -KILL $victims 2>/dev/null || true
+      n=$((n + $(wc -w <<<"$victims")))
+      echo "$n" >"$2"
+    fi
+    sleep 0.5
+  done
+}
 
 # --- Cache key ----------------------------------------------------------------
 pkgarg() { if [ "$1" = . ]; then echo .; else echo "./$1"; fi; }
@@ -230,13 +289,24 @@ for f in "${todo[@]}"; do
   others=$(cd "$wt/$d" && find . -maxdepth 1 -name '*.go' ! -name '*_test.go' ! -name "$(basename "$f")" -printf '%f\n' |
     sed 's/[.]/\\./g' | paste -sd'|')
   [ -n "$others" ] && excl+=(-E "^($others)\$")
-  say "[$i/${#todo[@]}] $f"
+  package_coef "$d" # not in $( ): the table must outlive the call
+  c=${coef[$d]}
+  say "[$i/${#todo[@]}] $f (timeout ${c}x coverage)"
   # -count=1: gremlins times its coverage run to set every mutant's timeout,
   # and a coverage run served from the test cache takes a tenth of a second.
   # 9>&-: the lock stays with this script, not with a test process gremlins
   # leaves behind for a moment.
-  if (ulimit -v "$cap_kib" && cd "$wt" && GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1" exec gremlins unleash \
-    --config "$cfg" --workers "$workers" "${dry[@]}" "${excl[@]}" -o "$json" "$(pkgarg "$d")" 9>&-) >"$log" 2>&1; then
+  (ulimit -v "$cap_kib" && cd "$wt" && GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1" exec gremlins unleash \
+    --config "$cfg" --workers "$workers" --timeout-coefficient "$c" "${dry[@]}" "${excl[@]}" \
+    -o "$json" "$(pkgarg "$d")" 9>&-) >"$log" 2>&1 &
+  gp=$!
+  rss_watch "$gp" "$out/units/$name.rss-killed" &
+  wp=$!
+  rc=0
+  wait "$gp" || rc=$?
+  gp=""
+  wait "$wp" 2>/dev/null || true
+  if [ "$rc" = 0 ]; then
     # A file without a mutant ends in "No results to report." and no file.
     [ -f "$json" ] || printf '{"go_module":"","files":[]}\n' >"$json"
     echo no >"$out/units/$name.cached"

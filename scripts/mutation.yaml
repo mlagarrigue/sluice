@@ -5,25 +5,37 @@
 
 unleash:
   # The most mutants tested at once. scripts/mutation.sh lowers it when the
-  # memory left under the container's limit cannot hold that many processes
-  # at sluice.memory-cap-kib each.
+  # memory left under the container's limit cannot hold that many workers at
+  # sluice.worker-kib each.
   workers: 2
-  # A mutant's test run is cut after this many times the duration of the
-  # coverage run of its package (gremlins' default is 3). The script runs one
-  # file at a time, so that duration is the package's own, compile included
-  # from a warm cache, while a mutant also recompiles and relinks: three times
-  # a two-second package flags as "timed out" mutants that only paid the
-  # build. Ten keeps a timeout for a mutant that really loops; such a mutant
-  # cannot grow past the memory cap below while it runs.
+  # The most a mutant's test run may last, as a multiple of the duration of
+  # its package's coverage run (gremlins' default is 3). The script lowers it
+  # per package, below.
   timeout-coefficient: 10
 
 # Not gremlins keys: read by scripts/mutation.sh only.
 sluice:
+  # The timeout of a package's mutants is its coverage time times
+  # clamp(ceil(timeout-target-s / coverage time), timeout-coefficient-min,
+  # unleash.timeout-coefficient): ten times a package of a tenth of a second
+  # to two seconds, whose mutants mostly pay their own rebuild (three times
+  # flagged half of join's timeouts falsely, 2026-10-30), but three times a
+  # package of forty seconds, where ten times let each looping mutant of
+  # net/httpstream run seven minutes before it was cut.
+  timeout-target-s: 30
+  timeout-coefficient-min: 3
+  # Memory a worker needs, to size them: a mutant's test process took 12 to
+  # 47 MiB in net/httpstream, go 31 MiB, the compiler up to a few hundred
+  # (2026-10-31); half a GiB leaves room.
+  worker-kib: 524288
+  # A test process whose resident memory passes this is killed at once (the
+  # mutant counts as detected): with two workers, two mutants that loop while
+  # allocating cannot together reach the container's limit.
+  rss-cap-kib: 1572864
   # Address-space cap of every process a mutant run starts (ulimit -v, in
-  # KiB): a mutant that loops while allocating dies at this size instead of
-  # driving the container to its memory limit. The whole test suite passes
-  # under 3,000,000 KiB without -race (2026-10-30); database/postgres fails
-  # under 2,400,000.
+  # KiB), the backstop behind rss-cap-kib. The whole test suite passes under
+  # 3,000,000 KiB without -race (2026-10-30); database/postgres fails under
+  # 2,400,000.
   memory-cap-kib: 3000000
   # Memory kept free for everything else (editor, language server) when the
   # script sizes the number of workers, in MiB.
