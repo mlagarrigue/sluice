@@ -4,6 +4,16 @@ Each breaking change below is listed by its commit subject; what it changes
 in your code, and what to write instead, is in the
 [migration guide](docs/migration.md).
 
+## [0.4.1](https://github.com/mlagarrigue/sluice/compare/v0.4.0...v0.4.1) (2026-10-31)
+
+
+### Documentation
+
+* **bench:** the statement cache measured at the page's pace ([9262dcf](https://github.com/mlagarrigue/sluice/commit/9262dcfed07af471302dfa4cc0e935f1b685f0e1))
+* **bench:** the statement cache re-measured on its own ([6696722](https://github.com/mlagarrigue/sluice/commit/6696722554a590206738f08d7b25e183d19b127a))
+* **postgres:** name every type the codecs leave out ([3a87749](https://github.com/mlagarrigue/sluice/commit/3a8774996b3ba0e23222be5757b9deec46a28b26))
+* the guides install v0.4.0, not main ([20fcd7c](https://github.com/mlagarrigue/sluice/commit/20fcd7c8ce9833102ce1784335cb53d1f7f7cb1c))
+
 ## [0.4.0](https://github.com/mlagarrigue/sluice/compare/v0.3.0...v0.4.0) (2026-10-29)
 
 
