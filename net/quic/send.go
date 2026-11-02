@@ -75,6 +75,11 @@ type sendOpts struct {
 	// carriesAck says an ACK frame rode along with the payload: what
 	// completes this end's answer to the peer's key update (RFC 9001 §6.2).
 	carriesAck bool
+	// ackDue says that ACK paid a debt — owed, or waiting on the
+	// delayed-ACK timer — rather than riding along because Initial and
+	// Handshake packets always carry one (resend). Only a debt is owed
+	// again when the packet is withheld (withholdLocked).
+	ackDue bool
 	// noRetrans drops the payload from loss recovery: a probe resends bytes
 	// that are already queued elsewhere, and recording them again would
 	// duplicate them on the next loss.
@@ -309,6 +314,7 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 	}
 	if len(ack) > 0 {
 		payload = append(ack[:len(ack):len(ack)], payload...)
+		opts.ackDue = sp.ack.owes(now) || sp.ack.pending()
 		sp.ack.settle()
 		opts.carriesAck = true
 	}
@@ -907,12 +913,17 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 // certificate chain does. The payload goes back to the front of the
 // retransmission queue, and retransmitLocked sends it once the peer's next
 // datagram raises amplRecv. An ACK was settled when it was encoded, so its
-// debt is owed again (rearm) for the flush that follows that datagram. A
-// packet sent without retransmission — a PMTU probe, a PATH_CHALLENGE, a
+// debt is owed again (rearm) for the flush that follows that datagram —
+// when there was a debt: an ACK that rode along only because Initial and
+// Handshake packets always carry one owed nothing, and rearmed it would
+// leave alone after the peer's next datagram even when that datagram
+// elicited nothing, which RFC 9000 §13.2.1 forbids ("An endpoint MUST NOT
+// send a non-ack-eliciting packet in response to a non-ack-eliciting
+// packet"). A packet sent without retransmission — a PMTU probe, a PATH_CHALLENGE, a
 // PATH_RESPONSE — is skipped: what sends it again is its own timer, or the
 // peer's next challenge. No packet number was consumed. Callers hold mu.
 func withholdLocked(sp *space, retransPart []byte, opts sendOpts) {
-	if opts.ackOnly || opts.carriesAck {
+	if opts.ackOnly || opts.ackDue {
 		sp.ack.rearm()
 	}
 	if !opts.ackOnly && !opts.noRetrans && len(retransPart) > 0 {
