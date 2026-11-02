@@ -1734,6 +1734,40 @@ func TestIntegrationTextTypesRoundTrip(t *testing.T) {
 		{"enum", `'happy'::` + schema + `.mood`, oid, pgtype.AppendText(nil, "happy"), false},
 	})
 
+	// tsvector in the server's order, which the test can write; tsquery's
+	// node order is the server's to choose, so its bytes are decoded, must
+	// encode back to themselves, and go round as a parameter.
+	runIdentifierCases(t, 14, []identifierCase{
+		{
+			"tsvector", `'bc:2A a:1'::tsvector`, pgtype.OIDTSVector,
+			pgtype.AppendTSVector(nil, []pgtype.Lexeme{{Word: "a", Positions: []pgtype.TSPosition{1}}, {Word: "bc", Positions: []pgtype.TSPosition{0xc002}}}),
+			false,
+		},
+	})
+	tsq := serverEncoding(t, conn, `'fat:AB* & !(cat <2> rat)'::tsquery`)
+	items, err := pgtype.DecodeTSQuery(nil, tsq)
+	if err != nil {
+		t.Fatalf("the server's tsquery does not decode: %v", err)
+	}
+	words := map[string]bool{}
+	for _, it := range items {
+		if it.Operator == 0 {
+			words[it.Word] = true
+			if it.Word == "fat" && (it.Weight != 0b1100 || !it.Prefix) {
+				t.Errorf("fat:AB* decoded as weight %#b, prefix %v", it.Weight, it.Prefix)
+			}
+		}
+		if it.Operator == pgtype.TSPhrase && it.Distance != 2 {
+			t.Errorf("<2> decoded at distance %d", it.Distance)
+		}
+	}
+	if len(items) != 6 || !words["fat"] || !words["cat"] || !words["rat"] {
+		t.Errorf("tsquery decoded to %v", items)
+	}
+	runIdentifierCases(t, 14, []identifierCase{
+		{"tsquery", `'fat:AB* & !(cat <2> rat)'::tsquery`, pgtype.OIDTSQuery, pgtype.AppendTSQuery(nil, items), false},
+	})
+
 	src := conn.Query(t.Context(), `SELECT unnest(enum_range(NULL::`+schema+`.mood))`, nil, postgres.QueryConfig{})
 	var labels []string
 	src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
