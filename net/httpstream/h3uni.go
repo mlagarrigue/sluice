@@ -131,8 +131,16 @@ func (a *h3Assembler) controlFrames(u *h3Uni) error {
 	// which then started none; a parse that started one found none owed.
 	a.frames, u.skip = keepFrames(frames), u.skip+skip
 	if err != nil {
-		// A frame too long is a layout fault (H3_FRAME_ERROR); an HTTP/2
-		// frame type is §7.2.8's H3_FRAME_UNEXPECTED.
+		// A frame too long is a layout fault (H3_FRAME_ERROR) — unless its
+		// type has no place here at any length, which is judged first: the
+		// frame refused is the one at rest, and a SETTINGS ahead of it in
+		// this delivery (frames) counts as the first. An HTTP/2 frame type
+		// is §7.2.8's H3_FRAME_UNEXPECTED.
+		if typ, _, e := varint.Read(rest); e == nil && errors.Is(err, ErrTooLarge) {
+			if fault := controlTypeFault(typ, a.controlSettings || len(frames) > 0); fault != nil {
+				return fault
+			}
+		}
 		code := uint64(h3FrameError)
 		if errors.Is(err, errH3FrameUnexpected) {
 			code = h3FrameUnexpected
@@ -158,13 +166,10 @@ func (a *h3Assembler) controlFrames(u *h3Uni) error {
 			a.controlSettings = true
 			continue
 		}
+		if fault := controlTypeFault(fr.Type, true); fault != nil {
+			return fault
+		}
 		switch fr.Type {
-		case h3Settings:
-			return h3ConnectionError{Code: h3FrameUnexpected, Err: fmt.Errorf(
-				"%w: a second SETTINGS on the control stream", ErrH3Protocol)}
-		case h3Data, h3Headers, h3PushPromise:
-			return h3ConnectionError{Code: h3FrameUnexpected, Err: fmt.Errorf(
-				"%w: frame type %#x on the control stream", ErrH3Protocol, fr.Type)}
 		case h3GoAway, h3MaxPushID, h3CancelPush:
 			// Legal here, and inert: this server never pushes and announces
 			// its own shutdown by closing, so there is nothing to act on.
@@ -178,6 +183,23 @@ func (a *h3Assembler) controlFrames(u *h3Uni) error {
 		}
 	}
 	u.buf = keepRest(u.buf, rest)
+	return nil
+}
+
+// controlTypeFault is the connection error a control-stream frame of type
+// typ earns whatever its length or payload, nil for a type that may stand
+// there: a second SETTINGS (§7.2.4), and the frames of a request stream —
+// DATA (§7.2.1), HEADERS (§7.2.2), PUSH_PROMISE (§7.2.5) — are each
+// H3_FRAME_UNEXPECTED. settingsSeen says a SETTINGS came before.
+func controlTypeFault(typ uint64, settingsSeen bool) error {
+	switch {
+	case typ == h3Settings && settingsSeen:
+		return h3ConnectionError{Code: h3FrameUnexpected, Err: fmt.Errorf(
+			"%w: a second SETTINGS on the control stream", ErrH3Protocol)}
+	case typ == h3Data || typ == h3Headers || typ == h3PushPromise:
+		return h3ConnectionError{Code: h3FrameUnexpected, Err: fmt.Errorf(
+			"%w: frame type %#x on the control stream", ErrH3Protocol, typ)}
+	}
 	return nil
 }
 

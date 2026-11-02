@@ -1328,14 +1328,10 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 			if err := a.appendBody(st, f.Payload); err != nil {
 				return err
 			}
-		case h3Settings, h3GoAway, h3MaxPushID, h3CancelPush:
-			// §7.2.3, §7.2.4, §7.2.6, §7.2.7: each names a connection error
-			// of type H3_FRAME_UNEXPECTED for its frame off the control stream.
-			return fmt.Errorf("%w: frame type %#x belongs on the control stream", errH3FrameUnexpected, f.Type)
-		case h3PushPromise:
-			// §7.2.5: "A server MUST treat the receipt of a PUSH_PROMISE
-			// frame as a connection error of type H3_FRAME_UNEXPECTED."
-			return fmt.Errorf("%w: a client sent PUSH_PROMISE", errH3FrameUnexpected)
+		default:
+			if err := requestTypeFault(f.Type); err != nil {
+				return err
+			}
 		}
 	}
 	// What is left is the start of a frame that has not all arrived, kept at
@@ -1365,6 +1361,11 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 			case typ == h3Headers && length > uint64(a.cfg.MaxHeaderBytes): //nolint:gosec // G115: positive config, set by Config.resolve
 				return fmt.Errorf("%w: a HEADERS frame of %d bytes, over the %d header bound",
 					ErrTooLarge, length, a.cfg.MaxHeaderBytes)
+			case requestTypeFault(typ) != nil:
+				// A frame no request stream may carry, refused on its
+				// type before its payload is waited for: whole, it would
+				// park up to rawStreamBound first.
+				return requestTypeFault(typ)
 			case typ == h3Data && !st.gotHead:
 				return fmt.Errorf("%w: DATA before HEADERS", errH3FrameUnexpected)
 			case typ == h3Data && st.gotTrailers:
@@ -1378,6 +1379,21 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 		return err // unreachable: a DATA frame over the bound is refused above
 	}
 	st.buf = keepStreamRest(st.buf, rest)
+	return nil
+}
+
+// requestTypeFault is the error a frame of type typ earns on a request
+// stream whatever its length or payload, nil for a type that may stand
+// there. §7.2.3, §7.2.4, §7.2.6, §7.2.7: each names a connection error of
+// type H3_FRAME_UNEXPECTED for its frame off the control stream, and §7.2.5
+// has a server treat a PUSH_PROMISE the same way.
+func requestTypeFault(typ uint64) error {
+	switch typ {
+	case h3Settings, h3GoAway, h3MaxPushID, h3CancelPush:
+		return fmt.Errorf("%w: frame type %#x belongs on the control stream", errH3FrameUnexpected, typ)
+	case h3PushPromise:
+		return fmt.Errorf("%w: a client sent PUSH_PROMISE", errH3FrameUnexpected)
+	}
 	return nil
 }
 
