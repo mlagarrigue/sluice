@@ -131,11 +131,15 @@ func earlyTLSConfig(cfg *tls.Config) *tls.Config {
 		return cfg // newClientConn refuses a nil cfg
 	}
 	cache := cfg.ClientSessionCache
+	sessionCacheMu.Lock() // the look and the putting back are one step for other Dials
 	cs, ok := cache.Get(cfg.ServerName)
+	if ok && cs != nil {
+		cache.Put(cfg.ServerName, cs)
+	}
+	sessionCacheMu.Unlock()
 	if !ok || cs == nil {
 		return cfg
 	}
-	cache.Put(cfg.ServerName, cs)
 	_, state, err := cs.ResumptionState()
 	if err != nil || state == nil || !state.EarlyData {
 		return cfg

@@ -544,7 +544,11 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 // client would refuse the chain mid-handshake, where the cause is lost.
 // What GetCertificate or GetConfigForClient return is the caller's to hold
 // to the same rules, as is matching the chain to the client's
-// signature_algorithms_cert, which crypto/tls does not do.
+// signature_algorithms_cert, which crypto/tls does not do — save TLS 1.3: a
+// Config GetConfigForClient returns with a lower MinVersion is used on a
+// copy raised to it, so a client offering nothing newer is answered
+// protocol_version (RFC 9846 Appendix E.2). With a GetConfigForClient set,
+// the handshakes run on a copy of cfg taken here.
 func NewListener(pc net.PacketConn, cfg *tls.Config, params TransportParameters, lcfg ListenerConfig) (*Listener, error) {
 	if err := params.check(); err != nil {
 		return nil, err
@@ -578,7 +582,7 @@ func NewListener(pc net.PacketConn, cfg *tls.Config, params TransportParameters,
 	}
 	l := &Listener{
 		pc: pc, sourced: packetInfoSocket(pc), preferred: lcfg.PreferredAddress, preferredV4: preferredV4, preferredV6: preferredV6,
-		cfg: cfg, params: params, lcfg: lcfg,
+		cfg: serverTLSConfig(cfg), params: params, lcfg: lcfg,
 		spent:        spentTokens{ttl: lcfg.RetryTokenTTL, max: lcfg.MaxSpentRetryTokens},
 		byDCID:       make(map[string]*Conn),
 		keysOf:       make(map[*Conn][]string),

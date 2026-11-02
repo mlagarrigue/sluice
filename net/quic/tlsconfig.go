@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"sync"
 )
 
 // checkTLSConfig refuses, before anything is written, a tls.Config that
@@ -97,7 +98,19 @@ func clientTLSConfig(cfg *tls.Config) *tls.Config {
 // concurrent use when the inner cache is, as the interface requires.
 type singleUseSessionCache struct{ inner tls.ClientSessionCache }
 
+// sessionCacheMu makes taking a ticket — the Get and the Put(nil) that
+// removes it — one step for every Dial, and DialEarly's look at the ticket
+// it will resume (earlyTLSConfig, a Get and a Put back) another. Two Dials
+// sharing a cache each wrap it in a singleUseSessionCache of their own, so
+// the lock cannot live in the wrapper; one for the package costs a
+// ClientHello's worth of waiting at most, once per handshake. Without it two
+// ClientHellos built at once read the same ticket before either removed it,
+// and the second connection presented it again.
+var sessionCacheMu sync.Mutex
+
 func (c singleUseSessionCache) Get(key string) (*tls.ClientSessionState, bool) {
+	sessionCacheMu.Lock()
+	defer sessionCacheMu.Unlock()
 	cs, ok := c.inner.Get(key)
 	if !ok {
 		return nil, false
@@ -123,7 +136,13 @@ func sessionCopy(cs *tls.ClientSessionState) *tls.ClientSessionState {
 	return cs
 }
 
-func (c singleUseSessionCache) Put(key string, cs *tls.ClientSessionState) { c.inner.Put(key, cs) }
+// Put stores under the same lock, so that a ticket arriving between
+// another Dial's Get and its removal is not the one removed.
+func (c singleUseSessionCache) Put(key string, cs *tls.ClientSessionState) {
+	sessionCacheMu.Lock()
+	defer sessionCacheMu.Unlock()
+	c.inner.Put(key, cs)
+}
 
 // requireALPN refuses a tls.Config that names no application protocol. QUIC
 // mandates ALPN (RFC 9001 §8.1): against a conformant peer the handshake
@@ -151,4 +170,37 @@ func requireTLS13(cfg *tls.Config) error {
 			"(RFC 9001 §4.2), and crypto/tls refuses a lower minimum at handshake", ErrQUIC)
 	}
 	return nil
+}
+
+// serverTLSConfig is cfg as a Listener's handshakes use it: cfg itself,
+// unless it has a GetConfigForClient, whose returned Config no constructor
+// sees. Then a copy of cfg whose GetConfigForClient holds what the caller's
+// returns to TLS 1.3, on a copy of its own when its MinVersion is lower: QUIC
+// speaks TLS 1.3 only (RFC 9001 §4.2), and a returned Config without
+// MinVersion negotiated TLS 1.2 with a ClientHello offering nothing newer,
+// which then failed inside crypto/tls where RFC 9846 Appendix E.2 (EID 9040)
+// wants protocol_version. The returned Config is corrected rather than
+// refused, as requireTLS13 refuses the Listener's: it exists only for this
+// handshake, and refusing it would end the handshake for a client that
+// does offer TLS 1.3.
+//
+// The copy is taken once, by NewListener. Session ticket keys set on cfg
+// after that reach only the handshakes GetConfigForClient leaves to cfg
+// when they were set by [tls.Config.SetSessionTicketKeys] before.
+func serverTLSConfig(cfg *tls.Config) *tls.Config {
+	inner := cfg.GetConfigForClient
+	if inner == nil {
+		return cfg
+	}
+	c := cfg.Clone()
+	c.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+		got, err := inner(hello)
+		if err != nil || got == nil || got.MinVersion >= tls.VersionTLS13 {
+			return got, err
+		}
+		own := got.Clone()
+		own.MinVersion = tls.VersionTLS13
+		return own, nil
+	}
+	return c
 }
