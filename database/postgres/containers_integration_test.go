@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mlagarrigue/sluice/database/postgres"
 	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 )
 
@@ -67,7 +68,7 @@ func TestIntegrationContainersMatchTheServer(t *testing.T) {
 			Lower: pgtype.RangeBound[int32]{Value: 1, Inclusive: true},
 			Upper: pgtype.RangeBound[int32]{Value: 6},
 		}
-		check(t, `int4range(1, 5, '[]')`, "int4range", 3904,
+		check(t, `int4range(1, 5, '[]')`, "int4range", pgtype.OIDInt4Range,
 			pgtype.AppendRange(nil, r, pgtype.Int4Codec()), func(b []byte) bool {
 				got, err := pgtype.DecodeRange(b, pgtype.Int4Codec())
 				return err == nil && got == r
@@ -79,7 +80,7 @@ func TestIntegrationContainersMatchTheServer(t *testing.T) {
 			Lower: pgtype.RangeBound[time.Time]{Value: time.Date(2024, 3, 1, 12, 0, 0, 0, time.UTC)},
 			Upper: pgtype.RangeBound[time.Time]{Unbounded: true},
 		}
-		check(t, `tstzrange('2024-03-01 12:00+00', NULL, '()')`, "tstzrange", 3910,
+		check(t, `tstzrange('2024-03-01 12:00+00', NULL, '()')`, "tstzrange", pgtype.OIDTSTZRange,
 			pgtype.AppendRange(nil, r, pgtype.TimestampTZCodec()), func(b []byte) bool {
 				got, err := pgtype.DecodeRange(b, pgtype.TimestampTZCodec())
 				return err == nil && got.Lower.Value.Equal(r.Lower.Value) && !got.Lower.Inclusive &&
@@ -89,7 +90,7 @@ func TestIntegrationContainersMatchTheServer(t *testing.T) {
 
 	t.Run("empty numrange", func(t *testing.T) {
 		r := pgtype.Range[pgtype.Numeric]{Empty: true}
-		check(t, `'empty'::numrange`, "numrange", 3906,
+		check(t, `'empty'::numrange`, "numrange", pgtype.OIDNumRange,
 			pgtype.AppendRange(nil, r, pgtype.NumericCodec()), func(b []byte) bool {
 				got, err := pgtype.DecodeRange(b, pgtype.NumericCodec())
 				return err == nil && got.Empty
@@ -101,12 +102,62 @@ func TestIntegrationContainersMatchTheServer(t *testing.T) {
 			{Lower: pgtype.RangeBound[int64]{Value: 1, Inclusive: true}, Upper: pgtype.RangeBound[int64]{Value: 3}},
 			{Lower: pgtype.RangeBound[int64]{Value: 5, Inclusive: true}, Upper: pgtype.RangeBound[int64]{Unbounded: true}},
 		}
-		check(t, `'{[1,3), [5,)}'::int8multirange`, "int8multirange", 4536,
+		check(t, `'{[1,3), [5,)}'::int8multirange`, "int8multirange", pgtype.OIDInt8Multirange,
 			pgtype.AppendMultirange(nil, m, pgtype.Int8Codec()), func(b []byte) bool {
 				got, err := pgtype.DecodeMultirange(nil, b, pgtype.Int8Codec())
 				return err == nil && slices.Equal(got, m)
 			})
 	})
+
+	// Every built-in range and multirange through its named Codec, bound by
+	// the OID the Codec carries, and an array of ranges, whose element OID is
+	// the range's.
+	day := func(d int) time.Time { return time.Date(2024, 3, d, 0, 0, 0, 0, time.UTC) }
+	num := func(s string) pgtype.Numeric { return mustParseNumeric(s) }
+	closedOpen := func(lo, hi time.Time) pgtype.Range[time.Time] {
+		return pgtype.Range[time.Time]{
+			Lower: pgtype.RangeBound[time.Time]{Value: lo, Inclusive: true},
+			Upper: pgtype.RangeBound[time.Time]{Value: hi},
+		}
+	}
+	codecMatchesServer(t, conn, `int8range(-3, 9)`, pgtype.Int8RangeCodec(), pgtype.Range[int64]{
+		Lower: pgtype.RangeBound[int64]{Value: -3, Inclusive: true}, Upper: pgtype.RangeBound[int64]{Value: 9},
+	})
+	codecMatchesServer(t, conn, `numrange(0.5, 2, '(]')`, pgtype.NumRangeCodec(), pgtype.Range[pgtype.Numeric]{
+		Lower: pgtype.RangeBound[pgtype.Numeric]{Value: num("0.5")},
+		Upper: pgtype.RangeBound[pgtype.Numeric]{Value: num("2"), Inclusive: true},
+	})
+	codecMatchesServer(t, conn, `tsrange('2024-03-01', '2024-03-02')`, pgtype.TSRangeCodec(), closedOpen(day(1), day(2)))
+	codecMatchesServer(t, conn, `daterange('2024-03-01', '2024-03-03', '[]')`, pgtype.DateRangeCodec(), closedOpen(day(1), day(4)))
+	codecMatchesServer(t, conn, `'{[1,3), [7,9)}'::int4multirange`, pgtype.Int4MultirangeCodec(), pgtype.Multirange[int32]{
+		{Lower: pgtype.RangeBound[int32]{Value: 1, Inclusive: true}, Upper: pgtype.RangeBound[int32]{Value: 3}},
+		{Lower: pgtype.RangeBound[int32]{Value: 7, Inclusive: true}, Upper: pgtype.RangeBound[int32]{Value: 9}},
+	})
+	codecMatchesServer(t, conn, `'{}'::nummultirange`, pgtype.NumMultirangeCodec(), pgtype.Multirange[pgtype.Numeric]{})
+	codecMatchesServer(t, conn, `'{[2024-03-01,)}'::tsmultirange`, pgtype.TSMultirangeCodec(), pgtype.Multirange[time.Time]{{
+		Lower: pgtype.RangeBound[time.Time]{Value: day(1), Inclusive: true}, Upper: pgtype.RangeBound[time.Time]{Unbounded: true},
+	}})
+	codecMatchesServer(t, conn, `'{[2024-03-01 00:00+00,2024-03-02 00:00+00)}'::tstzmultirange`, pgtype.TSTZMultirangeCodec(),
+		pgtype.Multirange[time.Time]{closedOpen(day(1), day(2))})
+	codecMatchesServer(t, conn, `'{[2024-03-01,2024-03-05), [2024-03-03,2024-03-07)}'::datemultirange`, pgtype.DateMultirangeCodec(),
+		pgtype.Multirange[time.Time]{closedOpen(day(1), day(7))}) // merged by the server
+	codecMatchesServer(t, conn, `ARRAY['[1,6)', NULL, 'empty']::int4range[]`,
+		pgtype.Codec[pgtype.Array[pgtype.Range[int32]]]{
+			OID: pgtype.OIDInt4RangeArray,
+			Append: func(dst []byte, a pgtype.Array[pgtype.Range[int32]]) []byte {
+				return pgtype.AppendArray(dst, a, pgtype.Int4RangeCodec())
+			},
+			Decode: func(b []byte) (pgtype.Array[pgtype.Range[int32]], error) {
+				return pgtype.DecodeArray(pgtype.Array[pgtype.Range[int32]]{}, b, pgtype.Int4RangeCodec())
+			},
+		},
+		pgtype.Array[pgtype.Range[int32]]{Elems: []pgtype.Null[pgtype.Range[int32]]{
+			{Value: pgtype.Range[int32]{
+				Lower: pgtype.RangeBound[int32]{Value: 1, Inclusive: true}, Upper: pgtype.RangeBound[int32]{Value: 6},
+			}, Valid: true},
+			{},
+			{Value: pgtype.Range[int32]{Empty: true}, Valid: true},
+		}})
 
 	t.Run("record", func(t *testing.T) {
 		// record_recv refuses the anonymous record, so the bound parameter is
@@ -158,4 +209,29 @@ func TestIntegrationAnonymousRecordDecodes(t *testing.T) {
 	if _, err := pgtype.DecodeRecordField(rec[1], pgtype.Int8Codec()); err == nil {
 		t.Error("an int8[] field read as int8 was not refused")
 	}
+}
+
+// codecMatchesServer settles one value of a Codec against the server: this
+// package's bytes are the send function's, the server's bytes decode to a
+// value that encodes back to them, and the value bound under c.OID is the
+// one expr names by the server's own equality.
+func codecMatchesServer[T any](t *testing.T, conn *postgres.Conn, expr string, c pgtype.Codec[T], v T) {
+	t.Helper()
+	t.Run(expr, func(t *testing.T) {
+		mine := c.Append(nil, v)
+		theirs := serverEncoding(t, conn, expr)
+		if !bytes.Equal(mine, theirs) {
+			t.Errorf("this package encodes %x\n          the server %x", mine, theirs)
+		}
+		got, err := c.Decode(theirs)
+		if err != nil {
+			t.Fatalf("decoding the server's bytes: %v", err)
+		}
+		if again := c.Append(nil, got); !bytes.Equal(again, theirs) {
+			t.Errorf("the server's bytes decode to %+v, which encodes to %x", got, again)
+		}
+		if !serverAgrees(t, conn, "SELECT $1 = "+expr, c.OID, mine) {
+			t.Errorf("bound under OID %d, the value is not %s", c.OID, expr)
+		}
+	})
 }

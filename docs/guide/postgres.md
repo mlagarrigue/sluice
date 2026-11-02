@@ -335,8 +335,23 @@ r, err := pgtype.DecodeRange(raw, pgtype.DateCodec())         // a daterange
   named composite (`$1::my_type`, OID 0); the anonymous `record` is read
   and cannot be sent.
 
-Ranges have no OID constant in `pgtype`: name the type in the query
-(`$1::int4range`) and leave the OID at 0.
+The six built-in ranges and their multiranges have their codecs and
+OIDs, arrays included (`OIDInt4RangeArray`…):
+
+| PostgreSQL | Go | Codec | OID |
+|---|---|---|---|
+| `int4range`, `int4multirange` | `Range[int32]`, `Multirange[int32]` | `Int4RangeCodec()`, `Int4MultirangeCodec()` | `OIDInt4Range`, `OIDInt4Multirange` |
+| `int8range`, `int8multirange` | `Range[int64]`, `Multirange[int64]` | `Int8RangeCodec()`, `Int8MultirangeCodec()` | `OIDInt8Range`, `OIDInt8Multirange` |
+| `numrange`, `nummultirange` | `Range[Numeric]`, `Multirange[Numeric]` | `NumRangeCodec()`, `NumMultirangeCodec()` | `OIDNumRange`, `OIDNumMultirange` |
+| `tsrange`, `tsmultirange` | `Range[time.Time]`, `Multirange[time.Time]` | `TSRangeCodec()`, `TSMultirangeCodec()` | `OIDTSRange`, `OIDTSMultirange` |
+| `tstzrange`, `tstzmultirange` | `Range[time.Time]`, `Multirange[time.Time]` | `TSTZRangeCodec()`, `TSTZMultirangeCodec()` | `OIDTSTZRange`, `OIDTSTZMultirange` |
+| `daterange`, `datemultirange` | `Range[time.Time]`, `Multirange[time.Time]` | `DateRangeCodec()`, `DateMultirangeCodec()` | `OIDDateRange`, `OIDDateMultirange` |
+
+A range's codec puts a range in a container: an `int4range[]` is
+`DecodeArray` over `Int4RangeCodec()`. A range type a database created
+(`CREATE TYPE … AS RANGE`) is read the same way with
+`RangeCodec(Float8Codec(), oid, arrayOID)` — and `MultirangeCodec` for its
+multirange —, the OIDs read from `pg_type`; build it once and keep it.
 
 The table's named arrays (`DecodeInt4Array`…) stay the fast path for their
 shape, one dimension numbered from 1. Over 1,000 `int4` elements,

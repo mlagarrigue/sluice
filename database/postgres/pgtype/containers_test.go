@@ -464,6 +464,28 @@ func TestEveryCodecIsDistinctAndRoundTrips(t *testing.T) {
 	check("xid8", roundTrip(XID8Codec(), uint64(17)))
 	check("oid8", roundTrip(OID8Codec(), uint64(18)))
 	check("regdatabase", roundTrip(RegdatabaseCodec(), uint32(19)))
+
+	day := func(d int) time.Time { return time.Date(2024, 3, d, 0, 0, 0, 0, time.UTC) }
+	closedOpen := func(lo, hi int64) Range[int64] {
+		return Range[int64]{Lower: RangeBound[int64]{Value: lo, Inclusive: true}, Upper: RangeBound[int64]{Value: hi}}
+	}
+	check("int4range", roundTrip(Int4RangeCodec(), Range[int32]{Lower: RangeBound[int32]{Value: 1, Inclusive: true}, Upper: RangeBound[int32]{Unbounded: true}}))
+	check("int8range", roundTrip(Int8RangeCodec(), closedOpen(-3, 9)))
+	check("numrange", roundTrip(NumRangeCodec(), Range[Numeric]{Lower: RangeBound[Numeric]{Value: mustNumeric(t, "0.5")}, Upper: RangeBound[Numeric]{Value: mustNumeric(t, "2"), Inclusive: true}}))
+	check("tsrange", roundTrip(TSRangeCodec(), Range[time.Time]{Lower: RangeBound[time.Time]{Value: day(1), Inclusive: true}, Upper: RangeBound[time.Time]{Value: day(2)}}))
+	check("tstzrange", roundTrip(TSTZRangeCodec(), Range[time.Time]{Empty: true}))
+	check("daterange", roundTrip(DateRangeCodec(), Range[time.Time]{Lower: RangeBound[time.Time]{Unbounded: true}, Upper: RangeBound[time.Time]{Value: day(3)}}))
+	check("int4multirange", roundTrip(Int4MultirangeCodec(), Multirange[int32]{{Lower: RangeBound[int32]{Value: 1, Inclusive: true}, Upper: RangeBound[int32]{Value: 2}}}))
+	check("int8multirange", roundTrip(Int8MultirangeCodec(), Multirange[int64]{closedOpen(1, 2), closedOpen(5, 7)}))
+	check("nummultirange", roundTrip(NumMultirangeCodec(), Multirange[Numeric]{}))
+	check("tsmultirange", roundTrip(TSMultirangeCodec(), Multirange[time.Time]{{Lower: RangeBound[time.Time]{Value: day(1), Inclusive: true}, Upper: RangeBound[time.Time]{Unbounded: true}}}))
+	check("tstzmultirange", roundTrip(TSTZMultirangeCodec(), Multirange[time.Time]{{Lower: RangeBound[time.Time]{Unbounded: true}, Upper: RangeBound[time.Time]{Value: day(4)}}}))
+	check("datemultirange", roundTrip(DateMultirangeCodec(), Multirange[time.Time]{{Lower: RangeBound[time.Time]{Value: day(1), Inclusive: true}, Upper: RangeBound[time.Time]{Value: day(5)}}}))
+	for _, oid := range []uint32{OIDInt4Range, OIDInt8Range, OIDNumRange, OIDTSRange, OIDTSTZRange, OIDDateRange} {
+		if _, ok := seen[oid]; !ok {
+			t.Errorf("range OID %d has no codec", oid)
+		}
+	}
 }
 
 // roundTrip checks one Codec through an array of two elements and a NULL, and
@@ -482,6 +504,28 @@ func roundTrip[T any](c Codec[T], v T) func(*testing.T) (uint32, uint32) {
 		}
 		t.Errorf("%v came back as %+v", v, got.Elems)
 		return c.OID, c.ArrayOID
+	}
+}
+
+// A range type a database created is the same container over another
+// codec, and its array is an Array over the result.
+func TestRangeCodecOfACreatedType(t *testing.T) {
+	const oid, arrayOID = 16500, 16499
+	floatrange := RangeCodec(Float8Codec(), oid, arrayOID)
+	in := Array[Range[float64]]{Elems: []Null[Range[float64]]{
+		{Value: Range[float64]{Lower: RangeBound[float64]{Value: -0.5, Inclusive: true}, Upper: RangeBound[float64]{Unbounded: true}}, Valid: true},
+		{},
+	}}
+	b := AppendArray(nil, in, floatrange)
+	if got := binary.BigEndian.Uint32(b[8:12]); got != oid {
+		t.Errorf("the array names element type %d, want the range's %d", got, oid)
+	}
+	got, err := DecodeArray(Array[Range[float64]]{}, b, floatrange)
+	if err != nil || !slices.Equal(got.Elems, in.Elems) {
+		t.Errorf("floatrange[] = %+v, %v", got, err)
+	}
+	if _, err := DecodeArray(Array[Range[int32]]{}, b, Int4RangeCodec()); !errors.Is(err, ErrCodec) {
+		t.Errorf("a floatrange[] read as int4range[]: err = %v", err)
 	}
 }
 
