@@ -212,3 +212,68 @@ func TestH2HandlerGoexitStillAnswers(t *testing.T) {
 		t.Errorf("stream 3 answered %q; the connection was left counting the exited handler in flight", got)
 	}
 }
+
+// RFC 9113 §10.5 and Config.IdleTimeout: a peer "cannot hold a connection
+// it never uses". An empty DATA frame on a stream closed long ago counted
+// as stream activity for the frame reader and re-armed the idle clock,
+// where PING, SETTINGS and WINDOW_UPDATE do not: one such frame per
+// IdleTimeout held the connection for nine bytes an interval, with no
+// request in flight and nothing the server answers. Only a frame that
+// opens or advances a live stream re-arms the clock now, and the trickle
+// is closed within two IdleTimeouts.
+func TestH2EmptyDataOnAClosedStreamDoesNotHoldTheIdleClock(t *testing.T) {
+	const idle = 200 * time.Millisecond
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	served := make(chan error, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			served <- err
+			return
+		}
+		cfg := Config{Logger: discardLogger(), ReadTimeout: 5 * time.Second, IdleTimeout: idle, LingerTimeout: 100 * time.Millisecond}
+		served <- ServeH2Conn(t.Context(), c, cfg, echoTarget)
+	}()
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	c := h2clientOn(t, conn)
+	// One request, answered: the stream is closed on both sides and the
+	// connection owes nothing.
+	c.request(1, "GET", "/once")
+	c.flush()
+	c.pump(func() bool { return c.ended[1] })
+	if !c.ended[1] {
+		t.Fatal("the request was not answered")
+	}
+	// Then an empty DATA on that closed stream every half IdleTimeout, for
+	// ten IdleTimeouts. A connection that owes nothing is closed with
+	// GOAWAY(NO_ERROR) after at most two IdleTimeouts of silence; the
+	// trickle is the question. A write that fails is the close arriving.
+	empty, _ := appendH2Frame(nil, h2Frame{Type: frameData, StreamID: 1})
+	deadline := time.Now().Add(10 * idle)
+	for time.Now().Before(deadline) {
+		if _, err := conn.Write(empty); err != nil {
+			break
+		}
+		select {
+		case <-served:
+			return // closed under the trickle: the clock did not restart
+		case <-time.After(idle / 2):
+		}
+	}
+	select {
+	case err := <-served:
+		if errors.Is(err, ErrShutdownForced) {
+			t.Fatal(err)
+		}
+	case <-time.After(idle / 4):
+		t.Fatalf("the connection outlived %v of empty DATA frames on a closed stream with no request in flight; want the idle close within two IdleTimeouts", 10*idle)
+	}
+}

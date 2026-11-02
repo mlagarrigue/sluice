@@ -904,6 +904,13 @@ func (w *h2Writer) interim(id uint32, status int) error {
 	if err := w.waitCtrlLocked(); err != nil {
 		return err
 	}
+	if _, alive := w.windows[id]; !alive {
+		// The peer reset the stream between the handler's check of its
+		// body and this call (forget), or the answer already ended: RFC
+		// 9113 §5.1 forbids a frame on a closed stream, and an interim
+		// response after the final one means nothing.
+		return nil
+	}
 	var buf [16]byte // a size update and :status fit without the heap
 	block := w.bareHeadLocked(buf[:0], status)
 	if err := w.appendCtrl(h2Frame{Type: frameHeaders, Flags: flagEndHeaders, StreamID: id, Payload: block}); err != nil {
@@ -945,6 +952,26 @@ func (w *h2Writer) reset(id, code uint32) error {
 	var p [4]byte
 	be32put(p[:], code)
 	return w.controlLocked(h2Frame{Type: frameRSTStream, StreamID: id, Payload: p[:]})
+}
+
+// streamGrant sends a WINDOW_UPDATE of inc on stream id from a handler's
+// goroutine, unless the stream was forgotten already — the peer's
+// RST_STREAM, read on the reader's goroutine after the handler last looked
+// at its body. RFC 9113 §6.4: after a RST_STREAM, "the receiver MUST NOT
+// send additional frames for that stream, except for PRIORITY". The
+// question is asked under w.mu, as reset asks it, so a forget either comes
+// first and the grant is dropped, or comes after and the grant is a frame
+// that crossed the peer's reset on the wire, which §5.1 has the peer
+// ignore.
+func (w *h2Writer) streamGrant(id, inc uint32) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if slices.Contains(w.gone, id) {
+		return nil
+	}
+	var p [4]byte
+	be32put(p[:], inc)
+	return w.controlLocked(h2Frame{Type: frameWindowUpdate, StreamID: id, Payload: p[:]})
 }
 
 // control32 and appendCtrl32 queue a control frame whose payload is one

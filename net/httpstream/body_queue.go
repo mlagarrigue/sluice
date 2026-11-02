@@ -246,7 +246,7 @@ func (b *bodyQueue) sendGrant(inc int32) error {
 	if inc <= 0 {
 		return nil
 	}
-	return b.h2.w.control32(frameWindowUpdate, uint32(b.id), uint32(inc)) //nolint:gosec // G115: an HTTP/2 stream identifier, a positive increment
+	return b.h2.w.streamGrant(uint32(b.id), uint32(inc)) //nolint:gosec // G115: an HTTP/2 stream identifier, a positive increment
 }
 
 // giveBack returns n consumed or dropped bytes' stream-level credit to the

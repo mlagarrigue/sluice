@@ -1,6 +1,7 @@
 package httpstream
 
 import (
+	"net"
 	"testing"
 	"time"
 )
@@ -112,5 +113,72 @@ func TestH2NoResetOnAClosedStreamAnsweredLongAgo(t *testing.T) {
 	}
 	if c.sawGoAway {
 		t.Fatal("the late frame on a closed stream ended the connection")
+	}
+}
+
+// RFC 9113 §6.4: "After receiving a RST_STREAM on a stream, the receiver
+// MUST NOT send additional frames for that stream, except for PRIORITY";
+// §5.1 "closed": "An endpoint MUST NOT send frames other than PRIORITY on a
+// closed stream". The reader processes the peer's RST_STREAM (fail, retire,
+// forget) on its own goroutine while the handler's goroutine, past its
+// check of the body's state, queues the 100 Continue (bodyQueue.next ->
+// h2Writer.interim) or a WINDOW_UPDATE (sendGrant -> control32); both now
+// ask the writer, under its lock, whether the stream is still alive, as
+// deliver, extend and reset do.
+//
+// The race is reproduced without timing: the writer has forgotten the
+// stream (what the RST_STREAM branch leaves behind) and the handler pulls
+// a body that holds nothing, which is the first wait that sends the 100.
+func TestH2NothingQueuedForAStreamTheWriterForgot(t *testing.T) {
+	cfg, err := Config{}.resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := net.Pipe()
+	t.Cleanup(func() { _ = a.Close(); _ = b.Close() })
+	w := newH2Writer(a, cfg) // run is not started: the control queue is inspected, never written
+	s := &h2Conn{cfg: cfg, w: w, streams: map[uint32]*h2Stream{}, closed: map[uint32]h2State{}}
+	st := &h2Stream{id: 1, declared: -1, recvWind: int32(cfg.InitialWindowSize)}
+	st.req = Request{Headers: []Header{{Name: []byte("expect"), Value: []byte("100-continue")}}}
+	w.open(st.id)
+	body := s.newH2Body(st)
+
+	// The peer's RST_STREAM reached the reader: the stream is retired and the
+	// writer told to forget it (h2read.go, frame, case frameRSTStream).
+	w.forget(st.id)
+
+	// The handler pulls: nothing is held, so next sends the interim 100 and
+	// then waits for the peer. The wait is ended by the body failing, as the
+	// reader's fail would have done an instant earlier.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = body.next()
+	}()
+	time.Sleep(200 * time.Millisecond)
+	body.fail(errBodyReset)
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("next did not return")
+	}
+	// The other frame the handler's goroutine queues: the stream-level
+	// WINDOW_UPDATE its reads earn.
+	if err := body.sendGrant(1 << 14); err != nil {
+		t.Fatal(err)
+	}
+
+	w.mu.Lock()
+	ctrl := append([]byte(nil), w.ctrl...)
+	w.mu.Unlock()
+	for len(ctrl) > 0 {
+		f, n, err := parseFrame(ctrl, cfg.MaxFrameSize)
+		if err != nil {
+			t.Fatalf("control queue: %v", err)
+		}
+		if f.StreamID == st.id {
+			t.Fatalf("frame type %#x queued on stream %d after the writer forgot it (RFC 9113 §6.4)", f.Type, st.id)
+		}
+		ctrl = ctrl[n:]
 	}
 }

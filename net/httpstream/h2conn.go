@@ -624,7 +624,9 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 	// would be this server refusing what it just built. A half-finished
 	// request is a different matter and stays on ReadTimeout, which is the
 	// slowloris bound.
-	src := framesWith(c, cfg, func() bool { return s.inFlight.Load() > 0 })
+	// live is asked by the reader on this goroutine, between two batches:
+	// the stream table is the one consume keeps.
+	src := framesWith(c, cfg, func() bool { return s.inFlight.Load() > 0 }, func(id uint32) bool { return s.streams[id] != nil })
 	var fatal error
 	greeted := false
 	src.Stream()(func(b sluice.Batch[h2Frame]) bool {

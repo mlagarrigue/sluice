@@ -113,7 +113,7 @@ var ErrH2Protocol = errors.New("httpstream: HTTP/2 protocol error")
 // Payloads borrow the read buffer and are valid for the duration of the call
 // that received the batch.
 func h2Frames(c net.Conn, cfg Config) sluice.Source[h2Frame] {
-	return framesWith(c, cfg, nil)
+	return framesWith(c, cfg, nil, nil)
 }
 
 // framesWith is Frames with the server's view of whether the connection is
@@ -122,9 +122,13 @@ func h2Frames(c net.Conn, cfg Config) sluice.Source[h2Frame] {
 // connection with nothing above it, which is what h2Frames gives a caller
 // composing operators directly, and it is idle whenever it is silent.
 //
+// live reports whether a stream is still open at the server, so that only
+// a DATA frame that advances one counts as use of the connection; a nil
+// live counts every DATA frame.
+//
 // cfg is resolved: every caller has been through Config.resolve.
-func framesWith(c net.Conn, cfg Config, busy func() bool) sluice.Source[h2Frame] {
-	r := &frameReader{conn: c, cfg: cfg, busy: busy}
+func framesWith(c net.Conn, cfg Config, busy func() bool, live func(id uint32) bool) sluice.Source[h2Frame] {
+	r := &frameReader{conn: c, cfg: cfg, busy: busy, live: live}
 	return sluice.NewSource(sluice.Stream[h2Frame](r.stream), func() error { return r.err })
 }
 
@@ -160,9 +164,16 @@ type frameReader struct {
 	// the connection, not using it (see Config.IdleTimeout). streamSeen says
 	// whether any stream activity ever arrived; until it has, the clock is
 	// ReadTimeout's, the bound a connection that has not spoken yet gets.
+	//
+	// A DATA frame counts only on a stream live says is open: an empty DATA
+	// on a stream closed long ago is tolerated without an answer (h2Conn.data),
+	// and counted as use, nine bytes per IdleTimeout held a connection that
+	// carried no request — RFC 9113 §10.5's idle connection, kept by the one
+	// frame the clock did not tell apart.
 	idleAt         time.Time
 	streamActivity bool
 	streamSeen     bool
+	live           func(id uint32) bool
 
 	// continuations and headerBlock track an open header block across
 	// CONTINUATION frames, which is where the flood defence lives.
@@ -199,7 +210,7 @@ func (r *frameReader) next() ([]h2Frame, bool) {
 		if len(batch) > 0 {
 			r.pending = used
 			for i := range batch {
-				if t := batch[i].Type; t == frameHeaders || t == frameContinuation || t == frameData {
+				if r.usesStream(batch[i]) {
 					r.streamActivity, r.streamSeen = true, true
 					break
 				}
@@ -218,6 +229,18 @@ func (r *frameReader) next() ([]h2Frame, bool) {
 			return nil, false
 		}
 	}
+}
+
+// usesStream reports whether f is use of the connection for the idle clock:
+// a HEADERS or CONTINUATION, or a DATA on a stream that is open (live).
+func (r *frameReader) usesStream(f h2Frame) bool {
+	switch f.Type {
+	case frameHeaders, frameContinuation:
+		return true
+	case frameData:
+		return r.live == nil || r.live(f.StreamID)
+	}
+	return false
 }
 
 func (r *frameReader) consume(used int) {
