@@ -319,7 +319,7 @@ const (
 func (c *Conn) admitSource(datagram []byte, from net.Addr) bool {
 	c.mu.Lock()
 	fromPeer := from == nil || sameAddr(from, c.peer)
-	if !fromPeer && c.isClient && c.pathProbe.pending && c.pathProbe.target != nil && sameAddr(from, c.pathProbe.target) {
+	if !fromPeer && c.isClient && c.probesPreferredLocked(from) {
 		// The one other address a client listens to: the server's
 		// preferred address while this end is probing it (§9.6.2). What
 		// arrives from it is authenticated like anything else; the

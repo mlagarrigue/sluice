@@ -3,6 +3,7 @@ package quic
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -1264,5 +1265,74 @@ func TestPeerParametersArmTheIdleClockOnlyWithATimeout(t *testing.T) {
 		case tc.want != 0 && (deadline.Before(before.Add(tc.want)) || deadline.After(time.Now().Add(tc.want))):
 			t.Errorf("%s: idle deadline %v after the parameters, want %v", tc.name, deadline.Sub(before), tc.want)
 		}
+	}
+}
+
+// RFC 9000 §9.6.3: a client probes the server's preferred address, Rebinds,
+// and the preferred address answers the candidate's challenge in a sealed
+// 1-RTT datagram that goes through c.receive; the client MUST migrate to
+// the preferred address. Rebind moved the preferred probe into
+// preferredCandidate, and admitSource heard only c.peer and the path probe's
+// target: the answer was dropped before it was read. The control sends the
+// same packet from the original address and sees the move, which proves the
+// packet itself is well formed; a third address is still dropped unread.
+func TestThePreferredAddressIsHeardAfterARebind(t *testing.T) {
+	run := func(t *testing.T, from string) (moved bool, discarded uint64) {
+		t.Helper()
+		first := &recordingPC{addr: fakeFuzzAddr("rebind-preferred:first")}
+		original, preferred := fakeFuzzAddr("rebind-preferred:peer"), fakeFuzzAddr("rebind-preferred:preferred")
+		c := newConn(first, original, []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+		defer c.Close()
+		sec, err := initialSecrets([]byte("rebind-preferred-keys"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := c.install(tls.QUICEncryptionLevelApplication, tls.TLS_AES_128_GCM_SHA256, sec.Client, true); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.install(tls.QUICEncryptionLevelApplication, tls.TLS_AES_128_GCM_SHA256, sec.Server, false); err != nil {
+			t.Fatal(err)
+		}
+		server, err := newSealerSuite(sec.Server, aes128Suite)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.mu.Lock()
+		c.handshakeConfirmed = true
+		for i := 1; i <= 3; i++ {
+			c.peerCIDs = append(c.peerCIDs, peerCID{seq: uint64(i), cid: []byte("peercid" + string(rune('0'+i)))})
+		}
+		c.preferred = preferred
+		c.probePreferredAddressLocked(time.Now())
+		c.mu.Unlock()
+
+		if err := c.Rebind(&recordingPC{addr: fakeFuzzAddr("rebind-preferred:second")}); err != nil {
+			t.Fatal(err)
+		}
+		c.mu.Lock()
+		cand := c.preferredCandidate
+		c.mu.Unlock()
+		if !cand.pending || !sameAddr(cand.to, preferred) {
+			t.Fatalf("no preferred candidate after Rebind (pending %v, to %v): case not reached", cand.pending, cand.to)
+		}
+		payload := append(varint.Append(nil, framePathResponse), cand.data[:]...)
+		payload = append(payload, make([]byte, 40)...) // PADDING
+		pkt := shortPacket(t, server, 0, []byte("selfcid0"), 0, payload)
+		src := map[string]net.Addr{"original": original, "preferred": preferred, "elsewhere": fakeFuzzAddr("rebind-preferred:elsewhere")}[from]
+		if err := c.receive(pkt, src); err != nil {
+			t.Fatalf("receive: %v", err)
+		}
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return sameAddr(c.peer, preferred), c.discarded
+	}
+	if moved, _ := run(t, "original"); !moved {
+		t.Fatal("control: the answer arriving from the original address did not move the client; the probe's packet is not read")
+	}
+	if moved, _ := run(t, "preferred"); !moved {
+		t.Fatal("the preferred address's PATH_RESPONSE, received from the preferred address after a Rebind, did not move the client there (RFC 9000 §9.6.3 MUST)")
+	}
+	if moved, discarded := run(t, "elsewhere"); moved || discarded != 1 {
+		t.Fatalf("a datagram from a third address: moved %v, discarded %d; want dropped unread", moved, discarded)
 	}
 }

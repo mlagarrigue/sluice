@@ -1090,6 +1090,19 @@ type preferredCandidate struct {
 	data          [8]byte
 }
 
+// probesPreferredLocked reports whether from is the server's preferred
+// address while this client probes it: as the path probe's target, or,
+// after a Rebind restarted that probe toward the original address, as the
+// candidate (§9.6.3). Its answer must be heard from there — refused before
+// it is read, the PATH_RESPONSE that completes the move never reached
+// handlePathResponse. Callers hold mu.
+func (c *Conn) probesPreferredLocked(from net.Addr) bool {
+	if c.pathProbe.pending && c.pathProbe.target != nil && sameAddr(from, c.pathProbe.target) {
+		return true
+	}
+	return c.preferredCandidate.pending && c.preferredCandidate.to != nil && sameAddr(from, c.preferredCandidate.to)
+}
+
 // probePreferredCandidateLocked starts the second of §9.6.3's two
 // validations from a client's new socket, toward the server's preferred
 // address. Without a second identifier never used — the first went to the
