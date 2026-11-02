@@ -8,7 +8,9 @@ name: Mutation
 
 on:
   schedule:
-    - cron: '17 1 * * 6'
+    # Saturday, after the nightly fuzzing (02:43, fourteen jobs): the two
+    # together would pass the twenty jobs a free account runs at once.
+    - cron: '17 5 * * 6'
   workflow_dispatch:
 
 permissions:
@@ -19,18 +21,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Twelve shards, a file to each by a hash of its path: a GitHub runner holds
-  # two workers at the script's memory cap, and the slowest shard stays far
-  # from the six-hour bound of a job.
+  # Four shards, a file to each by a hash of its path. Each shard pays a fixed
+  # cost (Go, gremlins, the cache keys, one coverage run per package it
+  # touches), so few shards waste least. A full run, twenty-six hours of
+  # processor time measured locally with two workers (2026-11-01), should
+  # take three to four hours on the busiest shard with the configuration's
+  # three workers; a week without change, a few minutes. The bound stays under
+  # the six hours of a job.
   shard:
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 330
     env:
       GOWORK: off
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+        shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -51,11 +57,11 @@ jobs:
           key: mutation-${{ matrix.shard }}-${{ github.run_id }}
           restore-keys: mutation-${{ matrix.shard }}-
 
-      - name: Mutate shard ${{ matrix.shard }} of 12
+      - name: Mutate shard ${{ matrix.shard }} of 4
         env:
           MUTATION_CACHE: ${{ runner.temp }}/mutation-cache
           SHARD: ${{ matrix.shard }}
-        run: scripts/mutation.sh --wait 10 --shard "$SHARD/12" --out mutation-out
+        run: scripts/mutation.sh --wait 10 --shard "$SHARD/4" --out mutation-out
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
