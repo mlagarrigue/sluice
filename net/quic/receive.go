@@ -1450,8 +1450,15 @@ func (c *Conn) handleResetStream(f Frame, space int) (s *Stream, growth, release
 	if err != nil || tolerated {
 		return nil, 0, 0, err
 	}
+	// A copy — a retransmission, or a peer repeating it — still has its
+	// final size checked by abandon, and is reported to nobody: once in the
+	// batch and in ended is what the reset means, and a packet of copies
+	// moved nothing (RFC 9000 §21.9). Only this goroutine sets readReset.
+	s.mu.Lock()
+	again := s.readReset
+	s.mu.Unlock()
 	growth, released, err = s.abandon(f.value, f.offset)
-	if err != nil {
+	if err != nil || again {
 		return nil, 0, 0, err
 	}
 	c.rxProgress = true

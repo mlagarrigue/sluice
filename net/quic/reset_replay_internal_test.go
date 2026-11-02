@@ -359,3 +359,42 @@ func TestALostControlFrameGoesAgainOnlyWhileItHolds(t *testing.T) {
 		}
 	}
 }
+
+// RFC 9000 §21.9: a packet that moves nothing is non-productive. A second
+// RESET_STREAM on a stream already reset changes nothing — abandon checks
+// its final size and returns — but it used to be reported each time: a
+// FrameResetStream in the batch and the stream in ended per copy, three
+// hundred entries for the layer above from one packet, and the packet
+// counted as progress. One report now, and a packet of copies alone is
+// non-productive.
+func TestARepeatedResetStreamIsReportedOnce(t *testing.T) {
+	c := assembleConn(&fuzzSink{addr: "resets:self"}, fakeFuzzAddr("resets:peer"), []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+	t.Cleanup(func() { _ = c.Close() })
+	resets := 0
+	c.OnStreamFrames(CreditOnDelivery, func(frames []Frame) error {
+		for _, f := range frames {
+			if f.Type == FrameResetStream {
+				resets++
+			}
+		}
+		return nil
+	})
+	reset := appendFrame(nil, FrameResetStream, 0, 7, 10)
+	var copies []byte
+	for range 300 {
+		copies = append(copies, reset...)
+	}
+	if err := c.frames(spaceApplication, copies, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if resets != 1 {
+		t.Fatalf("300 copies of one RESET_STREAM reached the batch %d times, want once", resets)
+	}
+	before := c.nonProductive
+	if err := c.frames(spaceApplication, copies, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if resets != 1 || c.nonProductive != before+1 {
+		t.Fatalf("a packet of copies alone: %d reports, non-productive count %d → %d; want no report and one more non-productive packet", resets-1, before, c.nonProductive)
+	}
+}

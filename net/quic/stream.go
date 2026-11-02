@@ -517,7 +517,10 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 		// this direction and declared this very offset final
 		// (sendOpts.recheck).
 		opts := sendOpts{waitCwnd: true, own: true, deadline: s.writeDeadline, recheck: s.sendableLocked}
-		if err := c.sendPacketLocked(spaceApplication, frame, opts); err != nil {
+		// A packet the socket refused after it was recorded is sent as far
+		// as the stream goes (errSentUnwritten): recovery resends the frame
+		// at this offset.
+		if err := c.sendPacketLocked(spaceApplication, frame, opts); err != nil && !errors.Is(err, errSentUnwritten) {
 			s.sendQ.sent -= uint64(n)
 			c.connSend.sent -= uint64(n)
 			if errors.Is(err, errRefit) {

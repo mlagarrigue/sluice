@@ -180,3 +180,53 @@ func TestSealWithoutZeroRTTKeysRequeuesThePayload(t *testing.T) {
 		t.Fatalf("retransmission queue = %q; want the unsealed frames first", sp.retrans)
 	}
 }
+
+// RFC 9000 §2.2 and sealLocked's model: a datagram the socket refuses after
+// its packet was sealed and recorded is a packet the network lost, and
+// recovery sends its frames again. A lone 0-RTT writer, whose packet is
+// written at once, used to take the write error as a refusal: it gave the
+// stream and connection credit back and left writeOff where it was, while
+// the frame sat in the sent record — credit spent twice, and a Write
+// replayed put other bytes at the same offset. The write counts as sent now.
+func TestAZeroRTTWriteTheSocketRefusedStillAdvancesTheStream(t *testing.T) {
+	pc := &failingWritePC{fuzzSink{addr: "refused:self"}}
+	dcid, scid := []byte("dcid0000"), []byte("scid0000")
+	c := assembleConn(pc, fakeFuzzAddr("refused:peer"), dcid, scid, true, DefaultParameters())
+	t.Cleanup(func() { _ = c.Close() })
+	c.initialDCID = dcid
+	if err := c.installInitial(dcid); err != nil {
+		t.Fatal(err)
+	}
+	c.remembered = TransportParameters{
+		InitialMaxData:          1 << 20,
+		InitialMaxStreamDataUni: 1 << 16,
+		InitialMaxStreamsUni:    8,
+		ActiveConnIDLimit:       4,
+	}
+	if err := c.installEarlySealer(tls.TLS_AES_128_GCM_SHA256, make([]byte, 32)); err != nil {
+		t.Fatalf("early sealer: %v", err)
+	}
+	s, err := c.OpenUniStream(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := bytes.Repeat([]byte{0x5A}, 200)
+	n, err := s.Write(marker)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	recorded := false
+	for _, p := range c.spaces[spaceApplication].sent.packets {
+		recorded = recorded || bytes.Contains(p.payload, marker[:64])
+	}
+	if !recorded {
+		t.Fatalf("the 0-RTT frame is not in the sent record (Write = %d, %v): the test proves nothing", n, err)
+	}
+	if s.writeOff != uint64(len(marker)) || c.connSend.sent != uint64(len(marker)) {
+		t.Fatalf("Write = %d, %v; writeOff %d, connection credit spent %d; want both %d, the frame recovery will resend",
+			n, err, s.writeOff, c.connSend.sent, len(marker))
+	}
+	if err != nil || n != len(marker) {
+		t.Errorf("Write = %d, %v; want %d, nil: the bytes are sent as far as the stream goes", n, err, len(marker))
+	}
+}

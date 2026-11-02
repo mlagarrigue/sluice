@@ -903,8 +903,19 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 	if opts.via != nil {
 		pc = opts.via
 	}
-	return c.writeLocked(pc, pkt, dest, p.ecn)
+	if err := c.writeLocked(pc, pkt, dest, p.ecn); err != nil {
+		return fmt.Errorf("%w: %w", errSentUnwritten, err)
+	}
+	return nil
 }
+
+// errSentUnwritten marks the error of a packet sealed and recorded for
+// recovery whose datagram the socket then refused. As far as recovery goes
+// the packet left and was lost (sealLocked): its frames go again when the
+// loss is declared. A caller that charged credit for the packet keeps it
+// charged — given back, it was spent twice, once by the frame recovery
+// resends and once by whatever took it next.
+var errSentUnwritten = errors.New("quic: a recorded packet's datagram was not written")
 
 // withholdLocked puts back a packet the amplification limit stops (RFC
 // 9000 §8.1): withheld, not dropped. Handshake bytes exist only here —
