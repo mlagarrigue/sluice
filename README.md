@@ -1,12 +1,11 @@
 <!-- Badges -->
 [![Go Reference](https://pkg.go.dev/badge/github.com/mlagarrigue/sluice.svg)](https://pkg.go.dev/github.com/mlagarrigue/sluice)
+[![Go](https://img.shields.io/github/go-mod/go-version/mlagarrigue/sluice)](go.mod)
 [![CI](https://github.com/mlagarrigue/sluice/actions/workflows/ci.yml/badge.svg)](https://github.com/mlagarrigue/sluice/actions/workflows/ci.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/mlagarrigue/sluice)](https://goreportcard.com/report/github.com/mlagarrigue/sluice)
 [![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/mlagarrigue/sluice/badges/coverage.json)](https://github.com/mlagarrigue/sluice/actions/workflows/ci.yml)
+[![govulncheck](https://github.com/mlagarrigue/sluice/actions/workflows/govulncheck.yml/badge.svg)](https://github.com/mlagarrigue/sluice/actions/workflows/govulncheck.yml)
 [![Release](https://img.shields.io/github/v/release/mlagarrigue/sluice)](https://github.com/mlagarrigue/sluice/releases)
-![Go](https://img.shields.io/badge/go-1.26-00ADD8)
-![Status](https://img.shields.io/badge/status-v0%20·%20unstable%20API-orange)
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+![Status](https://img.shields.io/badge/status-unstable%20API-orange)
 
 # Sluice.go
 
@@ -342,3 +341,10 @@ Inspired by the Volcano model, MonetDB/X100, Akka Streams, Flink, and the
 FHIR and SARIF diagnostic models — sources cited in the architecture.
 
 Licensed under [Apache 2.0](LICENSE).
+
+## Links
+
+- [Documentation](docs/README.md)
+- [Benchmarks](docs/benchmarks.md)
+- [Migration guide](docs/migration.md)
+- [Changelog](CHANGELOG.md)
