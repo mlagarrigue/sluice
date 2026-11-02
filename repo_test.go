@@ -12,6 +12,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -412,6 +413,10 @@ func TestDecisionRecordsDateTheirLastRevision(t *testing.T) {
 // constants of the same types), named in the PostgreSQL guide itself, or used
 // outside the package. A codec is the caller's to call, so a consumer in the
 // tree is not required of it; a name nothing documents and nothing uses is.
+//
+// The guide states one rule for the OID constants — every type's OIDX has an
+// OIDXArray for its array and an XCodec for its Codec — so a type's OID
+// constant, documented or used, accounts for those two.
 func TestPgtypeNamesAreDocumentedOrUsed(t *testing.T) {
 	guide, err := os.ReadFile("docs/guide/postgres.md")
 	if err != nil {
@@ -451,6 +456,13 @@ func TestPgtypeNamesAreDocumentedOrUsed(t *testing.T) {
 					}
 					return true
 				})
+			}
+		}
+	}
+	for _, m := range []map[string]bool{maps.Clone(documented), used} {
+		for name := range m {
+			if x, ok := strings.CutPrefix(name, "OID"); ok && !strings.HasSuffix(x, "Array") {
+				documented[name+"Array"], documented[x+"Codec"] = true, true
 			}
 		}
 	}

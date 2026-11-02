@@ -70,20 +70,73 @@ const (
 	OIDRegdatabase   uint32 = 6490 // PostgreSQL 19
 )
 
-// Array type OIDs, one per element type the Append…Array and Decode…Array
-// functions of this package cover, in OID order.
+// Array type OIDs, one per scalar type above, in OID order. An array's
+// element OID is what its header carries and what the server checks: a
+// varchar[] is not a text[] on the wire, though the elements' bytes are the
+// same.
 const (
-	OIDBoolArray        uint32 = 1000
-	OIDByteaArray       uint32 = 1001
-	OIDInt2Array        uint32 = 1005
-	OIDInt4Array        uint32 = 1007
-	OIDTextArray        uint32 = 1009
-	OIDInt8Array        uint32 = 1016
-	OIDFloat4Array      uint32 = 1021
-	OIDFloat8Array      uint32 = 1022
-	OIDTimestampArray   uint32 = 1115
-	OIDDateArray        uint32 = 1182
-	OIDTimestampTZArray uint32 = 1185
-	OIDNumericArray     uint32 = 1231
-	OIDUUIDArray        uint32 = 2951
+	OIDXMLArray           uint32 = 143
+	OIDJSONArray          uint32 = 199
+	OIDXID8Array          uint32 = 271
+	OIDLineArray          uint32 = 629
+	OIDCIDRArray          uint32 = 651
+	OIDCircleArray        uint32 = 719
+	OIDMacaddr8Array      uint32 = 775
+	OIDMoneyArray         uint32 = 791
+	OIDBoolArray          uint32 = 1000
+	OIDByteaArray         uint32 = 1001
+	OIDCharArray          uint32 = 1002
+	OIDNameArray          uint32 = 1003
+	OIDInt2Array          uint32 = 1005
+	OIDInt2VectorArray    uint32 = 1006
+	OIDInt4Array          uint32 = 1007
+	OIDRegprocArray       uint32 = 1008
+	OIDTextArray          uint32 = 1009
+	OIDTIDArray           uint32 = 1010
+	OIDXIDArray           uint32 = 1011
+	OIDCIDArray           uint32 = 1012
+	OIDOIDVectorArray     uint32 = 1013
+	OIDBPCharArray        uint32 = 1014
+	OIDVarcharArray       uint32 = 1015
+	OIDInt8Array          uint32 = 1016
+	OIDPointArray         uint32 = 1017
+	OIDLSegArray          uint32 = 1018
+	OIDPathArray          uint32 = 1019
+	OIDBoxArray           uint32 = 1020
+	OIDFloat4Array        uint32 = 1021
+	OIDFloat8Array        uint32 = 1022
+	OIDPolygonArray       uint32 = 1027
+	OIDOIDArray           uint32 = 1028
+	OIDMacaddrArray       uint32 = 1040
+	OIDInetArray          uint32 = 1041
+	OIDTimestampArray     uint32 = 1115
+	OIDDateArray          uint32 = 1182
+	OIDTimeArray          uint32 = 1183
+	OIDTimestampTZArray   uint32 = 1185
+	OIDIntervalArray      uint32 = 1187
+	OIDNumericArray       uint32 = 1231
+	OIDTimeTZArray        uint32 = 1270
+	OIDBitArray           uint32 = 1561
+	OIDVarbitArray        uint32 = 1563
+	OIDRefcursorArray     uint32 = 2201
+	OIDRegprocedureArray  uint32 = 2207
+	OIDRegoperArray       uint32 = 2208
+	OIDRegoperatorArray   uint32 = 2209
+	OIDRegclassArray      uint32 = 2210
+	OIDRegtypeArray       uint32 = 2211
+	OIDTxidSnapshotArray  uint32 = 2949
+	OIDUUIDArray          uint32 = 2951
+	OIDPGLSNArray         uint32 = 3221
+	OIDTSVectorArray      uint32 = 3643
+	OIDTSQueryArray       uint32 = 3645
+	OIDRegconfigArray     uint32 = 3735
+	OIDRegdictionaryArray uint32 = 3770
+	OIDJSONBArray         uint32 = 3807
+	OIDJSONPathArray      uint32 = 4073
+	OIDRegnamespaceArray  uint32 = 4090
+	OIDRegroleArray       uint32 = 4097
+	OIDRegcollationArray  uint32 = 4192
+	OIDPGSnapshotArray    uint32 = 5039
+	OIDOID8Array          uint32 = 6442 // PostgreSQL 19
+	OIDRegdatabaseArray   uint32 = 6491 // PostgreSQL 19
 )

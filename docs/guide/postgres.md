@@ -213,11 +213,14 @@ keys to send as `= ANY`.
 ### The codecs, in one table
 
 Every type below has the same pair in `pgtype`, `AppendX`/`DecodeX`, named
-after the PostgreSQL type. The first thirteen also have a one-dimensional array
-(`AppendXArray`/`DecodeXArray`), the same array with NULL elements
+after the PostgreSQL type, and its codec, `XCodec()`, which opens the
+containers (arrays of any shape, ranges, composites:
+[below](#containers-arrays-ranges-composites)). The first thirteen also
+have a named one-dimensional array (`AppendXArray`/`DecodeXArray`), the
+same array with NULL elements
 (`AppendNullableXArray`/`DecodeNullableXArray`, over `[]Null[T]`), and a
-column scanner (`ScanX`). The others have the scalar pair only; what is
-missing is listed in [Limits](limits.md), not discovered at use.
+column scanner (`ScanX`). What is missing is listed in
+[Limits](limits.md), not discovered at use.
 
 | PostgreSQL | Go | X | Array | Array with NULLs | Scan |
 |---|---|---|---|---|---|
@@ -259,9 +262,11 @@ missing is listed in [Limits](limits.md), not discovered at use.
 | `tsquery` | `[]TSQueryItem` | `TSQuery` | — | — | — |
 
 Each type's OID — the number the server names it by — is `OIDX` in `pgtype`,
-and `OIDXArray` for its array, after the same X; the types that share an
-X have one each — `OIDVarchar`, `OIDBPChar` (char(n)) and `OIDName` beside
-`OIDText`, `OIDBit` and `OIDVarbit` for `Bits`. A few values are
+`OIDXArray` for its array and `XCodec()` for its codec, after the same X;
+the types that share an X have one each — `OIDVarchar`, `OIDBPChar`
+(char(n)) and `OIDName` beside `OIDText`, `OIDBit` and `OIDVarbit` for
+`Bits`, `OIDRegclass` and the other `reg*` beside `OIDOID`, so
+`VarcharCodec()` or `RegclassCodec()`. A few values are
 special. A timestamp, timestamptz or date of `infinity` or `-infinity`
 decodes to `pgtype.InfinityTime()` or `NegInfinityTime()`, and those two
 encode back to it; compare them with `Equal`. A `money` is a count of the
@@ -298,6 +303,50 @@ allocation `Null[T]` does not.
 > named: `n.Float64()` says what it does; `n.String()` renders `10.00`, not
 > `10`, because that is what an invoice prints.
 
+### Containers: arrays, ranges, composites
+
+An array, a range of values (`[1,10)`, a period), a multirange (several
+disjoint ranges, since PostgreSQL 14) and a composite (a row of a
+`CREATE TYPE … AS` type, or the `ROW(…)` of a query) wrap values of other
+types. `pgtype` writes each of them once, over the **codec** of what it
+wraps: `Codec[T]` carries the type's OID, its array's, and its
+`Append`/`Decode` pair. Every type in the table has its own.
+
+```go
+arr, err := pgtype.DecodeArray(arr, raw, pgtype.Int4Codec()) // an int4[] of any shape
+r, err := pgtype.DecodeRange(raw, pgtype.DateCodec())         // a daterange
+```
+
+- `Array[T]`: `Dims` — for each dimension, `Len` and `Lower`, the index of
+  the first element (1 unless stated otherwise) — and `Elems`, the elements
+  as `Null[T]`, row after row. `Array[T]{Elems: e}` without `Dims` is the
+  one-dimensional array. An array of any type in the table, up to six
+  dimensions, goes through `AppendArray`/`DecodeArray`; its parameter OID
+  is `OIDXArray`.
+- `Range[T]`: two `RangeBound[T]` (`Value`, `Inclusive`, and `Unbounded`
+  for the absent bound of `(,5]`, which is not an `infinity` value) and
+  `Empty`. The server returns the canonical form: an `int4range` written
+  `[1,5]` comes back `[1,6)`.
+- `Multirange[T]`: its ranges, merged and in order, as the server returns
+  them.
+- `Record`: the fields as they arrive, each a `RecordField` (OID and bytes);
+  `DecodeRecordField(rec[i], pgtype.Int8Codec())` decodes one field and
+  refuses a field of another type. As a parameter, the server reads only a
+  named composite (`$1::my_type`, OID 0); the anonymous `record` is read
+  and cannot be sent.
+
+Ranges have no OID constant in `pgtype`: name the type in the query
+(`$1::int4range`) and leave the OID at 0.
+
+The table's named arrays (`DecodeInt4Array`…) stay the fast path for their
+shape, one dimension numbered from 1. Over 1,000 `int4` elements,
+`DecodeArray` takes 3.4 times as long as `DecodeInt4Array`: an indirect
+call per element, the price of code written once for every type.
+
+> **In plain words: a codec.** It is a type's record card: its number at
+> PostgreSQL, and how to write and read it as bytes. A container knows
+> nothing of what it holds; it is handed the card of its contents.
+
 ### The types not covered
 
 Every other built-in type of PostgreSQL 14 to 19, by family. A column of
@@ -306,7 +355,6 @@ you to decode, or the query casts it to `text`.
 
 | Family | Types |
 |---|---|
-| Containers | multi-dimensional arrays; arrays of the types past the table's first thirteen (`json[]`, `jsonb[]`, `inet[]`, `interval[]`…); ranges (`int4range`, `int8range`, `numrange`, `tsrange`, `tstzrange`, `daterange`) and their multiranges (since 14); composite types and `record` |
 | Extensions | `hstore`, `citext`, `ltree`, `vector`, PostGIS's types — their OID too is chosen by each database |
 | Internal | `pg_node_tree`, `pg_ndistinct`, `pg_dependencies`, `pg_mcv_list`, the BRIN summaries: the planner's and the statistics' own |
 
@@ -830,10 +878,9 @@ The design is in [ADR 0024](../design/adr/0024-listen-notify.md).
   at-least-once, and the resumption point lives in your schema.
 - **No `COPY ... TO STDOUT`**.
 - **`md5` authentication is refused.**
-- **Types**: the table above and nothing else — no ranges, composites,
-  multi-dimensional arrays or
-  extension types ([the full list](#the-types-not-covered)); arrays and
-  column scanners for its first thirteen types only.
+- **Types**: the table above and its containers, nothing else — no
+  extension types ([the full list](#the-types-not-covered)); named arrays
+  and column scanners for its first thirteen types only.
 
 The detail: [Limits](limits.md).
 

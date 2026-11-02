@@ -31,10 +31,12 @@ shape of the object.
 
 ## Installing
 
-This guide describes the latest release, v0.4.0:
+This guide describes the `main` branch, which carries the additions grouped
+for the next minor release; the last one published, v0.4.0, lacks some of
+the functions cited here. Until that release, install `main`:
 
 ```sh
-go get github.com/mlagarrigue/sluice
+go get github.com/mlagarrigue/sluice@main
 ```
 
 Go 1.26 or newer: that is the `go` line of the module, and the oldest

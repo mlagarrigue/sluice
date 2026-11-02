@@ -30,6 +30,14 @@ import (
 // three percent and is discovered a month later. The duplication is the price
 // of not moving them, and it is written down here rather than left to look
 // like an oversight.
+//
+// Measured, it is not three percent. Over a 1,000-element int4[], the
+// skeleton takes 3.45 times as long as DecodeInt4Array (paired rounds, 14 of
+// 14 slower, BenchmarkDecodeInt4Array1000), and [DecodeArray] the same: the
+// indirect call per element, which the compiler cannot inline through a
+// function value. The hand-written four stay the fast path; the ones below
+// and the generic containers are for the columns a schema hands over, where
+// a few nanoseconds per element are not what a batch is spent on.
 
 // appendArrayOf writes a one-dimensional array whose elements are encoded by
 // enc. Element lengths are written in place, so a variable-width element costs

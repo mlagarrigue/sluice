@@ -85,10 +85,11 @@ Three reasons come up, and the difference matters:
   [Authentication, in detail](#authentication-in-detail).
 - **Types**: the [PostgreSQL guide's table](postgres.md#the-codecs-in-one-table)
   says which has what; [the types not covered](postgres.md#the-types-not-covered)
-  names every other built-in type, by family. **Missing**: multi-dimensional
-  arrays, arrays past the table's first thirteen types, ranges and
-  multiranges, composites,
-  extension types (`hstore`, `vector`…). Such
+  names every other built-in type, by family. Arrays of any shape, ranges,
+  multiranges and composites go through the
+  [generic containers](postgres.md#containers-arrays-ranges-composites).
+  **Missing**: extension types (`hstore`, `vector`…), whose OID each
+  database chooses. Such
   a column arrives as raw binary bytes through `Rows.Value`, or cast to
   `text` in the query; `aclitem` and `gtsvector`, which have no binary form,
   must be cast.
