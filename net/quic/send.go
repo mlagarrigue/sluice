@@ -980,10 +980,19 @@ func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad, lengthWidth int) ([
 	if p.early {
 		sealer = c.earlySealer
 	}
-	if sp.discarded || sealer == nil {
+	if sp.discarded {
 		// The keys left between building and sealing — a Handshake packet
 		// retiring the Initial space under an Initial still pending. What
 		// it carried is gone with the space, as discardSpaceLocked says.
+		return dst, nil
+	}
+	if sealer == nil {
+		// A 0-RTT packet whose keys the 1-RTT ones replaced: the space
+		// lives on, so its frames go back to the front of the
+		// retransmission queue and leave again under 1-RTT (RFC 9000
+		// §13.3). handleTLSEvent flushes such a packet before dropping the
+		// keys; this is the guard for any path that would not.
+		withholdLocked(sp, p.retransPart, p.opts)
 		return dst, nil
 	}
 	payload := p.payload

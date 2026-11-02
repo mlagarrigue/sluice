@@ -546,8 +546,16 @@ func (c *Conn) handleTLSEvent(e tls.QUICEvent) (done bool, err error) {
 			}
 			// RFC 9001 §4.9.3: a client SHOULD discard its 0-RTT keys as
 			// soon as it installs 1-RTT keys; from here everything leaves
-			// in 1-RTT, retransmissions of 0-RTT data included.
+			// in 1-RTT, retransmissions of 0-RTT data included. A 0-RTT
+			// packet still gathered — built by a writer that left it for
+			// the next one (writersIn > 1) — leaves first, under the keys
+			// it was built for: its stream bytes are already counted as
+			// sent, and only its sent record would ever send them again
+			// (RFC 9000 §13.3).
 			c.mu.Lock()
+			if p := c.dgramPend; p != nil && p.early {
+				c.flushDatagramLocked()
+			}
 			c.earlySealer = nil
 			c.cond.Broadcast() // a writer waiting since a refused 0-RTT (awaitSealLocked)
 			c.mu.Unlock()
