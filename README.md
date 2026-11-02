@@ -286,7 +286,7 @@ preparation** — scenarios, method and results will be published together.
   security review.**
 - **PostgreSQL only** for now; SCRAM-SHA-256 (password authentication that
   never sends the password), cleartext and trust
-  authentication; codecs for the common types (no `money`, `tsvector`,
+  authentication; codecs for the common types (no `tsvector`,
   ranges, composites).
 - **QUIC is experimental**: crossed every Sunday with the other
   implementations of the QUIC Interop Runner, each case judged against a

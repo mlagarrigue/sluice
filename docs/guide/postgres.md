@@ -242,6 +242,9 @@ missing is listed in [Limits](limits.md), not discovered at use.
 | `timetz` | `TimeTZ` | `TimeTZ` | — | — | — |
 | `macaddr`, `macaddr8` | `[6]byte`, `[8]byte` | `Macaddr`, `Macaddr8` | — | — | — |
 | `bit`, `varbit` | `Bits` | `Bits` | — | — | — |
+| `point`, `line`, `lseg`, `box`, `circle` | `Point`, `Line`, `LSeg`, `Box`, `Circle` | `Point`, `Line`, `LSeg`, `Box`, `Circle` | — | — | — |
+| `path`, `polygon` | `Path`, `[]Point` | `Path`, `Polygon` | — | — | — |
+| `money` | `int64` (units) | `Money` | — | — | — |
 
 Each type's OID — the number the server names it by — is `OIDX` in `pgtype`,
 and `OIDXArray` for its array, after the same X; the types that share an
@@ -249,7 +252,13 @@ X have one each — `OIDVarchar`, `OIDBPChar` (char(n)) and `OIDName` beside
 `OIDText`, `OIDBit` and `OIDVarbit` for `Bits`. A few values are
 special. A timestamp, timestamptz or date of `infinity` or `-infinity`
 decodes to `pgtype.InfinityTime()` or `NegInfinityTime()`, and those two
-encode back to it; compare them with `Equal`. A `Numeric` carries a
+encode back to it; compare them with `Equal`. A `money` is a count of the
+currency's smallest unit: its scale is the server's `lc_monetary` setting
+(two digits under `C`, so 1234 is 12.34), which the binary form does not
+carry and this package does not read — the scale is yours, and
+`money::numeric` in the query gives a `Numeric` where it must not depend on
+a setting. A `box` arrives upper-right corner first (`High`), whatever order
+it was given in. A `Numeric` carries a
 `NumericSign`: `NumericPositive`, `NumericNegative`, or one of the
 non-numbers `NumericNaN`, `NumericPosInf`, `NumericNegInf`. `TimeOfDayFrom`
 builds a `TimeOfDay` from a `time.Time`, dropping the date and the zone and
@@ -281,8 +290,6 @@ you to decode, or the query casts it to `text`.
 | Containers | multi-dimensional arrays; arrays of the types past the table's first thirteen (`json[]`, `jsonb[]`, `inet[]`, `interval[]`…); ranges (`int4range`, `int8range`, `numrange`, `tsrange`, `tstzrange`, `daterange`) and their multiranges (since 14); composite types and `record` |
 | Identifiers and positions | `oid`, `oid8` (19), the `reg*` aliases (`regclass`, `regtype`, `regproc`…, `regdatabase` in 19), `xid`, `xid8`, `cid`, `tid`, `pg_lsn`, `pg_snapshot`, `txid_snapshot`, `int2vector`, `oidvector` |
 | Text and search | `xml`, `jsonpath`, `tsvector`, `tsquery`, `refcursor`, `"char"`, and enums, whose OID each database chooses |
-| Geometry | `point`, `line`, `lseg`, `box`, `path`, `polygon`, `circle` |
-| Money | `money`, whose scale depends on a server setting (`lc_monetary`) |
 | Extensions | `hstore`, `citext`, `ltree`, `vector`, PostGIS's types — their OID too is chosen by each database |
 | Internal | `pg_node_tree`, `pg_ndistinct`, `pg_dependencies`, `pg_mcv_list`, the BRIN summaries: the planner's and the statistics' own |
 
@@ -807,7 +814,7 @@ The design is in [ADR 0024](../design/adr/0024-listen-notify.md).
 - **No `COPY ... TO STDOUT`**.
 - **`md5` authentication is refused.**
 - **Types**: the table above and nothing else — no ranges, composites,
-  multi-dimensional arrays, geometry, `money`, `tsvector`, `oid` or
+  multi-dimensional arrays, `tsvector`, `oid` or
   extension types ([the full list](#the-types-not-covered)); arrays and
   column scanners for its first thirteen types only.
 

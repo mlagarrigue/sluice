@@ -198,7 +198,9 @@ func TestIntegrationTypeOIDs(t *testing.T) {
 
 	src := conn.Query(t.Context(),
 		`SELECT 1::bigint, 1::int, 1::smallint, 1.5::float8, true, 'x'::text,
-		        now()::timestamptz, current_date, '1.25'::numeric`,
+		        now()::timestamptz, current_date, '1.25'::numeric,
+		        '(0,0)'::point, '[(0,0),(1,1)]'::lseg, '[(0,0)]'::path, '(1,1),(0,0)'::box,
+		        '((0,0),(1,0),(0,1))'::polygon, '{1,1,0}'::line, '<(0,0),1>'::circle, '1'::money`,
 		nil, postgres.QueryConfig{BatchRows: 8},
 	)
 
@@ -206,6 +208,8 @@ func TestIntegrationTypeOIDs(t *testing.T) {
 		pgtype.OIDInt8, pgtype.OIDInt4, pgtype.OIDInt2, pgtype.OIDFloat8,
 		pgtype.OIDBool, pgtype.OIDText, pgtype.OIDTimestampTZ,
 		pgtype.OIDDate, pgtype.OIDNumeric,
+		pgtype.OIDPoint, pgtype.OIDLSeg, pgtype.OIDPath, pgtype.OIDBox,
+		pgtype.OIDPolygon, pgtype.OIDLine, pgtype.OIDCircle, pgtype.OIDMoney,
 	}
 	var fields []postgres.Field
 	src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
@@ -634,6 +638,69 @@ func TestIntegrationCodecsMeanWhatTheyShould(t *testing.T) {
 				t.Errorf("the server says these bytes are not %s", tc.literal)
 			}
 		})
+	}
+}
+
+// The geometric types and money, all the way round: this package's bytes
+// go in as parameters, the server reads them (its *_recv), sends them back
+// (its *_send), and this package's decoders must find the values it wrote.
+func TestIntegrationGeometryAndMoneyRoundTrip(t *testing.T) {
+	conn := dial(t)
+	point := pgtype.Point{X: -1.5, Y: 2.25}
+	line := pgtype.Line{A: 1, B: -1, C: 0.5}
+	lseg := pgtype.LSeg{P: [2]pgtype.Point{{X: 0, Y: 0}, {X: 3, Y: 4}}}
+	box := pgtype.Box{High: pgtype.Point{X: 3, Y: 4}, Low: pgtype.Point{X: 1, Y: 2}}
+	path := pgtype.Path{Closed: true, Points: []pgtype.Point{{X: 0, Y: 0}, {X: 1, Y: 1}, {X: 2, Y: 0}}}
+	poly := []pgtype.Point{{X: 0, Y: 0}, {X: 1, Y: 0}, {X: 0, Y: 1}}
+	circle := pgtype.Circle{Center: pgtype.Point{X: 1, Y: 2}, Radius: 3}
+	const money = int64(-123456)
+	src := conn.Query(t.Context(), `SELECT $1, $2, $3, $4, $5, $6, $7, $8`, []postgres.Param{
+		{OID: pgtype.OIDPoint, Value: pgtype.AppendPoint(nil, point)},
+		{OID: pgtype.OIDLine, Value: pgtype.AppendLine(nil, line)},
+		{OID: pgtype.OIDLSeg, Value: pgtype.AppendLSeg(nil, lseg)},
+		{OID: pgtype.OIDBox, Value: pgtype.AppendBox(nil, box)},
+		{OID: pgtype.OIDPath, Value: pgtype.AppendPath(nil, path)},
+		{OID: pgtype.OIDPolygon, Value: pgtype.AppendPolygon(nil, poly)},
+		{OID: pgtype.OIDCircle, Value: pgtype.AppendCircle(nil, circle)},
+		{OID: pgtype.OIDMoney, Value: pgtype.AppendMoney(nil, money)},
+	}, postgres.QueryConfig{})
+	var seen bool
+	src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
+		for _, row := range b.Items {
+			seen = true
+			col := func(i int) []byte { v, _ := row.Value(i); return v }
+			if got, err := pgtype.DecodePoint(col(0)); err != nil || got != point {
+				t.Errorf("point = %v, %v", got, err)
+			}
+			if got, err := pgtype.DecodeLine(col(1)); err != nil || got != line {
+				t.Errorf("line = %v, %v", got, err)
+			}
+			if got, err := pgtype.DecodeLSeg(col(2)); err != nil || got != lseg {
+				t.Errorf("lseg = %v, %v", got, err)
+			}
+			if got, err := pgtype.DecodeBox(col(3)); err != nil || got != box {
+				t.Errorf("box = %v, %v", got, err)
+			}
+			if got, err := pgtype.DecodePath(nil, col(4)); err != nil || got.Closed != path.Closed || !slices.Equal(got.Points, path.Points) {
+				t.Errorf("path = %v, %v", got, err)
+			}
+			if got, err := pgtype.DecodePolygon(nil, col(5)); err != nil || !slices.Equal(got, poly) {
+				t.Errorf("polygon = %v, %v", got, err)
+			}
+			if got, err := pgtype.DecodeCircle(col(6)); err != nil || got != circle {
+				t.Errorf("circle = %v, %v", got, err)
+			}
+			if got, err := pgtype.DecodeMoney(col(7)); err != nil || got != money {
+				t.Errorf("money = %d, %v", got, err)
+			}
+		}
+		return true
+	})
+	if err := src.Err(); err != nil {
+		t.Fatalf("the server refused the values: %v", err)
+	}
+	if !seen {
+		t.Fatal("no row came back")
 	}
 }
 
@@ -1137,7 +1204,12 @@ func TestIntegrationEveryCodecMatchesTheServersEncoding(t *testing.T) {
 
 	// The session zone is pinned so a literal without an offset means one
 	// thing. It is set for timestamptz's benefit and costs the others nothing.
+	// lc_monetary is pinned for money's: under C it has two fractional
+	// digits, so '12.34' is 1234 units.
 	if err := exec(t, conn, "SET TimeZone = 'UTC'"); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec(t, conn, "SET lc_monetary = 'C'"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1183,6 +1255,36 @@ func TestIntegrationEveryCodecMatchesTheServersEncoding(t *testing.T) {
 			"interval", `'1 year 2 mons 3 days 04:05:06.789'::interval`,
 			pgtype.AppendInterval(nil, pgtype.Interval{Months: 14, Days: 3, Micros: 14_706_789_000}),
 		},
+		{"point", `'(1.5,-2)'::point`, pgtype.AppendPoint(nil, pgtype.Point{X: 1.5, Y: -2})},
+		{"line", `'{1,-1,0.5}'::line`, pgtype.AppendLine(nil, pgtype.Line{A: 1, B: -1, C: 0.5})},
+		{
+			"lseg", `'[(0,0),(3,4)]'::lseg`,
+			pgtype.AppendLSeg(nil, pgtype.LSeg{P: [2]pgtype.Point{{X: 0, Y: 0}, {X: 3, Y: 4}}}),
+		},
+		{
+			// Given low corner first: the server keeps the upper-right one
+			// first, and that is what it sends.
+			"box", `'(1,2),(3,4)'::box`,
+			pgtype.AppendBox(nil, pgtype.Box{High: pgtype.Point{X: 3, Y: 4}, Low: pgtype.Point{X: 1, Y: 2}}),
+		},
+		{
+			"open path", `'[(0,0),(1,1),(2,0)]'::path`,
+			pgtype.AppendPath(nil, pgtype.Path{Points: []pgtype.Point{{X: 0, Y: 0}, {X: 1, Y: 1}, {X: 2, Y: 0}}}),
+		},
+		{
+			"closed path", `'((0,0),(1,1))'::path`,
+			pgtype.AppendPath(nil, pgtype.Path{Closed: true, Points: []pgtype.Point{{X: 0, Y: 0}, {X: 1, Y: 1}}}),
+		},
+		{
+			"polygon", `'((0,0),(1,0),(0,1))'::polygon`,
+			pgtype.AppendPolygon(nil, []pgtype.Point{{X: 0, Y: 0}, {X: 1, Y: 0}, {X: 0, Y: 1}}),
+		},
+		{
+			"circle", `'<(1,2),3>'::circle`,
+			pgtype.AppendCircle(nil, pgtype.Circle{Center: pgtype.Point{X: 1, Y: 2}, Radius: 3}),
+		},
+		{"money", `'12.34'::money`, pgtype.AppendMoney(nil, 1234)},
+		{"negative money", `'-0.01'::money`, pgtype.AppendMoney(nil, -1)},
 		{
 			"inet", `'192.168.1.1/24'::inet`,
 			pgtype.AppendInet(nil, netip.MustParsePrefix("192.168.1.1/24")),

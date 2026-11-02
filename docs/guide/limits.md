@@ -88,7 +88,7 @@ Three reasons come up, and the difference matters:
   names every other built-in type, by family. **Missing**: multi-dimensional
   arrays, arrays past the table's first thirteen types, ranges and
   multiranges, composites, `oid` and the `reg*` aliases, `pg_lsn`, `xml`,
-  `tsvector`, geometry, `money`, extension types (`hstore`, `vector`…). Such
+  `tsvector`, extension types (`hstore`, `vector`…). Such
   a column arrives as raw binary bytes through `Rows.Value`, or cast to
   `text` in the query; `aclitem` and `gtsvector`, which have no binary form,
   must be cast.
