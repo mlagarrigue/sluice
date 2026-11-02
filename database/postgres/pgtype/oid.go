@@ -20,6 +20,7 @@ const (
 	OIDCID           uint32 = 29
 	OIDOIDVector     uint32 = 30  // an oid[] numbered from 0
 	OIDJSON          uint32 = 114 // not interchangeable with jsonb on the wire, and mixing them is silent: see [AppendJSONB]
+	OIDXML           uint32 = 142 // text on the wire, in the client encoding: see [AppendJSONPath]
 	OIDPoint         uint32 = 600
 	OIDLSeg          uint32 = 601
 	OIDPath          uint32 = 602
@@ -45,6 +46,7 @@ const (
 	OIDBit           uint32 = 1560
 	OIDVarbit        uint32 = 1562
 	OIDNumeric       uint32 = 1700 // arbitrary-precision decimal
+	OIDRefcursor     uint32 = 1790 // a cursor's name, text on the wire
 	OIDRegprocedure  uint32 = 2202
 	OIDRegoper       uint32 = 2203
 	OIDRegoperator   uint32 = 2204
@@ -56,6 +58,7 @@ const (
 	OIDRegconfig     uint32 = 3734
 	OIDRegdictionary uint32 = 3769
 	OIDJSONB         uint32 = 3802
+	OIDJSONPath      uint32 = 4072
 	OIDRegnamespace  uint32 = 4089
 	OIDRegrole       uint32 = 4096
 	OIDRegcollation  uint32 = 4191

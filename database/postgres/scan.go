@@ -192,15 +192,18 @@ func ScanBool(dst []bool, rows *Rows, col int) ([]bool, error) {
 }
 
 // ScanText appends column col of every row as strings. It reads text,
-// varchar, bpchar, name and json columns — the built-ins whose binary form is
-// the string's own bytes.
+// varchar, bpchar, name, json, xml and refcursor columns — the built-ins
+// whose binary form is the string's own bytes — and, like every scanner, a
+// column of a type the database created, such as an enum, whose binary form
+// is its label.
 //
 // Each string is a copy: a string is immutable in Go and the batch's buffer is
 // not, so a borrowed one would change under its holder at the next batch.
 // That copy is the one allocation hydration cannot avoid, and it is per value
 // rather than per row.
 func ScanText(dst []string, rows *Rows, col int) ([]string, error) {
-	if err := checkColumn(rows, col, "ScanText", pgtype.OIDText, pgtype.OIDVarchar, oidBpchar, oidNameType, pgtype.OIDJSON, oidUnknown); err != nil {
+	if err := checkColumn(rows, col, "ScanText", pgtype.OIDText, pgtype.OIDVarchar, oidBpchar, oidNameType, pgtype.OIDJSON, oidUnknown,
+		pgtype.OIDXML, pgtype.OIDRefcursor); err != nil {
 		return dst, err
 	}
 	for i := range rows.Len() {

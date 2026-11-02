@@ -1705,6 +1705,54 @@ func TestIntegrationPostgreSQL19Identifiers(t *testing.T) {
 	})
 }
 
+// xml, jsonpath and refcursor, the same two ways; jsonpath comes back in the
+// server's own spelling of the path, which is what its send writes. Then an
+// enum created in the fixture's schema: its label is text under the OID
+// its database chose, read back as a parameter under that OID and through
+// ScanText, which takes any type a database created.
+func TestIntegrationTextTypesRoundTrip(t *testing.T) {
+	runIdentifierCases(t, 14, []identifierCase{
+		{"xml", `'<a>b</a>'::xml`, pgtype.OIDXML, pgtype.AppendText(nil, "<a>b</a>"), false},
+		{"jsonpath", `'$.a ? (@ > 1)'::jsonpath`, pgtype.OIDJSONPath, pgtype.AppendJSONPath(nil, `$."a"?(@ > 1)`), false},
+		// refcursor's send function is textsend (pg_type), which takes text:
+		// the oracle is asked of the same name as text, the round trip
+		// goes under refcursor's own OID.
+		{"refcursor", `'c1'::refcursor::text`, pgtype.OIDRefcursor, pgtype.AppendText(nil, "c1"), false},
+	})
+
+	conn := dial(t)
+	schema := testSchema(t, conn)
+	if err := conn.Exec(t.Context(), `CREATE TYPE `+schema+`.mood AS ENUM ('sad', 'happy')`); err != nil {
+		t.Fatal(err)
+	}
+	oid := queryOne(t, conn, `SELECT '`+schema+`.mood'::regtype::oid`, func(row postgres.Row) uint32 {
+		v, _ := row.Value(0)
+		o, _ := pgtype.DecodeOID(v)
+		return o
+	})
+	runIdentifierCases(t, 14, []identifierCase{
+		{"enum", `'happy'::` + schema + `.mood`, oid, pgtype.AppendText(nil, "happy"), false},
+	})
+
+	src := conn.Query(t.Context(), `SELECT unnest(enum_range(NULL::`+schema+`.mood))`, nil, postgres.QueryConfig{})
+	var labels []string
+	src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
+		if b.Len() > 0 {
+			var err error
+			if labels, err = postgres.ScanText(labels, b.Items[0].Rows(), 0); err != nil {
+				t.Errorf("ScanText over an enum column: %v", err)
+			}
+		}
+		return true
+	})
+	if err := src.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(labels, []string{"sad", "happy"}) {
+		t.Errorf("enum labels = %q, want sad, happy", labels)
+	}
+}
+
 type identifierCase struct {
 	name     string
 	expr     string // SQL producing the value, whose send output is the oracle

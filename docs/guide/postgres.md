@@ -253,6 +253,8 @@ missing is listed in [Limits](limits.md), not discovered at use.
 | `pg_snapshot`, `txid_snapshot` | `Snapshot` | `Snapshot` | — | — | — |
 | `int2vector`, `oidvector` | `[]int16`, `[]uint32` | `Int2Vector`, `OIDVector` | — | — | — |
 | `char`, the quoted `"char"` (not `char(n)`) | `byte` | `Char` | — | — | — |
+| `xml`, `refcursor` | `string` | `Text` | — | — | as text |
+| `jsonpath` | `string` | `JSONPath` | — | — | — |
 
 Each type's OID — the number the server names it by — is `OIDX` in `pgtype`,
 and `OIDXArray` for its array, after the same X; the types that share an
@@ -266,7 +268,11 @@ currency's smallest unit: its scale is the server's `lc_monetary` setting
 carry and this package does not read — the scale is yours, and
 `money::numeric` in the query gives a `Numeric` where it must not depend on
 a setting. A `box` arrives upper-right corner first (`High`), whatever order
-it was given in. A `Numeric` carries a
+it was given in.
+
+An enum value is its label, as text, under the OID its database gave the
+type: `ScanText` reads it (it takes any type a database created), and it is
+written as text with OID 0 where the query names the type (`$1::mood`). A `Numeric` carries a
 `NumericSign`: `NumericPositive`, `NumericNegative`, or one of the
 non-numbers `NumericNaN`, `NumericPosInf`, `NumericNegInf`. `TimeOfDayFrom`
 builds a `TimeOfDay` from a `time.Time`, dropping the date and the zone and
@@ -296,7 +302,7 @@ you to decode, or the query casts it to `text`.
 | Family | Types |
 |---|---|
 | Containers | multi-dimensional arrays; arrays of the types past the table's first thirteen (`json[]`, `jsonb[]`, `inet[]`, `interval[]`…); ranges (`int4range`, `int8range`, `numrange`, `tsrange`, `tstzrange`, `daterange`) and their multiranges (since 14); composite types and `record` |
-| Text and search | `xml`, `jsonpath`, `tsvector`, `tsquery`, `refcursor`, and enums, whose OID each database chooses |
+| Text search | `tsvector`, `tsquery` |
 | Extensions | `hstore`, `citext`, `ltree`, `vector`, PostGIS's types — their OID too is chosen by each database |
 | Internal | `pg_node_tree`, `pg_ndistinct`, `pg_dependencies`, `pg_mcv_list`, the BRIN summaries: the planner's and the statistics' own |
 
