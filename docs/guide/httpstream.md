@@ -25,6 +25,15 @@ the parsers are fuzzed in CI; the limit on streamed HTTP/2
 responses is owned below, and their per-batch cost is measured from a real
 client.
 
+Two readings of the texts are chosen. In HTTP/2, the values of a SETTINGS
+frame are all checked in order, then only the last value of each parameter
+is applied (RFC 9113 §6.5.3 asks for them one at a time): the peer sees the
+same result, and a frame full of repetitions does not cost one operation
+per repetition. In HTTP/3, only `http` and `https` are taken as schemes
+with a mandatory authority: a request of another scheme that carries
+`:authority` is delivered as it is (RFC 9114 §4.3.1 forbids it to the
+sender; the server does not know the other schemes).
+
 HTTP exists in three versions. HTTP/1.1 sends requests one at a time over
 a connection (or several in a row, "pipelined"). HTTP/2 **multiplexes**:
 several requests travel interleaved over the same connection. HTTP/3 does

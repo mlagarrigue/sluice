@@ -133,6 +133,16 @@ type Verifier interface {
 
 // HMACConfig states what a token must satisfy. Everything in it is a refusal
 // the verifier will make, which is why there are no clever defaults.
+//
+// Three readings of the texts hold for every configuration. A header that
+// names a parameter twice keeps its last value, the choice RFC 7515 §4
+// leaves a parser; the header is signed, so only the issuer could write it.
+// `alg: none` is refused: RFC 7519 §8 has implementations implement it,
+// RFC 8725 §3.2 has a verifier that cannot see the transport refuse it, and
+// implementing it here could only mean accepting it. Telling apart kinds
+// of JWT from one issuer is the application's rule (RFC 8725 §3.12): a typ
+// other than JWT is refused, and Audience, Issuer and TenantClaim are the
+// levers.
 type HMACConfig struct {
 	// Secret is the shared HMAC key. It must be at least 32 bytes: shorter
 	// than the hash it feeds, and the security of the whole thing rests on

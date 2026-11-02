@@ -193,6 +193,22 @@ with the command that replays the comparison). To judge on yours,
 | `SlowStart` | the algorithm's default: HyStart++ for CUBIC, standard for NewReno | | how a loss-based controller ends its initial slow start |
 | `DisableFastConvergence` | on | | turns off CUBIC's fast convergence, for a flow alone on its path |
 
+**Where QUIC's own texts decide.** The three controllers follow RFC 9002
+when a general text says otherwise. A PTO expiry is not read as a loss
+(RFC 9002 §6.2): the conservative cut RFC 8085 §3.1.1 asks for is
+persistent congestion's, the window down to its minimum. The window does
+not go below two datagrams, and persistent ECN marks add no back-off timer
+(RFC 9002 §7.2, against RFC 9438 §4.6). CUBIC leaves slow start once the
+window equals the threshold ("below", RFC 9002 §7.3.1, against "no more
+than", RFC 9438 §4.10). The PTO stops doubling at the eleventh PTO in a
+row, so that a duration cannot overflow (RFC 9002 §6.2.1). A PMTU probe is
+declared lost by QUIC's loss detection, without RFC 8899 §5.1.1's
+one-second PROBE_TIMER (RFC 9000 §14.3). BBR keeps neither
+`pending_transmissions`, `lost_out` nor `retrans_out`: an application-limited
+sample is read from an empty retransmission queue and a send batch flushed
+before the window is waited for. In plain words: when two texts disagree,
+QUIC's wins.
+
 ## Deployments
 
 Which deployments the network packages are written for — HTTP/1.1 exposed

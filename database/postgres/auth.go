@@ -92,6 +92,11 @@ const (
 
 // ChannelBindingMode is [Config.ChannelBinding]: whether the SCRAM exchange
 // binds to the server's certificate.
+//
+// The binding is tls-server-end-point, a hash of that certificate, not
+// tls-unique: it does not depend on the Finished messages RFC 7627's flaw
+// lies in, so a TLS 1.2 session resumed without the extended master secret
+// does not weaken it. Whether to resume is the tls.Config's (RFC 7677 §4).
 type ChannelBindingMode int
 
 const (
