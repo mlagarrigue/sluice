@@ -137,10 +137,19 @@ if [ "$merge" = 1 ]; then
 fi
 
 # --- Units: production files of the main module -------------------------------
-pkgs=() files=()
+# A file argument keeps that file only; a package argument keeps the whole
+# package, and both may be mixed.
+pkgs=() files=() whole=()
 for p in "${paths[@]}"; do
   p=${p#./}
-  if [[ $p == *.go ]]; then files+=("$p"); pkgs+=("./$(dirname "$p")"); else pkgs+=("./${p%/}"); fi
+  if [[ $p == *.go ]]; then
+    files+=("$p")
+    pkgs+=("./$(dirname "$p")")
+  else
+    p=${p%/}
+    pkgs+=("./$p")
+    whole+=("${p:-.}")
+  fi
 done
 [ ${#pkgs[@]} -gt 0 ] || pkgs=(./...)
 
@@ -156,7 +165,12 @@ units() {
         printf '%s\n' "$f"
       done
     done | sort -u |
-    if [ ${#files[@]} -gt 0 ]; then grep -xF -f <(printf '%s\n' "${files[@]}"); else cat; fi |
+    if [ ${#files[@]} -gt 0 ]; then
+      awk -v f="$(printf '%s\n' "${files[@]}")" -v w="$(printf '%s\n' "${whole[@]}")" '
+        BEGIN { n = split(f, a, "\n"); for (i = 1; i <= n; i++) file[a[i]] = 1
+                n = split(w, a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") pkg[a[i]] = 1 }
+        { d = $0; if (!sub(/\/[^\/]*$/, "", d)) d = "."; if (($0 in file) || (d in pkg)) print }'
+    else cat; fi |
     if [ -n "$shard" ]; then
       # A file keeps its shard while the list grows (a hash of its path, not
       # its rank), so CI's per-shard cache still holds its result.
@@ -185,13 +199,25 @@ heavy_lock
 heavy_start "$wait_min"
 workers=$(heavy_workers "$worker_kib" "$max_workers" "$margin_mib")
 
-# --- A worktree of HEAD -------------------------------------------------------
+# --- A worktree of HEAD, a temporary directory of our own ---------------------
 wt=${MUTATION_WORKTREE:-${TMPDIR:-/tmp}/sluice-mutation-wt}
 git -C "$root" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
 git -C "$root" worktree prune
 git -C "$root" worktree add --quiet --detach "$wt" HEAD
+# gremlins copies the module into a directory under TMPDIR for every mutant and
+# builds the test binary there: with a TMPDIR of our own, every test process
+# this run starts is recognised by its path, orphan or not (below).
+tmpd=$(mktemp -d "${TMPDIR:-/tmp}/sluice-mutation-tmp.XXXXXX")
+heavy_own=$tmpd
 gp=""
-trap '[ -n "$gp" ] && kill -KILL "$gp" 2>/dev/null; git -C "$root" worktree remove --force "$wt" 2>/dev/null || true' EXIT
+sweep() { # kill every test process built under our TMPDIR; prints how many
+  local v
+  v=$(ps -eo pid=,comm=,args= | awk -v own="$tmpd/" '$2 ~ /\.test$/ && index($3, own) == 1 { print $1 }')
+  # shellcheck disable=SC2086
+  [ -n "$v" ] && kill -KILL $v 2>/dev/null
+  wc -w <<<"$v"
+}
+trap '[ -n "$gp" ] && kill -KILL "$gp" 2>/dev/null; sweep >/dev/null; rm -rf "$tmpd"; git -C "$root" worktree remove --force "$wt" 2>/dev/null || true' EXIT
 head_sha=$(git -C "$wt" rev-parse --short HEAD)
 
 mapfile -t todo < <(units)
@@ -222,27 +248,34 @@ package_coef() { # $1 = package directory, "." for the root
   fi
 }
 
-# --- Resident memory of the test processes ------------------------------------------
-# Every half second, a *.test process under gremlins past rss-cap-kib is
-# killed: its run fails, gremlins counts the mutant as killed, and the count
-# goes to $2.
-rss_watch() { # $1 = gremlins' pid, $2 = file for the count
-  local n=0 victims
+# --- The test processes: memory, and the ones a timeout leaves behind ---------------
+# When a mutant runs past its timeout, gremlins kills go test but not the test
+# binary go test started: the binary goes on to its own -test.timeout, an
+# orphan adopted by process 1 or by a subreaper, no longer under gremlins.
+# Every half second, a test process built under our TMPDIR is killed when its
+# parent is no longer a go command (such an orphan), or when its resident
+# memory passes rss-cap-kib (its run fails, and gremlins counts the mutant as
+# killed). Counts go to $2.
+rss_watch() { # $1 = gremlins' pid, $2 = file for the counts
+  local big=0 orphans=0 out
   while kill -0 "$1" 2>/dev/null; do
-    victims=$(ps -eo pid=,ppid=,rss=,comm= | awk -v root="$1" -v cap="$rss_cap_kib" '
-      { parent[$1] = $2; rss[$1] = $3; comm[$1] = $4 }
+    # A go test that gremlins killed lingers a moment as a zombie: its child
+    # is already orphaned.
+    out=$(ps -eo pid=,ppid=,stat=,rss=,comm=,args= | awk -v own="$tmpd/" -v cap="$rss_cap_kib" '
+      { live_go[$1] = ($5 == "go" && $3 !~ /^Z/) }
+      $5 ~ /\.test$/ && index($6, own) == 1 { test[$1] = $4; parent[$1] = $2 }
       END {
-        for (p in comm) {
-          if (comm[p] !~ /\.test$/ || rss[p] <= cap) continue
-          q = p
-          while (q in parent && q > 1) { if (q == root) { print p; break }; q = parent[q] }
+        for (p in test) {
+          if (test[p] > cap) print "big", p
+          else if (!live_go[parent[p]]) print "orphan", p
         }
       }')
-    if [ -n "$victims" ]; then
-      # shellcheck disable=SC2086
-      kill -KILL $victims 2>/dev/null || true
-      n=$((n + $(wc -w <<<"$victims")))
-      echo "$n" >"$2"
+    if [ -n "$out" ]; then
+      # shellcheck disable=SC2046
+      kill -KILL $(awk '{ print $2 }' <<<"$out") 2>/dev/null || true
+      big=$((big + $(grep -c '^big' <<<"$out")))
+      orphans=$((orphans + $(grep -c '^orphan' <<<"$out")))
+      printf 'rss-killed\t%s\norphans-killed\t%s\n' "$big" "$orphans" >"$2"
     fi
     sleep 0.5
   done
@@ -267,55 +300,84 @@ closure_hash() { # $1 = package directory, "." for the root
   fi
   printf '%s' "${closure[$d]}"
 }
+file_key() { printf '%s\n%s' "$(closure_hash "$(dirname "$1")")" "$1" | sha256sum | cut -d' ' -f1; }
 
-# --- One file at a time -------------------------------------------------------
-failed=0 i=0
+# --- One package at a time ------------------------------------------------------
+# One gremlins run per package, on the files of that package not already in
+# the cache: gremlins times a coverage run of the package before its mutants,
+# and one run per file paid it once a file (twenty minutes over net/httpstream's
+# twenty-seven files). The result is split per file, which the cache and CI's
+# shards (a hash of the file's path) keep.
+declare -A pkgfiles=()
+order=()
 for f in "${todo[@]}"; do
-  i=$((i + 1))
   d=$(dirname "$f")
-  name=${f//\//__}
-  json=$out/units/$name.json
-  log=$out/units/$name.log
-  key=$(printf '%s\n%s' "$(closure_hash "$d")" "$f" | sha256sum | cut -d' ' -f1)
-  if [ ${#dry[@]} = 0 ] && [ -f "$cache/$key.json" ]; then
-    cp "$cache/$key.json" "$json"
-    echo yes >"$out/units/$name.cached"
-    continue
-  fi
+  [ -n "${pkgfiles[$d]+x}" ] || order+=("$d")
+  pkgfiles[$d]+="$f "
+done
+
+failed=0 done_files=0
+for d in "${order[@]}"; do
+  need=()
+  for f in ${pkgfiles[$d]}; do
+    name=${f//\//__}
+    key=$(file_key "$f")
+    if [ ${#dry[@]} = 0 ] && [ -f "$cache/$key.json" ]; then
+      cp "$cache/$key.json" "$out/units/$name.json"
+      echo yes >"$out/units/$name.cached"
+      done_files=$((done_files + 1))
+    else
+      need+=("$f")
+    fi
+  done
+  [ ${#need[@]} -gt 0 ] || continue
   heavy_stay
-  # Only this file: every file of a subdirectory, and every other file of the
-  # package, by their paths from the package directory (what gremlins walks).
+  # Only these files: every file of a subdirectory, and every other file of
+  # the package, by their paths from the package directory (what gremlins
+  # walks).
   excl=(-E /)
-  others=$(cd "$wt/$d" && find . -maxdepth 1 -name '*.go' ! -name '*_test.go' ! -name "$(basename "$f")" -printf '%f\n' |
-    sed 's/[.]/\\./g' | paste -sd'|')
+  others=$(cd "$wt/$d" && find . -maxdepth 1 -name '*.go' ! -name '*_test.go' -printf '%f\n' |
+    grep -vxF -f <(for f in "${need[@]}"; do basename "$f"; done) | sed 's/[.]/\\./g' | paste -sd'|' || true)
   [ -n "$others" ] && excl+=(-E "^($others)\$")
   package_coef "$d" # not in $( ): the table must outlive the call
   c=${coef[$d]}
-  say "[$i/${#todo[@]}] $f (timeout ${c}x coverage)"
+  pname=${d//\//__}
+  [ "$d" = . ] && pname=root
+  json=$out/units/$pname.package.json
+  log=$out/units/$pname.log
+  say "[$((done_files + 1))-$((done_files + ${#need[@]}))/${#todo[@]}] $d, ${#need[@]} file(s) (timeout ${c}x coverage)"
   # -count=1: gremlins times its coverage run to set every mutant's timeout,
   # and a coverage run served from the test cache takes a tenth of a second.
-  # 9>&-: the lock stays with this script, not with a test process gremlins
-  # leaves behind for a moment.
-  (ulimit -v "$cap_kib" && cd "$wt" && GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1" exec gremlins unleash \
+  # 9>&-: the lock stays with this script.
+  (ulimit -v "$cap_kib" && cd "$wt" && TMPDIR=$tmpd GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1" exec gremlins unleash \
     --config "$cfg" --workers "$workers" --timeout-coefficient "$c" "${dry[@]}" "${excl[@]}" \
     -o "$json" "$(pkgarg "$d")" 9>&-) >"$log" 2>&1 &
   gp=$!
-  rss_watch "$gp" "$out/units/$name.rss-killed" &
+  rss_watch "$gp" "$out/units/$pname.killed" &
   wp=$!
   rc=0
   wait "$gp" || rc=$?
   gp=""
   wait "$wp" 2>/dev/null || true
+  left=$(sweep)
+  [ "$left" = 0 ] || printf 'swept-after\t%s\n' "$left" >>"$out/units/$pname.killed"
   if [ "$rc" = 0 ]; then
-    # A file without a mutant ends in "No results to report." and no file.
+    # A package without a mutant ends in "No results to report." and no file.
     [ -f "$json" ] || printf '{"go_module":"","files":[]}\n' >"$json"
-    echo no >"$out/units/$name.cached"
-    [ ${#dry[@]} = 0 ] && cp "$json" "$cache/$key.json"
+    for f in "${need[@]}"; do
+      name=${f//\//__}
+      jq --arg b "$(basename "$f")" '{go_module: .go_module, files: [.files[]? | select(.file_name == $b)]}' \
+        "$json" >"$out/units/$name.json"
+      echo no >"$out/units/$name.cached"
+      [ ${#dry[@]} = 0 ] && cp "$out/units/$name.json" "$cache/$(file_key "$f").json"
+    done
+    rm -f "$json"
   else
     failed=1
-    say "gremlins failed on $f (log: $log)"
+    say "gremlins failed on $d (log: $log)"
     rm -f "$json"
   fi
+  done_files=$((done_files + ${#need[@]}))
 done
 printf 'finished\t%s\n' "$(date -u +%FT%TZ)" >>"$out/run.tsv"
 summarize "$out"

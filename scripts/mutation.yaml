@@ -6,8 +6,11 @@
 unleash:
   # The most mutants tested at once. scripts/mutation.sh lowers it when the
   # memory left under the container's limit cannot hold that many workers at
-  # sluice.worker-kib each.
-  workers: 2
+  # sluice.worker-kib each. A full run with two (2026-11-01, 15.3 h) used 1.7
+  # processors of 15 on average, 1.9 GiB of anonymous memory at most, and its
+  # largest test process held 771 MiB: three workers stay under 6 GiB even
+  # with three mutants at rss-cap-kib together.
+  workers: 3
   # The most a mutant's test run may last, as a multiple of the duration of
   # its package's coverage run (gremlins' default is 3). The script lowers it
   # per package, below.
@@ -29,8 +32,9 @@ sluice:
   # (2026-10-31); half a GiB leaves room.
   worker-kib: 524288
   # A test process whose resident memory passes this is killed at once (the
-  # mutant counts as detected): with two workers, two mutants that loop while
-  # allocating cannot together reach the container's limit.
+  # mutant counts as detected), and so is one a timeout left orphaned: with
+  # three workers, three mutants that loop while allocating cannot together
+  # reach the container's limit. Twice the largest test process measured.
   rss-cap-kib: 1572864
   # Address-space cap of every process a mutant run starts (ulimit -v, in
   # KiB), the backstop behind rss-cap-kib. The whole test suite passes under

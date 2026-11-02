@@ -27,14 +27,18 @@ heavy_lock() {
 }
 
 # Processes that build or test, outside the caller's own process tree; a
-# zombie (exited, not yet reaped) does nothing and is not counted.
+# zombie (exited, not yet reaped) does nothing and is not counted. A caller
+# that sets heavy_own to a directory also owns every process whose executable
+# lies under it, even one orphaned to process 1.
 heavy_foreign() {
-  ps -eo pid=,ppid=,stat=,comm=,args= | awk -v me=$$ '
-    { pid[NR] = $1; parent[$1] = $2; zombie[$1] = $3 ~ /^Z/; comm[$1] = $4; $1 = $2 = $3 = $4 = ""; args[pid[NR]] = $0 }
+  ps -eo pid=,ppid=,stat=,comm=,args= | awk -v me=$$ -v own="${heavy_own:+$heavy_own/}" '
+    { pid[NR] = $1; parent[$1] = $2; zombie[$1] = $3 ~ /^Z/; comm[$1] = $4; $1 = $2 = $3 = $4 = ""
+      a = $0; sub(/^[[:space:]]+/, "", a); args[pid[NR]] = a }
     END {
       for (i = 1; i <= NR; i++) {
         p = pid[i]; c = comm[p]
         if (zombie[p]) continue
+        if (own != "" && index(args[p], own) == 1) continue
         busy = c ~ /^(compile|link|asm|cgo|vet|gremlins)$/ || c ~ /\.test$/ ||
                (c == "go" && args[p] ~ /(^|[[:space:]])(test|build|vet|run|install)([[:space:]]|$)/)
         if (!busy) continue
