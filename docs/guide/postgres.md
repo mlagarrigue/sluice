@@ -245,6 +245,14 @@ missing is listed in [Limits](limits.md), not discovered at use.
 | `point`, `line`, `lseg`, `box`, `circle` | `Point`, `Line`, `LSeg`, `Box`, `Circle` | `Point`, `Line`, `LSeg`, `Box`, `Circle` | — | — | — |
 | `path`, `polygon` | `Path`, `[]Point` | `Path`, `Polygon` | — | — | — |
 | `money` | `int64` (units) | `Money` | — | — | — |
+| `oid` and the `reg*` aliases (`regclass`, `regtype`…, `regdatabase` in 19) | `uint32` | `OID` | — | — | — |
+| `oid8` (19), `xid8` | `uint64` | `OID8`, `XID8` | — | — | — |
+| `xid`, `cid` | `uint32` | `XID`, `CID` | — | — | — |
+| `tid` | `TID` | `TID` | — | — | — |
+| `pg_lsn` | `uint64` (`postgres.LSN(v)`) | `PGLSN` | — | — | — |
+| `pg_snapshot`, `txid_snapshot` | `Snapshot` | `Snapshot` | — | — | — |
+| `int2vector`, `oidvector` | `[]int16`, `[]uint32` | `Int2Vector`, `OIDVector` | — | — | — |
+| `char`, the quoted `"char"` (not `char(n)`) | `byte` | `Char` | — | — | — |
 
 Each type's OID — the number the server names it by — is `OIDX` in `pgtype`,
 and `OIDXArray` for its array, after the same X; the types that share an
@@ -288,8 +296,7 @@ you to decode, or the query casts it to `text`.
 | Family | Types |
 |---|---|
 | Containers | multi-dimensional arrays; arrays of the types past the table's first thirteen (`json[]`, `jsonb[]`, `inet[]`, `interval[]`…); ranges (`int4range`, `int8range`, `numrange`, `tsrange`, `tstzrange`, `daterange`) and their multiranges (since 14); composite types and `record` |
-| Identifiers and positions | `oid`, `oid8` (19), the `reg*` aliases (`regclass`, `regtype`, `regproc`…, `regdatabase` in 19), `xid`, `xid8`, `cid`, `tid`, `pg_lsn`, `pg_snapshot`, `txid_snapshot`, `int2vector`, `oidvector` |
-| Text and search | `xml`, `jsonpath`, `tsvector`, `tsquery`, `refcursor`, `"char"`, and enums, whose OID each database chooses |
+| Text and search | `xml`, `jsonpath`, `tsvector`, `tsquery`, `refcursor`, and enums, whose OID each database chooses |
 | Extensions | `hstore`, `citext`, `ltree`, `vector`, PostGIS's types — their OID too is chosen by each database |
 | Internal | `pg_node_tree`, `pg_ndistinct`, `pg_dependencies`, `pg_mcv_list`, the BRIN summaries: the planner's and the statistics' own |
 
@@ -814,7 +821,7 @@ The design is in [ADR 0024](../design/adr/0024-listen-notify.md).
 - **No `COPY ... TO STDOUT`**.
 - **`md5` authentication is refused.**
 - **Types**: the table above and nothing else — no ranges, composites,
-  multi-dimensional arrays, `tsvector`, `oid` or
+  multi-dimensional arrays, `tsvector` or
   extension types ([the full list](#the-types-not-covered)); arrays and
   column scanners for its first thirteen types only.
 

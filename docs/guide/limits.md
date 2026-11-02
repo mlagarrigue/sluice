@@ -87,7 +87,7 @@ Three reasons come up, and the difference matters:
   says which has what; [the types not covered](postgres.md#the-types-not-covered)
   names every other built-in type, by family. **Missing**: multi-dimensional
   arrays, arrays past the table's first thirteen types, ranges and
-  multiranges, composites, `oid` and the `reg*` aliases, `pg_lsn`, `xml`,
+  multiranges, composites, `xml`,
   `tsvector`, extension types (`hstore`, `vector`…). Such
   a column arrives as raw binary bytes through `Rows.Value`, or cast to
   `text` in the query; `aclitem` and `gtsvector`, which have no binary form,

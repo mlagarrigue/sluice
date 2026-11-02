@@ -1650,6 +1650,102 @@ func TestIntegrationMinProtocolRefusesAnOlderServer(t *testing.T) {
 	t.Logf("PostgreSQL %s refused: %v", version, err)
 }
 
+// The identifiers and positions, two ways each: this package's encoder
+// against the server's own send function for the same value, and this
+// package's bytes sent as a parameter and read back — the server's recv
+// then its send — unchanged. The two of PostgreSQL 19 (oid8, regdatabase)
+// are skipped below it, in TestIntegrationPostgreSQL19Identifiers, which
+// the CI's PostgreSQL 19 job requires to pass.
+func TestIntegrationIdentifiersRoundTrip(t *testing.T) {
+	runIdentifierCases(t, 14, []identifierCase{
+		{"oid", `1259::oid`, pgtype.OIDOID, pgtype.AppendOID(nil, 1259), false},
+		{"regclass", `1259::oid::regclass`, pgtype.OIDRegclass, pgtype.AppendOID(nil, 1259), false},
+		{"regtype", `23::oid::regtype`, pgtype.OIDRegtype, pgtype.AppendOID(nil, 23), false},
+		{"regproc", `1299::oid::regproc`, pgtype.OIDRegproc, pgtype.AppendOID(nil, 1299), false},
+		{"regprocedure", `1299::oid::regprocedure`, pgtype.OIDRegprocedure, pgtype.AppendOID(nil, 1299), false},
+		{"regoper", `96::oid::regoper`, pgtype.OIDRegoper, pgtype.AppendOID(nil, 96), false},
+		{"regoperator", `96::oid::regoperator`, pgtype.OIDRegoperator, pgtype.AppendOID(nil, 96), false},
+		{"regconfig", `3748::oid::regconfig`, pgtype.OIDRegconfig, pgtype.AppendOID(nil, 3748), false},
+		{"regdictionary", `3765::oid::regdictionary`, pgtype.OIDRegdictionary, pgtype.AppendOID(nil, 3765), false},
+		{"regnamespace", `11::oid::regnamespace`, pgtype.OIDRegnamespace, pgtype.AppendOID(nil, 11), false},
+		{"regrole", `10::oid::regrole`, pgtype.OIDRegrole, pgtype.AppendOID(nil, 10), false},
+		{"regcollation", `100::oid::regcollation`, pgtype.OIDRegcollation, pgtype.AppendOID(nil, 100), false},
+		{"xid", `'42'::xid`, pgtype.OIDXID, pgtype.AppendXID(nil, 42), false},
+		{"xid8", `'4294967338'::xid8`, pgtype.OIDXID8, pgtype.AppendXID8(nil, 4294967338), false},
+		{"cid", `'3'::cid`, pgtype.OIDCID, pgtype.AppendCID(nil, 3), false},
+		{"tid", `'(7,3)'::tid`, pgtype.OIDTID, pgtype.AppendTID(nil, pgtype.TID{Block: 7, Offset: 3}), false},
+		{"pg_lsn", `'16/B374D848'::pg_lsn`, pgtype.OIDPGLSN, pgtype.AppendPGLSN(nil, 0x16_B374D848), false},
+		{`"char"`, `'r'::"char"`, pgtype.OIDChar, pgtype.AppendChar(nil, 'r'), false},
+		{
+			"pg_snapshot", `'10:20:12,15'::pg_snapshot`, pgtype.OIDPGSnapshot,
+			pgtype.AppendSnapshot(nil, pgtype.Snapshot{Xmin: 10, Xmax: 20, Xip: []uint64{12, 15}}), false,
+		},
+		{
+			"txid_snapshot", `'10:20:12,15'::txid_snapshot`, pgtype.OIDTxidSnapshot,
+			pgtype.AppendSnapshot(nil, pgtype.Snapshot{Xmin: 10, Xmax: 20, Xip: []uint64{12, 15}}), false,
+		},
+		{
+			"empty snapshot", `'10:10:'::pg_snapshot`, pgtype.OIDPGSnapshot,
+			pgtype.AppendSnapshot(nil, pgtype.Snapshot{Xmin: 10, Xmax: 10}), false,
+		},
+		{"int2vector", `'1 3'::int2vector`, pgtype.OIDInt2Vector, pgtype.AppendInt2Vector(nil, []int16{1, 3}), false},
+		{"oidvector", `'23 25'::oidvector`, pgtype.OIDOIDVector, pgtype.AppendOIDVector(nil, []uint32{23, 25}), false},
+		// The server sends an empty vector with its one dimension and
+		// refuses that form back (int2vectorrecv: array_recv makes it zero
+		// dimensions): the encoding is checked, the round trip cannot be.
+		{"empty int2vector", `''::int2vector`, pgtype.OIDInt2Vector, pgtype.AppendInt2Vector(nil, nil), true},
+	})
+}
+
+// TestIntegrationPostgreSQL19Identifiers is the two types PostgreSQL 19 adds.
+func TestIntegrationPostgreSQL19Identifiers(t *testing.T) {
+	runIdentifierCases(t, 19, []identifierCase{
+		{"oid8", `'1099511627776'::oid8`, pgtype.OIDOID8, pgtype.AppendOID8(nil, 1<<40), false},
+		{"regdatabase", `1::oid::regdatabase`, pgtype.OIDRegdatabase, pgtype.AppendOID(nil, 1), false},
+	})
+}
+
+type identifierCase struct {
+	name     string
+	expr     string // SQL producing the value, whose send output is the oracle
+	oid      uint32
+	mine     []byte
+	sendOnly bool // the server does not receive the form it sends
+}
+
+func runIdentifierCases(t *testing.T, minMajor int, cases []identifierCase) {
+	t.Helper()
+	conn := dial(t)
+	if v := conn.Parameter("server_version"); serverMajor(t, v) < minMajor {
+		t.Skipf("PostgreSQL %s: these types arrive in %d", v, minMajor)
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if theirs := serverEncoding(t, conn, tc.expr); !bytes.Equal(tc.mine, theirs) {
+				t.Errorf("this package encodes %x\n          the server %x", tc.mine, theirs)
+			}
+			if tc.sendOnly {
+				return
+			}
+			src := conn.Query(t.Context(), "SELECT $1", []postgres.Param{{OID: tc.oid, Value: tc.mine}}, postgres.QueryConfig{})
+			var back []byte
+			src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
+				for _, row := range b.Items {
+					v, _ := row.Value(0)
+					back = append([]byte(nil), v...)
+				}
+				return true
+			})
+			if err := src.Err(); err != nil {
+				t.Fatalf("the server refused this package's bytes: %v", err)
+			}
+			if !bytes.Equal(back, tc.mine) {
+				t.Errorf("sent %x, the server sent back %x", tc.mine, back)
+			}
+		})
+	}
+}
+
 // serverMajor reads the major version out of server_version, "17.2" or
 // "18beta1".
 func serverMajor(t *testing.T, version string) int {

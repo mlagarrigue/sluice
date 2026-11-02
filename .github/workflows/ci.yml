@@ -373,6 +373,10 @@ jobs:
             echo "::error::protocol 3.2 did not run against PostgreSQL $PG_MAJOR" >&2
             exit 1
           fi
+          if [ "$PG_MAJOR" -ge 19 ] && ! grep -- '--- PASS: TestIntegrationPostgreSQL19Identifiers ' test.log; then
+            echo "::error::oid8 and regdatabase did not run against PostgreSQL $PG_MAJOR" >&2
+            exit 1
+          fi
           if [ "$PG_MAJOR" -ge 17 ] && ! grep -- '--- PASS: TestIntegrationChannelBindingOverTLS/direct' test.log; then
             echo "::error::SCRAM-SHA-256-PLUS did not pass against PostgreSQL $PG_MAJOR over direct TLS" >&2
             exit 1
