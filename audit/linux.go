@@ -55,7 +55,7 @@ var floors = []floor{
 	},
 	{
 		name: "netdev-backlog", path: "proc/sys/net/core/netdev_max_backlog", goal: "performance",
-		doc: "https://docs.kernel.org/networking/ip-sysctl.html", least: 1000, unit: "packets",
+		doc: "https://docs.kernel.org/admin-guide/sysctl/net.html#netdev-max-backlog", least: 1000, unit: "packets",
 		why: "packets taken off the card queue here before a core processes them. Too short and " +
 			"they are dropped under a burst — which a UDP server, so QUIC, pays in loss and the " +
 			"congestion controller reads as congestion",
