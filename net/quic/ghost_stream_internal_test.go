@@ -71,6 +71,9 @@ func TestGhostStream(t *testing.T) {
 			t.Fatalf("stream %d: %v", id, err)
 		}
 	}
+	// The RESET_STREAM answering each STOP_SENDING holds its stream's slot
+	// until its record goes (maybeRemoveLocked): the peer acknowledges them.
+	ackInFlight(t, c)
 	live, credit := tableSize(c)
 	if live != 0 {
 		t.Fatalf("%d streams still in the table after every one closed", live)

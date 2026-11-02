@@ -1359,10 +1359,23 @@ func (c *Conn) sendPathChallengeLocked() {
 // packet
 // full of challenges; a larger packet's responses take as many packets as
 // needed, the first one expanded. Callers hold mu.
+//
+// The answer waits for nothing, but it fits in the congestion window or
+// does not leave: §8.2.2 has an endpoint not delay it "unless constrained
+// by congestion control", and the peer's challenges come at the peer's
+// pace — no application action or timer counts them, as sendOpts.waitCwnd
+// requires of an ungated send. Every answer is ack-eliciting and tracked
+// until acknowledged, so a peer that challenged without ever acknowledging
+// grew the flight and the sent record by 1200 bytes and one packet per
+// challenge. A refused answer is dropped rather than queued — a stale
+// response proves nothing, and the peer retries with fresh data.
 func (c *Conn) answerPathChallengesLocked(responses []byte, now time.Time) {
 	c.flushControlLocked()
-	onPath := c.rxFrom == nil || sameAddr(c.rxFrom, c.peer)
 	padTo := 1200
+	if !c.cc.canSend(padTo) {
+		return
+	}
+	onPath := c.rxFrom == nil || sameAddr(c.rxFrom, c.peer)
 	// A challenge that reached a server's preferred-address socket is
 	// answered with this end's own probe of that path in the same packet
 	// (§9.6.2), under the identifier that path gets.
@@ -1411,6 +1424,9 @@ func (c *Conn) answerPathChallengesLocked(responses []byte, now time.Time) {
 		if len(probe) > 0 {
 			payload = append(payload, probe...)
 			probe = nil
+		}
+		if padTo == 0 && !c.cc.canSend(len(payload)+64) {
+			return
 		}
 		_ = c.sendPacketLocked(spaceApplication, payload, sendOpts{noRetrans: true, to: c.rxFrom, via: c.rxVia, dcid: dcid, padTo: padTo})
 		responses = responses[n:]

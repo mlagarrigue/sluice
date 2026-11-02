@@ -37,6 +37,13 @@ type sendOpts struct {
 	// keepalive misses the idle clock it serves. Flow-control grants are the
 	// same choice, written at takeQueuedLocked. The excess is bounded by the
 	// count of such events, as a probe's is by the PTO (§7.5).
+	//
+	// Two ungated sends answer the peer instead, at the peer's pace, and
+	// carry their own bound. The RESET_STREAM that answers a STOP_SENDING
+	// holds its stream's slot while its record stands (maybeRemoveLocked):
+	// a peer that never acknowledges has as many in flight as streams it
+	// may open. A PATH_RESPONSE is not ungated at all: it fits in the
+	// window or is dropped (answerPathChallengesLocked).
 	waitCwnd bool
 	// deadline bounds that wait (Stream.SetWriteDeadline); zero waits
 	// without bound.
@@ -1461,7 +1468,10 @@ func (c *Conn) staleLocked(f *Frame) bool {
 // pruneResetIDsLocked forgets the reset streams nothing in flight predates:
 // with the retransmission queue empty and every packet in flight sent at or
 // after a stream's mark, no STREAM frame of it can come back. Called at the
-// end of a replay pass, which is when the queue is known empty.
+// end of a replay pass, which is when the queue is known empty. A peer
+// stream that finished while its record stood kept its slot
+// (maybeRemoveLocked) and retires now; the read loop sends the MAX_STREAMS
+// that earns.
 func (c *Conn) pruneResetIDsLocked() {
 	sp := &c.spaces[spaceApplication]
 	if len(c.resetIDs) == 0 || len(sp.retrans) > 0 {
@@ -1474,6 +1484,9 @@ func (c *Conn) pruneResetIDsLocked() {
 	for id, mark := range c.resetIDs {
 		if mark <= oldest {
 			delete(c.resetIDs, id)
+			if s := c.streams[id]; s != nil {
+				c.maybeRemoveLocked(s)
+			}
 		}
 	}
 }

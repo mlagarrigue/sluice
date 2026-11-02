@@ -1067,6 +1067,17 @@ func (c *Conn) maybeRemoveLocked(s *Stream) {
 	if peerInitiated && !c.batchMode && (s.queued || !taken) {
 		return
 	}
+	if _, held := c.resetIDs[s.id]; peerInitiated && s.writeReset && held {
+		// The RESET_STREAM this end answered with may still be in flight,
+		// and it left ungated (onStopSendingLocked): granting the slot
+		// back now let a peer that never acknowledges open, finish and stop
+		// stream after stream, each leaving one more tracked packet and
+		// reset identifier, past the limit it was given. The slot waits
+		// for the record to go (pruneResetIDsLocked retires the stream), so
+		// what the peer's resets keep in flight is bounded by the stream
+		// limit.
+		return
+	}
 	delete(c.streams, s.id)
 	if peerInitiated { // grant the slot back
 		c.returnStreamSlotLocked(s.id&0x02 != 0)
