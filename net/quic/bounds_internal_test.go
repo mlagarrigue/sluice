@@ -625,3 +625,66 @@ func TestDensePacketsAllocateAtMostFourBytesPerByte(t *testing.T) {
 		}
 	}
 }
+
+// RFC 9000 §4.1: a receiver closes with FLOW_CONTROL_ERROR when the sender
+// goes past the connection limit. Two RESET_STREAMs in one packet, each of
+// final size 1000, under a connection limit of 1000: the first used to
+// credit its unread bytes back at once and raise the limit the second was
+// checked against, so both passed. The packet's growth is checked against
+// the limit it arrived under now; one alone still passes.
+func TestResetsInOnePacketAreCheckedAgainstTheLimitTheyArrivedUnder(t *testing.T) {
+	params := DefaultParameters()
+	params.InitialMaxData = 1000
+	params.InitialMaxStreamDataBidiRemote = 1000
+	reset := func(id uint64) []byte {
+		return appendFrame(nil, FrameResetStream, id, 0, 1000)
+	}
+	for _, tc := range []struct {
+		name    string
+		payload []byte
+		want    bool
+	}{
+		{"one reset at the limit", reset(0), false},
+		{"two resets past it", append(reset(0), reset(4)...), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := assembleConn(&fuzzSink{addr: "resets:self"}, fakeFuzzAddr("resets:peer"), []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, params)
+			t.Cleanup(func() { _ = c.Close() })
+			err := c.frames(spaceApplication, tc.payload, time.Now())
+			var te *transportError
+			flow := errors.As(err, &te) && te.code == transportFlowControl
+			if flow != tc.want {
+				t.Fatalf("frames = %v; want FLOW_CONTROL_ERROR %v", err, tc.want)
+			}
+		})
+	}
+}
+
+// RFC 9000 §7.5: "Implementations MUST support buffering at least 4096
+// bytes of data received in out-of-order CRYPTO frames." The reassembly
+// bounded the fragments it parks at max(held/1024, 256), so 4096 bytes in
+// more than 256 disjoint fragments closed the connection with
+// CRYPTO_BUFFER_EXCEEDED. CRYPTO parks as many fragments as 4096 bytes can
+// make now (minCryptoOutOfOrder).
+func TestCryptoAcceptsFourKilobytesOutOfOrderHoweverCut(t *testing.T) {
+	c := assembleConn(&fuzzSink{addr: "crypto:self"}, fakeFuzzAddr("crypto:peer"), []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+	t.Cleanup(func() { _ = c.Close() })
+	// 300 fragments of 13 or 14 bytes, 4096 bytes in all, each one byte
+	// apart from the next and none at offset 0: nothing is delivered.
+	const fragments, total = 300, 4096
+	off := uint64(1)
+	for i := range fragments {
+		n := total / fragments
+		if i < total%fragments {
+			n++
+		}
+		f := Frame{Type: frameCrypto, offset: off, Data: make([]byte, n)}
+		if err := c.handleCrypto(spaceHandshake, f); err != nil {
+			t.Fatalf("fragment %d of %d (%d bytes parked): %v", i+1, fragments, c.spaces[spaceHandshake].crypto.held, err)
+		}
+		off += uint64(n) + 1
+	}
+	if held := c.spaces[spaceHandshake].crypto.held; held != total {
+		t.Fatalf("%d bytes parked, want %d", held, total)
+	}
+}

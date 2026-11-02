@@ -1099,7 +1099,8 @@ func TestStatelessResetTokenOfAnUnusedIDIsNotCompared(t *testing.T) {
 
 // RFC 9000 §7.5 again, for the other way of filling the buffer: CRYPTO data
 // in many disjoint fragments, each a byte, far under the byte bound but
-// over what reassembly parks. The close is CRYPTO_BUFFER_EXCEEDED as for
+// over what reassembly parks — one more than the minCryptoOutOfOrder
+// fragments 4096 bytes can make. The close is CRYPTO_BUFFER_EXCEEDED as for
 // the byte bound, not the PROTOCOL_VIOLATION a fragmenting peer — which is
 // legal — has not committed.
 func TestCryptoInTooManyFragmentsIsABufferExceeded(t *testing.T) {
@@ -1107,13 +1108,13 @@ func TestCryptoInTooManyFragmentsIsABufferExceeded(t *testing.T) {
 	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
 	defer c.Close()
 	var err error
-	for i := range uint64(300) {
+	for i := range uint64(minCryptoOutOfOrder + 1) {
 		if err = c.handleCrypto(spaceInitial, Frame{Type: frameCrypto, offset: 1 + 2*i, Data: []byte("x")}); err != nil {
 			break
 		}
 	}
 	if err == nil {
-		t.Fatal("300 disjoint one-byte CRYPTO fragments were parked without complaint")
+		t.Fatalf("%d disjoint one-byte CRYPTO fragments were parked without complaint", minCryptoOutOfOrder+1)
 	}
 	te := &transportError{}
 	if !errors.As(err, &te) || te.code != transportCryptoBufferExceeded {

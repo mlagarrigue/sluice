@@ -85,11 +85,13 @@ type reassembly struct {
 	consumed uint64 // how far the delivered prefix reaches
 	chunks   []rchunk
 	held     int // bytes parked, kept so callers can observe the cost
+	// floor raises reassemblyChunkFloor for this buffer; zero keeps it.
+	floor int
 }
 
 // chunkLimit is how many chunks r may hold at its current size.
 func (r *reassembly) chunkLimit() int {
-	return min(max(r.held/reassemblyChunkBytes, reassemblyChunkFloor), reassemblyChunkCeiling)
+	return min(max(r.held/reassemblyChunkBytes, reassemblyChunkFloor, r.floor), reassemblyChunkCeiling)
 }
 
 // addThenTake files bytes at an offset and appends whatever is now

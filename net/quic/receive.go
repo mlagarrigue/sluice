@@ -1159,7 +1159,7 @@ func (c *Conn) framesIn(space int, early bool, payload []byte, now time.Time) er
 	c.batchScratch = nil
 	batch := batchScratch[:0]
 	defer func() { c.putScratch(&c.batchScratch, batch) }()
-	var connGrowth uint64
+	var connGrowth, connReleased uint64
 	// Streams whose lifecycle ended in this packet are retired only after
 	// the deltas are dispatched: retiring first removes the stream from the
 	// map, and the read-mode delivery that looks it up there would drop the
@@ -1224,10 +1224,11 @@ frames:
 			}
 
 		case f.Type == FrameResetStream:
-			s, growth, err := c.handleResetStream(f, space)
+			s, growth, released, err := c.handleResetStream(f, space)
 			if err != nil {
 				return err
 			}
+			connReleased += released
 			if s != nil {
 				connGrowth += growth
 				batch = append(batch, Frame{Type: FrameResetStream, StreamID: f.StreamID, value: f.value})
@@ -1341,11 +1342,16 @@ frames:
 	}
 	c.storeScratch(scratch)
 
-	if connGrowth > 0 {
+	if connGrowth > 0 || connReleased > 0 {
 		c.mu.Lock()
 		if err := c.connRecv.receive(c.connRecv.highest + connGrowth); err != nil {
 			c.mu.Unlock()
 			return err // FLOW_CONTROL_ERROR, attached by receive
+		}
+		// What resets released is credited after the check, against the
+		// limit the packet arrived under (handleResetStream).
+		if connReleased > 0 && c.connRecv.consume(connReleased) {
+			c.grants = appendFrame(c.grants, frameMaxData, c.connRecv.nextMax())
 		}
 		c.mu.Unlock()
 	}
@@ -1432,27 +1438,24 @@ func (c *Conn) oweAckFor(frames []Frame, space int, now time.Time) bool {
 
 // handleResetStream ends the receive side of the stream a RESET_STREAM
 // names, and returns it with the connection flow-control growth its final
-// size brings; a nil stream is one the frame may name and that needs
-// nothing (streamFor's tolerated). The bytes the application never
-// consumed are credited back to the connection window at once.
-func (c *Conn) handleResetStream(f Frame, space int) (*Stream, uint64, error) {
+// size brings and the bytes the application never consumed, which are the
+// connection window's again; a nil stream is one the frame may name and
+// that needs nothing (streamFor's tolerated). framesIn credits the
+// released bytes once the packet's growth is checked: credited here, each
+// reset raised the limit the next one in the same packet was checked
+// against, and RESET_STREAM(0, 1000) with RESET_STREAM(4, 1000) passed under
+// a connection limit of 1000 (RFC 9000 §4.1).
+func (c *Conn) handleResetStream(f Frame, space int) (s *Stream, growth, released uint64, err error) {
 	s, tolerated, err := c.streamFor(f.StreamID, space, false)
 	if err != nil || tolerated {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
-	growth, neverConsumed, err := s.abandon(f.value, f.offset)
+	growth, released, err = s.abandon(f.value, f.offset)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	c.rxProgress = true
-	if neverConsumed > 0 {
-		c.mu.Lock()
-		if c.connRecv.consume(neverConsumed) {
-			c.grants = appendFrame(c.grants, frameMaxData, c.connRecv.nextMax())
-		}
-		c.mu.Unlock()
-	}
-	return s, growth, nil
+	return s, growth, released, nil
 }
 
 // handleStopSending acts on a STOP_SENDING, and returns the stream when
@@ -1654,6 +1657,17 @@ func (c *Conn) abandonPending() {
 // otherwise hold the connection open until its handshake timeout.
 const maxCryptoBuffer = 64 << 10
 
+// minCryptoOutOfOrder is the out-of-order CRYPTO data RFC 9000 §7.5 has an
+// endpoint buffer whatever its fragmentation: "Implementations MUST support
+// buffering at least 4096 bytes of data received in out-of-order CRYPTO
+// frames". A fragment holds at least one byte, so a reassembly floor of as
+// many fragments accepts 4096 bytes however they are cut, where the floor
+// streams get (reassemblyChunkFloor, 256) refused them past 256 pieces.
+// What it costs is bounded: a fragment's bookkeeping times 4096, per space,
+// for the length of a handshake, and only for a peer that cuts its flight
+// into pieces no TLS stack sends.
+const minCryptoOutOfOrder = 4096
+
 // handleCrypto reassembles handshake bytes — retransmissions overlap here
 // exactly as they do on streams — and feeds what is newly in order to TLS.
 func (c *Conn) handleCrypto(space int, f Frame) error {
@@ -1671,6 +1685,7 @@ func (c *Conn) handleCrypto(space int, f Frame) error {
 		}
 	}
 	atStart := sp.crypto.consumed == 0
+	sp.crypto.floor = minCryptoOutOfOrder
 	delta, err := sp.crypto.addThenTake(f.offset, f.Data, nil)
 	if space == spaceInitial && atStart && c.isClient && c.earlyOffered && isHelloRetryRequest(delta) {
 		c.earlyHRR = true
