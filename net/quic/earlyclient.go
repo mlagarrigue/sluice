@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"errors"
 	"net"
+	"slices"
 )
 
 // ErrEarlyDataRejected is what a stream opened in 0-RTT reports once the
@@ -45,7 +47,9 @@ func isHelloRetryRequest(b []byte) bool {
 // Nothing outside crypto/tls can mend the binders, and DialEarly has
 // returned by then, so the error says what happened and what to do — dial
 // again with Dial, which offers no 0-RTT and resumes through a
-// HelloRetryRequest unharmed.
+// HelloRetryRequest unharmed. earlyTLSConfig keeps the retry from
+// happening whenever the ticket names the group the server chose; what is
+// left is a server that changed its group, or a ticket that names none.
 var errEarlyHelloRetry = errors.New("the server sent a HelloRetryRequest, which crypto/tls cannot complete after a 0-RTT offer; dial again with Dial")
 
 // rememberedMagic opens the SessionState.Extra entry a client keeps with a
@@ -89,6 +93,62 @@ func rememberedParams(extra [][]byte) (TransportParameters, bool) {
 	return TransportParameters{}, false
 }
 
+// groupMagic opens the SessionState.Extra entry naming the key exchange
+// group the server chose on the connection that issued the ticket.
+var groupMagic = []byte("sluice-group\x01")
+
+// groupEntry is the Extra entry for group id.
+func groupEntry(id tls.CurveID) []byte {
+	return binary.BigEndian.AppendUint16(append([]byte(nil), groupMagic...), uint16(id))
+}
+
+// rememberedGroup reads back the group a ticket's Extra names.
+func rememberedGroup(extra [][]byte) (tls.CurveID, bool) {
+	for _, e := range extra {
+		if raw, ok := bytes.CutPrefix(e, groupMagic); ok && len(raw) == 2 {
+			return tls.CurveID(binary.BigEndian.Uint16(raw)), true
+		}
+	}
+	return 0, false
+}
+
+// earlyTLSConfig is cfg as DialEarly offers it: when the ticket crypto/tls
+// will resume carries 0-RTT and names the group the server chose last
+// time, a copy whose ClientHello offers that group alone, so that its key
+// share is the one the server wants. A server that answers 0-RTT with a
+// HelloRetryRequest loses the connection (errEarlyHelloRetry), and a
+// server's choice of group is the one thing that sends one back to a
+// resuming client: crypto/tls shares a key for its first group only and,
+// since Go 1.24, takes the order of CurvePreferences from its own list, so
+// a server that keeps P-256 alone retried every resumption by a client
+// with the default groups. Offering the group the server took is no
+// downgrade — it is the one that connection used — and a group cfg no
+// longer lists is not offered. The ticket is read from the cache under
+// the key crypto/tls files it under, cfg.ServerName, and put back for the
+// handshake to take. Anything else leaves cfg as it is.
+func earlyTLSConfig(cfg *tls.Config) *tls.Config {
+	if cfg == nil || cfg.ClientSessionCache == nil {
+		return cfg // newClientConn refuses a nil cfg
+	}
+	cache := cfg.ClientSessionCache
+	cs, ok := cache.Get(cfg.ServerName)
+	if !ok || cs == nil {
+		return cfg
+	}
+	cache.Put(cfg.ServerName, cs)
+	_, state, err := cs.ResumptionState()
+	if err != nil || state == nil || !state.EarlyData {
+		return cfg
+	}
+	group, ok := rememberedGroup(state.Extra)
+	if !ok || (len(cfg.CurvePreferences) > 0 && !slices.Contains(cfg.CurvePreferences, group)) {
+		return cfg
+	}
+	own := cfg.Clone()
+	own.CurvePreferences = []tls.CurveID{group}
+	return own
+}
+
 // DialEarly is [Dial] for a client that wants to send before the handshake
 // ends. When cfg's session cache holds a ticket the server marked for early
 // data, DialEarly returns as soon as the ClientHello has left with it, and
@@ -125,14 +185,19 @@ func rememberedParams(extra [][]byte) (TransportParameters, bool) {
 // server closes with decrypt_error. [Conn.Err] wraps [ErrEarlyDataRejected]
 // and names the HelloRetryRequest, over the server's [ConnectionError];
 // dial again with Dial, which offers no 0-RTT and resumes through a
-// HelloRetryRequest unharmed.
+// HelloRetryRequest unharmed. To keep that from happening, the ticket
+// records the key exchange group the server chose, and DialEarly offers
+// that group alone when it resumes with 0-RTT — on a copy of cfg, whose
+// CurvePreferences it narrows only when they list the group or are empty.
+// The retry is left to a server that changed its group since, or to a
+// ticket stored without one.
 //
 // ctx bounds DialEarly's own wait, as it bounds Dial's handshake. Once
 // DialEarly has returned early, the rest of the handshake runs under
 // [DefaultHandshakeTimeout]; a handshake that fails then closes the
 // connection, which [Conn.Done] reports. cfg follows Dial's rules.
 func DialEarly(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls.Config, params TransportParameters) (*Conn, error) {
-	c, err := newClientConn(ctx, pc, addr, cfg, params)
+	c, err := newClientConn(ctx, pc, addr, earlyTLSConfig(cfg), params)
 	if err != nil {
 		return nil, err
 	}
@@ -203,4 +268,21 @@ func (c *Conn) applyRememberedLocked(p TransportParameters) {
 	c.connSend.grant(p.InitialMaxData)
 	c.peerMaxStreamsBidi = p.InitialMaxStreamsBidi
 	c.peerMaxStreamsUni = p.InitialMaxStreamsUni
+}
+
+// storeSession keeps a ticket from the server, with what a later DialEarly
+// needs to send 0-RTT under it: the parameters this connection's handshake
+// brought (rememberedParams), and the group the server chose, which
+// DialEarly offers alone so that no HelloRetryRequest meets its 0-RTT
+// (earlyTLSConfig). Session events being on, crypto/tls stores nothing
+// itself. A ticket that fails to store is one resumption less, not a
+// reason to end this connection.
+func (c *Conn) storeSession(s *tls.SessionState) {
+	if raw := c.peerParamsRaw; raw != nil {
+		s.Extra = append(s.Extra, rememberedEntry(raw))
+	}
+	if id := c.tls.ConnectionState().CurveID; id != 0 {
+		s.Extra = append(s.Extra, groupEntry(id))
+	}
+	_ = c.tls.StoreSession(s)
 }

@@ -1,11 +1,13 @@
 package quic
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
 	"io"
 	"net"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -124,12 +126,21 @@ func TestARetrySourceIDTheServerDoesNotEchoIsAParameterError(t *testing.T) {
 
 // ticketLanded is a client session cache that says when a ticket lands, so
 // the test waits for the server's NewSessionTicket rather than for a guess.
+// With forgetGroup, it keeps tickets as a version that did not record the
+// server's group stored them: without the groupEntry.
 type ticketLanded struct {
 	tls.ClientSessionCache
-	stored chan struct{}
+	stored      chan struct{}
+	forgetGroup bool
 }
 
 func (c *ticketLanded) Put(key string, cs *tls.ClientSessionState) {
+	if ticket, state, err := cs.ResumptionState(); c.forgetGroup && err == nil && state != nil {
+		state.Extra = slices.DeleteFunc(state.Extra, func(e []byte) bool { return bytes.HasPrefix(e, groupMagic) })
+		if cs, err = tls.NewResumptionState(ticket, state); err != nil {
+			panic(err)
+		}
+	}
 	c.ClientSessionCache.Put(key, cs)
 	if cs != nil {
 		select {
@@ -162,14 +173,21 @@ func (h *heldReads) ReadFrom(b []byte) (int, net.Addr, error) {
 // so a server that takes P-256 alone answers with a HelloRetryRequest
 // exactly when that curve is X25519 — the negotiated curve is the witness;
 // the control, P-256 first, resumes with no retry and has its 0-RTT read.
+//
+// DialEarly avoids the retry when the ticket names the group the server
+// chose (earlyTLSConfig): a client whose own first curve is X25519 then
+// offers P-256 alone and has its 0-RTT read. The retry stays for a ticket
+// that names no group, as one stored before the group was recorded.
 func TestADialEarlyClientHasItsZeroRTTRefusedByAHelloRetryRequest(t *testing.T) {
 	tests := []struct {
 		name         string
 		firstCurve   tls.CurveID
+		forgetGroup  bool
 		wantRejected bool
 	}{
-		{"a server forcing a HelloRetryRequest", tls.X25519, true},
-		{"control without a HelloRetryRequest", tls.CurveP256, false},
+		{"a ticket naming the server's group needs no HelloRetryRequest", tls.X25519, false, false},
+		{"a server forcing a HelloRetryRequest", tls.X25519, true, true},
+		{"control without a HelloRetryRequest", tls.CurveP256, false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -187,7 +205,7 @@ func TestADialEarlyClientHasItsZeroRTTRefusedByAHelloRetryRequest(t *testing.T) 
 			t.Cleanup(func() { _ = l.Close() })
 			go echoEachStream(l)
 
-			cache := &ticketLanded{ClientSessionCache: tls.NewLRUClientSessionCache(2), stored: make(chan struct{}, 1)}
+			cache := &ticketLanded{ClientSessionCache: tls.NewLRUClientSessionCache(2), stored: make(chan struct{}, 1), forgetGroup: tt.forgetGroup}
 			clientCfg := ClientTLSForTest()
 			clientCfg.ClientSessionCache = cache
 			clientCfg.CurvePreferences = []tls.CurveID{tls.CurveP256, tls.X25519}

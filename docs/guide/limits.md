@@ -691,10 +691,16 @@ A `DialEarly` client that
 offers 0-RTT does not survive a HelloRetryRequest — the answer of a server
 that wants a key share the ClientHello did not carry: `crypto/tls` computes
 the PSK binders of its second ClientHello before it drops `early_data` from
-it, and the server closes with decrypt_error. The connection is lost, not
-only its 0-RTT; its error wraps `ErrEarlyDataRejected` and names the
-HelloRetryRequest, and `Dial`, which offers no 0-RTT, resumes through a
-HelloRetryRequest unharmed.
+it, and the server closes with decrypt_error. To avoid it, the ticket
+keeps the key exchange group the server chose, and `DialEarly` offers that
+group alone when it resumes with 0-RTT: a server that makes the same
+choice from one connection to the next — a server set to P-256 alone,
+facing a client with the default groups — has no reason left to ask for
+another. What remains is a server that changed its group between the two
+connections, or a ticket stored before this version: the connection is
+then lost, not only its 0-RTT; its error wraps `ErrEarlyDataRejected` and
+names the HelloRetryRequest, and `Dial`, which offers no 0-RTT, resumes
+through a HelloRetryRequest unharmed.
 
 Rewriting the TLS stack is out of the question (ADR 0002:
 the standard library owns the sensitive ground); these follow the Go

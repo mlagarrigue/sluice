@@ -603,15 +603,7 @@ func (c *Conn) handleTLSEvent(e tls.QUICEvent) (done bool, err error) {
 		}
 		return false, nil
 	case tls.QUICStoreSession:
-		// A ticket from the server, stored with the parameters this
-		// connection's handshake brought, for a later DialEarly to send
-		// 0-RTT under. Session events being on, crypto/tls stores nothing
-		// itself. A ticket that fails to store is one resumption less, not
-		// a reason to end this connection.
-		if raw := c.peerParamsRaw; raw != nil {
-			e.SessionState.Extra = append(e.SessionState.Extra, rememberedEntry(raw))
-		}
-		_ = c.tls.StoreSession(e.SessionState)
+		c.storeSession(e.SessionState)
 		return false, nil
 	case tls.QUICRejectedEarlyData:
 		// The server refused 0-RTT (§4.6.2). Under DialEarly, what went
