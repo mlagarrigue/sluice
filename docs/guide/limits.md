@@ -423,6 +423,23 @@ whichever way the conditions go:
   every packet carries the QUIC Bit set, as RFC 9000 has it. Clearing it
   guards a protocol against middleboxes that come to rely on the bit, and
   no peer of this package has shown one; it is added when one does.
+- **`net/quic` NEW_TOKEN**: a server issues no address validation token
+  (RFC 9000 §8.1.3 allows it, §9.3 recommends it after a migration), and a
+  client neither keeps nor presents one (§8.1.3 recommends it): that takes
+  a key, an expiry and replay protection as Retry tokens have (ADR 0015),
+  and a client-side store per server. The cost is a Retry round trip on
+  each reconnection to a server that requires validation; a client
+  returning here goes through the 3× limit, or a Retry under
+  `AlwaysRetry`. A migrating endpoint sends what it has before validation,
+  not probing frames only (§21.5.6 leaves the choice; the 3× limit bounds
+  it). Tokens come when a real client shows that round trip. In plain
+  words: a returning client is validated again, like a new one.
+- **`net/quic` stream priority**: no API says how streams rank against
+  each other (RFC 9000 §2.3 recommends one; HTTP/3's priority scheme, RFC
+  9218, is not read); writes are synchronous and leave in the order of the
+  calls, as far as the congestion window allows. The application orders
+  what it sends by the order it writes it. An API comes with its first
+  consumer. In plain words: what is written first leaves first.
 
 ## Measurements: what is missing
 
