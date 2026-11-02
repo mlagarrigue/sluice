@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -546,9 +547,12 @@ func TestRetiredSelfRingIsBounded(t *testing.T) {
 	}
 }
 
-// One packet of 1 451 PINGs parses to as many frames; the parse scratch
-// that held them is not what the connection keeps for the next packet.
-// An ordinary packet's scratch still is, which is what the scratch is for.
+// One packet of 1 451 PINGs parses to as many frames. The scratch that
+// held them is kept while such packets keep coming — dropped at once, the
+// next one grew it again (TestDensePacketsAllocateAtMostFourBytesPerByte)
+// — and let go keepDenseFor ordinary packets later, so that one packet does
+// not make the connection hold it for its whole life. An ordinary packet's
+// scratch is always kept, which is what the scratch is for.
 func TestParseScratchDoesNotKeepAPacketOfPings(t *testing.T) {
 	c := assembleConn(&fuzzSink{addr: "scratch:self"}, fakeFuzzAddr("scratch:peer"), []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
 	t.Cleanup(func() { _ = c.Close() })
@@ -556,13 +560,68 @@ func TestParseScratchDoesNotKeepAPacketOfPings(t *testing.T) {
 	if err := c.frames(spaceApplication, pings, time.Now()); err != nil {
 		t.Fatal(err)
 	}
+	if got := cap(c.parseScratch); got < 1451 {
+		t.Errorf("after 1451 PINGs the connection keeps a scratch of %d frames, want the one that held them", got)
+	}
+	for i := range keepDenseFor {
+		if err := c.frames(spaceApplication, pings[:3], time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if i == keepDenseFor-2 && cap(c.parseScratch) <= maxKeptFrames {
+			t.Fatalf("the dense scratch was let go after %d ordinary packets, want %d", i+1, keepDenseFor)
+		}
+	}
 	if got := cap(c.parseScratch); got > maxKeptFrames {
-		t.Errorf("after 1451 PINGs the connection keeps a scratch of %d frames, want at most %d", got, maxKeptFrames)
+		t.Errorf("after %d ordinary packets the connection keeps a scratch of %d frames, want at most %d", keepDenseFor, got, maxKeptFrames)
 	}
 	if err := c.frames(spaceApplication, pings[:3], time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if c.parseScratch == nil {
 		t.Error("an ordinary packet's scratch was not kept")
+	}
+}
+
+// RFC 9000 §21.9: a packet of one-byte frames costs what its bytes cost. A
+// 1 400-byte packet of PINGs, or of two-byte MAX_DATA frames, allocated on
+// every packet a frame slice of 80 bytes per frame, grown by doubling —
+// some 300 KB, two hundred times the packet — because the scratch that held
+// the previous one was let go. The bound is 4 bytes allocated per byte
+// received; the same bytes as PADDING and one PING are the control.
+func TestDensePacketsAllocateAtMostFourBytesPerByte(t *testing.T) {
+	c := assembleConn(&fuzzSink{addr: "dense:self"}, fakeFuzzAddr("dense:peer"), []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+	t.Cleanup(func() { _ = c.Close() })
+	perPacket := func(payload []byte) uint64 {
+		t.Helper()
+		for range 3 {
+			if err := c.frames(spaceApplication, payload, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		const n = 200
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		for range n {
+			if err := c.frames(spaceApplication, payload, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		runtime.ReadMemStats(&after)
+		return (after.TotalAlloc - before.TotalAlloc) / n
+	}
+
+	const size = 1400
+	for _, tc := range []struct {
+		name    string
+		payload []byte
+	}{
+		{"PADDING and one PING", append(make([]byte, size-1), framePing)}, // PADDING is 0x00
+		{"PINGs", bytes.Repeat([]byte{framePing}, size)},
+		{"MAX_DATA frames", bytes.Repeat([]byte{frameMaxData, 0x00}, size/2)},
+	} {
+		if got := perPacket(tc.payload); got > 4*size {
+			t.Errorf("a %d-byte packet of %s allocates %d bytes (%d per byte received), want at most %d", size, tc.name, got, got/size, 4*size)
+		}
 	}
 }

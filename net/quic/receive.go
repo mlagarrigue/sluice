@@ -1012,10 +1012,48 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) error {
 	return c.framesIn(space, false, payload, now)
 }
 
-// maxKeptFrames is the most frames the parse scratch keeps between packets:
-// past any packet ordinary traffic sends, far under what a packet of PINGs
-// holds.
+// maxKeptFrames is the most frames a frame scratch keeps between packets
+// for good: past any packet ordinary traffic sends, far under what a packet
+// of PINGs holds.
 const maxKeptFrames = 64
+
+// keepDenseFor is how many packets a frame scratch grown past maxKeptFrames
+// is kept after the last packet that needed it.
+const keepDenseFor = 64
+
+// keepScratch reports whether a frame scratch of capacity n is kept for the
+// next packet: always when it is ordinary, and when it is larger, until
+// keepDenseFor packets have passed without needing it (denseAgo).
+//
+// Dropped at once, the scratch a dense packet grew was grown again by the
+// next one: a peer sending packets of one-byte frames (PING, or two-byte
+// MAX_DATA) made every packet of 1 400 bytes allocate some 300 KB in
+// doubling, two hundred times its size, with no bound per byte received
+// (RFC 9000 §21.9). Kept for as long as such packets keep coming, the
+// growth happens once; the most a connection holds is one frame per byte
+// of the largest datagram it reads (recvBufSize), and only while its peer
+// sends them — keepDenseFor ordinary packets later it is gone, rather than
+// held for the connection's whole life on the strength of one packet.
+func (c *Conn) keepScratch(n int) bool {
+	return n <= maxKeptFrames || c.denseAgo < keepDenseFor
+}
+
+// noteParsed counts a packet that parsed to n frames for keepScratch.
+func (c *Conn) noteParsed(n int) {
+	if n > maxKeptFrames {
+		c.denseAgo = 0
+	} else if c.denseAgo < keepDenseFor {
+		c.denseAgo++
+	}
+}
+
+// putScratch gives s back as the scratch *dst for the next packet, when
+// keepScratch keeps it.
+func (c *Conn) putScratch(dst *[]Frame, s []Frame) {
+	if c.keepScratch(cap(s)) {
+		*dst = s[:0]
+	}
+}
 
 // framesIn is frames for a packet that may be 0-RTT (early), whose frame
 // types §12.4 restricts further.
@@ -1059,17 +1097,13 @@ func (c *Conn) framesIn(space int, early bool, payload []byte, now time.Time) er
 	// replays from inside the handler. The nested call finds nil, allocates
 	// its own, and the unwind puts each level's slice back.
 	//
-	// Kept only up to maxKeptFrames: a packet of 1 451 one-byte PINGs grows
-	// the slice to that many frames, and a connection would hold that much
-	// for its whole life on the strength of one packet.
+	// A slice grown past maxKeptFrames is kept only while dense packets
+	// keep coming (keepScratch).
 	parseScratch := c.parseScratch
 	c.parseScratch = nil
 	frames, err := parseFrames(parseScratch[:0], payload)
-	defer func() {
-		if cap(frames) <= maxKeptFrames {
-			c.parseScratch = frames[:0]
-		}
-	}()
+	c.noteParsed(len(frames))
+	defer func() { c.putScratch(&c.parseScratch, frames) }()
 	if err != nil {
 		return &transportError{code: transportFrameEncoding, err: err}
 	}
@@ -1124,7 +1158,7 @@ func (c *Conn) framesIn(space int, early bool, payload []byte, now time.Time) er
 	batchScratch := c.batchScratch
 	c.batchScratch = nil
 	batch := batchScratch[:0]
-	defer func() { c.batchScratch = batch[:0] }()
+	defer func() { c.putScratch(&c.batchScratch, batch) }()
 	var connGrowth uint64
 	// Streams whose lifecycle ended in this packet are retired only after
 	// the deltas are dispatched: retiring first removes the stream from the

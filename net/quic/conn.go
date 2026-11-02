@@ -231,6 +231,9 @@ type Conn struct {
 	// packet at a time and no consumer keeps either slice (see frames).
 	parseScratch []Frame
 	batchScratch []Frame
+	// denseAgo counts the packets since one last parsed to more than
+	// maxKeptFrames frames, up to keepDenseFor (keepScratch).
+	denseAgo int
 	// settleScratch carries settleBatchConsumption's per-batch settlement
 	// between its lock passes; guarded by deliverMu like the batches it
 	// settles.
