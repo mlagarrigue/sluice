@@ -17,7 +17,7 @@ import (
 // reads two streams needs an assertion the table's two-batch allowance cannot
 // make.
 var earlyStopElsewhere = map[string]string{
-	"join.Merge":                "TestMergeJoinByEarlyStopEveryBranch",
+	"join.MergeJoin":            "TestMergeJoinByEarlyStopEveryBranch",
 	"join.Interval":             "TestIntervalJoinEarlyStopReleasesBoth",
 	"join.ZipLongest":           "TestZipLongestEarlyStopReleasesBoth",
 	"parallel.Async":            "TestAsyncEarlyStopReleasesProducer",

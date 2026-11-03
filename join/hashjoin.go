@@ -262,7 +262,7 @@ func (t *mapTable[K, B]) Len() int { return len(t.vals) }
 // bound broken on the output side.
 //
 // Left and outer variants are not provided — they are a filter away over an
-// [EitherOrBoth] shape, which is what [Merge] already gives for sorted
+// [EitherOrBoth] shape, which is what [MergeJoin] already gives for sorted
 // inputs, and adding a second spelling here would mean two joins differing in
 // ways callers get wrong.
 //
@@ -274,7 +274,7 @@ func (t *mapTable[K, B]) Len() int { return len(t.vals) }
 // is, and it is the reason the cost is what it is rather than something a
 // tighter loop would fix (BenchmarkJoinHash in internal/bench).
 //
-// **Where both inputs are sorted on the key, use [Merge] instead.** The
+// **Where both inputs are sorted on the key, use [MergeJoin] instead.** The
 // sorted-merge strategy does the same work in O(1) memory; the gap is larger
 // than "O(1) versus O(build)" conveys — several times the speed and orders of
 // magnitude less memory on the same data (BenchmarkJoinMerge against

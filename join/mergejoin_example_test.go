@@ -8,10 +8,10 @@ import (
 	"github.com/mlagarrigue/sluice/join"
 )
 
-// Merge walks two sorted streams once and reports what it found for each
+// MergeJoin walks two sorted streams once and reports what it found for each
 // key. Every join semantics is a filter over that output — here, an inner join
 // keeps the rows matched on both sides.
-func ExampleMerge() {
+func ExampleMergeJoin() {
 	type order struct {
 		customerID int
 		total      int
@@ -25,7 +25,7 @@ func ExampleMerge() {
 	orders := sluice.Of([]order{{1, 100}, {2, 250}, {4, 75}}, 2)
 	customers := sluice.Of([]customer{{1, "ana"}, {3, "bo"}, {4, "cy"}}, 2)
 
-	joined := join.Merge(orders, customers,
+	joined := join.MergeJoin(orders, customers,
 		func(o order) int { return o.customerID },
 		func(c customer) int { return c.id },
 		cmp.Compare[int],

@@ -39,7 +39,7 @@ A few deserve a word:
 
 - Two operators are called `Merge`. `sluice.Merge` brings two streams
   together by alternating their batches, comparing and keeping nothing;
-  `join.Merge` pairs two **sorted** streams on a key, as a SQL join does
+  `join.MergeJoin` pairs two **sorted** streams on a key, as a SQL join does
   ([Two sorted streams: the merge join](#two-sorted-streams-the-merge-join)).
 - `Map` and `Convert` both apply a function to every element. `Map` keeps
   the type and writes in place; `Convert` changes it and writes into a
@@ -100,7 +100,7 @@ streams.
 
 | Operator | What it retains | When to pick it |
 |---|---|---|
-| `join.Merge(left, right, keyL, keyR, cmp)` | only the current run of equal keys | both streams are **sorted** on the key |
+| `join.MergeJoin(left, right, keyL, keyR, cmp)` | only the current run of equal keys | both streams are **sorted** on the key |
 | `join.ZipLongest(left, right)` | nothing beyond the two current batches | pairing by position: the first with the first, and so on |
 | `join.Interval(left, right, spec, limit)` | a bounded time window of both sides | two streams **ordered by time**, possibly infinite |
 | `join.StreamTable(probe, build, …, limit)` | **all** of the `build` side in memory | `build` is finite (a reference table), `probe` may not be |
@@ -109,12 +109,12 @@ streams.
 
 If both streams are sorted on the key, you can walk them side by side like
 two alphabetical lists, advancing whichever is behind. You never need to
-retain more than the elements of the current key. That is `join.Merge`,
+retain more than the elements of the current key. That is `join.MergeJoin`,
 and it is the join to prefer whenever you can sort:
 
 ```go
 // customers and orders are sorted on the customer id.
-pairs := join.Merge(customers, orders,
+pairs := join.MergeJoin(customers, orders,
     func(c Customer) int { return c.ID },        // the key on the left side
     func(o Order) int { return o.CustomerID },   // the key on the right side
     cmp.Compare[int])                            // how to compare two keys

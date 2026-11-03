@@ -1033,7 +1033,7 @@ The figures the guides and the architecture quote for choosing a join, and
 for the generated hydration.
 
 The four joins are measured in the same runs, so they compare with each
-other: 65,536 rows a side, sorted, joined one to one through `join.Merge`,
+other: 65,536 rows a side, sorted, joined one to one through `join.MergeJoin`,
 through the hash table, and through the interval join on a zero-width and on
 a ±2 s window (`internal/bench`). Six runs of one second, median,
 2026-10-28, go1.26.9, 15 cores, under WSL2, not pinned.

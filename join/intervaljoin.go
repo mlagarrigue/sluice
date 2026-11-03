@@ -56,7 +56,7 @@ type IntervalSpec[L, R any, K comparable, Out any] struct {
 // What replaces the watermark is ordering: each input must be non-decreasing
 // on its extracted timestamp, checked as elements are first seen, panicking
 // with [sluice.ErrUnsorted] when one goes backwards — the same discipline, check and
-// sentinel as [Merge], because the failure is the same silent wrong
+// sentinel as [MergeJoin], because the failure is the same silent wrong
 // answer. Ordering is what makes state finite: a row can be evicted the
 // moment the other side's clock has passed the last instant that could still
 // match it, and no lateness needs to be guessed.
@@ -88,7 +88,7 @@ type IntervalSpec[L, R any, K comparable, Out any] struct {
 // open are kept out of the probes' way (BenchmarkIntervalJoinNarrow and
 // BenchmarkIntervalJoinWide in internal/bench, BenchmarkIntervalJoinOffset
 // here; the figures live in docs/design/architecture.md, "Infinite streams:
-// interval join"). Sorted inputs joined on equality alone belong in [Merge];
+// interval join"). Sorted inputs joined on equality alone belong in [MergeJoin];
 // this operator is bought for the temporal predicate.
 //
 // # Output

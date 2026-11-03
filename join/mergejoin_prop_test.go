@@ -92,13 +92,13 @@ func FuzzMergeJoinByMatchesNestedLoop(f *testing.F) {
 		right := mjSorted(rng, int(nr), k, 1000)
 		mb := int(maxBatch%8) + 1
 
-		got := sluice.Collect(Merge(
+		got := sluice.Collect(MergeJoin(
 			streamtest.Chunks(left, mb, rng), streamtest.Chunks(right, mb, rng),
 			mjKey, mjKey, cmp.Compare[int],
 		))
 		want := mjReference(left, right)
 		if !slices.Equal(got, want) {
-			t.Fatalf("Merge(%v, %v)\n got %v\nwant %v", left, right, got, want)
+			t.Fatalf("MergeJoin(%v, %v)\n got %v\nwant %v", left, right, got, want)
 		}
 	})
 }
@@ -146,10 +146,10 @@ func TestMergeJoinByOneToManyStreams(t *testing.T) {
 		join func(many sluice.Stream[mjRow]) sluice.Stream[EitherOrBoth[mjRow, mjRow]]
 	}{
 		{"many on the right", func(many sluice.Stream[mjRow]) sluice.Stream[EitherOrBoth[mjRow, mjRow]] {
-			return Merge(sluice.Of(single, 1), many, mjKey, mjKey, cmp.Compare[int])
+			return MergeJoin(sluice.Of(single, 1), many, mjKey, mjKey, cmp.Compare[int])
 		}},
 		{"many on the left", func(many sluice.Stream[mjRow]) sluice.Stream[EitherOrBoth[mjRow, mjRow]] {
-			return Merge(many, sluice.Of(single, 1), mjKey, mjKey, cmp.Compare[int])
+			return MergeJoin(many, sluice.Of(single, 1), mjKey, mjKey, cmp.Compare[int])
 		}},
 	}
 	for _, tt := range tests {
@@ -180,7 +180,7 @@ func TestMergeJoinByOneToManyStreams(t *testing.T) {
 func TestMergeJoinByOneToManyComplete(t *testing.T) {
 	const run = 5000
 	pulled := 0
-	got := sluice.Collect(Merge(
+	got := sluice.Collect(MergeJoin(
 		sluice.Of([]mjRow{{key: 0, id: -1}, {key: 1, id: -2}}, 1),
 		mjCounted(run, 7, &pulled),
 		mjKey, mjKey, cmp.Compare[int],

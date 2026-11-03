@@ -5,7 +5,7 @@ import "github.com/mlagarrigue/sluice"
 // ZipLongest pairs two streams positionally: first with first, second with
 // second, and so on until the longer one runs out.
 //
-// The output carries [EitherOrBoth] rows, like [Merge]: Both() while
+// The output carries [EitherOrBoth] rows, like [MergeJoin]: Both() while
 // both streams still have elements, then HasLeft or HasRight alone for the tail
 // of whichever is longer. Nothing is dropped.
 //

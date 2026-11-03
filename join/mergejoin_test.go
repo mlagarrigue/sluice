@@ -33,7 +33,7 @@ func joinRows(s sluice.Stream[EitherOrBoth[int, int]]) []string {
 func identity(v int) int { return v }
 
 func joinInts(left, right []int, batch int) []string {
-	return joinRows(Merge(
+	return joinRows(MergeJoin(
 		sluice.Of(left, batch), sluice.Of(right, batch),
 		identity, identity, cmp.Compare[int],
 	))
@@ -143,7 +143,7 @@ func TestMergeJoinBySemantics(t *testing.T) {
 	left, right := []int{1, 2, 3}, []int{2, 3, 4}
 
 	rows := func(keep func(EitherOrBoth[int, int]) bool) []string {
-		s := Merge(sluice.Of(left, 2), sluice.Of(right, 2), identity, identity, cmp.Compare[int])
+		s := MergeJoin(sluice.Of(left, 2), sluice.Of(right, 2), identity, identity, cmp.Compare[int])
 		return joinRows(sluice.Filter(s, keep))
 	}
 
@@ -227,13 +227,13 @@ func TestMergeJoinByNilFunctions(t *testing.T) {
 		call func()
 	}{
 		{"nil keyL", func() {
-			Merge(sluice.Empty[int](), sluice.Empty[int](), nil, identity, cmp.Compare[int])
+			MergeJoin(sluice.Empty[int](), sluice.Empty[int](), nil, identity, cmp.Compare[int])
 		}},
 		{"nil keyR", func() {
-			Merge(sluice.Empty[int](), sluice.Empty[int](), identity, nil, cmp.Compare[int])
+			MergeJoin(sluice.Empty[int](), sluice.Empty[int](), identity, nil, cmp.Compare[int])
 		}},
 		{"nil cmp", func() {
-			Merge[int, int, int](sluice.Empty[int](), sluice.Empty[int](), identity, identity, nil)
+			MergeJoin[int, int, int](sluice.Empty[int](), sluice.Empty[int](), identity, identity, nil)
 		}},
 	}
 
@@ -255,7 +255,7 @@ func TestMergeJoinBySinglePass(t *testing.T) {
 	left, consumedL := streamtest.SinglePass(t, []int{1, 3, 5}, 2)
 	right, consumedR := streamtest.SinglePass(t, []int{3, 5, 7}, 2)
 
-	got := joinRows(Merge(left, right, identity, identity, cmp.Compare[int]))
+	got := joinRows(MergeJoin(left, right, identity, identity, cmp.Compare[int]))
 	want := []string{"L(1)", "B(3,3)", "B(5,5)", "R(7)"}
 	if !slices.Equal(got, want) {
 		t.Errorf("got %v, want %v", got, want)
@@ -279,7 +279,7 @@ func TestMergeJoinByEarlyStopReleasesBoth(t *testing.T) {
 	}
 
 	n := 0
-	s := Merge(mk([]int{5, 5, 5}, &closedL), mk([]int{5, 5, 5}, &closedR),
+	s := MergeJoin(mk([]int{5, 5, 5}, &closedL), mk([]int{5, 5, 5}, &closedR),
 		identity, identity, cmp.Compare[int])
 	s(func(b sluice.Batch[EitherOrBoth[int, int]]) bool {
 		n += b.Len()
@@ -354,7 +354,7 @@ func TestMergeJoinByEarlyStopEveryBranch(t *testing.T) {
 			}
 
 			batches := 0
-			s := Merge(
+			s := MergeJoin(
 				mk(tt.left, &startedL, &closedL),
 				mk(tt.right, nil, &closedR),
 				identity, identity, cmp.Compare[int],
@@ -384,7 +384,7 @@ func TestMergeJoinByBatchesOutput(t *testing.T) {
 
 	var sizes []int
 	total := 0
-	s := Merge(sluice.Of(left, 100), sluice.Empty[int](), identity, identity, cmp.Compare[int])
+	s := MergeJoin(sluice.Of(left, 100), sluice.Empty[int](), identity, identity, cmp.Compare[int])
 	s(func(b sluice.Batch[EitherOrBoth[int, int]]) bool {
 		sizes = append(sizes, b.Len())
 		total += b.Len()
@@ -405,7 +405,7 @@ func TestMergeJoinByEmptyBatches(t *testing.T) {
 	left := sluice.Filter(sluice.Of([]int{1, 2, 3, 4, 5, 6}, 2), func(v int) bool { return v%3 == 0 })
 	right := sluice.Of([]int{3, 6}, 1)
 
-	got := joinRows(Merge(left, right, identity, identity, cmp.Compare[int]))
+	got := joinRows(MergeJoin(left, right, identity, identity, cmp.Compare[int]))
 	if want := []string{"B(3,3)", "B(6,6)"}; !slices.Equal(got, want) {
 		t.Errorf("got %v, want %v", got, want)
 	}
@@ -427,7 +427,7 @@ func TestMergeJoinByDistinctTypes(t *testing.T) {
 	customers := []customer{{1, "ana"}, {3, "bo"}, {4, "cy"}}
 
 	var matched []string
-	s := Merge(sluice.Of(orders, 2), sluice.Of(customers, 2),
+	s := MergeJoin(sluice.Of(orders, 2), sluice.Of(customers, 2),
 		func(o order) int { return o.customerID },
 		func(c customer) int { return c.id },
 		cmp.Compare[int],

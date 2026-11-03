@@ -227,7 +227,7 @@ type Batch[T any] struct {
 > they change its contents. A `Ctx` field would have to be copied at each of
 > those sites and at every one added later; the omission would compile, run,
 > and silently drop the context from that stage onward — the failure mode the
-> [merge join](#joinmerge--the-central-primitive) went out of its way to turn
+> [merge join](#joinmergejoin--the-central-primitive) went out of its way to turn
 > into a panic.
 >
 > Cost was measured and is not the reason: a `context.Context` is an interface,
@@ -659,12 +659,12 @@ branch ([Split](#split--a-single-primitive)); `Coalesce` keeps at most one
 batch while it fills it — the one documented exception, and the core's own
 tool for restoring full batches.
 
-**Retains one side — `join`.** `join.Merge` and `join.ZipLongest` walk two
-inputs in lockstep and retain only the current equal-key run; `join.Merge`
+**Retains one side — `join`.** `join.MergeJoin` and `join.ZipLongest` walk two
+inputs in lockstep and retain only the current equal-key run; `join.MergeJoin`
 is O(1) while keys repeat on at most one side — a key repeated on both buffers
 its right run to emit the cross product, O(m) over that run, so a stream that
 is one long many-to-many run materializes its right input
-([the merge join](#joinmerge--the-central-primitive)). `join.Interval`
+([the merge join](#joinmergejoin--the-central-primitive)). `join.Interval`
 retains a bounded window of both sides; `join.StreamTable` materializes its
 build side entirely, under a required bound.
 
@@ -878,7 +878,7 @@ joining pairs elements on a key, merging combines sequences.
 |---|---|---|---|
 | `Concat` | all of A, then all of B | O(1) | deterministic |
 | `Merge` | round-robin, one batch per source in turn | O(1) | strictly alternating rotation |
-| `join.Merge` | ordered merge of sorted streams | **O(1)**, O(m) per run repeated on both sides | sorted |
+| `join.MergeJoin` | ordered merge of sorted streams | **O(1)**, O(m) per run repeated on both sides | sorted |
 | `join.ZipLongest` | positional pairs, goes to the longest | O(1) | positional |
 | `Coalesce` | recombines batches to a target size | O(k) | preserved |
 | unsorted `Union`/`Intersect`/`Except` (not provided) | HashSet deduplication | **O(distinct)** | — |
@@ -886,9 +886,9 @@ joining pairs elements on a key, merging combines sequences.
 Unsorted `Union`, `Intersect` and `Except` **do not exist** as stream
 operators: an unbounded HashSet
 violates S1. They are provided only in a sorted variant, derived from
-`join.Merge` ([join.Merge](#joinmerge--the-central-primitive)) — this is the sort-merge strategy of SQL engines.
+`join.MergeJoin` ([join.MergeJoin](#joinmergejoin--the-central-primitive)) — this is the sort-merge strategy of SQL engines.
 
-### `join.Merge` — the central primitive
+### `join.MergeJoin` — the central primitive
 
 A single operator subsumes six semantics, in O(1) memory — with the equal-key
 caveat below — over **potentially infinite** streams provided they are sorted
@@ -902,7 +902,7 @@ type EitherOrBoth[L, R any] struct {
     HasRight bool
 }
 
-func Merge[L, R any, K any](       // package join
+func MergeJoin[L, R any, K any](   // package join
     left  Stream[L],
     right Stream[R],
     keyL  func(L) K,
@@ -942,13 +942,13 @@ current equal-key run.
 > one-to-one and one-to-many joins on an identifier, and is the figure the
 > tables quote.
 
-> **Articulation with [Database connectors](#database-connectors).** `join.Merge` **is** the merge-join primitive; the
+> **Articulation with [Database connectors](#database-connectors).** `join.MergeJoin` **is** the merge-join primitive; the
 > "merge join" entry in the strategy table ([Strategies](#strategies)) refers to it and is not a
 > separate implementation. The hash join ([Hash join](#hash-join--the-build-side-is-a-table)) remains a distinct primitive: it
 > does not assume sorted inputs, but materializes one side.
 
 > **The order is always checked.** On inputs that are **not actually sorted**,
-> `join.Merge` would produce a wrong result with no error whatsoever — a silent
+> `join.MergeJoin` would produce a wrong result with no error whatsoever — a silent
 > failure of the same kind as Kafka co-partitioning
 > ([hash join](#hash-join--the-build-side-is-a-table)), and unacceptable.
 >
@@ -1483,7 +1483,7 @@ thrashing*.
 | Strategy | Condition | Memory |
 |---|---|---|
 | Hash join | `comparable` keys | O(build) |
-| Merge join ([join.Merge](#joinmerge--the-central-primitive)) | both streams sorted on the key | O(1), O(m) per run repeated on both sides |
+| Merge join ([join.MergeJoin](#joinmergejoin--the-central-primitive)) | both streams sorted on the key | O(1), O(m) per run repeated on both sides |
 | Interval join | ordered temporal streams | O(throughput × interval) |
 | Nested loop | last resort, replayable right side | O(1), CPU O(n·m) |
 
@@ -1529,7 +1529,7 @@ lying to the user.
 > requires both inputs non-decreasing on their extracted `time.Time`, checked
 > as elements are first seen — the same discipline, machinery (the merge
 > join's cursor, with the timestamp as its key) and sentinel (`ErrUnsorted`)
-> as `join.Merge`. Ordering is what makes eviction safe without guessing
+> as `join.MergeJoin`. Ordering is what makes eviction safe without guessing
 > lateness: a row dies the moment the other side's clock passes the last
 > instant that could match it.
 >
@@ -1699,8 +1699,8 @@ nested calls, so a chain would break exactly where a pipeline does its work.
 | S6 | No goroutine leak. | A `synctest` bubble that fails while a goroutine is still blocked: `TestParallelLeavesNoGoroutines`, `TestConnectionsLeaveNoGoroutines` (QUIC); for `httpstream`, whose connections run on real sockets, no goroutine of the package left once they close, checked by name: `TestH2ConnectionsLeaveNoGoroutines` |
 | S7 | Internal errors do not leak to the client. | **Guaranteed by structure**: `cause` unexported ([The model adopted](#the-model-adopted)); exercised by `TestDiagnosticCauseIsWrappedNotExported`, `TestAuthenticateDoesNotLeakWhyItFailed` |
 | S8 | Every network input is bounded before allocation. | Fuzzing: `FuzzParseRequest`, `FuzzParseFrame`, `FuzzHPACKDecode`, `FuzzQPACKDecode`, `FuzzParseLongHeader`, `FuzzReaderNext` |
-| S9 | Every internal `iter.Pull` calls `stop()` on all paths. | Test with injected panic: `TestMergeReleasesOnPanic`, `TestSplitReleasesSourceOnPanic`, `TestPullingOperatorsReleaseBothInputsOnPanic` (`join.Merge`, `ZipLongest`, `join.Interval`), `TestAsyncConsumerPanicReleasesProducer` |
-| S10 | Every operator propagates `false` and lets the generator unwind. | One table drives the operators, `probe.Probe` included: `TestOperatorsPropagateEarlyStop`; `join.Merge`, which fills a batch before it yields, has its own: `TestMergeJoinByEarlyStopEveryBranch` |
+| S9 | Every internal `iter.Pull` calls `stop()` on all paths. | Test with injected panic: `TestMergeReleasesOnPanic`, `TestSplitReleasesSourceOnPanic`, `TestPullingOperatorsReleaseBothInputsOnPanic` (`join.MergeJoin`, `ZipLongest`, `join.Interval`), `TestAsyncConsumerPanicReleasesProducer` |
+| S10 | Every operator propagates `false` and lets the generator unwind. | One table drives the operators, `probe.Probe` included: `TestOperatorsPropagateEarlyStop`; `join.MergeJoin`, which fills a batch before it yields, has its own: `TestMergeJoinByEarlyStopEveryBranch` |
 | S11 | No unbounded buffer between two operators. | Pressure test: `TestParallelBoundsReadAhead`, `TestSplitBounds`; a `Split` branch that would overwrite an undrained slot stalls instead: `TestSplitStalls` |
 | **S12** | **Diagnostics ceiling per element and per batch.** `web/stream`'s `Exchange.Diagnostics` has no ceiling of its own: it holds what the pipeline's stages report for the element, a number set by the stages the program built, not by the input. | Pathological batch → counted truncation: `TestDiagnosticsCeiling` |
 | **S13** | **No value travels through SQL text.** | `TestSetLocalNeverPutsTheValueIntoSQL`, `TestSavepointRejectsHostileNames` |

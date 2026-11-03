@@ -2,7 +2,7 @@ package join
 
 import "github.com/mlagarrigue/sluice"
 
-// EitherOrBoth carries one row of a [Merge] result: a left row, a right
+// EitherOrBoth carries one row of a [MergeJoin] result: a left row, a right
 // row, or a matched pair.
 //
 // Values are held directly rather than behind pointers. A pointer into an
@@ -19,7 +19,7 @@ type EitherOrBoth[L, R any] struct {
 // Both reports whether the row matched on both sides.
 func (e EitherOrBoth[L, R]) Both() bool { return e.HasLeft && e.HasRight }
 
-// Merge merges two streams sorted on a common key, in O(1) memory over
+// MergeJoin merges two streams sorted on a common key, in O(1) memory over
 // streams of any length — including infinite ones.
 //
 // keyL and keyR extract the key each side is sorted by, and cmp orders two
@@ -66,9 +66,9 @@ func (e EitherOrBoth[L, R]) Both() bool { return e.HasLeft && e.HasRight }
 // at the next row. That is the cost of emitting full batches rather than
 // one-row ones, and it is what makes the operator worth its name.
 //
-// Merge panics with [sluice.ErrUnsorted] if either input goes backwards, and
+// MergeJoin panics with [sluice.ErrUnsorted] if either input goes backwards, and
 // with a plain message if cmp, keyL or keyR is nil.
-func Merge[L, R any, K any](
+func MergeJoin[L, R any, K any](
 	left sluice.Stream[L],
 	right sluice.Stream[R],
 	keyL func(L) K,
@@ -76,10 +76,10 @@ func Merge[L, R any, K any](
 	cmp func(K, K) int,
 ) sluice.Stream[EitherOrBoth[L, R]] {
 	if keyL == nil || keyR == nil {
-		panic("sluice: Merge requires non-nil key functions")
+		panic("sluice: MergeJoin requires non-nil key functions")
 	}
 	if cmp == nil {
-		panic("sluice: Merge requires a non-nil cmp function")
+		panic("sluice: MergeJoin requires a non-nil cmp function")
 	}
 
 	return func(yield func(sluice.Batch[EitherOrBoth[L, R]]) bool) {

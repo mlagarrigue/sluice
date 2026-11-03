@@ -48,7 +48,7 @@ func BenchmarkJoinFullMatch(b *testing.B) {
 	b.SetBytes(N * 8)
 	b.ReportAllocs()
 	for b.Loop() {
-		drainJoin(b, join.Merge(
+		drainJoin(b, join.MergeJoin(
 			sluice.Of(left, 1024), sluice.Of(right, 1024),
 			idInt64, idInt64, cmp.Compare[int64],
 		))
@@ -63,7 +63,7 @@ func BenchmarkJoinNoMatch(b *testing.B) {
 	b.SetBytes(N * 8)
 	b.ReportAllocs()
 	for b.Loop() {
-		drainJoin(b, join.Merge(
+		drainJoin(b, join.MergeJoin(
 			sluice.Of(left, 1024), sluice.Of(right, 1024),
 			idInt64, idInt64, cmp.Compare[int64],
 		))
@@ -112,7 +112,7 @@ func BenchmarkJoinCrossProduct(b *testing.B) {
 	b.SetBytes(N * 8)
 	b.ReportAllocs()
 	for b.Loop() {
-		drainJoin(b, join.Merge(
+		drainJoin(b, join.MergeJoin(
 			sluice.Of(left, 1024), sluice.Of(right, 1024),
 			idInt64, idInt64, cmp.Compare[int64],
 		))
@@ -129,7 +129,7 @@ func BenchmarkJoinTail(b *testing.B) {
 	b.SetBytes(N * 8)
 	b.ReportAllocs()
 	for b.Loop() {
-		drainJoin(b, join.Merge(
+		drainJoin(b, join.MergeJoin(
 			sluice.Of(left, 1024), sluice.Empty[int64](),
 			idInt64, idInt64, cmp.Compare[int64],
 		))

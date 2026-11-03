@@ -1,7 +1,7 @@
 # ADR 0001 — The package map: a core that retains nothing, operators by what they retain, the periphery by external system
 
 - **Created:** 2026-10-07
-- **Revised:** 2026-10-23 (what the root retains, the internal packages, operators and stages, two names that collide, where Partitions lives), 2026-10-28 (written in the present tense)
+- **Revised:** 2026-11-03 (`join.Merge` becomes `join.MergeJoin`: one word, one sense); 2 earlier, from 2026-10-23, in its `git log`
 - **Theme:** core
 
 ## Problem
@@ -39,9 +39,12 @@ from `Stream[A]` to `Stream[B]` and composes over a whole stream. A
 writes its stages as functions over the batch's `[]Exchange`.
 
 The package is part of a name, as in the standard library (`strings.Split`
-and `bytes.Split`). `sluice.Merge` interleaves streams, Rx's sense;
-`join.Merge` is a merge join over sorted inputs, the databases' sense. Both
-keep the name their reader already knows. `gateway.Partitions` groups a
+and `bytes.Split`), but one word keeps one sense across packages.
+`sluice.Merge` interleaves streams, Rx's sense; the merge join over sorted
+inputs, the databases' sense, is `join.MergeJoin`. It was `join.Merge`
+through v0.4: a reader who meets `Merge(` in a diff, after a dot import or in
+a test failure cannot tell which package wrote it, so the name says the
+operation, not only the package. `gateway.Partitions` groups a
 batch by key like a `Split` would, but it stays in `gateway`: it keeps a key
 index and its buffers from one batch to the next, which the root does not,
 and its reason — the security principal in the batching key — is the

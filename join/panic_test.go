@@ -47,8 +47,8 @@ func TestPullingOperatorsReleaseBothInputsOnPanic(t *testing.T) {
 		name string
 		join func(l, r sluice.Stream[int]) func() bool
 	}{
-		{"Merge", func(l, r sluice.Stream[int]) func() bool {
-			return func() bool { return panicsAtFirst(Merge(l, r, id, id, cmp.Compare[int])) }
+		{"MergeJoin", func(l, r sluice.Stream[int]) func() bool {
+			return func() bool { return panicsAtFirst(MergeJoin(l, r, id, id, cmp.Compare[int])) }
 		}},
 		{"ZipLongest", func(l, r sluice.Stream[int]) func() bool {
 			return func() bool { return panicsAtFirst(ZipLongest(l, r)) }

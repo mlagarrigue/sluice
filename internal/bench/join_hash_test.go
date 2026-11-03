@@ -62,7 +62,7 @@ func BenchmarkJoinMerge(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		join.Merge(
+		join.MergeJoin(
 			sluice.Of(left, 1024), sluice.Of(right, 1024),
 			func(v int64) int64 { return v },
 			func(v int64) int64 { return v },

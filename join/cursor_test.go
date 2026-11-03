@@ -55,8 +55,8 @@ func TestEmitterBufferReuseContract(t *testing.T) {
 	}
 
 	build := map[string]func() sluice.Stream[EitherOrBoth[int, int]]{
-		"Merge": func() sluice.Stream[EitherOrBoth[int, int]] {
-			return Merge(sluice.Of(left, 100), sluice.Empty[int](), identity, identity, cmp.Compare[int])
+		"MergeJoin": func() sluice.Stream[EitherOrBoth[int, int]] {
+			return MergeJoin(sluice.Of(left, 100), sluice.Empty[int](), identity, identity, cmp.Compare[int])
 		},
 		"ZipLongest": func() sluice.Stream[EitherOrBoth[int, int]] {
 			return ZipLongest(sluice.Of(left, 100), sluice.Empty[int]())

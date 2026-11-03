@@ -27,7 +27,7 @@ import (
 //     is the case most callers actually have.
 //
 // If exact global deduplication is required and the key space is genuinely
-// unbounded, sort the stream and use [github.com/mlagarrigue/sluice/join.Merge] — the sort-merge strategy —
+// unbounded, sort the stream and use [github.com/mlagarrigue/sluice/join.MergeJoin] — the sort-merge strategy —
 // or accept O(distinct) memory outside this package. Do not reach for a larger
 // maxKeys and hope.
 //

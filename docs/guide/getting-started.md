@@ -248,7 +248,7 @@ decide to stop (`TakeWhile`, or a terminal returning `false`).
   [Split: reading the branches](operators.md#split-reading-the-branches)).
 - `Merge(sluice.WhenAll, a, b)` brings two streams together, strictly
   alternating: one batch from `a`, one from `b`. `Concat(a, b)` puts `b`
-  after `a`. Not to be confused with `join.Merge`, which pairs two sorted
+  after `a`. Not to be confused with `join.MergeJoin`, which pairs two sorted
   streams by key.
 - *Joins* (pairing the elements of two streams by a common key, as in SQL)
   live in the `join` package, because they must keep elements in memory —

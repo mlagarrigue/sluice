@@ -1,7 +1,7 @@
 # ADR 0004 — The merge join carries values, extracts keys, and always checks order
 
 - **Created:** 2026-08-17
-- **Revised:** 2026-10-07 (renumbered; `MergeJoinBy` became `join.Merge`)
+- **Revised:** 2026-11-03 (`join.Merge` becomes `join.MergeJoin`, ADR 0001); 1 earlier, 2026-10-07, in its `git log`
 - **Theme:** join
 
 ## Problem
@@ -17,7 +17,7 @@ check it needs was proposed as a debug mode.
 ## Decision
 
 ```go
-func Merge[L, R any, K any](left Stream[L], right Stream[R],
+func MergeJoin[L, R any, K any](left Stream[L], right Stream[R],
     keyL func(L) K, keyR func(R) K, cmp func(K, K) int) Stream[EitherOrBoth[L, R]]
 ```
 
