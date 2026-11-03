@@ -62,6 +62,11 @@ type bodyStream struct {
 	chunkLeft     int
 	trailerBytes  int
 	trailerFields int
+	// lineSeen is how much of a trailer line still short of its CRLF has
+	// been searched for it, so a line delivered a byte per read is searched
+	// once in all rather than from its start on every read; zero between
+	// lines. read moves the line down whole, so it stays relative to pos.
+	lineSeen int
 	// trailers is the trailer section, copied out of r.buf as each field
 	// is read: the request pipelined behind the body moves over it.
 	trailers []Header
@@ -229,13 +234,19 @@ func (b *bodyStream) step() (data []byte, more bool, err error) {
 		return nil, true, nil
 	default: // chunkTrailer
 		limit := b.r.cfg.MaxHeaderBytes - b.trailerBytes - 2
-		line, rest, ok := cutCRLF(buf[b.pos:], limit)
+		// The search resumes one byte before where it stopped: a CR that
+		// ended what was seen may meet its LF now.
+		from := max(b.lineSeen-1, 0)
+		cut, rest, ok := cutCRLF(buf[b.pos+from:], limit-from)
 		if !ok {
 			if len(buf)-b.pos > limit+1 {
 				return nil, false, fmt.Errorf("%w: trailers over %d bytes", errHeadersTooLarge, b.r.cfg.MaxHeaderBytes)
 			}
+			b.lineSeen = len(buf) - b.pos
 			return nil, false, nil
 		}
+		line := buf[b.pos : b.pos+from+len(cut)]
+		b.lineSeen = 0
 		b.trailerBytes += len(buf) - len(rest) - b.pos
 		b.pos = len(buf) - len(rest)
 		if len(line) == 0 {

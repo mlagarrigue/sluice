@@ -695,16 +695,8 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 	out = arena
 	start := len(arena)
 
-	// A Content-Length body still short of its end, on a request whose head
-	// an earlier call already parsed and accepted: nothing before the body's
-	// last byte can change the answer, so the head is not parsed again.
-	// Re-parsing it on every read cost up to MaxHeaderBytes per byte of a
-	// body dripped one byte at a time, and the client nothing.
-	if progress != nil && progress.need > 0 && len(buf) < progress.need {
-		if progress.expect {
-			return req, 0, out, errExpectContinue
-		}
-		return req, 0, out, errIncomplete
+	if err := resumeAcceptedBody(buf, cfg, progress); err != nil {
+		return req, 0, out, err
 	}
 
 	// RFC 9112 §2.2: at least one empty line before the request-line is
@@ -790,8 +782,15 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 			return req, consumed, out, streamBody{chunked: true}
 		}
 		if cerr != nil {
-			if errors.Is(cerr, errIncomplete) && expectsContinue(req) {
-				return req, 0, out, errExpectContinue
+			if errors.Is(cerr, errIncomplete) {
+				expect := expectsContinue(req)
+				if progress != nil {
+					// The head is accepted: the next calls resume the body.
+					progress.chunked, progress.expect = true, expect
+				}
+				if expect {
+					return req, 0, out, errExpectContinue
+				}
 			}
 			return req, 0, out, cerr
 		}
@@ -828,6 +827,42 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 	}
 	req.Body = rest[:length]
 	return req, consumed + length, out, nil
+}
+
+// resumeAcceptedBody answers, without parsing the head again, a call on a
+// request whose head an earlier call parsed and accepted and whose body is
+// still short of its end: errIncomplete, or errExpectContinue when the head
+// asked for the interim 100. Re-parsing the head on every read cost up to
+// MaxRequestLineBytes + MaxHeaderBytes per byte of a body dripped one byte
+// at a time, and the client nothing. It returns nil when the parse must
+// run: no head accepted yet, or a body now whole or broken.
+//
+// For a Content-Length body, nothing before its last byte can change the
+// answer. A chunked body's end is not known before it comes: its walk
+// resumes from the chunks already validated, on a copy of the progress, and
+// a body whole now, or broken, is left to the parse, which starts from the
+// same progress.
+func resumeAcceptedBody(buf []byte, cfg Config, progress *chunkProgress) error {
+	switch {
+	case progress == nil:
+		return nil
+	case progress.need > 0:
+		if len(buf) >= progress.need {
+			return nil
+		}
+	case progress.chunked && progress.headersEnd <= len(buf):
+		resumed := *progress
+		if _, _, _, err := walkChunks(buf[progress.headersEnd:], cfg, &resumed, false, nil); !errors.Is(err, errIncomplete) {
+			return nil
+		}
+		*progress = resumed
+	default:
+		return nil
+	}
+	if progress.expect {
+		return errExpectContinue
+	}
+	return errIncomplete
 }
 
 // connectionOptions scans every Connection field line as the comma-separated
@@ -1125,10 +1160,13 @@ type chunkProgress struct {
 	// need, for a Content-Length body, is how many bytes from at the
 	// request takes, once its head has been parsed and accepted; zero until
 	// then. A call on fewer bytes returns at once, without parsing the head
-	// again (see parseRequest); expect is whether that call owes the
-	// interim 100 the head asked for.
-	need   int
-	expect bool
+	// again (see parseRequest). chunked says the same of a chunked body
+	// whose head was accepted: a call resumes the body's walk and, the body
+	// still short, returns without parsing the head. expect is whether that
+	// call owes the interim 100 the head asked for.
+	need    int
+	chunked bool
+	expect  bool
 }
 
 // headScan is how far a head short of its blank line has been looked at
