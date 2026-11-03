@@ -4,7 +4,8 @@ In v0, a minor version may break what the previous one offered; `main`
 groups the breaking changes for the next one, in a "Since v0.4.0" section
 once there are any. Code written against v0.4.0 reads the first section;
 code written against an older version reads every section down to its
-own, the oldest first. Each entry names the commit that made the change, says what
+own, the oldest first. The guide starts at v0.2.2; the breaks of the
+versions before it are listed in the CHANGELOG only. Each entry names the commit that made the change, says what
 changed, and what to write instead. The packages come in the order a reader
 meets them; within a package, the changes of behavior that keep the
 signatures — a value now refused — come last.

@@ -2,7 +2,7 @@
 
 Each breaking change below is listed by its commit subject; what it changes
 in your code, and what to write instead, is in the
-[migration guide](docs/migration.md).
+[migration guide](docs/migration.md), from 0.3.0 on.
 
 ## [0.4.0](https://github.com/mlagarrigue/sluice/compare/v0.3.0...v0.4.0) (2026-10-29)
 
