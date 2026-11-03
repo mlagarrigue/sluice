@@ -107,6 +107,8 @@
 // several batches are in flight at once. Unordered rather than ordered,
 // because nothing downstream of a request/reply gateway cares which batch
 // finishes first — every call carries its own way back.
+//
+// The guide: docs/guide/web.md (Grouping calls with gateway).
 package gateway
 
 import (

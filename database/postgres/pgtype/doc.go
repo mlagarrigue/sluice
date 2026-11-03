@@ -18,4 +18,6 @@
 // A Decode function that returns [ErrCodec] has read bytes that do not match
 // the type it was told they were, which means the stream and its description
 // disagree, never that the data was merely surprising.
+//
+// The guide: docs/guide/postgres.md (Decoding); every type: docs/reference/postgres.md.
 package pgtype

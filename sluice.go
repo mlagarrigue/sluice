@@ -36,6 +36,8 @@
 // for the Unicode normalisation SASLprep requires (the database/postgres
 // package needs it to send a password). CI fails on any module outside the
 // recorded list.
+//
+// The guides: docs/guide/getting-started.md, then docs/guide/operators.md.
 package sluice
 
 import (

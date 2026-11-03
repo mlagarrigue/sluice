@@ -37,6 +37,8 @@
 // This package lives outside the core deliberately. Apply the dependency
 // test: remove it and nothing stops compiling — so it must not be in the
 // core, whose rule is that it never knows its extensions.
+//
+// The guide: docs/guide/deployments.md (What to watch in production).
 package probe
 
 import (

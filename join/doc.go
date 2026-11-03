@@ -9,4 +9,6 @@
 // keeps it finite — BuildLimit, or the input's ordering — is a required
 // argument rather than an option. Decisions: docs/design/adr/0004-merge-join-signature.md
 // and docs/design/adr/0016-hash-join-bound.md.
+//
+// The guide: docs/guide/operators.md.
 package join

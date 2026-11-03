@@ -58,6 +58,8 @@
 // parser underneath it, and writing another one would put a second
 // hostile-input parser in a project whose whole position is that it does not
 // write the first. [PathInt] and [PathInt64] read the wildcards it captures.
+//
+// The guide: docs/guide/web.md.
 package web
 
 import (

@@ -39,6 +39,8 @@
 // reads. The design itself — what a demand is, why it only tightens, what one
 // atomic load per batch buys — is recorded in docs/design/architecture.md
 // ("Enriched stop signal — pushdown") against this code.
+//
+// The guide: docs/guide/httpstream.md.
 package pushdown
 
 import (

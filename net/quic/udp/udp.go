@@ -58,6 +58,8 @@
 // if a router could fragment them. The flow label is a SHOULD
 // and is applied where the platform allows, never reported as an error
 // where it does not.
+//
+// The guide: docs/guide/experimental.md.
 package udp
 
 import (

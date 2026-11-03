@@ -7,4 +7,6 @@
 // its clock, which is why they live outside the core. The core's Coalesce,
 // which regroups by count alone and holds at most one batch, stays there
 // (docs/design/adr/0001-package-map.md: a package per thing retained).
+//
+// The guide: docs/guide/operators.md.
 package window

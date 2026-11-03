@@ -38,6 +38,8 @@
 // saying. A stream of a thousand orders can carry three thousand diagnostics
 // and still deliver every order — which is why [Diagnostic] renders through
 // String and not Error, and cannot be returned where a failure is expected.
+//
+// The guide: docs/guide/web.md (Diagnostics and remedies).
 package diagnostics
 
 import (

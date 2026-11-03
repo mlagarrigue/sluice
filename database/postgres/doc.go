@@ -41,4 +41,6 @@
 // connection whose position in the protocol is unknown rather than an error
 // that can be returned. A caller wants [Connect] and what hangs off a [Conn];
 // [NewConn] exists for a transport the caller has already authenticated.
+//
+// The guide: docs/guide/postgres.md; every setting: docs/reference/postgres.md.
 package postgres

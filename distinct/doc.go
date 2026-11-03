@@ -5,4 +5,6 @@
 // batches, bounded by maxKeys and governed by an Overflow policy, and the core's
 // operators hold nothing beyond the batch in flight. Deduplication is local
 // to that window by design: a global set over a stream grows without bound.
+//
+// The guide: docs/guide/operators.md.
 package distinct

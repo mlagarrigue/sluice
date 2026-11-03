@@ -8,4 +8,6 @@
 // call. The core stays single-goroutine by construction; concurrency is
 // something a pipeline opts into, here, one stage at a time
 // (docs/design/adr/0001-package-map.md: a package per thing retained).
+//
+// The guide: docs/guide/operators.md.
 package parallel
