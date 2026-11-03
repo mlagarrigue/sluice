@@ -261,7 +261,7 @@ func TestProseParagraphsAreShort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, page := range append(guides, "README.md", "CONTRIBUTING.md", "docs/design/architecture.md") {
+	for _, page := range append(guides, "README.md", "CONTRIBUTING.md", "docs/design/architecture.md", "docs/benchmarks.md") {
 		b, err := os.ReadFile(page) //nolint:gosec // G304: a repository path, not input
 		if err != nil {
 			t.Fatal(err)

@@ -1,21 +1,27 @@
 # Measurements
 
-Every performance figure in the repository has a benchmark and a
-denominator. This page says how the figures are produced, what they are read
-against, and why a figure taken alone is worth nothing on the machine that
-produces them. The tables of "Measured in one session" are regenerated in one
-session by `internal/bench/scripts/consolidate.sh`, which rewrites only what
-lies between their `consolidate` markers; the session's conditions are
-written with them, and every other line of this page is edited by hand.
-The figures the README quotes are copied from those tables by
-`internal/bench/scripts/readme-figures.sh`, run after a regeneration; a test
-refuses a README figure that differs, to the character, from the median of
-its row.
+What the library costs, measured: the ceiling every operator is held to and
+what each one spends against it, then the HTTP servers from a real client,
+the QUIC transport on an emulated path, and the PostgreSQL connector against
+pgx. Every performance figure in the repository has a benchmark here and a
+denominator, and the page says why a figure taken alone is worth nothing on
+the machine that produced it.
+
+How the page is kept: the tables of "Measured in one session" are
+regenerated in one session by `internal/bench/scripts/consolidate.sh`, which
+rewrites only what lies between their `consolidate` markers, with the
+session's conditions; every other line is edited by hand. The figures the
+README quotes are copied from those tables by
+`internal/bench/scripts/readme-figures.sh`, and a test refuses a README
+figure that differs, to the character, from the median of its row.
 
 ## Contents
 
-- **How to read this page**
+- **What each operator costs**
   - [The ceiling and the budget](#the-ceiling-and-the-budget)
+  - [The architecture's figures](#the-architectures-figures)
+  - [Joins and hydration, in isolation](#joins-and-hydration-in-isolation)
+- **How to read this page**
   - [Measuring on a laptop](#measuring-on-a-laptop)
   - [Reading the tables](#reading-the-tables)
   - [Not yet measured](#not-yet-measured)
@@ -39,9 +45,6 @@ its row.
   - [Remote reads](#remote-reads)
   - [Codec, in isolation](#codec-in-isolation)
   - [Statement cache](#statement-cache)
-- **The core and the architecture's decisions**
-  - [Joins and hydration, in isolation](#joins-and-hydration-in-isolation)
-  - [The architecture's figures](#the-architectures-figures)
 
 `consolidate.sh` regenerates the tables under
 [Measured in one session](#measured-in-one-session); the sections before it
@@ -62,6 +65,220 @@ several streams at once, because `iter.Pull` costs 53.3 ns per value pulled
 — a coroutine and a context switch — and at batch grain that cost is paid
 once per thousand elements. The batch-size plateau starts at 8 elements and
 stays flat up to a million; 1024 by default is safe, not critical.
+
+## The architecture's figures
+
+The figures [the architecture](design/architecture.md) quotes for its
+decisions, each from the benchmark named beside it. Six runs of one second,
+median, 2026-10-23, go1.26.9, 15 cores, under WSL2, not pinned. Each table
+counts in the unit its header names; the spread is the lowest and highest of
+the six runs.
+
+Per element, over 1,048,576 `int64` (`internal/bench`). `BaselineLoop` is
+the ceiling, a native `for range`; `SeqStages/stages=0` is the same traversal
+pushed through an `iter.Seq`; the two `MergeTwoStreams` rows merge two halves
+by `iter.Pull`, one value or one batch of 1024 at a time.
+
+| benchmark | ns per element | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkBaselineLoop` | 0.219 | 0.215–0.222 | 0 | 0 |
+| `BenchmarkSeqStages/stages=0` | 1.05 | 1.03–1.05 | 72 | 3 |
+| `BenchmarkPullPerElement` | 53.3 | 52.9–58.9 | 267 | 7 |
+| `BenchmarkPullPerBatch` | 0.299 | 0.293–0.300 | 272 | 7 |
+| `BenchmarkMergeTwoStreams/element` | 53.2 | 53.0–53.7 | 559 | 14 |
+| `BenchmarkMergeTwoStreams/batch1024` | 0.295 | 0.291–0.300 | 544 | 14 |
+| `BenchmarkMergeOperator` | 0.305 | 0.300–0.327 | 568 | 16 |
+| `BenchmarkMergeOperatorEight` | 0.349 | 0.319–0.392 | 2,305 | 57 |
+| `BenchmarkWindowWide` | 5.43 | 5.32–5.67 | 8,413,960 | 1,038 |
+
+Pulling one value at a time costs ×243 the ceiling (53.3 against 0.219 ns per
+element); pulling a batch of 1024, ×1.4.
+
+The operators' own documentation quotes the figures below, from one more set
+of runs by the same method: six runs of one second, median, 2026-11-03,
+go1.26.9, under WSL2, pinned to one core. `BaselineLoop`, run beside them,
+came within 4% of the table above. `Fragmented` feeds batches of 8 elements;
+`WindowNarrow` closes a window every 8 elements.
+
+| benchmark | ns per element | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkBaselineLoop` | 0.226 | 0.222–0.236 | 0 | 0 |
+| `BenchmarkCoalescePassThrough` | 0.238 | 0.236–0.251 | 0 | 0 |
+| `BenchmarkCoalesceFragmented` | 0.640 | 0.632–0.659 | 8,192 | 1 |
+| `BenchmarkCoalesceWithinPassThrough` | 0.727 | 0.709–0.733 | 25,664 | 21 |
+| `BenchmarkCoalesceWithinFragmented` | 36.9 | 36.7–39.8 | 9,408 | 21 |
+| `BenchmarkSplitPartition` | 0.196 | 0.191–0.219 | 8,752 | 1,039 |
+| `BenchmarkSplitBroadcast` | 0.671 | 0.656–0.674 | 17,344 | 1,047 |
+| `BenchmarkZipLongest` | 2.20 | 2.18–2.34 | 25,304 | 20 |
+| `BenchmarkWindowNarrow` | 8.93 | 8.79–9.33 | 8,388,813 | 131,076 |
+
+`BenchmarkPathHasPrefix` (`diagnostics`, `internal/bench`): 3.01 ns per call,
+2.99–3.11, no allocation.
+
+The joins, the interval join among them, are in
+[Joins and hydration, in isolation](#joins-and-hydration-in-isolation), measured in one set
+of runs.
+
+Per row, six columns decoded into a struct (`database/postgres`), over a
+batch of 1,024 rows or of one.
+
+| benchmark | ns per row | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkHydrateRowMajor` | 29.6 | 29.1–30.5 | 15,584 | 1,024 |
+| `BenchmarkHydrateReflect` | 56.7 | 56.2–59.3 | 15,608 | 1,025 |
+| `BenchmarkHydrateReflectBoxed` | 187.5 | 185.4–190.5 | 163,764 | 8,192 |
+| `BenchmarkHydrateColumnar` | 36.7 | 36.1–36.9 | 15,589 | 1,024 |
+| `BenchmarkHydrateRowMajorBatchOne` | 26.1 | 25.9–26.4 | 8 | 1 |
+| `BenchmarkHydrateColumnarBatchOne` | 40.5 | 39.8–42.0 | 8 | 1 |
+
+Reflection costs ×1.9 the hydration written by hand (56.7 against 29.6 ns per
+row), and ×6.3 when every field is boxed through `reflect.Value.Interface`
+(187.5).
+
+Per call: one request through the six steps of the
+[request path](design/architecture.md#the-request-path), written by hand,
+through a pipeline built per request, or through one built once
+(`internal/bench`); the first `Add` to a diagnostics collector, and an `Add`
+past its ceiling.
+
+| benchmark | ns per call | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkWebHandwritten` | 1.98 | 1.95–2.02 | 0 | 0 |
+| `BenchmarkWebBatchOne` | 280 | 277–288 | 368 | 13 |
+| `BenchmarkWebBatchOneReused` | 142 | 140–147 | 128 | 6 |
+| `BenchmarkDiagnosticsFirstAdd` | 553 | 512–584 | 2,048 | 1 |
+| `BenchmarkDiagnosticsOverCeiling` | 1.24 | 1.24–1.25 | 0 | 0 |
+
+A pipeline built per request costs ×141 the same six steps written by hand
+(280 against 1.98 ns per call).
+
+Per run of a whole pipeline. The four `Scan` rows read a simulated table
+through [`pushdown`](design/architecture.md#enriched-stop-signal--pushdown) with no demand, with one
+that never changes, and with a consumer that skips ahead, publishing its
+position or not (`pushdown`). The four `Parallel` rows run 65,536 elements
+through `parallel.Ordered` with one worker or four, on an `f` that does
+about 34 µs of work per batch or only passes its batch through
+(`internal/bench`).
+
+| benchmark | µs per run | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkScanNoDemand` | 1,908 | 1,868–1,947 | 8,192 | 1 |
+| `BenchmarkScanQuietDemand` | 1,868 | 1,854–1,936 | 8,192 | 1 |
+| `BenchmarkScanSkipAheadControl` | 445 | 441–452 | 8,192 | 1 |
+| `BenchmarkScanSkipAhead` | 64.4 | 63.2–66.9 | 9,344 | 138 |
+| `BenchmarkParallelSerialBaseline` | 2,160 | 2,131–2,229 | 524,430 | 69 |
+| `BenchmarkParallelHeavyWork` | 2,051 | 2,003–2,172 | 558,552 | 92 |
+| `BenchmarkParallelTrivialSerial` | 16.0 | 15.9–16.1 | 136 | 5 |
+| `BenchmarkParallelTrivialWork` | 56.6 | 55.4–58.0 | 34,247 | 28 |
+
+A consumer that skips ahead runs the scan ×6.9 faster than the same consumer
+decoding what it discards (64.4 against 445 µs).
+
+`parallel.Async` between a producer and a consumer doing equal work overlaps
+them: 3,673 µs per run against 6,766 for the serial chain, ×1.84 of an ideal
+×2 (`BenchmarkAsyncOverlap` against `BenchmarkAsyncOverlapSerial`,
+`internal/bench`, six runs of one second, medians, 2026-10-28).
+
+Where four workers start to pay: `BenchmarkParallelWorkSize` runs the same
+65,536 elements with the work per element doubled from one row to the next,
+one worker against `parallel.Ordered` and `parallel.Unordered` on four
+(`internal/bench`, six runs of one second, medians). The work per batch is
+the serial run divided by its 64 batches; a gain is the serial run divided
+by the parallel one.
+
+| rounds | work per batch, µs | serial, µs per run | `Ordered` ×4, µs per run | `Unordered` ×4, µs per run | `Ordered` gain | `Unordered` gain |
+|---|---|---|---|---|---|---|
+| 64 | 34 | 2,148 | 2,063 | 1,356 | ×1.04 | ×1.58 |
+| 128 | 83 | 5,328 | 3,131 | 2,275 | ×1.70 | ×2.34 |
+| 256 | 192 | 12,307 | 5,139 | 4,432 | ×2.39 | ×2.78 |
+| 512 | 404 | 25,868 | 9,693 | 8,473 | ×2.67 | ×3.05 |
+| 1024 | 850 | 54,390 | 18,487 | 17,076 | ×2.94 | ×3.19 |
+
+Skewed work, and the state a worker keeps. The three `Skewed` rows run work
+whose cost varies 8× from one batch to the next through one worker, then
+through `parallel.Ordered` and `parallel.Unordered` on four.
+`ParallelFreshScratch` allocates a workspace for every batch;
+`ParallelInitReusedScratch` keeps one per worker, as
+`parallel.OrderedWithState` does (`internal/bench`). Six runs of one second,
+median, 2026-11-03, go1.26.9, 15 cores, under WSL2, not pinned, on mains
+power with a background load of about two cores.
+
+| benchmark | µs per run | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkParallelSkewedSerial` | 8,302 | 8,232–9,307 | 1,048,725 | 70 |
+| `BenchmarkParallelSkewed` | 8,223 | 8,063–8,395 | 1,082,940 | 93 |
+| `BenchmarkParallelUnorderedSkewed` | 3,465 | 3,400–3,595 | 1,124,223 | 98 |
+| `BenchmarkParallelFreshScratch` | 667 | 647–683 | 1,082,902 | 156 |
+| `BenchmarkParallelInitReusedScratch` | 440 | 428–468 | 591,596 | 104 |
+
+On skewed work, ordered fan-out gains ×1.01 over serial and unordered
+×2.40. A workspace kept per worker costs 34% less time and 45% less memory
+than one allocated per batch.
+
+A filter that keeps one element in 100, followed by a map, over 1,048,576
+`int64` (`BenchmarkSelectiveFilter`, same runs): 2.03 ns per element element
+by element (1.97–2.18), 0.513 by batches of 1024 left sparse, without
+`Coalesce` (0.508–0.545), neither allocating per element — the batch ×3.95
+faster.
+
+### The designs turned down
+
+Five decisions of the architecture compare the shape kept with one it
+turned down. Each benchmark mirrors the rejected shape in a few lines beside
+the kept one, so the comparison can be run again without the library
+carrying it. Six runs of one second, median, 2026-10-28, go1.26.9, 15
+cores, under WSL2, not pinned.
+
+Per element. `BatchContext` runs four map stages over 1,048,576 `int64` in
+batches of 1024: the batch as it is (`items`), with a `context.Context`
+carried in it (`ctx`, 24 bytes to 40), and with that context checked by each
+stage on each batch (`ctx-checked`). `JoinTableShape` builds a table of
+65,536 distinct keys and probes each once, as a flat value slice with an
+`int32` chain (`chain`, the shape `join` keeps) and as a `map[K][]B`
+(`slice-per-key`). `ParallelInputCopy` is the copy `parallel` makes of each
+input batch, alone, into one reused buffer (`internal/bench`).
+
+| benchmark | ns per element | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkBatchContext/items` | 4.55 | 4.43–4.61 | 328 | 11 |
+| `BenchmarkBatchContext/ctx` | 4.50 | 4.45–4.62 | 472 | 11 |
+| `BenchmarkBatchContext/ctx-checked` | 4.52 | 4.48–4.59 | 472 | 11 |
+| `BenchmarkJoinTableShape/chain` | 86.8 | 82.1–108.1 | 8,415,152 | 583 |
+| `BenchmarkJoinTableShape/slice-per-key` | 128.1 | 121.6–133.7 | 11,016,472 | 66,066 |
+| `BenchmarkParallelInputCopy` | 0.0512 | 0.0509–0.0514 | 0 | 0 |
+
+A context in the batch costs nothing measurable, checked or not: the three
+rows are within 1% of each other and inside each other's spread. A slice per
+key costs ×1.48 the time and ×113 the allocations of the chain. The input
+copy of `parallel` is 3% of the ~1.5 ns per-stage budget.
+
+Per call. `DiagnosticReceiver` builds the example of `NewDiagnostic`'s
+documentation from a template — a message, then an origin — through the
+`With` methods, which take and return the struct by value (`value`), and
+through setters on a pointer to one copy of the template (`pointer`).
+
+| benchmark | ns per call | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkDiagnosticReceiver/value` | 7.70 | 7.65–8.48 | 0 | 0 |
+| `BenchmarkDiagnosticReceiver/pointer` | 4.68 | 4.66–4.79 | 0 | 0 |
+
+The value receiver costs ×1.65 the pointer one: 3 ns per diagnostic built,
+neither allocating.
+
+Per run. `ScanTake` is the core `sluice.Take` of 2,048 rows over the
+[`pushdown`](design/architecture.md#enriched-stop-signal--pushdown)
+benchmarks' scan; `ScanTakePublished` is the same count taken by a `Take`
+that publishes what it still wants to a `Demand` after each batch, over a
+scan that reads it (`pushdown`).
+
+| benchmark | µs per run | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkScanTake` | 9.80 | 9.56–10.29 | 8,192 | 1 |
+| `BenchmarkScanTakePublished` | 10.27 | 9.81–11.06 | 8,256 | 2 |
+
+Publishing the count saves nothing: the scan decodes the same two pages
+either way, and the publishing `Take` came out 5% slower, inside the two
+rows' spreads.
 
 ## Measuring on a laptop
 
@@ -121,8 +338,9 @@ measures only the benchmarks whose code changed: a benchmark is kept when the
 diff touches a package its code reaches — its body and the helpers it calls,
 read by `internal/bench/cmd/benchdeps` — or a dependency of one. Read by
 file instead, a benchmark whose stages are helpers of its own file was
-measured on a diff to `database/postgres` alone, and declared slower. The test
-binary links every package `internal/bench` imports, so a change to
+measured on a diff to `database/postgres` alone, and declared slower.
+
+The test binary links every package `internal/bench` imports, so a change to
 `net/quic` moves the code of all the others within the binary, and that move
 alone has declared an untouched benchmark 4 to 19% slower, always in the same
 direction, which the sign test takes for a regression. Both binaries are
@@ -655,7 +873,9 @@ loss at all), whether bursts overrun a shallow buffer (`Bottleneck`, whose
 line rate is 6.25 MB/s), how much of a deep one the controller fills
 (`DeepBuffer`, read through `rtt_x`), how two copies of it split a line
 (`TwoFlows`, read through `share`) and how it grows a window back on a long
-round trip (`RTT40`, `RTT80`). Each benchmark also prints `rtt_x`, the
+round trip (`RTT40`, `RTT80`).
+
+Each benchmark also prints `rtt_x`, the
 sender's final smoothed RTT over the smallest it sampled: one when the
 controller keeps the queue empty, six when it keeps 200 ms of buffer full.
 Each benchmark also prints `retx_B` and `lost`: the bytes the sender put
@@ -743,7 +963,9 @@ pass on 2026-10-16, after the loss-detection fixes: median 8.1 (7.6–9.2),
 which is what CUBIC is compared with; the rows above are the ceilings the
 gate watches, and the two agree within their spread except `Clean`, which
 is the one profile the machine's load moves (its 284 ms here against
-256 ms above). What CUBIC proved: the 1.7× to 2.3× on the shallow 80 ms path
+256 ms above).
+
+What CUBIC proved: the 1.7× to 2.3× on the shallow 80 ms path
 (two modes, depending on where the loss that ends the slow start lands) is
 its window curve — a loss costs it three tenths of the window instead of
 half, and the curve refills in seconds what Reno refills a datagram per
@@ -812,7 +1034,9 @@ against Reno's 5.9 and CUBIC's 9.3 — at the same goodput. On
 spread Reno shows there (786–844 ms against 853–1195). What it did not
 reach: the 85% of the line the palette plan set for this profile (0.82
 here), and a smoothed round trip within 1.5× of the path's on the deep
-buffer (1.8). Both are the version's documented behaviour, read in the
+buffer (1.8).
+
+Both are the version's documented behaviour, read in the
 controller's trace. Startup detects the full pipe three rounds after the
 fact, pacing at 2/ln 2 of the estimate meanwhile, which on a 5 ms
 buffer loses (gain − 1) × BDP a round, 60 to 90 kB each, before Drain;
@@ -821,6 +1045,7 @@ acknowledgement timing of the emulated path inflates by 5 to 7% above
 the line, so the cruise paces above the link and only the window's gain
 of two bounds the queue — one bandwidth-delay product of it on a buffer
 that never drops, the 5 ms buffer's worth of loss on one that does.
+
 The ceiling of any controller on this transfer is 0.83 to 0.84 of the
 line (671 ms of line time, 80 to 90 ms of fixed cost and about 50 ms of
 ramp from 12 kB, worked out under the draft's table below), so the 85%
@@ -885,8 +1110,9 @@ against 125 kB a round) make 800 to 810 ms, 0.83 to 0.84. On a 16 MiB
 transfer (`BenchmarkTransferBottleneck16MiB`, eight rounds on
 2026-10-16 interleaved with Reno), out of that ceiling, BBR delivers
 0.93 of the line (2.88 s median, 2.870 to 2.886 s) against Reno's 0.81
-(3.33 s, 3.29 to 3.43 s). A smoothed round trip
-within 1.5× of the path's on `DeepBuffer`: 1.77 here, and 2.25 as the
+(3.33 s, 3.29 to 3.43 s).
+
+A smoothed round trip within 1.5× of the path's on `DeepBuffer`: 1.77 here, and 2.25 as the
 median over a 16 MiB transfer. With no loss and no ECN (the mark a router
 sets on a packet when its queue builds, before it drops any) the draft bounds
 the queue by the window's gain alone (§5.3.1.1: (gain − 1) × the
@@ -913,6 +1139,7 @@ signal as RFC 9002 §7.3.2 and B.7 have it, a congestion event dated by
 the newest tracked packet the frame acknowledges, or by the frame's
 arrival when it acknowledges none: the window halves (Reno) or
 takes β (CUBIC), once per recovery period.
+
 `BenchmarkTransferDeepBufferECN` is `DeepBuffer` behind an AQM that marks
 a datagram CE once it waits more than 5 ms for the line — the depth of
 `Bottleneck`'s buffer — and still drops at 200 ms. It runs over four UDP
@@ -992,7 +1219,9 @@ CUBIC 3.7 s or 5.1 s, Reno 5.3 s or 8.6 s on 2026-10-21 — so the median
 round is judged, not the worst. The bound was 1.3 against the 1.40–1.48
 Reno's early slow-start exit left; once Reno stopped exiting early (Reno
 4.6 s, CUBIC 3.8 s), it moved to 1.15, between the measured gain and the
-injection below. `gate-path.sh` sees a controller
+injection below.
+
+`gate-path.sh` sees a controller
 that gets worse from one commit to the next; `gate-cc.sh` sees one that
 never met its criterion, or drifts from it by less than 6% a commit.
 CUBIC's β brought from 0.7 to 0.5 turns the cubic job red in both scripts
@@ -1014,7 +1243,9 @@ when the median after is more than 6% above the median before (10% for
 by sign test. Ten passes on an identical tree kept every
 ratio within 0.970–1.015; an initial window halved put four rows 11–24%
 above. One transfer per round (`-benchtime=1x`): the figure is a
-transfer's wall clock, not a rate the harness scales. `Reorder` stays out of the gate:
+transfer's wall clock, not a rate the harness scales.
+
+`Reorder` stays out of the gate:
 on an identical tree its median moved 7% between the two sides (the eight
 gated profiles, under 2.1%), because a spurious loss is declared or not by
 a few microseconds of scheduling. Its `lost` is no steadier: 21 to 55
@@ -1057,220 +1288,6 @@ median, 2026-10-23, same machine.
 | benchmark | ns per row | spread | B/op | allocs/op |
 |---|---|---|---|---|
 | `BenchmarkGeneratedHydrate` | 53.8 | 52.8–55.7 | 21,846 | 2,048 |
-
-## The architecture's figures
-
-The figures [the architecture](design/architecture.md) quotes for its
-decisions, each from the benchmark named beside it. Six runs of one second,
-median, 2026-10-23, go1.26.9, 15 cores, under WSL2, not pinned. Each table
-counts in the unit its header names; the spread is the lowest and highest of
-the six runs.
-
-Per element, over 1,048,576 `int64` (`internal/bench`). `BaselineLoop` is
-the ceiling, a native `for range`; `SeqStages/stages=0` is the same traversal
-pushed through an `iter.Seq`; the two `MergeTwoStreams` rows merge two halves
-by `iter.Pull`, one value or one batch of 1024 at a time.
-
-| benchmark | ns per element | spread | B/op | allocs/op |
-|---|---|---|---|---|
-| `BenchmarkBaselineLoop` | 0.219 | 0.215–0.222 | 0 | 0 |
-| `BenchmarkSeqStages/stages=0` | 1.05 | 1.03–1.05 | 72 | 3 |
-| `BenchmarkPullPerElement` | 53.3 | 52.9–58.9 | 267 | 7 |
-| `BenchmarkPullPerBatch` | 0.299 | 0.293–0.300 | 272 | 7 |
-| `BenchmarkMergeTwoStreams/element` | 53.2 | 53.0–53.7 | 559 | 14 |
-| `BenchmarkMergeTwoStreams/batch1024` | 0.295 | 0.291–0.300 | 544 | 14 |
-| `BenchmarkMergeOperator` | 0.305 | 0.300–0.327 | 568 | 16 |
-| `BenchmarkMergeOperatorEight` | 0.349 | 0.319–0.392 | 2,305 | 57 |
-| `BenchmarkWindowWide` | 5.43 | 5.32–5.67 | 8,413,960 | 1,038 |
-
-Pulling one value at a time costs ×243 the ceiling (53.3 against 0.219 ns per
-element); pulling a batch of 1024, ×1.4.
-
-The operators' own documentation quotes the figures below, from one more set
-of runs by the same method: six runs of one second, median, 2026-11-03,
-go1.26.9, under WSL2, pinned to one core. `BaselineLoop`, run beside them,
-came within 4% of the table above. `Fragmented` feeds batches of 8 elements;
-`WindowNarrow` closes a window every 8 elements.
-
-| benchmark | ns per element | spread | B/op | allocs/op |
-|---|---|---|---|---|
-| `BenchmarkBaselineLoop` | 0.226 | 0.222–0.236 | 0 | 0 |
-| `BenchmarkCoalescePassThrough` | 0.238 | 0.236–0.251 | 0 | 0 |
-| `BenchmarkCoalesceFragmented` | 0.640 | 0.632–0.659 | 8,192 | 1 |
-| `BenchmarkCoalesceWithinPassThrough` | 0.727 | 0.709–0.733 | 25,664 | 21 |
-| `BenchmarkCoalesceWithinFragmented` | 36.9 | 36.7–39.8 | 9,408 | 21 |
-| `BenchmarkSplitPartition` | 0.196 | 0.191–0.219 | 8,752 | 1,039 |
-| `BenchmarkSplitBroadcast` | 0.671 | 0.656–0.674 | 17,344 | 1,047 |
-| `BenchmarkZipLongest` | 2.20 | 2.18–2.34 | 25,304 | 20 |
-| `BenchmarkWindowNarrow` | 8.93 | 8.79–9.33 | 8,388,813 | 131,076 |
-
-`BenchmarkPathHasPrefix` (`diagnostics`, `internal/bench`): 3.01 ns per call,
-2.99–3.11, no allocation.
-
-The joins, the interval join among them, are in
-[the section above](#joins-and-hydration-in-isolation), measured in one set
-of runs.
-
-Per row, six columns decoded into a struct (`database/postgres`), over a
-batch of 1,024 rows or of one.
-
-| benchmark | ns per row | spread | B/op | allocs/op |
-|---|---|---|---|---|
-| `BenchmarkHydrateRowMajor` | 29.6 | 29.1–30.5 | 15,584 | 1,024 |
-| `BenchmarkHydrateReflect` | 56.7 | 56.2–59.3 | 15,608 | 1,025 |
-| `BenchmarkHydrateReflectBoxed` | 187.5 | 185.4–190.5 | 163,764 | 8,192 |
-| `BenchmarkHydrateColumnar` | 36.7 | 36.1–36.9 | 15,589 | 1,024 |
-| `BenchmarkHydrateRowMajorBatchOne` | 26.1 | 25.9–26.4 | 8 | 1 |
-| `BenchmarkHydrateColumnarBatchOne` | 40.5 | 39.8–42.0 | 8 | 1 |
-
-Reflection costs ×1.9 the hydration written by hand (56.7 against 29.6 ns per
-row), and ×6.3 when every field is boxed through `reflect.Value.Interface`
-(187.5).
-
-Per call: one request through the six steps of the
-[request path](design/architecture.md#the-request-path), written by hand,
-through a pipeline built per request, or through one built once
-(`internal/bench`); the first `Add` to a diagnostics collector, and an `Add`
-past its ceiling.
-
-| benchmark | ns per call | spread | B/op | allocs/op |
-|---|---|---|---|---|
-| `BenchmarkWebHandwritten` | 1.98 | 1.95–2.02 | 0 | 0 |
-| `BenchmarkWebBatchOne` | 280 | 277–288 | 368 | 13 |
-| `BenchmarkWebBatchOneReused` | 142 | 140–147 | 128 | 6 |
-| `BenchmarkDiagnosticsFirstAdd` | 553 | 512–584 | 2,048 | 1 |
-| `BenchmarkDiagnosticsOverCeiling` | 1.24 | 1.24–1.25 | 0 | 0 |
-
-A pipeline built per request costs ×141 the same six steps written by hand
-(280 against 1.98 ns per call).
-
-Per run of a whole pipeline. The four `Scan` rows read a simulated table
-through [`pushdown`](design/architecture.md#enriched-stop-signal--pushdown) with no demand, with one
-that never changes, and with a consumer that skips ahead, publishing its
-position or not (`pushdown`). The four `Parallel` rows run 65,536 elements
-through `parallel.Ordered` with one worker or four, on an `f` that does
-about 34 µs of work per batch or only passes its batch through
-(`internal/bench`).
-
-| benchmark | µs per run | spread | B/op | allocs/op |
-|---|---|---|---|---|
-| `BenchmarkScanNoDemand` | 1,908 | 1,868–1,947 | 8,192 | 1 |
-| `BenchmarkScanQuietDemand` | 1,868 | 1,854–1,936 | 8,192 | 1 |
-| `BenchmarkScanSkipAheadControl` | 445 | 441–452 | 8,192 | 1 |
-| `BenchmarkScanSkipAhead` | 64.4 | 63.2–66.9 | 9,344 | 138 |
-| `BenchmarkParallelSerialBaseline` | 2,160 | 2,131–2,229 | 524,430 | 69 |
-| `BenchmarkParallelHeavyWork` | 2,051 | 2,003–2,172 | 558,552 | 92 |
-| `BenchmarkParallelTrivialSerial` | 16.0 | 15.9–16.1 | 136 | 5 |
-| `BenchmarkParallelTrivialWork` | 56.6 | 55.4–58.0 | 34,247 | 28 |
-
-A consumer that skips ahead runs the scan ×6.9 faster than the same consumer
-decoding what it discards (64.4 against 445 µs).
-
-`parallel.Async` between a producer and a consumer doing equal work overlaps
-them: 3,673 µs per run against 6,766 for the serial chain, ×1.84 of an ideal
-×2 (`BenchmarkAsyncOverlap` against `BenchmarkAsyncOverlapSerial`,
-`internal/bench`, six runs of one second, medians, 2026-10-28).
-
-Where four workers start to pay: `BenchmarkParallelWorkSize` runs the same
-65,536 elements with the work per element doubled from one row to the next,
-one worker against `parallel.Ordered` and `parallel.Unordered` on four
-(`internal/bench`, six runs of one second, medians). The work per batch is
-the serial run divided by its 64 batches; a gain is the serial run divided
-by the parallel one.
-
-| rounds | work per batch, µs | serial, µs per run | `Ordered` ×4, µs per run | `Unordered` ×4, µs per run | `Ordered` gain | `Unordered` gain |
-|---|---|---|---|---|---|---|
-| 64 | 34 | 2,148 | 2,063 | 1,356 | ×1.04 | ×1.58 |
-| 128 | 83 | 5,328 | 3,131 | 2,275 | ×1.70 | ×2.34 |
-| 256 | 192 | 12,307 | 5,139 | 4,432 | ×2.39 | ×2.78 |
-| 512 | 404 | 25,868 | 9,693 | 8,473 | ×2.67 | ×3.05 |
-| 1024 | 850 | 54,390 | 18,487 | 17,076 | ×2.94 | ×3.19 |
-
-Skewed work, and the state a worker keeps. The three `Skewed` rows run work
-whose cost varies 8× from one batch to the next through one worker, then
-through `parallel.Ordered` and `parallel.Unordered` on four.
-`ParallelFreshScratch` allocates a workspace for every batch;
-`ParallelInitReusedScratch` keeps one per worker, as
-`parallel.OrderedWithState` does (`internal/bench`). Six runs of one second,
-median, 2026-11-03, go1.26.9, 15 cores, under WSL2, not pinned, on mains
-power with a background load of about two cores.
-
-| benchmark | µs per run | spread | B/op | allocs/op |
-|---|---|---|---|---|
-| `BenchmarkParallelSkewedSerial` | 8,302 | 8,232–9,307 | 1,048,725 | 70 |
-| `BenchmarkParallelSkewed` | 8,223 | 8,063–8,395 | 1,082,940 | 93 |
-| `BenchmarkParallelUnorderedSkewed` | 3,465 | 3,400–3,595 | 1,124,223 | 98 |
-| `BenchmarkParallelFreshScratch` | 667 | 647–683 | 1,082,902 | 156 |
-| `BenchmarkParallelInitReusedScratch` | 440 | 428–468 | 591,596 | 104 |
-
-On skewed work, ordered fan-out gains ×1.01 over serial and unordered
-×2.40. A workspace kept per worker costs 34% less time and 45% less memory
-than one allocated per batch.
-
-A filter that keeps one element in 100, followed by a map, over 1,048,576
-`int64` (`BenchmarkSelectiveFilter`, same runs): 2.03 ns per element element
-by element (1.97–2.18), 0.513 by batches of 1024 left sparse, without
-`Coalesce` (0.508–0.545), neither allocating per element — the batch ×3.95
-faster.
-
-### The designs turned down
-
-Five decisions of the architecture compare the shape kept with one it
-turned down. Each benchmark mirrors the rejected shape in a few lines beside
-the kept one, so the comparison can be run again without the library
-carrying it. Six runs of one second, median, 2026-10-28, go1.26.9, 15
-cores, under WSL2, not pinned.
-
-Per element. `BatchContext` runs four map stages over 1,048,576 `int64` in
-batches of 1024: the batch as it is (`items`), with a `context.Context`
-carried in it (`ctx`, 24 bytes to 40), and with that context checked by each
-stage on each batch (`ctx-checked`). `JoinTableShape` builds a table of
-65,536 distinct keys and probes each once, as a flat value slice with an
-`int32` chain (`chain`, the shape `join` keeps) and as a `map[K][]B`
-(`slice-per-key`). `ParallelInputCopy` is the copy `parallel` makes of each
-input batch, alone, into one reused buffer (`internal/bench`).
-
-| benchmark | ns per element | spread | B/op | allocs/op |
-|---|---|---|---|---|
-| `BenchmarkBatchContext/items` | 4.55 | 4.43–4.61 | 328 | 11 |
-| `BenchmarkBatchContext/ctx` | 4.50 | 4.45–4.62 | 472 | 11 |
-| `BenchmarkBatchContext/ctx-checked` | 4.52 | 4.48–4.59 | 472 | 11 |
-| `BenchmarkJoinTableShape/chain` | 86.8 | 82.1–108.1 | 8,415,152 | 583 |
-| `BenchmarkJoinTableShape/slice-per-key` | 128.1 | 121.6–133.7 | 11,016,472 | 66,066 |
-| `BenchmarkParallelInputCopy` | 0.0512 | 0.0509–0.0514 | 0 | 0 |
-
-A context in the batch costs nothing measurable, checked or not: the three
-rows are within 1% of each other and inside each other's spread. A slice per
-key costs ×1.48 the time and ×113 the allocations of the chain. The input
-copy of `parallel` is 3% of the ~1.5 ns per-stage budget.
-
-Per call. `DiagnosticReceiver` builds the example of `NewDiagnostic`'s
-documentation from a template — a message, then an origin — through the
-`With` methods, which take and return the struct by value (`value`), and
-through setters on a pointer to one copy of the template (`pointer`).
-
-| benchmark | ns per call | spread | B/op | allocs/op |
-|---|---|---|---|---|
-| `BenchmarkDiagnosticReceiver/value` | 7.70 | 7.65–8.48 | 0 | 0 |
-| `BenchmarkDiagnosticReceiver/pointer` | 4.68 | 4.66–4.79 | 0 | 0 |
-
-The value receiver costs ×1.65 the pointer one: 3 ns per diagnostic built,
-neither allocating.
-
-Per run. `ScanTake` is the core `sluice.Take` of 2,048 rows over the
-[`pushdown`](design/architecture.md#enriched-stop-signal--pushdown)
-benchmarks' scan; `ScanTakePublished` is the same count taken by a `Take`
-that publishes what it still wants to a `Demand` after each batch, over a
-scan that reads it (`pushdown`).
-
-| benchmark | µs per run | spread | B/op | allocs/op |
-|---|---|---|---|---|
-| `BenchmarkScanTake` | 9.80 | 9.56–10.29 | 8,192 | 1 |
-| `BenchmarkScanTakePublished` | 10.27 | 9.81–11.06 | 8,256 | 2 |
-
-Publishing the count saves nothing: the scan decodes the same two pages
-either way, and the publishing `Take` came out 5% slower, inside the two
-rows' spreads.
 
 ---
 
