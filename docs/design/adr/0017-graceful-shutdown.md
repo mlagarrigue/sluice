@@ -1,7 +1,7 @@
 # ADR 0017 — Shutdown drains, it does not cut
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-11-03 (`Close` in the present tense; subheadings); 5 earlier, from 2026-10-15, in its `git log`
+- **Revised:** 2026-11-03 (`Close` in the present tense; subheadings; its own points numbered without §); 5 earlier, from 2026-10-15, in its `git log`
 - **Theme:** httpstream
 
 ## Problem
@@ -145,7 +145,7 @@ sequenceDiagram
      `quic.Conn.ShutdownWithError` waits for: an application close sent at
      once can overtake the response it follows. Past the grace the
      connection is closed under its handler and `ServeH3Conn` returns
-     without waiting for it, as `Serve` does (§2).
+     without waiting for it, as `Serve` does (point 2).
 
    - `web.Shutdown(ctx, srv web.Server, closers...)` stops every
      `Serve(ctx)` in this order, not only a `*http.Server`: `web.Server` is
@@ -156,7 +156,7 @@ sequenceDiagram
      one layer whatever the number of listeners. The handle lives in `web`,
      not in `httpstream`, so that `web` does not import the transport and so
      that a server keeps one signal. When `ctx` ends before the drain does,
-     a server with a `Close` method is closed (§3's forced stop);
+     a server with a `Close` method is closed (point 3's forced stop);
      `web.Shutdown` then returns `context.DeadlineExceeded`, and the closers
      still run.
 
@@ -185,10 +185,10 @@ are those two gestures; `Serve` is only their sequence at a fixed duration.
 `web.Shutdown` composes these signals across several servers; it does not
 add one.
 
-The order of §1 makes the gateway the layer that waits on the next one:
+The order of point 1 makes the gateway the layer that waits on the next one:
 its pipeline calls the back end that the closers after it close. An
 unbounded wait there turns a silent back end into a stop that never ends,
-which is what §2's grace refuses for a handler. The shape `Shutdown(ctx)`
+which is what point 2's grace refuses for a handler. The shape `Shutdown(ctx)`
 is `http.Server`'s and `web.Server`'s, so no interface is added, and
 `Close` is `Shutdown` without a deadline.
 
