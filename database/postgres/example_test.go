@@ -191,6 +191,46 @@ func ExampleConn_Begin() {
 	fmt.Println(n, "orders shipped")
 }
 
+// A step that may fail without taking the transaction with it: a savepoint
+// before it, RollbackTo when it fails — the transaction goes on from the
+// savepoint — and Release when it succeeds. SetLocalTimeout bounds the
+// statements that follow, until the transaction ends. Compiled but not run:
+// it needs a server.
+func ExampleTx_Savepoint() {
+	ctx := context.Background()
+	conn := mustConnect()
+	defer func() { _ = conn.Close() }()
+
+	tx, err := conn.Begin(ctx, postgres.TxConfig{})
+	if err != nil {
+		fmt.Println("begin:", err)
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := tx.SetLocalTimeout(ctx, 2*time.Second); err != nil {
+		fmt.Println("timeout:", err)
+		return
+	}
+	if err := tx.Savepoint(ctx, "optional_audit"); err != nil {
+		fmt.Println("savepoint:", err)
+		return
+	}
+	if err := tx.Exec(ctx, "INSERT INTO audit (event) VALUES ('shipped')"); err != nil {
+		// Say the table is missing: undo the step, keep the transaction.
+		if err := tx.RollbackTo(ctx, "optional_audit"); err != nil {
+			fmt.Println("rollback to:", err)
+			return
+		}
+	} else if err := tx.Release(ctx, "optional_audit"); err != nil {
+		fmt.Println("release:", err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		fmt.Println("commit:", err)
+	}
+}
+
 // Following a table's changes through logical replication: the stream
 // delivers each committed transaction as a Begin, its row changes and a
 // Commit, and Ack tells the server what may be let go — after the work, so

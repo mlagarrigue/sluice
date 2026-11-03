@@ -486,6 +486,14 @@ connection is the worst outcome. A stream obtained from `tx.Query` is read
 **before** the `Commit`; afterwards it refuses to run rather than running
 outside the transaction under nobody's identity.
 
+A **savepoint** is a mark inside a transaction to return to: a step that
+may fail — an optional insert, a retry — goes after `tx.Savepoint(ctx,
+name)`; `tx.RollbackTo(ctx, name)` undoes it and the transaction carries
+on, `tx.Release(ctx, name)` keeps it and drops the mark. `tx.Savepoints`
+sets several in one round trip. `tx.SetLocalTimeout(ctx, d)` bounds the
+statements that follow, until the transaction ends. `ExampleTx_Savepoint`
+in `database/postgres` puts the four together.
+
 `TxConfig`, the argument of `Begin`:
 
 | Field | Zero | Bounds | What it sets |
