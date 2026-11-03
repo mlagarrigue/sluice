@@ -73,12 +73,15 @@ import (
 
 // Codes for the diagnostics this package raises itself. They are in the same
 // hierarchical style as an application's own, so a client matches on them the
-// same way.
+// same way. [CodeUnsupportedMediaType] is a body refused for its label before
+// a byte was read — a 415 (RFC 9110 §15.5.16), where [CodeMalformedBody] is a
+// document that would not parse, a 400.
 const (
-	CodeMalformedBody = "Transport.Request.Malformed"
-	CodeBodyTooLarge  = "Transport.Request.TooLarge"
-	CodeMissingParam  = "Transport.Request.MissingParameter"
-	CodeInvalidParam  = "Transport.Request.InvalidParameter"
+	CodeMalformedBody        = "Transport.Request.Malformed"
+	CodeUnsupportedMediaType = "Transport.Request.UnsupportedMediaType"
+	CodeBodyTooLarge         = "Transport.Request.TooLarge"
+	CodeMissingParam         = "Transport.Request.MissingParameter"
+	CodeInvalidParam         = "Transport.Request.InvalidParameter"
 )
 
 // DecodeJSON reads a request body into dst, bounded to limit bytes.
@@ -100,10 +103,16 @@ const (
 // with a value the client never sent.
 //
 // The request must say it carries JSON: one Content-Type, application/json or
-// a +json subtype. Any other label, or none, is refused as malformed before a
-// byte is read — a browser posts text/plain and form bodies across origins
-// without a preflight, and a JSON document hidden in one would otherwise be
-// decoded as if the client had asked to send it.
+// a +json subtype. Any other label, or none, is refused under
+// [CodeUnsupportedMediaType] before a byte is read — a browser posts
+// text/plain and form bodies across origins without a preflight, and a JSON
+// document hidden in one would otherwise be decoded as if the client had asked
+// to send it. Its answer is 415, which tells the client to change the label
+// rather than the document; for a PATCH, RFC 5789 §2.2 adds an Accept-Patch
+// naming the format the handler reads. application/json is accepted on a
+// PATCH too, but it defines no PATCH semantics (RFC 5789 erratum 3169): a
+// handler that applies the document as the members to set reads JSON Merge
+// Patch, application/merge-patch+json (RFC 7396), and says so.
 //
 // Three readings are encoding/json's, kept as they are, and a hop in front
 // that reads the document differently must know them: a name repeated in an
@@ -119,7 +128,7 @@ func DecodeJSON(r *http.Request, limit int64, dst any) (diagnostics.Diagnostic, 
 		panic("web: DecodeJSON needs a positive byte limit; an unbounded read from a socket is not a default")
 	}
 	if ct := r.Header["Content-Type"]; len(ct) != 1 || !reqbody.JSONMediaType(ct[0]) {
-		return reqbody.MediaType(CodeMalformedBody), false
+		return reqbody.MediaType(CodeUnsupportedMediaType), false
 	}
 
 	// MaxBytesReader rather than io.LimitReader: it reports the overrun as a
@@ -227,13 +236,31 @@ func Status(diags []diagnostics.Diagnostic) int {
 	return http.StatusOK
 }
 
+// TransportStatus is the status a refusal by this package is answered with,
+// the one web/stream's DecodeJSON writes for the same refusal: 415 for
+// [CodeUnsupportedMediaType] (RFC 9110 §15.5.16 — change the label, not the
+// document), 413 for [CodeBodyTooLarge], 400 for the other transport codes.
+// A diagnostic [IsTransport] does not report gets what [Status] gives it
+// alone.
+func TransportStatus(d diagnostics.Diagnostic) int {
+	switch d.Code {
+	case CodeUnsupportedMediaType:
+		return http.StatusUnsupportedMediaType
+	case CodeBodyTooLarge:
+		return http.StatusRequestEntityTooLarge
+	case CodeMalformedBody, CodeMissingParam, CodeInvalidParam:
+		return http.StatusBadRequest
+	}
+	return Status([]diagnostics.Diagnostic{d})
+}
+
 // IsTransport reports whether a diagnostic came from this package rather than
 // from a business rule — a body that would not parse, a parameter that was not
 // there. Those usually deserve a 400 rather than a 422, and the decision is
 // the handler's.
 func IsTransport(d diagnostics.Diagnostic) bool {
 	switch d.Code {
-	case CodeMalformedBody, CodeBodyTooLarge, CodeMissingParam, CodeInvalidParam:
+	case CodeMalformedBody, CodeUnsupportedMediaType, CodeBodyTooLarge, CodeMissingParam, CodeInvalidParam:
 		return true
 	}
 	return false

@@ -164,6 +164,9 @@ func (c compiledRoute) covers(later compiledRoute) bool {
 // 405 on that path would carry (§9.3.7), the 204 saying there is no
 // representation of the options beyond the fields. OPTIONS * asks about
 // the server rather than a resource and lists every method of the table.
+// No Accept-Patch is added (RFC 5789 §3.1's SHOULD): the table does not know
+// which patch formats a PATCH route's stage reads; [DecodeJSON] names the one
+// it fits when it refuses a PATCH for its label.
 // Allow discloses nothing a client cannot learn from a 405, and nothing
 // Authenticate would hide, so answering ahead of it costs no secret.
 //

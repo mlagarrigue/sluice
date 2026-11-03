@@ -26,6 +26,23 @@ signatures — a value now refused — come last.
   `Config.CancelTimeout`, as `Tx.Rollback` is: `defer cp.Abort(reason)`
   beside the `Close` is the copy's `defer tx.Rollback()`.
 
+### Web: `web` and `web/stream`
+
+- **A body refused for its `Content-Type` carries a code of its own and is
+  answered 415** ("fix(web)!: answer a body's wrong label with 415"): the
+  diagnostic `DecodeJSON` (`web` and `web/stream`) returns for a type that
+  is not JSON, or for none, now has the code `web.CodeUnsupportedMediaType`
+  (`Transport.Request.UnsupportedMediaType`) instead of
+  `web.CodeMalformedBody`; `web/stream` answers it 415 instead of 400, with
+  an `Accept-Patch: application/merge-patch+json` header on a PATCH. A
+  client or a test that expected 400, or that code, for a wrong type
+  expects 415 and the new code. With `web`, a handler that wrote
+  `http.StatusBadRequest` for every `DecodeJSON` failure writes
+  `web.TransportStatus(d)`: 415, 413 or 400, as `web/stream` does.
+  `IsTransport` recognises the new code. `application/json` is still
+  accepted on a PATCH; the type that states the semantics of a PATCH that
+  sets members is `application/merge-patch+json` (RFC 7396).
+
 ## From v0.3.0 to v0.4.0
 
 ### Fan-out: `parallel`

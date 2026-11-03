@@ -15,6 +15,17 @@ func withBody(body string) Exchange {
 	return e
 }
 
+// acceptPatchOf is the Accept-Patch field an exchange's answer carries, or
+// "".
+func acceptPatchOf(e Exchange) string {
+	for _, h := range e.Headers {
+		if strings.EqualFold(string(h.Name), "accept-patch") {
+			return string(h.Value)
+		}
+	}
+	return ""
+}
+
 func TestDecodeJSON(t *testing.T) {
 	type patch struct {
 		SaleQty int64 `json:"saleQty"`
@@ -92,14 +103,40 @@ func TestDecodeJSON(t *testing.T) {
 			if tc.ok {
 				return
 			}
-			if e.Status != 400 || len(e.Diagnostics) != 1 || e.Diagnostics[0].MessageID != "RequestBodyMediaType" {
-				t.Errorf("status %d, diagnostics %v, want 400 and one RequestBodyMediaType", e.Status, e.Diagnostics)
+			// RFC 9110 §15.5.16: a format the endpoint does not read is
+			// 415, which tells the client to change the label, not the
+			// document; on a PATCH, RFC 5789 §2.2 has the refusal name the
+			// patch formats accepted.
+			if e.Status != 415 || len(e.Diagnostics) != 1 || e.Diagnostics[0].MessageID != "RequestBodyMediaType" ||
+				e.Diagnostics[0].Code != web.CodeUnsupportedMediaType {
+				t.Errorf("status %d, diagnostics %v, want 415 and one RequestBodyMediaType under %s", e.Status, e.Diagnostics, web.CodeUnsupportedMediaType)
+			}
+			if got := acceptPatchOf(e); got != "application/merge-patch+json" {
+				t.Errorf("a refused PATCH carries Accept-Patch %q, want application/merge-patch+json", got)
 			}
 			if p.SaleQty != 0 {
 				t.Errorf("refused, yet the body was decoded: %+v", p)
 			}
 		})
 	}
+
+	// Accept-Patch belongs to a PATCH: a POST refused for its label gets the
+	// 415 alone.
+	t.Run("a POST refused for its label", func(t *testing.T) {
+		e := exchangeFor("POST", "/orders")
+		e.Request.Body = []byte(`{"saleQty": 4}`)
+		e.Request.Headers = append(e.Request.Headers, httpstream.Header{Name: []byte("Content-Type"), Value: []byte("text/plain")})
+		var p patch
+		if DecodeJSON(&e, 1<<10, &p) {
+			t.Fatal("a text/plain POST was decoded")
+		}
+		if e.Status != 415 {
+			t.Errorf("status %d, want 415", e.Status)
+		}
+		if got := acceptPatchOf(e); got != "" {
+			t.Errorf("a refused POST carries Accept-Patch %q", got)
+		}
+	})
 
 	// The rules are web's exactly, including this one: the decoder's error
 	// text names the server's Go types and never travels. See

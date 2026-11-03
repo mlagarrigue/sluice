@@ -26,7 +26,7 @@ mux := http.NewServeMux() // the standard library's router
 mux.HandleFunc("PATCH /orders/{order}/lines/{line}", func(w http.ResponseWriter, r *http.Request) {
     var body struct{ SaleQty int64 `json:"saleQty"` }
     if d, ok := web.DecodeJSON(r, 1<<16, &body); !ok {            // read at most 64 KB of JSON
-        web.WriteJSON(w, http.StatusBadRequest, web.ReportOf(d)) // malformed: 400
+        web.WriteJSON(w, web.TransportStatus(d), web.ReportOf(d)) // 415, 413 or 400
         return
     }
     order, d, ok := web.PathInt64(r, "order")                     // the {order} from the address
@@ -57,16 +57,30 @@ the address (`{order}`), which `http.ServeMux` can extract since Go 1.22;
 one and an unparseable one being two diagnostics with two fixes.
 `Status` picks the code from the diagnostics (see below); `IsTransport`
 tells one of this package's — a body that would not parse, a parameter
-that was not there, usually a 400 — from a business rule's, usually a 422.
-`WriteJSON` writes the response as JSON.
+that was not there — from a business rule's, usually a 422, and
+`TransportStatus` gives the code of such a refusal: 415, 413 or 400, the
+ones `web/stream` writes for the same refusal. `WriteJSON` writes the
+response as JSON.
 
 `DecodeJSON` also requires the request to say it carries JSON: one
 `Content-Type` header, `application/json` or a `+json` subtype (such as
-`application/merge-patch+json`). Any other type, or none, is refused with a
-400 before a byte is read: a browser sends a form or `text/plain` to another
+`application/merge-patch+json`). Any other type, or none, is refused before
+a byte is read, under the code `CodeUnsupportedMediaType`, which
+`TransportStatus` turns into a 415: change the label, not the document (a
+JSON document that does not parse stays a 400, a body too large a 413). The
+reason for the refusal: a browser sends a form or `text/plain` to another
 site without asking permission, and a JSON document hidden in one would
-otherwise be decoded as if the client had meant to send it. With `curl`,
-remember `-H 'Content-Type: application/json'`.
+otherwise be decoded as if the client had meant to send it.
+
+> **In plain words: which type for a PATCH?** `application/json` says
+> "here is a JSON document", not "here are the changes to apply": the PATCH
+> specification (RFC 5789, erratum 3169) asks servers not to read it that
+> way. The type that says it is `application/merge-patch+json` (RFC 7396):
+> the document lists the members to set, which is what this handler does.
+> `DecodeJSON` accepts both; advertise the second. `web/stream` names it in
+> an `Accept-Patch` header when it refuses a PATCH with the wrong label.
+
+With `curl`, remember `-H 'Content-Type: application/merge-patch+json'`.
 
 To stay short, this example authenticates no one. A handler that serves
 protected data authenticates first and decodes after: see

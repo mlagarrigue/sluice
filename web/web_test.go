@@ -65,8 +65,10 @@ func TestDecodeJSONRefusesABodyNotLabelledJSON(t *testing.T) {
 			t.Errorf("Content-Type %q: decoded = %v, want %v (%+v)", labels, ok, want, d)
 			continue
 		}
-		if !ok && (d.Code != web.CodeMalformedBody || d.MessageID != "RequestBodyMediaType") {
-			t.Errorf("Content-Type %q: refused with %s/%s, want %s/RequestBodyMediaType", labels, d.Code, d.MessageID, web.CodeMalformedBody)
+		// A code of its own: the answer is 415, not the 400 of a document
+		// that would not parse (RFC 9110 §15.5.16).
+		if !ok && (d.Code != web.CodeUnsupportedMediaType || d.MessageID != "RequestBodyMediaType" || !web.IsTransport(d)) {
+			t.Errorf("Content-Type %q: refused with %s/%s, want a transport %s/RequestBodyMediaType", labels, d.Code, d.MessageID, web.CodeUnsupportedMediaType)
 		}
 		if !ok && a != (amendment{}) {
 			t.Errorf("Content-Type %q: refused, yet the body was decoded into %+v", labels, a)
@@ -313,6 +315,28 @@ func TestIsTransport(t *testing.T) {
 	}
 	if web.IsTransport(business) {
 		t.Error("a business diagnostic was taken for a transport one")
+	}
+}
+
+// A refusal of this package gets the status web/stream writes for it: a
+// label it does not read is 415, a body past the bound 413, the others 400;
+// a business diagnostic keeps Status's 422.
+func TestTransportStatus(t *testing.T) {
+	at := diagnostics.Path{}
+	for _, tc := range []struct {
+		code string
+		want int
+	}{
+		{web.CodeUnsupportedMediaType, http.StatusUnsupportedMediaType},
+		{web.CodeBodyTooLarge, http.StatusRequestEntityTooLarge},
+		{web.CodeMalformedBody, http.StatusBadRequest},
+		{web.CodeMissingParam, http.StatusBadRequest},
+		{web.CodeInvalidParam, http.StatusBadRequest},
+		{"Sales.Order.InvalidQty", http.StatusUnprocessableEntity},
+	} {
+		if got := web.TransportStatus(diagnostics.NewDiagnostic(diagnostics.Error, tc.code, at)); got != tc.want {
+			t.Errorf("TransportStatus(%s) = %d, want %d", tc.code, got, tc.want)
+		}
 	}
 }
 

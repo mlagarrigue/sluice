@@ -33,8 +33,9 @@ import (
 // when dst is a struct, a second JSON value behind the first refused as the
 // smuggling it is, and "too large" kept
 // distinct from "malformed" because they need different fixes. Here the
-// stage also picks the refusal's status — 413 past the limit, 400 otherwise
-// — where web leaves that to its net/http caller. So are the three readings
+// stage also picks the refusal's status — 415 for a label it does not read
+// (with Accept-Patch on a PATCH), 413 past the limit, 400 otherwise — where
+// web leaves that to its net/http caller. So are the three readings
 // web.DecodeJSON names as encoding/json's: a repeated name's last value
 // wins and names match fields without regard to case, invalid UTF-8 and a
 // lone surrogate become U+FFFD, a byte order mark is refused.
@@ -46,7 +47,10 @@ func DecodeJSON(e *Exchange, limit int64, dst any) bool {
 		return false
 	}
 	if !jsonBody(e.Request.Headers) {
-		e.Refuse(400, reqbody.MediaType(web.CodeMalformedBody))
+		if string(e.Request.Method) == "PATCH" { // methods are case-sensitive (RFC 9110 §9.1)
+			e.Headers = append(e.Headers, acceptPatch)
+		}
+		e.Refuse(415, reqbody.MediaType(web.CodeUnsupportedMediaType))
 		return false
 	}
 	body := e.Request.Body
@@ -71,6 +75,13 @@ func DecodeJSON(e *Exchange, limit int64, dst any) bool {
 	}
 	return true
 }
+
+// acceptPatch is the field a PATCH refused for its label carries (RFC 5789
+// §2.2): the one patch format whose semantics this decoder's output fits,
+// JSON Merge Patch (RFC 7396) — a document of the members to set. The decoder
+// reads application/json as well, but that type defines no PATCH semantics
+// (RFC 5789 erratum 3169), so it is not advertised as one.
+var acceptPatch = httpstream.Header{Name: []byte("accept-patch"), Value: []byte("application/merge-patch+json")}
 
 // bound turns the stage's limit into the int [httpstream.Request.ReadAll]
 // takes. A limit past the largest int cannot bound anything on this platform,
