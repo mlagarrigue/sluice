@@ -1464,8 +1464,8 @@ func (c *newReno) slowStart(ev ackEvent, earns, closed bool) {
 // which costs at most one round trip of recovery when that window is
 // already full, and a packet sent past the window right after a loss adds
 // to the very load the loss reported. The PTO covers the case where no
-// acknowledgement comes at all. The same holds for cubic, bbr and bbr3,
-// whose onLost say so by reference.
+// acknowledgement comes at all. The same holds for cubic and bbr3, whose
+// onLost say so by reference.
 func (c *newReno) onLost(ev lossEvent) {
 	c.inFlight = max(c.inFlight-ev.bytes, 0)
 	if !c.recoveryStart.IsZero() && !ev.latestSent.After(c.recoveryStart) {

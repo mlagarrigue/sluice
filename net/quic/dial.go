@@ -229,7 +229,7 @@ func accept(pc net.PacketConn, first datagram, cfg *tls.Config, params Transport
 // newServerConn bootstraps a server-side Conn from a client's first Initial
 // packet: picks this end's connection identifier, derives Initial secrets,
 // and starts the TLS handshake machinery. accept and [Listener] share this
-// and diverge only after: Accept drives the handshake synchronously against
+// and diverge only after: accept drives the handshake synchronously against
 // its own exclusive socket, Listener feeds it datagrams from its shared
 // demux loop instead.
 //

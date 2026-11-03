@@ -335,9 +335,9 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 			// RFC 9113 §8.2.3, RFC 9114 §4.2.1: a client may split its
 			// cookie into crumbs, one field per pair, and they MUST be
 			// joined by "; " before a generic server application sees them
-			// — the handler here. Left apart, [Request.Get] returned the
-			// first pair alone and every session cookie behind it went
-			// missing on HTTP/2 and HTTP/3 only.
+			// — the handler here. Left apart, [Request.Get] would return
+			// the first pair alone, and every session cookie behind it
+			// would go missing on HTTP/2 and HTTP/3 only.
 			if cookie >= 0 {
 				regular[cookie].Value = appendCrumb(regular[cookie].Value, cookieOwned, h.Value)
 				cookieOwned = true

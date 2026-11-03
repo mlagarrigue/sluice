@@ -985,8 +985,8 @@ func writeH3Interim(c *quic.Conn, id, fieldSection uint64, wb writeBound) {
 // goroutines; each writer holds one for exactly one response.
 var h3ScratchPool = sync.Pool{New: func() any { return &h3Scratch{} }}
 
-// writeH3Response frames and writes one response on its own goroutine — the
-// lift of the old single-writer design's head-of-line block. A write stalled
+// writeH3Response frames and writes one response on its own goroutine, so
+// that no response's write waits behind another's. A write stalled
 // on this stream's flow control stalls this goroutine alone; packets keep
 // arriving on the read loop and every other response keeps leaving. Each
 // write is bounded by wb — [Config.WriteTimeout] without progress, the bound

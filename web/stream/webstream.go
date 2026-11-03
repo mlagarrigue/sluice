@@ -14,9 +14,8 @@
 // spellings of the same boundary would drift apart.
 //
 // It lives outside the core by the library's own test: nothing in the core
-// stops compiling if this package is removed. It is on the supported path
-// since 0.4.0, which it reached through a first real consumer
-// (docs/guide/httpstream.md).
+// stops compiling if this package is removed. It is on the supported path,
+// held to a first real consumer (docs/guide/httpstream.md).
 //
 // # The element is the exchange
 //
@@ -136,7 +135,7 @@ type Exchange struct {
 // [diagnostics.NewDiagnostic], a code of its own vocabulary and
 // [diagnostics.Diagnostic.WithMessage] for the i18n key: the codes this
 // package and [web] refuse under ([web.CodeMalformedBody] and the others)
-// are exported, their constructors are not. That is deliberate for now —
+// are exported, their constructors are not. That is deliberate —
 // one consumer is not enough to say whether the right export is a
 // constructor per code or a refusal type — and it costs a caller the three
 // lines that build the diagnostic. [web.Problems] renders whatever a stage
