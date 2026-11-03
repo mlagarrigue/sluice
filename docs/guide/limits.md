@@ -289,11 +289,11 @@ bullet per package, each condition in it checkable:
   Checked by: `net/quic`'s conditions met, and `test-udp` green on the
   commit that lifts the label.
 - **`net/quic`**: three conditions, each checked on its own.
-  - *Interop*: being green in the *QUIC Interop Runner* — its weekly
-    workflow green with `interop/expected-results.json` unchanged, every
-    case against quic-go and ngtcp2 in each direction passing or failing
-    for its written cause. Not yet: no complete pass has been green with
-    the register unchanged ([in detail](#the-interop-runner-in-detail)).
+  - *Interop*: the *QUIC Interop Runner*'s weekly workflow green, not a
+    pass started by hand, with `interop/expected-results.json` unchanged:
+    every case against quic-go and ngtcp2, each direction, passing or
+    failing for its written cause. Not yet: only passes started by hand
+    have been ([in detail](#the-interop-runner-in-detail)).
   - *Review*: an external review of the handshake and key handling,
     linked from `SECURITY.md`. Not done.
   - *Measurement*: throughput and latency against a real third-party
