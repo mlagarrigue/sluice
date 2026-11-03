@@ -1532,6 +1532,36 @@ func TestResponseFieldNamesMustBeTokens(t *testing.T) {
 	}
 }
 
+// A Trailer header on a response without Trailers promises fields that never
+// come (RFC 9110 §6.6.2): every version's writer refuses it, and lets it pass
+// beside Trailers.
+func TestTrailerWithoutTrailersRefusedOnEveryVersion(t *testing.T) {
+	trailer := []Header{{Name: []byte("trailer"), Value: []byte("x-sum")}}
+	bare := Response{Status: 200, Body: []byte("b"), Headers: trailer}
+	if _, err := appendStatusAndHeaders(nil, bare, testDate); !errors.Is(err, ErrMalformed) {
+		t.Errorf("h1: got %v, want ErrMalformed", err)
+	}
+	s := newBenchH2Server(Config{})
+	if _, err := s.appendHead(nil, 1, []byte("GET"), bare, defaultMaxFrameSize); !errors.Is(err, ErrH2Protocol) {
+		t.Errorf("h2: got %v, want ErrH2Protocol", err)
+	}
+	if _, err := appendH3Response(nil, bare, []byte("GET"), h3NoFieldSectionLimit, &h3Scratch{}, testDate); !errors.Is(err, ErrH3Protocol) {
+		t.Errorf("h3: got %v, want ErrH3Protocol", err)
+	}
+
+	with := bare
+	with.Trailers = func() []Header { return []Header{{Name: []byte("x-sum"), Value: []byte("1")}} }
+	if _, err := appendStatusAndHeaders(nil, with, testDate); err != nil {
+		t.Errorf("h1 refused a Trailer beside Trailers: %v", err)
+	}
+	if _, err := s.appendHead(nil, 1, []byte("GET"), with, defaultMaxFrameSize); err != nil {
+		t.Errorf("h2 refused a Trailer beside Trailers: %v", err)
+	}
+	if _, err := appendH3Response(nil, with, []byte("GET"), h3NoFieldSectionLimit, &h3Scratch{}, testDate); err != nil {
+		t.Errorf("h3 refused a Trailer beside Trailers: %v", err)
+	}
+}
+
 // The HTTP/2 writer's refusals hold on HTTP/3 too: a connection-specific
 // field makes the response malformed (RFC 9114 §4.2), and a caller's
 // content-length is a second opinion on framing this package states itself.

@@ -314,6 +314,11 @@ func (s *h2Conn) appendHead(dst []byte, id uint32, method []byte, r Response, ma
 		if string(name) == "content-length" {
 			return nil, fmt.Errorf("%w: content-length is set by the writer, not the caller", ErrH2Protocol)
 		}
+		// The h1 writer's refusal too: a Trailer on a response without
+		// Trailers promises fields that never come.
+		if string(name) == "trailer" && r.Trailers == nil {
+			return nil, fmt.Errorf("%w: trailer announced on a response without Trailers", ErrH2Protocol)
+		}
 		block = appendHPACK(block, name, h.Value)
 		listSize += uint64(len(name)+len(h.Value)) + 32
 	}

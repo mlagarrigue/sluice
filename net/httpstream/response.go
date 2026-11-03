@@ -155,7 +155,7 @@ type Response struct {
 	// sent there, a field from another specification (Set-Cookie, a
 	// Cache-Control of RFC 9111) included. A Trailer header naming
 	// them, which RFC 9110 §6.6.2 says a sender SHOULD send, is the
-	// handler's to set; HTTP/1.1 refuses it on a response without
+	// handler's to set; every version refuses it on a response without
 	// Trailers, as the promise of fields that never come.
 	//
 	// The function is not called for a response that carries no body —

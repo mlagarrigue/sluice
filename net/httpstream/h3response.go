@@ -107,6 +107,9 @@ func appendH3Response(dst []byte, r Response, method []byte, peerFieldSection ui
 		if string(name) == "content-length" {
 			return nil, fmt.Errorf("%w: content-length is set by the writer, not the caller", ErrH3Protocol)
 		}
+		if string(name) == "trailer" && r.Trailers == nil {
+			return nil, fmt.Errorf("%w: trailer announced on a response without Trailers", ErrH3Protocol)
+		}
 		fields = append(fields, Header{Name: name, Value: h.Value})
 	}
 	if n, ok := statedLength(r, noLength, noBody); ok {
