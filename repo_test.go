@@ -1159,6 +1159,72 @@ func parseDir(t *testing.T, fset *token.FileSet, dir string, tests bool) []*ast.
 	return files
 }
 
+// guideFunctionsWithoutExample are the functions the guides name that need
+// no Example, each with the reason; empty while every one has its own.
+var guideFunctionsWithoutExample = map[string]string{}
+
+// A function the guides or the README present to the reader as `pkg.Func`
+// has an Example in its package (ExampleFunc, or ExampleFunc_suffix), which
+// go test compiles and, when it states its output, runs: what the guide
+// shows in a sentence, the example shows working. The guides are the list of
+// what a reader meets first; a function they do not name is the godoc's.
+func TestGuideFunctionsHaveAnExample(t *testing.T) {
+	funcs, examples := map[string]map[string]bool{}, map[string]map[string]bool{}
+	fset := token.NewFileSet()
+	for _, dir := range packageDirs(t) {
+		slashed := filepath.ToSlash(dir)
+		if strings.Contains(slashed, "/internal") || strings.Contains(slashed, "/example") || strings.Contains(slashed, "/cmd/") {
+			continue
+		}
+		for _, tests := range []bool{false, true} {
+			for _, f := range parseDir(t, fset, dir, tests) {
+				pkg := strings.TrimSuffix(f.Name.Name, "_test")
+				for _, d := range f.Decls {
+					fd, ok := d.(*ast.FuncDecl)
+					if !ok || fd.Recv != nil {
+						continue
+					}
+					if tests && strings.HasPrefix(fd.Name.Name, "Example") {
+						if examples[pkg] == nil {
+							examples[pkg] = map[string]bool{}
+						}
+						name, _, _ := strings.Cut(strings.TrimPrefix(fd.Name.Name, "Example"), "_")
+						examples[pkg][name] = true
+					}
+					if !tests && fd.Name.IsExported() {
+						if funcs[pkg] == nil {
+							funcs[pkg] = map[string]bool{}
+						}
+						funcs[pkg][fd.Name.Name] = true
+					}
+				}
+			}
+		}
+	}
+	pages, err := filepath.Glob("docs/guide/*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	named := map[string]bool{}
+	ref := regexp.MustCompile("`([a-z]+)\\.([A-Z][A-Za-z0-9]*)\\b")
+	for _, page := range append(pages, "README.md") {
+		b, err := os.ReadFile(page) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range ref.FindAllStringSubmatch(string(b), -1) {
+			if funcs[m[1]][m[2]] && !examples[m[1]][m[2]] {
+				named[m[1]+"."+m[2]] = true
+			}
+		}
+	}
+	for name := range named {
+		if _, ok := guideFunctionsWithoutExample[name]; !ok {
+			t.Errorf("%s is named in a guide and has no Example", name)
+		}
+	}
+}
+
 // unresolvedLink is a doc link go doc leaves as plain text: [Name],
 // [Type.Method], [pkg.Name]. A lowercase single word in brackets is prose.
 var unresolvedLink = regexp.MustCompile(`(?:^|[^A-Za-z0-9_\]])\[([A-Z][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_.]*)\]`)
