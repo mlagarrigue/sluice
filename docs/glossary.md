@@ -10,6 +10,10 @@ repeated here; a term used in several places is.
   of the whole library, a thousand by default.
 - **Operator** — a function that takes a stream and returns another
   (`Filter`, `Map`, a join).
+- **Stage** — one step of a pipeline, written one of two ways: as an
+  operator, over the whole stream, or as a function from one batch to the
+  next, called once per batch — the web path's shape (`httpstream.Handler`,
+  the `web/stream` stages).
 - **Pull / push** — in pull, the reader asks for the next batch; in push,
   the source sends it when it has it. Sluice.go is pull-based.
 - **Back-pressure** — what slows a source down when the reader cannot keep

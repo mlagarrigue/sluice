@@ -116,8 +116,10 @@ elements, whichever you like.
 
 Everything that happens in an application — reading the network, routing,
 authenticating, applying a business rule, querying the database, building
-the objects, serialising — is an operator of that same model. There is no
-special "handler" in the middle that would be of another nature.
+the objects, serialising — is a stage of that same model: an operator over
+the stream, or, on the web path, a function over one batch, whose handler
+takes a batch of requests and returns a batch of responses. There is no
+handler in the middle that would be of another nature.
 
 ### The packages
 
