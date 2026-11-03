@@ -258,14 +258,16 @@ func (cp *Copier) WriteTuples(tuples []byte, rows int) error {
 	// issued from inside a consumer's callback is the caller's bug, and its
 	// CopyData landing mid-result would corrupt the outer query's stream —
 	// but the copy itself is untouched and stays finishable.
+	// Watched like a statement, from before the claim: the claim reads the
+	// ReadyForQuery a batched read left owed, the batch may open the
+	// transaction, wait on a server that has stopped reading, or commit — and
+	// a commit is where the server runs what the rows set off, triggers and
+	// constraints.
+	w := cp.conn.watchCancel(cp.ctx)
 	if err := cp.conn.claim(cp); err != nil {
-		return err
+		return cp.conn.settleCancel(cp.ctx, w, err)
 	}
 	defer cp.conn.endBusy()
-	// Watched like a statement: the batch may open the transaction, wait on
-	// a server that has stopped reading, or commit — and a commit is where
-	// the server runs what the rows set off, triggers and constraints.
-	w := cp.conn.watchCancel(cp.ctx)
 	if err := cp.conn.settleCancel(cp.ctx, w, cp.write(tuples, rows)); err != nil {
 		return cp.fail(err)
 	}

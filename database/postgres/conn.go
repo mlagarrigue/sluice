@@ -467,8 +467,19 @@ func (c *Conn) Err() error { return c.broken }
 // it. The server announces just before the ReadyForQuery that ends the
 // statement, so a read that left that ReadyForQuery owed has it read here
 // first: a SELECT that calls set_config is seen as soon as it returns.
+//
+// That read is bounded as [Tx.Rollback] is, by [Config.CancelTimeout]: a
+// server that took the read's Sync and does not answer is sent a
+// cancellation, and one that still does not has the connection closed under
+// it, which [Conn.Err] then reports.
 func (c *Conn) Parameter(name string) string {
-	_ = c.settleReady() // a lost connection is reported by Err and every later call
+	if c.readyOwed && c.broken == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), c.cancelBound())
+		w := c.watchCancel(ctx)
+		// A lost connection is reported by Err and every later call.
+		_ = c.settleCancel(ctx, w, c.settleReady())
+		cancel()
+	}
 	return c.params[name]
 }
 

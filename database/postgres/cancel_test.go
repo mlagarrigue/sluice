@@ -1415,3 +1415,72 @@ func TestABlockTheRollbackCannotEndBreaksTheConnection(t *testing.T) {
 		})
 	}
 }
+
+// A batched read leaves its ReadyForQuery owed, and the next entry point
+// reads it. Exec, Begin and Query arm their watch before that read; Parameter,
+// which takes no ctx, and the first Copier.WriteTuples after the read did not,
+// so a server that took the Sync and never answered held them for as long as
+// the socket lived. Each is now bounded: WriteTuples by its copy's ctx,
+// Parameter by CancelTimeout, as Rollback is.
+func TestTheOwedReadyForQueryIsReadUnderWatch(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(ctx context.Context, conn *Conn) error
+	}{
+		{"Conn.Exec", func(ctx context.Context, conn *Conn) error {
+			return conn.Exec(ctx, "SELECT 2")
+		}},
+		{"Conn.Parameter", func(_ context.Context, conn *Conn) error {
+			_ = conn.Parameter("server_version")
+			return conn.Err()
+		}},
+		{"Copier.WriteTuples", func(ctx context.Context, conn *Conn) error {
+			cp, err := conn.CopyFrom(ctx, "COPY t FROM STDIN (FORMAT binary)", CopyConfig{RowsPerTx: 10})
+			if err != nil {
+				return err
+			}
+			return cp.WriteTuples([]byte{0, 1, 0, 0, 0, 1, 7}, 1)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				srv, conn := newScriptedPipe(t)
+				conn.cancelKey = CancelKey{PID: 1, Secret: testSecret}
+				packets := make(chan []byte, 1)
+				conn.cancelDial = cancelHolding(0, packets) // confirms at once
+				conn.cancelTimeout = time.Second
+				go func() {
+					srv.read() // the batched query
+					srv.answer()
+					srv.read() // its Sync; the ReadyForQuery never comes
+					buf := make([]byte, 4096)
+					for {
+						if _, err := srv.conn.Read(buf); err != nil {
+							return
+						}
+					}
+				}()
+				readAll(t, conn, "SELECT 1")
+				if !conn.readyOwed {
+					t.Fatal("setup: the batched read did not leave its ReadyForQuery owed")
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+				defer cancel()
+				res := make(chan error, 1)
+				go func() { res <- tc.run(ctx, conn) }()
+				select {
+				case err := <-res:
+					if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, ErrConnBroken) {
+						t.Errorf("%s returned %v, want ctx's error or a broken connection", tc.name, err)
+					}
+				case <-time.After(time.Minute):
+					// A guard, not a measurement: ctx ends at 100 ms and
+					// CancelTimeout is one second.
+					_ = conn.rw.Close()
+					<-res
+					t.Errorf("%s still blocked on the owed ReadyForQuery a minute after its ctx ended", tc.name)
+				}
+			})
+		})
+	}
+}
