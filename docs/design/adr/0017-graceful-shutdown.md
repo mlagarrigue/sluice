@@ -1,7 +1,7 @@
 # ADR 0017 — Shutdown drains, it does not cut
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-10-28 (the two-stage close stated as built); 4 earlier, from 2026-10-15, in its `git log`
+- **Revised:** 2026-11-03 (`Close` in the present tense); 5 earlier, from 2026-10-15, in its `git log`
 - **Theme:** httpstream
 
 ## Problem
@@ -184,7 +184,7 @@ its pipeline calls the back end that the closers after it close. An
 unbounded wait there turns a silent back end into a stop that never ends,
 which is what §2's grace refuses for a handler. The shape `Shutdown(ctx)`
 is `http.Server`'s and `web.Server`'s, so no interface is added, and
-`Close` stays what it was, `Shutdown` without a deadline.
+`Close` is `Shutdown` without a deadline.
 
 A forced stop that returns `nil` cannot be told from a clean one: the
 operator does not learn that responses were lost. Hence a sentinel,

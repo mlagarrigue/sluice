@@ -1,7 +1,7 @@
 # ADR 0008 — A multiplexed connection is a reader, a responder and a writer
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-28 (the assembler's lock and grouped reception measured without a socket; the per-batch watch kept against a reader kept for the connection); 9 earlier, from 2026-10-05, in its `git log`
+- **Revised:** 2026-11-03 (written in the present tense); 10 earlier, from 2026-10-05, in its `git log`
 - **Theme:** httpstream
 
 ## Problem
@@ -59,7 +59,7 @@ writer for control frames is bounded by `MaxPendingControlBytes` and the
 reader blocks when full, which is the prescribed back-pressure; responder →
 writer for buffered bodies is a queue bounded by the same stream slot — the
 responder queues a batch and moves on to the next, so a stream waiting for
-its window no longer holds the others, and the writer hands the batch's
+its window does not hold the others, and the writer hands the batch's
 buffer back once each of its answers is written, dropped or expired. A
 streamed body is still pulled by the responder, at the socket's pace, once
 its head is out.
@@ -104,10 +104,9 @@ A buffer the pipeline hands back to a pool or overwrites for its next batch
 is not one to borrow from: the body is allocated, or borrowed from data that
 no longer changes. HTTP/1.1 writes a batch before it reads the next, but a
 handler does not know which protocol called it, and the rule is the one that
-holds on all three. A defensive copy at the hand-off would have kept the
-original promise ("read during the write and not retained") true, at the
-price of copying every body on the hot path: the contract changed, not the
-writer.
+holds on all three. A defensive copy at the hand-off would let a handler pass a buffer
+it reuses, at the price of copying every body on the hot path: the rule
+is the handler's to keep, not the writer's to repair.
 
 ## Rationale
 

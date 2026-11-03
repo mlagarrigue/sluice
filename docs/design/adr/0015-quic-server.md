@@ -1,7 +1,7 @@
 # ADR 0015 — The QUIC server: transport machinery, a real listener, a moving client
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-11-03 (a /64 bounds a host, not a site); 18 earlier, from 2026-10-03, in its `git log`
+- **Revised:** 2026-11-03 (a /64 bounds a host, not a site; what moving the deadline costs, in the present tense); 18 earlier, from 2026-10-03, in its `git log`
 - **Theme:** quic
 
 ## Problem
@@ -176,7 +176,7 @@ server that closed at 10 s answers it with INTERNAL_ERROR (the runner's
 handshakeloss case against ngtcp2 and quinn). quic-go holds the same 10 s
 (twice `HandshakeIdleTimeout`, counted from the connection's creation).
 
-What the move costs: a client that validates its address and then stalls
+What moving the deadline costs: a client that validates its address and then stalls
 keeps its pending slot up to the idle timeout (30 s by default) rather than
 `HandshakeTimeout`. Only a client that answered from its own address with
 the handshake keys gets that far, and it could as well complete the
