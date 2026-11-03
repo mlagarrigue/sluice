@@ -72,6 +72,23 @@ places is.
 - **Gateway** — the package that groups simultaneous calls (one per HTTP
   request, say) into one batch, so that a pipeline answers them together.
 
+## Time and concurrency
+
+- **Data race** — two goroutines touching the same memory at once, one of
+  them writing, with nothing ordering them; Go's `-race` detector finds one
+  when a test makes it happen.
+- **Coroutine** — a function that can pause and resume where it stopped;
+  `iter.Pull` runs a stream as one, so a reader takes its batches one at a
+  time.
+- **Event time** — the time an element says it happened, carried in the
+  element, as opposed to the time it is processed; time windows group by
+  it.
+- **Watermark** — a mark of how far a stream has got: in event time, the
+  point below which no more elements are expected; for a job, the position
+  it records to resume from.
+- **Idempotence** — the property of an operation that has the same effect
+  done twice as done once; what makes a delivery that may repeat safe.
+
 ## Databases
 
 - **Connector** — the code that speaks an external system's protocol
@@ -80,6 +97,8 @@ places is.
 - **Wire protocol** — the exact shape of the bytes exchanged with a server.
 - **OID** — the number PostgreSQL gives each type (and every other catalog
   object); a result describes its columns' types by OID.
+- **SQLSTATE** — PostgreSQL's standard five-character error code
+  (`23505`, a unique violation): what code compares, never the message.
 - **Prepared statement** — a query PostgreSQL has parsed and planned once,
   run again with new parameters; the **plan** is how the server decided to
   read the tables.
@@ -89,6 +108,8 @@ places is.
   session may see, from that session's settings (`SET LOCAL app.tenant_id`).
 - **WAL** — PostgreSQL's write-ahead log: every change, written before the
   data files; logical replication reads it as a stream of changes.
+- **LSN** — log sequence number: a position in the WAL, written like
+  `0/16B3748`; logical replication resumes from one.
 - **ETL** — a job that extracts data from a source, transforms it and loads
   it elsewhere; the same chain of operators as a web request.
 - **TVP** — table-valued parameter: SQL Server's way of passing a whole
@@ -100,13 +121,15 @@ places is.
   journey, often the dominant cost.
 - **RTT** — round-trip time: how long a packet takes to reach the peer and
   its answer to come back.
-- **Principal** — who a request is, as authentication established it.
-- **Grant** — what a principal is allowed to do, as authorisation
-  established it.
 - **TLS** — the encryption layer HTTPS and QUIC run under; the handshake is
   where the two ends agree on keys and check certificates.
+- **ALPN** — the TLS extension by which the two ends agree, during the
+  handshake, on the protocol they will speak (`h2`, `http/1.1`, `h3`).
 - **QUIC** — the transport over UDP that HTTP/3 runs on (RFC 9000):
   encrypted, with several independent streams per connection.
+- **Parser** — the code that reads bytes from the network and makes
+  something of them (a request, a packet); where hostile input does its
+  damage, so it is written once and bounded everywhere.
 - **Frame** — the unit HTTP/2, HTTP/3 and QUIC cut their bytes into, each
   with a type (DATA, HEADERS, ACK). `END_STREAM` is the flag on the last
   frame of a stream; `CONTINUATION` the frame that carries the rest of a
@@ -122,6 +145,23 @@ places is.
   or socket; a process has a limited supply.
 - **CDN** — content delivery network: servers in front of a service that
   answer from a copy near the client.
+
+## Identity and credentials
+
+- **Principal** — who a request is, as authentication established it.
+- **Grant** — what a principal is allowed to do, as authorisation
+  established it.
+- **JWT** — JSON Web Token: a signed token carrying claims, sent as a
+  bearer credential; `web` verifies the kind signed with HMAC.
+- **Claims** — the statements a token makes about its holder: who (`sub`),
+  for which service (`aud`), until when (`exp`), and any the issuer adds.
+- **Dimension** — an axis on which a grant permits values (`region`,
+  `tenant`), read from a claim; `grant.Allows("region", "eu")` asks one.
+- **HMAC** — a signature computed with a secret key both sides hold; a
+  verifier with the key checks that a token was signed with it.
+- **PBKDF2** — a function that derives a key from a password slowly, by
+  hashing it many times over; SCRAM uses it, and the iteration count is
+  what makes guessing costly.
 
 ## The project's own words
 

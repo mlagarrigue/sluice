@@ -517,3 +517,57 @@ func TestGlossaryGroupsAreShortAndTermsDefinedOnce(t *testing.T) {
 		t.Fatalf("read %d terms; the glossary's shape changed", entries)
 	}
 }
+
+// An "In plain words" box glosses a term in bold — "A **parser** (the code
+// that…)", "its **SQLSTATE** — PostgreSQL's…" — for the reader of that
+// page. A term the other pages use too belongs in the glossary every guide
+// sends its reader to, or the second page's reader never meets the gloss.
+func TestBoxedTermsUsedElsewhereAreInTheGlossary(t *testing.T) {
+	glossary, err := os.ReadFile("docs/glossary.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := filepath.Glob("docs/*/*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	more, err := filepath.Glob("docs/*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files = append(append(files, more...), "README.md", "CONTRIBUTING.md")
+	files = slices.DeleteFunc(files, func(f string) bool { return f == "docs/glossary.md" })
+	text := map[string]string{}
+	for _, f := range files {
+		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		text[f] = strings.ToLower(string(b))
+	}
+	// Emphasis that happens to precede an aside, not a term being glossed.
+	emphasis := map[string]bool{"cancelled": true, "cause": true}
+	glossed := regexp.MustCompile(`\*\*([^*]+)\*\* (?:\(|— )`)
+	for _, f := range files {
+		for line := range strings.SplitSeq(text[f], "\n") {
+			if !strings.HasPrefix(line, ">") {
+				continue
+			}
+			for _, m := range glossed.FindAllStringSubmatch(line, -1) {
+				term := m[1]
+				if strings.HasPrefix(term, "in plain words") || emphasis[term] {
+					continue
+				}
+				used := 0
+				for _, other := range files {
+					if regexp.MustCompile(`\b` + regexp.QuoteMeta(term) + `\b`).MatchString(text[other]) {
+						used++
+					}
+				}
+				if used > 1 && !strings.Contains(strings.ToLower(string(glossary)), "**"+term) {
+					t.Errorf("%s glosses **%s** in a box, %d pages use it, and the glossary does not define it", f, term, used)
+				}
+			}
+		}
+	}
+}
