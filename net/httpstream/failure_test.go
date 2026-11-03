@@ -2,7 +2,9 @@ package httpstream
 
 import (
 	"context"
+	"io"
 	"log/slog"
+	"net"
 	"strings"
 	"sync"
 	"testing"
@@ -130,6 +132,62 @@ func TestServeLogsAConnectionEndedInError(t *testing.T) {
 			time.Sleep(time.Millisecond)
 		}
 	})
+	// HTTP/1.1 too: a request that breaks the protocol is the peer's fault
+	// the line exists for; one refused by a bound (431 here) is a conforming
+	// client's, and its status says it.
+	for _, tc := range []struct {
+		name, request string
+		status        string
+		logged        bool
+	}{
+		{"http/1.1 malformed", "GET / HTTP/1.1\r\nno colon here\r\n\r\n", "400", true},
+		{"http/1.1 past a bound", "GET / HTTP/1.1\r\nHost: h\r\nX: " + strings.Repeat("a", 64<<10) + "\r\n\r\n", "431", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &logRecorder{}
+			addr, _ := serveTest(t, Config{Logger: slog.New(rec)}, echoTarget)
+			conn, err := net.Dial("tcp", addr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = conn.Close() }()
+			if _, err := conn.Write([]byte(tc.request)); err != nil {
+				t.Fatal(err)
+			}
+			_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			answer, _ := io.ReadAll(conn) // the refusal, then the server's close
+			if !strings.HasPrefix(string(answer), "HTTP/1.1 "+tc.status) {
+				t.Fatalf("answered %q, want %s", answer, tc.status)
+			}
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				rec.mu.Lock()
+				n := len(rec.records)
+				var r slog.Record
+				if n > 0 {
+					r = rec.records[0]
+				}
+				rec.mu.Unlock()
+				switch {
+				case n > 0 && !tc.logged:
+					t.Fatalf("a refusal by a bound logged %q", r.Message)
+				case n > 0:
+					attrs := map[string]string{}
+					r.Attrs(func(a slog.Attr) bool { attrs[a.Key] = a.Value.String(); return true })
+					if r.Level != slog.LevelWarn || attrs["proto"] != "http/1.1" || attrs["err"] == "" {
+						t.Errorf("logged %v %q %v, want a warn with proto http/1.1 and the error", r.Level, r.Message, attrs)
+					}
+					return
+				case time.Now().After(deadline):
+					if tc.logged {
+						t.Fatal("no record 2s after the malformed request was refused")
+					}
+					return
+				}
+				time.Sleep(time.Millisecond)
+			}
+		})
+	}
 	t.Run("ordinary close", func(t *testing.T) {
 		rec := &logRecorder{}
 		t.Cleanup(func() { // after serveTest's own: Serve has returned

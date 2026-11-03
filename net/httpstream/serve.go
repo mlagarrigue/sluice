@@ -487,8 +487,17 @@ func serveConn(ctx context.Context, c *prefixConn, st *connState, cfg Config, ha
 		// request gets the status its refusal maps to, on the connection
 		// that is about to close anyway.
 		if err := src.Err(); err != nil && !errors.Is(err, io.EOF) {
-			if status := statusFor(err); status != 0 {
+			status := statusFor(err)
+			if status != 0 {
 				_ = writeStatus(c, cfg, refusedMethod(err), status)
+			}
+			// A peer that broke the protocol (400), or a transport that
+			// failed under the reader (no status), is logged as over HTTP/2
+			// and HTTP/3. A request refused by a bound (413, 414, 431) or for
+			// a feature this end lacks (501, 505) is a conforming client's,
+			// and its status tells it; a timeout is an ordinary end.
+			if status == 0 || status == 400 {
+				reportConnEnd(cfg.logger(), "http/1.1", c.RemoteAddr(), err)
 			}
 		}
 	}
