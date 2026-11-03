@@ -109,6 +109,20 @@ func TestIntervalAddTo(t *testing.T) {
 			Interval{Months: -13},
 			time.Date(2023, 2, 28, 0, 0, 0, 0, time.UTC),
 		},
+		{
+			// The microseconds under a second become nanoseconds added to
+			// the base's own: 1.5 s on 250 ns past the second.
+			"microseconds under a second, onto a base with nanoseconds",
+			time.Date(2024, 1, 1, 0, 0, 0, 250, time.UTC),
+			Interval{Micros: 1_500_000},
+			time.Date(2024, 1, 1, 0, 0, 1, 500_000_250, time.UTC),
+		},
+		{
+			"negative microseconds under a second",
+			time.Date(2024, 1, 1, 0, 0, 1, 0, time.UTC),
+			Interval{Micros: -250},
+			time.Date(2024, 1, 1, 0, 0, 0, 999_750_000, time.UTC),
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -183,6 +197,10 @@ func TestIntervalDurationRefusesTooManyDays(t *testing.T) {
 	big := Interval{Days: 100_000, Micros: 9_000_000_000_000_000}
 	if d, ok := big.Duration(); ok {
 		t.Errorf("Duration = %v, true; want the sum refused", d)
+	}
+	// The same below zero: two negative terms whose sum wraps positive.
+	if d, ok := (Interval{Days: -100_000, Micros: -9_000_000_000_000_000}).Duration(); ok {
+		t.Errorf("Duration = %v, true; want the negative sum refused", d)
 	}
 }
 
