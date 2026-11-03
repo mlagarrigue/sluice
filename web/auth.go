@@ -143,6 +143,14 @@ type Verifier interface {
 // of JWT from one issuer is the application's rule (RFC 8725 §3.12): a typ
 // other than JWT is refused, and Audience, Issuer and TenantClaim are the
 // levers.
+//
+// A token bound to its holder is verified as a bearer token. The verifier
+// sees the token alone, and RFC 7800 §3.1 has a recipient ignore the
+// confirmation members it does not understand, so a `cnf` claim — the
+// client certificate's thumbprint of RFC 8705 §3 — is not checked here. A
+// server that requires the binding asks for client certificates during the
+// handshake and compares the request's certificate with Principal.Claims
+// after the token verifies.
 type HMACConfig struct {
 	// Secret is the shared HMAC key. It must be at least 32 bytes, the size
 	// of the hash output RFC 7518 §3.2 sets as the floor for HS256: shorter,
