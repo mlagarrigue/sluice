@@ -467,3 +467,53 @@ func TestLimitsAbsencesHold(t *testing.T) {
 		}
 	}
 }
+
+// maxGlossaryGroup is how many terms one group of the glossary may hold: a
+// reader scans a dozen, not fifty.
+const maxGlossaryGroup = 12
+
+// The glossary is read by scanning, so it is cut into groups under their own
+// headings, a dozen terms at most each, every group one unbroken list; and a
+// term is defined once — two entries for one word, the second added later
+// and saying something else, is how "Source" came to mean two things.
+func TestGlossaryGroupsAreShortAndTermsDefinedOnce(t *testing.T) {
+	b, err := os.ReadFile("docs/glossary.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := regexp.MustCompile(`^- \*\*([^*]+)\*\*`)
+	seen := map[string]int{}
+	group, count, blank, entries := "", 0, false, 0
+	for i, line := range strings.Split(string(b), "\n") {
+		switch {
+		case strings.HasPrefix(line, "## "):
+			group, count, blank = line[3:], 0, false
+		case line == "":
+			blank = count > 0
+		case entry.MatchString(line):
+			if group == "" {
+				t.Errorf("glossary.md:%d: a term before any group heading", i+1)
+			}
+			if blank {
+				t.Errorf("glossary.md:%d: a blank line splits the group %q", i+1, group)
+			}
+			count++
+			if count == maxGlossaryGroup+1 {
+				t.Errorf("glossary.md: the group %q holds more than %d terms", group, maxGlossaryGroup)
+			}
+			// The first word names the term: "Source, sink…" and "Source"
+			// are one term.
+			term := strings.ToLower(strings.FieldsFunc(entry.FindStringSubmatch(line)[1], func(r rune) bool {
+				return r == ' ' || r == ',' || r == '/' || r == '('
+			})[0])
+			if prev, ok := seen[term]; ok {
+				t.Errorf("glossary.md:%d: %q is defined again (first at line %d)", i+1, term, prev)
+			}
+			seen[term] = i + 1
+			entries++
+		}
+	}
+	if entries < 40 {
+		t.Fatalf("read %d terms; the glossary's shape changed", entries)
+	}
+}
