@@ -1,8 +1,8 @@
 # The interop endpoint's public image, ghcr.io/mlagarrigue/sluice-interop,
 # which the Interop runner workflow pulls (its image input) to cross a
-# release rather than the working tree. Built from a release tag only,
-# never from a commit of main: the runner tests the state the release
-# notes and docs/guide/limits.md describe. `latest` moves with each
+# release rather than the working tree, which its Sunday pass builds from
+# main. Built from a release tag only, never from a commit of main: the
+# image is the state the release notes describe. `latest` moves with each
 # release; the version tag stays. The Release workflow calls this one with
 # the tag it just cut (its token's tag push starts nothing); a tag pushed by
 # hand starts it directly. The dispatch form rebuilds a tag whose image was
