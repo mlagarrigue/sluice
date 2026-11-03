@@ -480,6 +480,14 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 			// charges a stream once). Stream 3 is ServeH3Conn's own: it
 			// ended the connection before this ran.
 			if f.StreamID&0x03 == 0 {
+				// One still assembling is dropped as a RESET_STREAM drops
+				// it: completed later by its DATA and FIN, it would reach a
+				// handler whose response the transport has already reset,
+				// holding its admission slot until then. One in the
+				// handler's hands leaves its batch (ServeH3Conn's cancels).
+				if st := a.streams[f.StreamID]; st != nil && !st.handed {
+					a.Forget(f.StreamID)
+				}
 				a.countCancel(f.StreamID)
 			}
 			continue
