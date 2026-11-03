@@ -1,7 +1,7 @@
 # ADR 0002 — The dependency graph is a decision, never a default
 
 - **Created:** 2026-10-07
-- **Revised:** 2026-10-28 (`audit/` the fifth nested module, `interop/` replaces the root too, the nested tests run by `check.sh`); 3 earlier, from 2026-10-10, in its `git log`
+- **Revised:** 2026-11-03 (what runs on every push named without a count); 4 earlier, from 2026-10-10, in its `git log`
 - **Theme:** ci
 
 ## Problem
@@ -72,11 +72,11 @@ branch of its own it falls behind, and a measurement of code that is no
 longer the code proves nothing about it. The measurements are still taken on
 purpose, not on every push; what runs on every push is `go vet` and one pass
 of every benchmark in the `benchmarks-module` job, `go vet` and `go mod tidy
--diff` of the study's two modules in the same job, golangci-lint in all four
-in the `lint` job, and `TestPGContendersAgree` against PostgreSQL 17 and 18
-in the `postgres` job, so an API change that breaks a module, a benchmark
-that hangs, or a connector that reads other rows than `pgx` goes red the day
-it lands.
+-diff` of the study's two modules in the same job, golangci-lint in every
+nested module in the `lint` job, and `TestPGContendersAgree` against every
+PostgreSQL major of the `postgres` job's matrix, so an API change that
+breaks a module, a benchmark that hangs, or a connector that reads other
+rows than `pgx` goes red the day it lands.
 
 **The nested modules never ship, but they are watched.** They run on the
 project's machines and pin `quic-go`, `pgx`, `gin` and the `x/` modules
