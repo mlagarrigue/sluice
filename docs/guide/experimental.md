@@ -26,15 +26,15 @@ review by security specialists. Fuzzing
 (sending masses of random inputs to find flaws) against a public corpus.
 
 > **In plain words: then why do these packages exist?** A **parser** (the
-> code that reads bytes from the network and makes a request of them) is
+> code that reads bytes from the network and makes something of them) is
 > the most dangerous place in a server: it is where hostile input can do
-> damage. Sluice.go's architecture refuses to write one, and `web` over
-> `net/http` remains the supported path. But the library's thesis — "the
-> batch is the unit of transport, from the byte to the answer" — can only
-> be *verified* if reading the bytes is itself a stream stage. These
-> packages exist to prove that it is feasible and to measure it, not to be
-> deployed as they are. Put them behind something you trust, or do not
-> expose them.
+> damage. The library's thesis — "the batch is the unit of transport, from
+> the byte to the answer" — can only be *verified* if reading the bytes is
+> itself a stream stage, so it carries its own: `net/httpstream`, which
+> reads HTTP/1.1, /2 and /3, is supported and under the compatibility
+> promise. `net/quic` and `net/quic/udp` are the transport under its
+> HTTP/3, the newest and least proven layer; until they meet their exit
+> conditions, put them behind something you trust, or do not expose them.
 
 ## `net/quic` — a recent transport, reimplemented
 

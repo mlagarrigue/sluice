@@ -22,7 +22,7 @@ supported yet.
 | [HTTP/2 clients with a reduced HPACK table](#http2-clients-with-a-reduced-hpack-table) | Yes |
 | [HTTP/2 uploads on a link with latency](#http2-uploads-on-a-link-with-latency) | Yes, with a window to set |
 | [QUIC clients behind a mobile NAT](#quic-clients-behind-a-mobile-nat) | Yes |
-| [A QUIC server on a host with several addresses](#a-quic-server-on-a-host-with-several-addresses) | Linux only |
+| [A QUIC server on a host with several addresses](#a-quic-server-on-a-host-with-several-addresses) | On Linux, macOS and Windows |
 | [HTTP/3 clients resuming in 0-RTT](#http3-clients-resuming-in-0-rtt) | On request |
 | [TLS in front](#tls-in-front) | Yes, by wrapping the listener |
 
@@ -138,12 +138,12 @@ Where it is decided: `net/quic/migration.go`, `issueLocalCIDsLocked` and
 
 ## A QUIC server on a host with several addresses
 
-**Linux only**: `net/quic/udp` learns which address a datagram arrived on
-and answers from it. Elsewhere, `EnablePacketInfo` returns
+**On Linux, macOS and Windows**: `net/quic/udp` learns which address a
+datagram arrived on and answers from it (`IP_PKTINFO`, `IPV6_PKTINFO`).
+Elsewhere (the BSDs, for instance) `EnablePacketInfo` returns
 `errors.ErrUnsupported` and the kernel picks the source by route: the
-client sees a reply come from an address it never wrote to, which for QUIC
-is a different path. Bind the socket to one specific address, or stay on
-Linux.
+client sees a reply come from an address it never wrote to, which for
+QUIC is a different path. There, bind the socket to one specific address.
 
 Where it is decided: `net/quic/udp/udp.go`, `EnablePacketInfo`.
 
