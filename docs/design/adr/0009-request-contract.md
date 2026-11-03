@@ -1,7 +1,7 @@
 # ADR 0009 — One request contract for three protocols
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-28 (the authority as received, compared without regard to case; written in the present tense; the absolute-form, the streaming default and its cost stated as delivered); 3 earlier, from 2026-10-15, in its `git log`
+- **Revised:** 2026-11-03 (subheadings in the Decision); 4 earlier, from 2026-10-15, in its `git log`
 - **Theme:** httpstream
 
 ## Problem
@@ -16,6 +16,8 @@ protocol-neutral requests was meant to remove.
 
 The contract is stated in full on `Handler`, and each protocol's assembly
 enforces it:
+
+### The request line and the header fields
 
 1. **Authority present, under one name.** Delivered as `host` on all three;
    a request carrying both `Host` and `:authority` in disagreement is
@@ -43,6 +45,8 @@ enforces it:
 3. **Header names keep the case the protocol sent.** The handler matches
    case-insensitively (`Request.Get` does) rather than the package rewriting
    what the client sent.
+
+### The body
 
 4. **The body is complete and bounded, or streamed when asked for.** An
    element is a whole request under `MaxBodyBytes`; no partial reads, no
@@ -109,6 +113,8 @@ enforces it:
      default, one — a real consumer had used it — was waived rather than
      met: the first consumer builds on 0.3.0, the one grouped breaking
      version, and a later switch would have cost a second.
+
+### Cookies and the response
 
 5. **The cookie arrives whole.** HTTP/2 and HTTP/3 let a client split its
    `Cookie` into one field per pair (RFC 9113 §8.2.3, RFC 9114 §4.2.1);

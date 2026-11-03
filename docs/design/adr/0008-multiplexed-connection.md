@@ -1,7 +1,7 @@
 # ADR 0008 — A multiplexed connection is a reader, a responder and a writer
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-11-03 (written in the present tense); 10 earlier, from 2026-10-05, in its `git log`
+- **Revised:** 2026-11-03 (written in the present tense; subheadings); 10 earlier, from 2026-10-05, in its `git log`
 - **Theme:** httpstream
 
 ## Problem
@@ -22,6 +22,8 @@ every refusal was a `GOAWAY`, so one bad request among a hundred lost all
 hundred. A multiplexed protocol exists to make requests independent.
 
 ## Decision
+
+### Goroutines and what each owns
 
 Three goroutines per HTTP/2 connection, each owning one piece of state:
 a **reader** (frame parsing, stream states, receive windows, the HPACK
@@ -51,6 +53,8 @@ ENHANCE_YOUR_CALM or H3_EXCESSIVE_LOAD: the rapid-reset bound
 holds on a stalled connection. Concurrency is per batch, not per request: a
 batch that arrived together is still handed to the handler together, in one
 call.
+
+### Every hand-off bounded
 
 Every hand-off is bounded and the bound is stated: reader → responder is a
 channel of `MaxConcurrentStreams` batches that cannot block (a request
@@ -91,6 +95,8 @@ flowchart LR
     W --> OUT[(socket, write side)]
 ```
 
+### What a call hands back
+
 What a call returns is read after it returns. The HTTP/2 responder encodes
 the response and the writer sends its body while later batches of the same
 connection are being handled; HTTP/3 writes each response on a goroutine
@@ -109,6 +115,8 @@ it reuses, at the price of copying every body on the hot path: the rule
 is the handler's to keep, not the writer's to repair.
 
 ## Rationale
+
+### What the shape buys
 
 Streamed responses of any size, a connection that stays responsive, one
 request's failure costing one request, and cancellation that reaches the
@@ -139,6 +147,8 @@ batch is answered whole, and a client giving up on one request does not
 cost the others their answers. It costs one allocation per batch and a
 map entry per stream, and nothing more until the handler asks `ctx.Done`.
 
+### What it costs, measured
+
 The cost is three goroutines per connection plus one per call in
 flight, and their synchronisation, which
 `TestH2ConnectionsLeaveNoGoroutines` keeps honest. Calls run in parallel
@@ -164,6 +174,8 @@ parallel calls and 1.48-2.32 serialised, its p50 1.07-1.18 against
 1.19-1.35. The goroutine costs 1.7% of a request answered alone
 (`BenchmarkH3FromQuicGo/plain`, median of twelve paired rounds, within the
 noise of a sign test).
+
+### The HTTP/3 tail, measured
 
 What remains of the HTTP/3 p99 gap is mostly the apparatus, and partly the
 server. Against the load generator's trivial server, which answers with
@@ -220,6 +232,8 @@ The HTTP/3 p99 is therefore judged against the trivial server's HTTP/3 p99,
 not against HTTP/1.1. Measured locally on 2026-10-22 and 2026-10-23, the
 server on two cores, 8,000 requests per second, two or three alternated
 rounds, eight for the grouped sends.
+
+### What is deliberately not built
 
 Deliberately not built: stream priorities (RFC 9113 deprecated the scheme,
 and the extensible priorities of RFC 9218 that replace it are not read),

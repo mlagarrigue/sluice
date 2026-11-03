@@ -1,7 +1,7 @@
 # ADR 0002 — The dependency graph is a decision, never a default
 
 - **Created:** 2026-10-07
-- **Revised:** 2026-11-03 (what runs on every push named without a count); 4 earlier, from 2026-10-10, in its `git log`
+- **Revised:** 2026-11-03 (what runs on every push named without a count; subheadings); 4 earlier, from 2026-10-10, in its `git log`
 - **Theme:** ci
 
 ## Problem
@@ -17,6 +17,8 @@ PostgreSQL's SCRAM exchange. Without it, a non-ASCII password the server
 normalised does not authenticate.
 
 ## Decision
+
+### The production graph
 
 **Every production dependency is a recorded decision, and the graph is
 kept as small as the job allows.** Today it holds the standard library
@@ -42,6 +44,8 @@ than be reimplemented or excluded. The line falls where the data
 changes: SASLprep's tables (RFC 3454) are frozen by the RFC at Unicode 3.2
 and generated from its text in this repository; NFKC follows every Unicode
 version and comes from the module.
+
+### The nested modules
 
 **Tests and tools that confront the library with others live in separate
 modules**, which depend on this one and never the reverse. A test-only
