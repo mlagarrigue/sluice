@@ -43,7 +43,7 @@ func run(typeName, input, output string) error {
 	if err != nil {
 		return err
 	}
-	generated, err := Generate(src, input, typeName)
+	generated, err := generate(src, input, typeName)
 	if err != nil {
 		return err
 	}

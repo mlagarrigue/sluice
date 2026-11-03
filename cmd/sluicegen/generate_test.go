@@ -24,9 +24,9 @@ func TestCommittedOutputIsCurrent(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		generated, err := Generate(in, filepath.Base(tc.src), tc.typ)
+		generated, err := generate(in, filepath.Base(tc.src), tc.typ)
 		if err != nil {
-			t.Fatalf("Generate(%s) returned %v", tc.typ, err)
+			t.Fatalf("generate(%s) returned %v", tc.typ, err)
 		}
 		committed, err := os.ReadFile(tc.out)
 		if err != nil {
@@ -59,9 +59,9 @@ type Thing struct {
 	At    time.Time        ` + "`db:\"at\"`" + `
 }
 `)
-	out, err := Generate(src, "fixture.go", "Thing")
+	out, err := generate(src, "fixture.go", "Thing")
 	if err != nil {
-		t.Fatalf("Generate returned %v", err)
+		t.Fatalf("generate returned %v", err)
 	}
 	got := string(out)
 	for _, want := range []string{
@@ -85,7 +85,7 @@ func TestDateOptionRefusals(t *testing.T) {
 		"not a time.Time": "N int64 `db:\"n,date\"`",
 		"unknown option":  "N int64 `db:\"n,bogus\"`",
 	} {
-		_, err := Generate([]byte("package p\ntype T struct{ "+field+" }\n"), "p.go", "T")
+		_, err := generate([]byte("package p\ntype T struct{ "+field+" }\n"), "p.go", "T")
 		if err == nil {
 			t.Errorf("%s: accepted", name)
 		}
@@ -112,9 +112,9 @@ type Thing struct {
 	At        time.Time ` + "`db:\"at\"`" + `
 }
 `)
-	out, err := Generate(src, "fixture.go", "Thing")
+	out, err := generate(src, "fixture.go", "Thing")
 	if err != nil {
-		t.Fatalf("Generate returned %v", err)
+		t.Fatalf("generate returned %v", err)
 	}
 	got := string(out)
 
@@ -158,7 +158,7 @@ type Thing struct {
 	Weird map[string]int ` + "`db:\"weird\"`" + `
 }
 `)
-	_, err := Generate(src, "fixture.go", "Thing")
+	_, err := generate(src, "fixture.go", "Thing")
 	if err == nil {
 		t.Fatal("a field of an unmapped type was accepted")
 	}
@@ -173,7 +173,7 @@ type Thing struct {
 func TestUnknownTypeIsNamedInTheError(t *testing.T) {
 	for _, typ := range []string{"map[string]int", "[N]byte", "chan int", "func()", "struct{}"} {
 		src := []byte("package fixture\n\nconst N = 4\n\ntype Thing struct {\n\tF " + typ + " `db:\"f\"`\n}\n")
-		_, err := Generate(src, "fixture.go", "Thing")
+		_, err := generate(src, "fixture.go", "Thing")
 		if err == nil {
 			t.Errorf("%s: accepted", typ)
 			continue
@@ -217,7 +217,7 @@ func TestGenerateErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := Generate([]byte(tt.src), "fixture.go", tt.typ)
+			_, err := generate([]byte(tt.src), "fixture.go", tt.typ)
 			if err == nil {
 				t.Fatal("no error")
 			}

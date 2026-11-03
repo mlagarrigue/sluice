@@ -109,14 +109,14 @@ var typeMapping = map[string]struct {
 	"[16]byte":       {decode: "pgtype.DecodeUUID(b)", oids: []string{"pgtype.OIDUUID"}},
 }
 
-// Generate produces the hydration source for one struct type found in src.
+// generate produces the hydration source for one struct type found in src.
 //
 // src is the Go source of a single file, filename names it in errors, and
 // typeName is the struct to hydrate; the output's package clause is the
 // input's own. Returning the bytes rather than writing them is what makes this
 // testable against a golden file, which is the only way a generator's output
 // stays reviewed.
-func Generate(src []byte, filename, typeName string) ([]byte, error) {
+func generate(src []byte, filename, typeName string) ([]byte, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, filename, src, parser.ParseComments)
 	if err != nil {
