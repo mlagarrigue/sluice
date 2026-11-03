@@ -67,10 +67,13 @@ type cidRegistrar interface {
 	// trace of the connection is gone, which only a key the registrar
 	// keeps for its own lifetime can honour.
 	resetTokenFor(cid []byte) [16]byte
-	// peerMoved follows c to the remote address it now sends to: a
-	// listener finds the connections a stateless reset may be for by that
-	// address (Listener.resetFor).
-	peerMoved(c *Conn, to net.Addr)
+	// peerTokenAdded and peerTokenRetired follow the stateless reset tokens
+	// the peer announced for its identifiers, as they enter c's pool and
+	// leave it: a listener finds the connection a stateless reset is for by
+	// its token (Listener.resetFor), not by walking connections. A zero
+	// token, an identifier the peer gave none, is never passed.
+	peerTokenAdded(c *Conn, token [16]byte)
+	peerTokenRetired(c *Conn, token [16]byte)
 }
 
 // ownerRegistrar is the registrar of a connection that owns its socket —
@@ -100,14 +103,26 @@ func (r *ownerRegistrar) addLocalCID(c *Conn) ([]byte, error) {
 
 func (r *ownerRegistrar) removeLocalCID([]byte) {}
 
-func (r *ownerRegistrar) peerMoved(*Conn, net.Addr) {}
+func (r *ownerRegistrar) peerTokenAdded(*Conn, [16]byte) {}
 
-// setPeerLocked is the one way peer changes once the connection is live,
-// so the registrar follows every move (peerMoved). Callers hold mu.
+func (r *ownerRegistrar) peerTokenRetired(*Conn, [16]byte) {}
+
+// setPeerLocked is the one way peer changes once the connection is live.
+// Callers hold mu.
 func (c *Conn) setPeerLocked(to net.Addr) {
 	c.peer = to
-	if c.registrar != nil {
-		c.registrar.peerMoved(c, to)
+}
+
+// notePeerTokenLocked tells the registrar a peer identifier's stateless
+// reset token entered the pool (added) or left it. Callers hold mu.
+func (c *Conn) notePeerTokenLocked(token [16]byte, added bool) {
+	if c.registrar == nil || token == ([16]byte{}) {
+		return
+	}
+	if added {
+		c.registrar.peerTokenAdded(c, token)
+	} else {
+		c.registrar.peerTokenRetired(c, token)
 	}
 }
 
@@ -465,6 +480,7 @@ func (c *Conn) handleNewConnectionID(f Frame) error {
 		return c.queueRetireLocked(seq)
 	}
 	c.peerCIDs = append(c.peerCIDs, peerCID{seq: seq, cid: append([]byte(nil), cid...), token: token})
+	c.notePeerTokenLocked(token, true)
 	c.rxProgress = true
 	if err := c.retirePeerCIDsBeforeLocked(retire); err != nil {
 		return err
@@ -498,6 +514,7 @@ func (c *Conn) retirePeerCIDsBeforeLocked(retire uint64) error {
 			if err := c.queueRetireLocked(e.seq); err != nil {
 				return err
 			}
+			c.notePeerTokenLocked(e.token, false)
 			continue
 		}
 		kept = append(kept, e)
@@ -664,6 +681,8 @@ func (c *Conn) retirePeerCIDLocked(seq uint64) {
 	for _, e := range c.peerCIDs {
 		if e.seq != seq {
 			kept = append(kept, e)
+		} else {
+			c.notePeerTokenLocked(e.token, false)
 		}
 	}
 	c.peerCIDs = kept

@@ -87,9 +87,9 @@ type Conn struct {
 	// peer is where this connection sends. Once the connection is live it
 	// changes only through setPeerLocked — a server following its client to
 	// a new address (migrateLocked, RFC 9000 §9), a client adopting the
-	// preferred address, either falling back to the last validated path —
-	// so the registrar follows every move; it is guarded by mu like
-	// everything else the send and receive paths share.
+	// preferred address, either falling back to the last validated path.
+	// It is guarded by mu like everything else the send and receive paths
+	// share.
 	peer net.Addr
 
 	// mu comes before a Listener's mu in the lock order: identifier

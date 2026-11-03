@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"net"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1656,8 +1657,8 @@ func TestListenerRecognisesAPeersStatelessReset(t *testing.T) {
 	c.mu.Unlock()
 	l.mu.Lock()
 	l.routeLocked("srv-cid0", c)
-	l.placePeerLocked(c, c.peer)
 	l.mu.Unlock()
+	l.peerTokenAdded(c, token)
 
 	// A short-header datagram naming an identifier nobody issued, ending in
 	// the token: §10.3's reset, as the client sends it.
@@ -1711,8 +1712,8 @@ func TestAStatelessResetIsOnlyLookedForOnItsOwnAddress(t *testing.T) {
 	c.mu.Unlock()
 	l.mu.Lock()
 	l.routeLocked("srv-cid0", c)
-	l.placePeerLocked(c, peer)
 	l.mu.Unlock()
+	l.peerTokenAdded(c, token)
 
 	// A datagram carrying that very token, from an address the connection
 	// knows nothing about. §10.3.1 does not have it compared there.
@@ -1731,10 +1732,11 @@ func TestAStatelessResetIsOnlyLookedForOnItsOwnAddress(t *testing.T) {
 	}
 }
 
-// resetConns is a listener with n live connections, each at its own
-// address reset11:peer-<i> and holding token for an identifier it has used,
-// filed the way the accept path files them; and a datagram ending in token.
-func resetConns(t *testing.T, n int) (*Listener, []*Conn, []byte) {
+// resetConns is a listener with n live connections, connection i at its own
+// address reset11:peer-<i> (or all at reset11:peer when shared) and holding
+// a token of its own for an identifier it has used, filed the way the
+// accept path files them; and, for each, a datagram ending in its token.
+func resetConns(t *testing.T, n int, shared bool) (*Listener, []*Conn, [][]byte) {
 	t.Helper()
 	pc := &capturePC{fuzzSink: fuzzSink{addr: "reset11:self"}, stopped: make(chan struct{})}
 	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}},
@@ -1743,14 +1745,16 @@ func resetConns(t *testing.T, n int) (*Listener, []*Conn, []byte) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = l.Close() })
-	var token [16]byte
-	for i := range token {
-		token[i] = byte(0xb0 + i)
-	}
 	conns := make([]*Conn, n)
+	resets := make([][]byte, n)
 	for i := range conns {
 		peer := fakeFuzzAddr(fmt.Sprintf("reset11:peer-%d", i))
-		c := newConn(pc, peer, []byte(fmt.Sprintf("cli-c%03d", i)), []byte(fmt.Sprintf("srv-c%03d", i)), false, DefaultParameters())
+		if shared {
+			peer = fakeFuzzAddr("reset11:peer")
+		}
+		var token [16]byte
+		token[0], token[1], token[15] = byte(i), byte(i>>8), 0xb0
+		c := newConn(pc, peer, []byte(fmt.Sprintf("cli-c%04d", i)), []byte(fmt.Sprintf("srv-c%04d", i)), false, DefaultParameters())
 		t.Cleanup(func() { _ = c.Close() })
 		c.mu.Lock()
 		c.registrar = l
@@ -1758,15 +1762,16 @@ func resetConns(t *testing.T, n int) (*Listener, []*Conn, []byte) {
 		c.mu.Unlock()
 		l.mu.Lock()
 		l.routeLocked(string(c.scid), c)
-		l.placePeerLocked(c, peer)
 		l.mu.Unlock()
+		l.peerTokenAdded(c, token)
 		conns[i] = c
+		reset := make([]byte, 40)
+		reset[0] = 0x40
+		copy(reset[1:], "made-up0")
+		copy(reset[len(reset)-16:], token[:])
+		resets[i] = reset
 	}
-	reset := make([]byte, 40)
-	reset[0] = 0x40
-	copy(reset[1:], "made-up0")
-	copy(reset[len(reset)-16:], token[:])
-	return l, conns, reset
+	return l, conns, resets
 }
 
 // resetForWithin is l.resetFor, failed if it has not returned in time: a
@@ -1779,71 +1784,116 @@ func resetForWithin(t *testing.T, l *Listener, reset []byte, from net.Addr) *Con
 	case c := <-got:
 		return c
 	case <-time.After(2 * time.Second):
-		t.Fatalf("resetFor from %v waited on the lock of a connection elsewhere", from)
+		t.Fatalf("resetFor from %v waited on the lock of a connection its tail is not a token of", from)
 		return nil
 	}
 }
 
-// An unroutable datagram is compared with the connections on its own
-// address and takes no other connection's lock. Until 2026-10-28 resetFor
-// walked every live connection and took each one's lock to read its
-// address: a flow of unroutable datagrams from an address without a
-// connection serialised the socket-reading goroutine with every receive
-// loop, a lock per connection per datagram. Every
-// connection's lock is held here, so a walk would wait forever.
-func TestAnUnroutableDatagramTakesNoOtherConnectionsLock(t *testing.T) {
-	l, conns, reset := resetConns(t, 8)
-	held := make([]bool, len(conns))
-	for i, c := range conns {
+// An unroutable datagram takes at most one connection's lock: the one whose
+// token its tail is, found by a lookup. Until 2026-10-28 resetFor walked
+// every live connection and took each one's lock; until 2026-11-03 it
+// walked the connections of the datagram's address, so a peer that opened a
+// thousand from one socket made every unroutable datagram cost a thousand
+// locks on the socket-reading goroutine. Every lock but the owner's is held
+// here, so a walk would wait forever.
+func TestAnUnroutableDatagramTakesOneLockAtMost(t *testing.T) {
+	const n = 1024
+	l, conns, resets := resetConns(t, n, true)
+	for _, c := range conns {
 		c.mu.Lock()
-		held[i] = true
 	}
-	// Released on the way out too, so a failure frees the call it timed out.
+	owner := conns[n-1]
+	owner.mu.Unlock()
 	defer func() {
-		for i, c := range conns {
-			if held[i] {
-				c.mu.Unlock()
-			}
+		for _, c := range conns[:n-1] {
+			c.mu.Unlock()
 		}
 	}()
-	if got := resetForWithin(t, l, reset, fakeFuzzAddr("reset11:elsewhere")); got != nil {
-		t.Errorf("a datagram from an address without a connection was taken as %v's reset", got)
+	noise := make([]byte, 40)
+	noise[0] = 0x40
+	if got := resetForWithin(t, l, noise, fakeFuzzAddr("reset11:peer")); got != nil {
+		t.Errorf("a datagram ending in no token was taken as %v's reset", got)
 	}
-	conns[0].mu.Unlock()
-	held[0] = false
-	// From the first connection's address: that connection is compared,
-	// and none of the seven others, whose locks are still held.
-	if got := resetForWithin(t, l, reset, fakeFuzzAddr("reset11:peer-0")); got != conns[0] {
-		t.Errorf("a reset from peer-0 carrying its token returned %v, want peer-0's connection", got)
+	if got := resetForWithin(t, l, resets[n-1], fakeFuzzAddr("reset11:peer")); got != owner {
+		t.Errorf("a reset carrying the last connection's token returned %v, want that connection", got)
 	}
 }
 
-// The index follows the peer: after a move, a reset from the new address is
-// the connection's and one from the old address is not; a forgotten
-// connection is not found, and a move after forget does not file it again.
+// The address is still checked, under the owner's lock: after a move, a
+// reset from the new address is the connection's and one from the old
+// address is not. A forgotten connection is not found, a token it adds
+// after forget is not filed, and a retired token is no longer looked for.
 func TestAStatelessResetFollowsTheMovedPeer(t *testing.T) {
-	l, conns, reset := resetConns(t, 2)
+	l, conns, resets := resetConns(t, 2, false)
 	c, moved := conns[0], fakeFuzzAddr("reset11:moved")
 	c.mu.Lock()
 	c.setPeerLocked(moved)
 	c.mu.Unlock()
-	if got := resetForWithin(t, l, reset, moved); got != c {
+	if got := resetForWithin(t, l, resets[0], moved); got != c {
 		t.Errorf("a reset from the address the connection moved to returned %v, want the connection", got)
 	}
-	if got := resetForWithin(t, l, reset, fakeFuzzAddr("reset11:peer-0")); got != nil {
+	if got := resetForWithin(t, l, resets[0], fakeFuzzAddr("reset11:peer-0")); got != nil {
 		t.Errorf("a reset from the address the connection left returned %v, want none", got)
 	}
 	l.forget(c)
-	c.mu.Lock()
-	c.setPeerLocked(fakeFuzzAddr("reset11:peer-0"))
-	c.mu.Unlock()
+	if got := resetForWithin(t, l, resets[0], moved); got != nil {
+		t.Errorf("a forgotten connection's reset returned %v, want none", got)
+	}
+	l.peerTokenAdded(c, [16]byte{1})
 	l.mu.Lock()
-	_, filed := l.peerOf[c]
+	_, filed := l.tokensOf[c]
 	l.mu.Unlock()
 	if filed {
-		t.Error("a move after forget filed the connection again")
+		t.Error("a token added after forget filed the connection again")
 	}
-	if got := resetForWithin(t, l, reset, fakeFuzzAddr("reset11:peer-1")); got != conns[1] {
+	other := conns[1]
+	if got := resetForWithin(t, l, resets[1], fakeFuzzAddr("reset11:peer-1")); got != other {
 		t.Errorf("the other connection's reset returned %v, want it", got)
+	}
+	l.peerTokenRetired(other, [16]byte(resets[1][len(resets[1])-16:]))
+	if got := resetForWithin(t, l, resets[1], fakeFuzzAddr("reset11:peer-1")); got != nil {
+		t.Errorf("a retired token's reset returned %v, want none", got)
+	}
+}
+
+// tokenRecorder is a registrar that keeps the peer tokens it is told about.
+type tokenRecorder struct {
+	*testRegistrar
+	added, retired [][16]byte
+}
+
+func (r *tokenRecorder) peerTokenAdded(_ *Conn, t [16]byte)   { r.added = append(r.added, t) }
+func (r *tokenRecorder) peerTokenRetired(_ *Conn, t [16]byte) { r.retired = append(r.retired, t) }
+
+// The listener's index is only as good as what the connection tells it: a
+// NEW_CONNECTION_ID's token enters it, and leaves it when Retire Prior To
+// retires the identifier; a zero token, which no reset can carry, is never
+// passed.
+func TestTheConnectionReportsItsPeersTokens(t *testing.T) {
+	c := newConn(&fuzzSink{addr: "tok:self"}, fakeFuzzAddr("tok:peer"),
+		[]byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+	defer c.Close()
+	reg := &tokenRecorder{testRegistrar: newTestRegistrar()}
+	c.mu.Lock()
+	c.registrar = reg
+	c.mu.Unlock()
+	newCID := func(seq, retire uint64, cid string, token [16]byte) Frame {
+		return Frame{Type: frameNewConnectionID, value: seq, offset: retire, Data: append([]byte(cid), token[:]...)}
+	}
+	one, two := [16]byte{1, 15: 1}, [16]byte{2, 15: 2}
+	if err := c.handleNewConnectionID(newCID(1, 0, "peercid1", one)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.handleNewConnectionID(newCID(2, 0, "peercid2", [16]byte{})); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.handleNewConnectionID(newCID(3, 2, "peercid3", two)); err != nil {
+		t.Fatal(err)
+	}
+	if want := [][16]byte{one, two}; !slices.Equal(reg.added, want) {
+		t.Errorf("tokens added = %x, want %x", reg.added, want)
+	}
+	if want := [][16]byte{one}; !slices.Equal(reg.retired, want) {
+		t.Errorf("tokens retired = %x, want %x (sequence 1, retired by Retire Prior To 2)", reg.retired, want)
 	}
 }

@@ -788,6 +788,7 @@ func (c *Conn) handlePeerParameters(raw []byte) error {
 		for i := range c.peerCIDs {
 			if c.peerCIDs[i].seq == 0 {
 				copy(c.peerCIDs[i].token[:], p.statelessResetToken)
+				c.notePeerTokenLocked(c.peerCIDs[i].token, true)
 			}
 		}
 	}
@@ -806,6 +807,7 @@ func (c *Conn) handlePeerParameters(raw []byte) error {
 		// (confirmLocked), as §9.6 requires.
 		pa := p.preferredAddress
 		c.peerCIDs = append(c.peerCIDs, peerCID{seq: 1, cid: append([]byte(nil), pa.cid...), token: pa.statelessResetToken})
+		c.notePeerTokenLocked(pa.statelessResetToken, true)
 		// The address is probed at 1200 bytes with no amplification
 		// limit, so one nothing could answer from is not taken: loopback
 		// offered by a server reached elsewhere (§21.5.6), the unspecified

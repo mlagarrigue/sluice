@@ -3,6 +3,8 @@ package quic
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -11,6 +13,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"time"
 
@@ -383,14 +386,23 @@ type Listener struct {
 	// back without the address. MaxConns itself reads len(keysOf).
 	connsByIP map[string]int
 	ipOf      map[*Conn]string
-	// byPeer files the connections in keysOf by the remote address they
-	// send to, and peerOf is each one's key: resetFor finds a stateless
-	// reset's connections there, by the address §10.3.1 names, instead of
-	// walking every connection and taking each one's lock. A migration
-	// moves the entry (peerMoved, under the connection's lock); forget
-	// removes it.
-	byPeer map[peerKey][]*Conn
-	peerOf map[*Conn]peerKey
+	// byToken files the connections in keysOf by the stateless reset tokens
+	// their peers announced, each token under its image by tokenPRF, and
+	// tokensOf is each connection's images: resetFor finds the one
+	// connection a datagram's tail may be a reset for by a lookup, instead
+	// of comparing it with every connection of the address and taking each
+	// one's lock. The connection follows its pool (peerTokenAdded,
+	// peerTokenRetired, under its lock); forget removes it.
+	//
+	// The images, not the tokens: a map lookup is not a constant-time
+	// comparison, and RFC 9000 §10.3.1 allows comparing "the transformed
+	// values of stateless reset tokens", under a cryptographically secure
+	// pseudorandom function with a secret key, in its place. tokenPRF is
+	// one AES-128 block under a key drawn at NewListener: what the lookup's
+	// timing can tell is about an image no one outside can compute.
+	byToken  map[[16]byte]*Conn
+	tokensOf map[*Conn][][16]byte
+	tokenPRF cipher.Block
 	// spent is the Retry tokens that already admitted a connection, which a
 	// second Initial echoing one must not open again (RFC 9000 §8.1.4).
 	spent spentTokens
@@ -580,6 +592,10 @@ func NewListener(pc net.PacketConn, cfg *tls.Config, params TransportParameters,
 			return nil, err
 		}
 	}
+	tokenPRF, err := newTokenPRF()
+	if err != nil {
+		return nil, err
+	}
 	l := &Listener{
 		pc: pc, sourced: packetInfoSocket(pc), preferred: lcfg.PreferredAddress, preferredV4: preferredV4, preferredV6: preferredV6,
 		cfg: serverTLSConfig(cfg), params: params, lcfg: lcfg,
@@ -589,8 +605,9 @@ func NewListener(pc net.PacketConn, cfg *tls.Config, params TransportParameters,
 		pendingConns: make(map[*Conn]struct{}),
 		connsByIP:    make(map[string]int),
 		ipOf:         make(map[*Conn]string),
-		byPeer:       make(map[peerKey][]*Conn),
-		peerOf:       make(map[*Conn]peerKey),
+		byToken:      make(map[[16]byte]*Conn),
+		tokensOf:     make(map[*Conn][][16]byte),
+		tokenPRF:     tokenPRF,
 		accepted:     make(chan *Conn, lcfg.MaxPendingConns),
 		stop:         make(chan struct{}),
 		done:         make(chan struct{}),
@@ -1295,7 +1312,6 @@ func (l *Listener) bootstrapConn(datagram []byte, from net.Addr, h longHeader, r
 	ip := l.connKey(from)
 	l.ipOf[c] = ip
 	l.connsByIP[ip]++
-	l.placePeerLocked(c, from)
 	l.mu.Unlock()
 
 	go l.runHandshake(c, datagram, from, ecn)
@@ -1491,7 +1507,7 @@ func (l *Listener) forget(c *Conn) {
 		}
 	}
 	delete(l.keysOf, c)
-	l.unplacePeerLocked(c)
+	l.unfileTokensLocked(c)
 	// The per-address count follows ipOf, not keysOf: a connection the
 	// closing listener turned away before registering (above) has keys but
 	// no address, and a second forget of the same one finds neither.
@@ -1578,116 +1594,110 @@ const defaultResetsPerAddress = 4
 // datagram is a stateless reset for: RFC 9000 §10.3.1 has the comparison
 // made "when a packet cannot be associated with a connection", and on a
 // server that is here, not in any connection — the datagram named an
-// identifier the peer made up. The 16-byte tail is compared against the
-// tokens held by the connections *on the datagram's own remote address*,
-// which is the comparison §10.3.1 describes: "all stateless reset tokens
-// associated with the remote address on which the datagram was received"
-// (isStatelessResetFrom; used identifiers only, constant time).
+// identifier the peer made up.
 //
-// That address is also what bounds the cost. The per-second reset budget
-// does not: it is l.resetsSent, which only a reset actually sent raises,
-// and StatelessResetsPerAddress caps one source at four of the sixteen.
-// Measured: 200 datagrams from a single source left it at 4, so compared
-// against every live connection, every datagram would pay the whole
-// table — on the one goroutine that reads the socket, with MaxConns zero
-// by default.
-// Scoped to the address, a flood from a source holding no connection
-// compares nothing, and the budget is left to do what it is for: bounding
-// the resets this end *sends*.
+// The tail is looked up among the tokens of every live connection's pool by
+// its image (byToken), and the one connection it may belong to is then
+// asked under its lock (isStatelessResetFrom): the identifier used, not
+// retired, and the datagram from the remote address §10.3.1 names — "all
+// stateless reset tokens associated with the remote address on which the
+// datagram was received" — compared in constant time. One lookup and at
+// most one lock per datagram, whatever the number of connections: a walk of
+// the connections of the datagram's address would let a peer that opens a
+// thousand from one socket make every unroutable datagram of 21 bytes or
+// more cost a thousand comparisons and locks, on the one goroutine that
+// reads the socket.
 //
-// Those connections are looked up in byPeer, not found by walking the
-// table: a walk would take every live connection's lock to read its
-// address, one lock per connection per datagram on the goroutine that reads
-// the socket, and a flow of unroutable datagrams would keep that goroutine
-// contending with every connection's receive loop. The index follows
-// each migration (setPeerLocked), and isStatelessResetFrom still compares
-// the address under the connection's lock, since a move may land between
-// the lookup and the comparison.
+// The per-second reset budget does not bound this: it is l.resetsSent,
+// which only a reset actually sent raises, and StatelessResetsPerAddress
+// caps one source at four of the sixteen. The budget is left to do what it
+// is for, bounding the resets this end *sends*.
 //
 // Long headers are not compared: §10.3 says "any packet", but a reset has
 // the short-header shape by construction (§10.3), a conforming peer never
 // sends a long-header one, and every Initial from a new client would
-// otherwise pay a comparison per live connection on the accept path.
+// otherwise pay a lookup on the accept path.
 //
-// The connections are listed under l.mu and compared outside it: the
-// established order is Conn.mu then Listener.mu, and isStatelessResetFrom
-// takes the connection's.
+// The connection is found under l.mu and asked outside it: the established
+// order is Conn.mu then Listener.mu, and isStatelessResetFrom takes the
+// connection's.
 func (l *Listener) resetFor(datagram []byte, from net.Addr) *Conn {
 	if len(datagram) < 21 { // §10.3: a reset is at least 21 bytes
 		return nil
 	}
-	var room [4]*Conn
+	image := l.tokenImage([16]byte(datagram[len(datagram)-16:]))
 	l.mu.Lock()
-	conns := append(room[:0], l.byPeer[peerKeyOf(from)]...)
+	c := l.byToken[image]
 	l.mu.Unlock()
-	for _, c := range conns {
-		if c.isStatelessResetFrom(datagram, from) {
-			return c
-		}
+	if c != nil && c.isStatelessResetFrom(datagram, from) {
+		return c
 	}
 	return nil
 }
 
-// peerKey is a remote address as sameAddr compares them: for a UDP address
-// the IP without its IPv4-in-IPv6 mapping, and the port; for any other, its
-// network and text.
-type peerKey struct {
-	ap   netip.AddrPort
-	text string
-}
-
-func peerKeyOf(a net.Addr) peerKey {
-	if u, ok := a.(*net.UDPAddr); ok {
-		ap := u.AddrPort()
-		return peerKey{ap: netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port())}
+// newTokenPRF draws the key byToken's images are made under. It lives as
+// long as the Listener and never leaves it.
+func newTokenPRF() (cipher.Block, error) {
+	var key [16]byte
+	if _, err := rand.Read(key[:]); err != nil {
+		return nil, err
 	}
-	if a == nil {
-		return peerKey{}
-	}
-	return peerKey{text: a.Network() + " " + a.String()}
+	return aes.NewCipher(key[:])
 }
 
-// placePeerLocked files c under the remote address to, out of the one it
-// was filed under. Callers hold mu.
-func (l *Listener) placePeerLocked(c *Conn, to net.Addr) {
-	l.unplacePeerLocked(c)
-	k := peerKeyOf(to)
-	l.byPeer[k] = append(l.byPeer[k], c)
-	l.peerOf[c] = k
+// tokenImage is a stateless reset token under tokenPRF, the value byToken
+// files it by.
+func (l *Listener) tokenImage(token [16]byte) [16]byte {
+	var image [16]byte
+	l.tokenPRF.Encrypt(image[:], token[:])
+	return image
 }
 
-// unplacePeerLocked takes c out of byPeer. Callers hold mu.
-func (l *Listener) unplacePeerLocked(c *Conn) {
-	k, ok := l.peerOf[c]
-	if !ok {
+// peerTokenAdded is cidRegistrar's: c, whose lock the caller holds, holds a
+// peer identifier with this token now (Conn.mu before Listener.mu). A
+// connection already forgotten is not filed again. Two connections given
+// the same token by their peers leave it to the later one: only those
+// peers' own resets go unrecognised.
+func (l *Listener) peerTokenAdded(c *Conn, token [16]byte) {
+	image := l.tokenImage(token)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, live := l.keysOf[c]; !live {
 		return
 	}
-	delete(l.peerOf, c)
-	conns := l.byPeer[k]
-	for i, o := range conns {
-		if o == c {
-			last := len(conns) - 1
-			conns[i], conns[last] = conns[last], nil
-			conns = conns[:last]
-			break
-		}
+	l.byToken[image] = c
+	l.tokensOf[c] = append(l.tokensOf[c], image)
+}
+
+// peerTokenRetired is cidRegistrar's: the identifier with this token left
+// c's pool.
+func (l *Listener) peerTokenRetired(c *Conn, token [16]byte) {
+	image := l.tokenImage(token)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.byToken[image] == c {
+		delete(l.byToken, image)
 	}
-	if len(conns) == 0 {
-		delete(l.byPeer, k)
+	images := l.tokensOf[c]
+	if i := slices.Index(images, image); i >= 0 {
+		images = slices.Delete(images, i, i+1)
+	}
+	if len(images) == 0 {
+		delete(l.tokensOf, c)
 	} else {
-		l.byPeer[k] = conns
+		l.tokensOf[c] = images
 	}
 }
 
-// peerMoved is cidRegistrar's: c, whose lock the caller holds, now sends to
-// to (Conn.mu before Listener.mu). A connection already forgotten is not
-// filed again.
-func (l *Listener) peerMoved(c *Conn, to net.Addr) {
-	l.mu.Lock()
-	if _, ok := l.peerOf[c]; ok {
-		l.placePeerLocked(c, to)
+// unfileTokensLocked takes every token of c out of byToken. Callers hold
+// mu.
+func (l *Listener) unfileTokensLocked(c *Conn) {
+	for _, image := range l.tokensOf[c] {
+		if l.byToken[image] == c {
+			delete(l.byToken, image)
+		}
 	}
-	l.mu.Unlock()
+	delete(l.tokensOf, c)
 }
 
 // resetBudgetLocked reports whether this end may still spend a reset on src
