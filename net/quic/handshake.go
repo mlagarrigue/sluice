@@ -554,7 +554,13 @@ func (c *Conn) pump() (done bool, err error) {
 }
 
 // handleTLSEvent acts on one crypto/tls event; done reports the handshake
-// complete.
+// complete. One case per event kind: a read or write secret installs keys
+// (0-RTT's apart from the application space's); QUICResumeSession admits or
+// refuses a resumption and its 0-RTT; QUICStoreSession keeps a ticket;
+// QUICRejectedEarlyData fails what 0-RTT carried; QUICWriteData sends
+// CRYPTO bytes; QUICTransportParameters reads the peer's; QUICHandshakeDone
+// completes the handshake; QUICErrorEvent returns crypto/tls's error; any
+// other kind is counted and passed over.
 func (c *Conn) handleTLSEvent(e tls.QUICEvent) (done bool, err error) {
 	switch e.Kind {
 	case tls.QUICSetReadSecret, tls.QUICSetWriteSecret:

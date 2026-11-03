@@ -646,7 +646,14 @@ type startupState struct {
 	negotiated bool
 }
 
-// authenticate drives the exchange from the startup packet to ReadyForQuery.
+// authenticate drives the exchange from the startup packet to ReadyForQuery,
+// one case per message the server may send: NegotiateProtocolVersion, once,
+// settles the version; Authentication runs one step of the method through
+// authStep; ParameterStatus and BackendKeyData are recorded; a notice is
+// passed over; ErrorResponse is the server's refusal; ReadyForQuery ends the
+// exchange once it holds the SCRAM exchange finished, a credential asked
+// for when Config.RequireAuth says so, and the channel binding
+// Config.ChannelBinding requires. Any other message breaks the connection.
 func (c *Conn) authenticate(cfg Config, ts tlsStater) error {
 	st := startupState{version: cfg.maxProtocol()}
 	for {

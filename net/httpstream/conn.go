@@ -259,7 +259,14 @@ func (r *h1Conn) next() ([]Request, bool) {
 }
 
 // parseBuffered takes as many complete requests as the buffer holds, stopping
-// at the batch bound.
+// at the batch bound. Each turn of its loop runs in this order: parse the
+// next request; on Expect: 100-continue, stop — sending the 100 when the
+// request opens the batch; on an incomplete one, stop; on a body that
+// streams, take that request alone and stop; on a refusal, stop before it,
+// or return it when it opens the batch; otherwise take the request, and stop
+// after one that closes the connection, spends its request budget, or
+// speaks HTTP/1.0. The header views are cut from the arena last, once it
+// can no longer move.
 func (r *h1Conn) parseBuffered() (batch []Request, used int, err error) {
 	r.batch, r.headers, r.bounds = r.batch[:0], r.headers[:0], r.bounds[:0]
 	// A batch may not serve more than the connection has left, and it may

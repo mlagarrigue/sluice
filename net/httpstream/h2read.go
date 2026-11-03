@@ -300,6 +300,13 @@ func (s *h2Conn) lookup(id uint32) *h2Stream {
 	return &s.late
 }
 
+// frame applies one frame to the connection, one case per frame type:
+// SETTINGS (acknowledged, or checked and applied), PING, WINDOW_UPDATE,
+// RST_STREAM under the rapid-reset bound, GOAWAY, PRIORITY, a refused
+// PUSH_PROMISE, then HEADERS and CONTINUATION through headers and DATA
+// through data. It returns the stream whose request the frame completed, if
+// any, and a streamError for consume to reset or any other error to end the
+// connection.
 func (s *h2Conn) frame(f h2Frame) (*h2Stream, error) {
 	switch f.Type {
 	case frameSettings:
@@ -663,6 +670,14 @@ func (s *h2Conn) blockRefused(st *h2Stream, err error) error {
 	return statusFail(st.id, 431, nil, "%w", err)
 }
 
+// data takes one DATA frame, in this order: refuse it on a stream never
+// opened or before its headers, and count a forgotten stream's against the
+// connection window alone; debit the connection window; drop it on a
+// stream already closed, refuse it on one half-closed or past its
+// trailers; strip the padding; turn the body into a stream past what Body
+// may hold, or answer 413 under BodyWhole; hand a streaming body its
+// bytes, or append them under the aggregate bound; debit the stream's
+// window and grant it back at half; finish the request on END_STREAM.
 func (s *h2Conn) data(f h2Frame) (*h2Stream, error) {
 	st := s.lookup(f.StreamID)
 	if st == nil {
