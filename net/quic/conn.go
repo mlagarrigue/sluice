@@ -456,6 +456,11 @@ type Conn struct {
 	// was accepted), after which it is never given back.
 	earlyTicket []byte
 	earlyTaken  bool
+	// earlyEnded says the connection's end gave its reservation back
+	// (enterClosingLocked): one crypto/tls makes after that, on the
+	// handshake goroutine, is given back at once rather than kept by a
+	// connection nothing will release it from.
+	earlyEnded bool
 	// ticketChainOrigin is when the full handshake a resuming client's
 	// chain of tickets started from (ticketchain.go), zero on a full
 	// handshake. Set on the handshake goroutine, read by issueTicket there.

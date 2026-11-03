@@ -586,6 +586,7 @@ func (c *Conn) keepClosingDatagramLocked(pc net.PacketConn, b []byte, to net.Add
 // read loop, which keeps answering until end, returns (holdClosing).
 func (c *Conn) enterClosingLocked() {
 	c.releaseEarlyTicketLocked() // a handshake that ends here used no 0-RTT
+	c.earlyEnded = true
 	if len(c.closing.datagrams) == 0 && (!c.draining || !c.holdsClosingLocked()) {
 		c.closing.left = true
 		if !c.closing.loop {

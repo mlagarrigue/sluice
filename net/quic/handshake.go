@@ -371,6 +371,37 @@ func (c *Conn) installEarly(suiteID uint16, secret []byte) error {
 	return nil
 }
 
+// reserveEarlyTicket is the server's half of a resumption: a client resumes,
+// and its 0-RTT stands only if this listener admits the ticket (ADR 0019);
+// otherwise crypto/tls answers without early_data, and no 0-RTT packet is
+// read (RFC 9001 §4.6.2). The ticket is reserved here; installEarly confirms
+// the reservation when the 0-RTT is accepted, and releaseEarlyTicketLocked
+// gives it back otherwise. Recorded under mu, as the close that gives it
+// back reads it; a connection already ended gives it back at once.
+func (c *Conn) reserveEarlyTicket(ss *tls.SessionState) {
+	if !ss.EarlyData {
+		return
+	}
+	var id []byte
+	ok := false
+	if c.early != nil {
+		id, ok = c.early.eligible(ss.Extra, time.Now())
+	}
+	c.mu.Lock()
+	if c.earlyEnded {
+		if ok {
+			c.early.release(id)
+		}
+		ok = false
+	} else {
+		c.earlyTicket = append([]byte(nil), id...)
+	}
+	c.mu.Unlock()
+	if !ok {
+		ss.EarlyData = false
+	}
+}
+
 // releaseEarlyTicketLocked gives the listener's register back a ticket this
 // connection reserved (eligible) and never used: the handshake ended
 // without the early keys, or the connection ends before it did. Idempotent;
@@ -566,23 +597,7 @@ func (c *Conn) handleTLSEvent(e tls.QUICEvent) (done bool, err error) {
 			// The chain this resumption continues, for the ticket this
 			// connection issues (ticketOptions).
 			c.ticketChainOrigin = ticketChainOrigin(e.SessionState.Extra)
-			// A client resumes. Its 0-RTT stands only if this listener
-			// admits the ticket (ADR 0019); otherwise crypto/tls answers
-			// without early_data, and no 0-RTT packet is read (RFC 9001
-			// §4.6.2). The ticket is reserved here; installEarly confirms
-			// the reservation when the 0-RTT is accepted, and
-			// releaseEarlyTicketLocked gives it back otherwise.
-			if e.SessionState.EarlyData {
-				var id []byte
-				ok := false
-				if c.early != nil {
-					id, ok = c.early.eligible(e.SessionState.Extra, time.Now())
-				}
-				if !ok {
-					e.SessionState.EarlyData = false
-				}
-				c.earlyTicket = append([]byte(nil), id...)
-			}
+			c.reserveEarlyTicket(e.SessionState)
 			return false, nil
 		}
 		// This client resumes from a ticket. It offers 0-RTT only under
