@@ -199,22 +199,38 @@ func pipelinedClient(t *testing.T, addr string, n int) {
 }
 
 // concurrentClient opens n connections at once, one request each — the shape
-// the gateway was built for.
+// the gateway was built for. Every connection is dialled and its goroutine
+// waiting before any request leaves: the n requests are meant to arrive
+// together, and on a loaded machine dials and goroutine starts spread over
+// more than the gateway's window, which counted the scheduler, not the
+// gateway (one more round trip under check.sh at load 30).
 func concurrentClient(t *testing.T, addr string, n int) {
 	t.Helper()
-	var wg sync.WaitGroup
-	for i := range n {
+	conns := make([]net.Conn, n)
+	for i := range conns {
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			// Surfaced, not swallowed: a failed dial would otherwise show
+			// up only as a short call count in the caller's assertion.
+			t.Errorf("connection %d: dial: %v", i, err)
+			continue
+		}
+		conns[i] = c
+	}
+	var ready, wg sync.WaitGroup
+	start := make(chan struct{})
+	for i, c := range conns {
+		if c == nil {
+			continue
+		}
+		ready.Add(1)
 		wg.Go(func() {
-			c, err := net.Dial("tcp", addr)
-			if err != nil {
-				// Surfaced, not swallowed: a failed dial would otherwise show
-				// up only as a short call count in the caller's assertion.
-				t.Errorf("connection %d: dial: %v", i, err)
-				return
-			}
 			defer func() { _ = c.Close() }()
 			_ = c.SetDeadline(time.Now().Add(30 * time.Second))
-			if _, err := fmt.Fprintf(c, "GET /o/%d HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n", i); err != nil {
+			req := fmt.Appendf(nil, "GET /o/%d HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n", i)
+			ready.Done()
+			<-start
+			if _, err := c.Write(req); err != nil {
 				t.Errorf("connection %d: write: %v", i, err)
 				return
 			}
@@ -223,6 +239,8 @@ func concurrentClient(t *testing.T, addr string, n int) {
 			}
 		})
 	}
+	ready.Wait()
+	close(start)
 	wg.Wait()
 }
 
