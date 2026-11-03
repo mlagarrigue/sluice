@@ -25,7 +25,7 @@ func TestAServerWithoutALPNClosesWithNoApplicationProtocol(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := NewListener(pc, srvCfg, DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(pc, srvCfg, DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestAServerWithoutALPNClosesWithNoApplicationProtocol(t *testing.T) {
 	clientPC := loopbackSocket(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c, err := newClientConn(ctx, clientPC, l.Addr(), ClientTLSForTest(), DefaultParameters())
+	c, err := newClientConn(ctx, clientPC, l.Addr(), ClientTLSForTest(), DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}

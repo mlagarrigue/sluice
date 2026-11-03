@@ -87,7 +87,7 @@ type Conn struct {
 
 	scid     []byte
 	isClient bool
-	params   TransportParameters // this endpoint's own announcements
+	params   Config // this endpoint's own announcements and local settings
 
 	// peer is where this connection sends. Once the connection is live it
 	// changes only through setPeerLocked — a server following its client to
@@ -793,7 +793,7 @@ func (c *Conn) fail(err error) {
 // A layer above sizing its own queues wants the same bounds the transport
 // enforces — most of all the stream limit, which is what caps how many
 // requests can be admitted and unanswered at once.
-func (c *Conn) LocalParameters() TransportParameters { return c.params }
+func (c *Conn) LocalParameters() TransportParameters { return c.params.TransportParameters }
 
 // ConnectionState reports the TLS state the handshake settled: the
 // negotiated application protocol (NegotiatedProtocol, what a server

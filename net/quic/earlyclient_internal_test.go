@@ -14,7 +14,7 @@ import (
 func TestParkedWriterDoesNotHoldAGatheredDatagram(t *testing.T) {
 	tap := newTap(&fuzzSink{addr: "parked:self"})
 	dcid, scid := []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}
-	c := assembleConn(tap, fakeFuzzAddr("parked:peer"), dcid, scid, true, DefaultParameters())
+	c := assembleConn(tap, fakeFuzzAddr("parked:peer"), dcid, scid, true, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	c.initialDCID = dcid
 
@@ -28,10 +28,10 @@ func TestParkedWriterDoesNotHoldAGatheredDatagram(t *testing.T) {
 	if err := c.installEarlySealer(tls.TLS_AES_128_GCM_SHA256, make([]byte, 32)); err != nil {
 		t.Fatalf("early sealer: %v", err)
 	}
-	srv := DefaultParameters()
+	srv := DefaultConfig()
 	srv.initialSourceCID = dcid
 	srv.originalDCID = dcid
-	if err := c.handlePeerParameters(appendParameters(nil, srv)); err != nil {
+	if err := c.handlePeerParameters(appendParameters(nil, srv.TransportParameters)); err != nil {
 		t.Fatalf("server parameters: %v", err)
 	}
 	s, err := c.OpenUniStream(context.Background())
@@ -74,7 +74,7 @@ func TestParkedWriterDoesNotHoldAGatheredDatagram(t *testing.T) {
 func TestZeroRTTPacketPendingAtTheKeyChangeLeaves(t *testing.T) {
 	tap := newTap(&fuzzSink{addr: "keychange:self"})
 	dcid, scid := []byte("dcid0000"), []byte("scid0000")
-	c := assembleConn(tap, fakeFuzzAddr("keychange:peer"), dcid, scid, true, DefaultParameters())
+	c := assembleConn(tap, fakeFuzzAddr("keychange:peer"), dcid, scid, true, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	c.initialDCID = dcid
 	if err := c.installInitial(dcid); err != nil {
@@ -159,7 +159,7 @@ func TestZeroRTTPacketPendingAtTheKeyChangeLeaves(t *testing.T) {
 func TestSealWithoutZeroRTTKeysRequeuesThePayload(t *testing.T) {
 	tap := newTap(&fuzzSink{addr: "nosealer:self"})
 	dcid, scid := []byte("dcid0000"), []byte("scid0000")
-	c := assembleConn(tap, fakeFuzzAddr("nosealer:peer"), dcid, scid, true, DefaultParameters())
+	c := assembleConn(tap, fakeFuzzAddr("nosealer:peer"), dcid, scid, true, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 
 	c.mu.Lock()
@@ -191,7 +191,7 @@ func TestSealWithoutZeroRTTKeysRequeuesThePayload(t *testing.T) {
 func TestAZeroRTTWriteTheSocketRefusedStillAdvancesTheStream(t *testing.T) {
 	pc := &failingWritePC{fuzzSink{addr: "refused:self"}}
 	dcid, scid := []byte("dcid0000"), []byte("scid0000")
-	c := assembleConn(pc, fakeFuzzAddr("refused:peer"), dcid, scid, true, DefaultParameters())
+	c := assembleConn(pc, fakeFuzzAddr("refused:peer"), dcid, scid, true, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	c.initialDCID = dcid
 	if err := c.installInitial(dcid); err != nil {

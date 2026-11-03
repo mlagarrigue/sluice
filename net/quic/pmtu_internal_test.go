@@ -68,11 +68,11 @@ func (p *mtuPC) setMTU(mtu int) {
 // returns both connections once the handshake is confirmed on each.
 func pmtuPair(t *testing.T, mtu int) (client, server *Conn, clientPC *mtuPC) {
 	t.Helper()
-	return pmtuPairWith(t, mtu, DefaultParameters())
+	return pmtuPairWith(t, mtu, DefaultConfig())
 }
 
 // pmtuPairWith is pmtuPair with both ends built from params.
-func pmtuPairWith(t *testing.T, mtu int, params TransportParameters) (client, server *Conn, clientPC *mtuPC) {
+func pmtuPairWith(t *testing.T, mtu int, params Config) (client, server *Conn, clientPC *mtuPC) {
 	t.Helper()
 	serverPC := newMTUPC(t, mtu)
 	l, err := NewListener(serverPC, ServerTLSForTest(t), params, ListenerConfig{})
@@ -235,7 +235,7 @@ func TestPMTUSearchSettlesWithin20Bytes(t *testing.T) {
 // lost the probe after 1452 is the ceiling itself — a 9000-byte jumbo path
 // both ends opened up reaches 8952 in two probes.
 func TestPMTUSearchReachesAJumboCeiling(t *testing.T) {
-	params := DefaultParameters()
+	params := DefaultConfig()
 	params.MaxDatagramSize = 8952
 	params.MaxUDPPayloadSize = 8952
 	client, server, clientPC := pmtuPairWith(t, 9000, params)
@@ -253,7 +253,7 @@ func TestPMTUSearchReachesAJumboCeiling(t *testing.T) {
 // The ceiling is bounded by what the peer reads: a client opened up to 8952
 // facing a server that announces the default 1452 stops at 1452.
 func TestPMTUCeilingBoundedByThePeer(t *testing.T) {
-	params := DefaultParameters()
+	params := DefaultConfig()
 	params.MaxDatagramSize = 8952
 	client, _, _ := pmtuPairWith(t, 9000, params)
 	waitFor(t, "the client's search complete", func() bool { return client.pmtuSnapshot().done })
@@ -267,7 +267,7 @@ func TestPMTUCeilingBoundedByThePeer(t *testing.T) {
 // themselves and zero are accepted.
 func TestMaxDatagramSizeOutOfRangeIsRefused(t *testing.T) {
 	for _, n := range []int{1199, 65528, -1} {
-		p := DefaultParameters()
+		p := DefaultConfig()
 		p.MaxDatagramSize = n
 		if err := p.check(); err == nil {
 			t.Errorf("MaxDatagramSize %d accepted", n)
@@ -277,7 +277,7 @@ func TestMaxDatagramSizeOutOfRangeIsRefused(t *testing.T) {
 		}
 	}
 	for _, n := range []int{0, 1200, 65527} {
-		p := DefaultParameters()
+		p := DefaultConfig()
 		p.MaxDatagramSize = n
 		if err := p.check(); err != nil {
 			t.Errorf("MaxDatagramSize %d refused: %v", n, err)

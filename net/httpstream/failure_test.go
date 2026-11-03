@@ -69,7 +69,7 @@ func recordingLogger(t *testing.T) (*slog.Logger, func(value, frame string)) {
 // the operator sees why.
 func TestH3HandlerPanicIsLogged(t *testing.T) {
 	logger, logged := recordingLogger(t)
-	conn, _, _ := startH3With(t, Config{Logger: logger}, quic.DefaultParameters(), quic.DefaultParameters(),
+	conn, _, _ := startH3With(t, Config{Logger: logger}, quic.DefaultConfig(), quic.DefaultConfig(),
 		func(context.Context, sluice.Batch[Request]) sluice.Batch[Response] {
 			panic("the caller's own bug")
 		})

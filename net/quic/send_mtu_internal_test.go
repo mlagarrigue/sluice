@@ -89,7 +89,7 @@ func sealedAppConn(t *testing.T) (*Conn, *tapPC) {
 	t.Helper()
 	pcA, pcB := newLoopbackPair(t)
 	tap := newTap(pcA)
-	c := newConn(tap, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(tap, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	sec, err := initialSecrets([]byte("appkeys0"))
 	if err != nil {
@@ -174,7 +174,7 @@ func TestPacketsFitTheDatagramWhateverTheirHeader(t *testing.T) {
 	t.Run("0-RTT with the control queue", func(t *testing.T) {
 		tap := newTap(&fuzzSink{addr: "fit:self"})
 		dcid, scid := []byte{1, 2, 3, 4, 5, 6, 7, 8}, []byte{9, 10, 11, 12, 13, 14, 15, 16}
-		c := assembleConn(tap, fakeFuzzAddr("fit:peer"), dcid, scid, true, DefaultParameters())
+		c := assembleConn(tap, fakeFuzzAddr("fit:peer"), dcid, scid, true, DefaultConfig())
 		t.Cleanup(func() { _ = c.Close() })
 		c.initialDCID = dcid
 		c.remembered = TransportParameters{
@@ -186,10 +186,10 @@ func TestPacketsFitTheDatagramWhateverTheirHeader(t *testing.T) {
 		if err := c.installEarlySealer(tls.TLS_AES_128_GCM_SHA256, make([]byte, 32)); err != nil {
 			t.Fatalf("early sealer: %v", err)
 		}
-		srv := DefaultParameters()
+		srv := DefaultConfig()
 		srv.initialSourceCID = dcid
 		srv.originalDCID = dcid
-		if err := c.handlePeerParameters(appendParameters(nil, srv)); err != nil {
+		if err := c.handlePeerParameters(appendParameters(nil, srv.TransportParameters)); err != nil {
 			t.Fatalf("server parameters: %v", err)
 		}
 		s, err := c.OpenUniStream(context.Background())
@@ -215,7 +215,7 @@ func TestPacketsFitTheDatagramWhateverTheirHeader(t *testing.T) {
 	t.Run("an Initial with a Retry token", func(t *testing.T) {
 		tap := newTap(&fuzzSink{addr: "fit2:self"})
 		dcid, scid := []byte{1, 2, 3, 4, 5, 6, 7, 8}, []byte{9, 10, 11, 12, 13, 14, 15, 16}
-		c := assembleConn(tap, fakeFuzzAddr("fit2:peer"), dcid, scid, true, DefaultParameters())
+		c := assembleConn(tap, fakeFuzzAddr("fit2:peer"), dcid, scid, true, DefaultConfig())
 		t.Cleanup(func() { _ = c.Close() })
 		if err := c.installInitial(dcid); err != nil {
 			t.Fatal(err)
@@ -443,7 +443,7 @@ func TestARetryTokenTheInitialCannotCarryIsDiscarded(t *testing.T) {
 		tap := newTap(&fuzzSink{addr: "retrytok:self"})
 		dcid, scid := []byte{1, 2, 3, 4, 5, 6, 7, 8}, []byte{9, 10, 11, 12, 13, 14, 15, 16}
 		peer := fakeFuzzAddr("retrytok:peer")
-		c := assembleConn(tap, peer, dcid, scid, true, DefaultParameters())
+		c := assembleConn(tap, peer, dcid, scid, true, DefaultConfig())
 		if err := c.installInitial(dcid); err != nil {
 			t.Fatal(err)
 		}
@@ -535,7 +535,7 @@ func TestDialCompletesPastALongRetryToken(t *testing.T) {
 	var key [32]byte
 	key[0] = 1
 	pc := &inflatingPC{PacketConn: serverPC, key: key, size: 900}
-	l, err := NewListener(pc, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{AlwaysRetry: true, TokenKey: key})
+	l, err := NewListener(pc, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{AlwaysRetry: true, TokenKey: key})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -551,7 +551,7 @@ func TestDialCompletesPastALongRetryToken(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	client, err := Dial(ctx, clientPC, serverPC.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	client, err := Dial(ctx, clientPC, serverPC.LocalAddr(), ClientTLSForTest(), DefaultConfig())
 	if err != nil {
 		t.Fatalf("Dial past a Retry with a long token: %v", err)
 	}

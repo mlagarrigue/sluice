@@ -1155,7 +1155,7 @@ func (a *h3Assembler) retire() {
 
 // h3FrameSlack is the room a request's frame headers take beyond its header
 // and body bounds — a few varints per frame, generously rounded. ServeH3Conn's
-// stream window (Config.TransportParameters) carries the same headroom.
+// stream window (Config.QUICConfig) carries the same headroom.
 const h3FrameSlack = 4096
 
 // rawStreamBound is what one request stream's unparsed bytes may reach: a

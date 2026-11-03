@@ -94,7 +94,7 @@ func (f h2Frame) EndsHeaders() bool {
 // has no initial value for it — a peer that is told nothing may open as many
 // as it likes — so saying a number is the bound, not a preference; 100 is
 // the floor RFC 9114 §6.1 recommends an HTTP/3 server grant, and what
-// [quic.DefaultParameters] grants, so one number serves both protocols.
+// [quic.DefaultConfig] grants, so one number serves both protocols.
 const defaultMaxConcurrency = 100
 
 // ErrH2Protocol reports a frame sequence this package will not accept. Like

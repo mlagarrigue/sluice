@@ -390,7 +390,7 @@ type Config struct {
 	// The zero value, [BodyStreamed], streams it on every protocol
 	// (docs/design/adr/0009, article 4) — on HTTP/3 when the QUIC
 	// connection's windows cover a request's head, MaxHeaderBytes and a few
-	// kilobytes of framing, which [Config.TransportParameters] gives:
+	// kilobytes of framing, which [Config.QUICConfig] gives:
 	// streaming needs the transport's manual credit, and on smaller windows
 	// bodies arrive whole. A value that names neither form is refused.
 	BodyDelivery BodyDelivery
@@ -445,7 +445,7 @@ type Config struct {
 	// it is refused (REFUSED_STREAM, H3_REQUEST_REJECTED) rather than the
 	// connection lost (RFC 9113 §5.1.2, RFC 9114 §5.2). Zero means 100 for
 	// both: RFC 9114 §6.1 has an HTTP/3 server grant at least 100 request
-	// streams, [quic.DefaultParameters] grants exactly that as its
+	// streams, [quic.DefaultConfig] grants exactly that as its
 	// InitialMaxStreamsBidi, so a zero config admits what the transport
 	// invites, and HTTP/2 advertises the same number as
 	// SETTINGS_MAX_CONCURRENT_STREAMS. Over HTTP/2 a stream holds its slot
@@ -500,7 +500,7 @@ type Config struct {
 	// silence, where silence means no stream activity: a PING, SETTINGS or
 	// WINDOW_UPDATE does not restart the clock, so a peer cannot hold a
 	// connection it never uses; over HTTP/3 the transport keeps it, as the
-	// max_idle_timeout that [Config.TransportParameters] derives from this
+	// max_idle_timeout that [Config.QUICConfig] derives from this
 	// field, so a connection ServeH3Conn serves on other parameters has the
 	// idle timeout those parameters say, not this one. That clock is QUIC's,
 	// and any packet from the peer restarts it, PING included (RFC 9000
@@ -702,7 +702,7 @@ type Config struct {
 	// protocol's own initial value; a value over 2^31-1 — the largest a
 	// window can be (RFC 9113 §6.5.2) — is refused rather than advertised as
 	// a setting the peer must refuse. HTTP/2 only: HTTP/3's windows are the
-	// QUIC transport's, in [Config.TransportParameters].
+	// QUIC transport's, in [Config.QUICConfig].
 	//
 	// The window is what a client may have in flight on one stream before it
 	// hears back, so on a link with latency it is the ceiling on an upload's

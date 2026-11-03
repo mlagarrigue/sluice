@@ -27,7 +27,7 @@ func BenchmarkServeH3(b *testing.B) {
 			b.Cleanup(func() { cancel(); <-served })
 			go func() {
 				defer close(served)
-				conn, err := acceptOne(b, serverPC, h3ServerTLS(b), quic.DefaultParameters())
+				conn, err := acceptOne(b, serverPC, h3ServerTLS(b), quic.DefaultConfig())
 				if err != nil {
 					b.Error(err)
 					return
@@ -40,7 +40,7 @@ func BenchmarkServeH3(b *testing.B) {
 					return sluice.Batch[Response]{Items: res}
 				})
 			}()
-			conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+			conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultConfig())
 			if err != nil {
 				b.Fatalf("Dial: %v", err)
 			}

@@ -9,7 +9,7 @@ import "time"
 //
 // The search (RFC 8899 §5.3) runs between the last size confirmed and the
 // smallest size lost, from 1200 up to a ceiling: the caller's
-// [TransportParameters.MaxDatagramSize] (1452 when zero), no more than the
+// [Config.MaxDatagramSize] (1452 when zero), no more than the
 // peer's max_udp_payload_size (§5.3.1: MAX_PLPMTU is the local MTU bounded
 // by EMTU_R, and "MAY be reduced by an application"). The first probe is
 // 1452 — 1500-byte Ethernet less the IPv6 and UDP headers, the path that
@@ -54,7 +54,7 @@ import "time"
 
 const (
 	// pmtuCommonSize is the first size probed, and the ceiling when
-	// [TransportParameters.MaxDatagramSize] is zero.
+	// [Config.MaxDatagramSize] is zero.
 	pmtuCommonSize = 1452
 	// pmtuBaseSize is the size every path carries (RFC 9000 §14.1), where
 	// each path starts and where a black hole falls back to.

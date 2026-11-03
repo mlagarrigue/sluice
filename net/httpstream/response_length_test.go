@@ -212,7 +212,7 @@ func TestResponseContentLengthOverHTTP2(t *testing.T) {
 }
 
 func TestResponseContentLengthOverHTTP3(t *testing.T) {
-	conn, _, _ := startH3(t, quic.DefaultParameters(), lengthHandler(nil))
+	conn, _, _ := startH3(t, quic.DefaultConfig(), lengthHandler(nil))
 	s := askH3(t, conn, h3Request("GET", "/exact"))
 	_ = s.SetReadDeadline(time.Now().Add(10 * time.Second))
 	raw, err := io.ReadAll(s)

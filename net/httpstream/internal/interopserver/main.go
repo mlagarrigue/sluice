@@ -111,7 +111,7 @@ func serveH3(listen string) {
 		MinVersion:   tls.VersionTLS13,
 		NextProtos:   []string{"h3"},
 	}
-	ln, err := quic.NewListener(pc, cfg, quic.DefaultParameters(), quic.ListenerConfig{})
+	ln, err := quic.NewListener(pc, cfg, quic.DefaultConfig(), quic.ListenerConfig{})
 	if err != nil {
 		log.Fatal(err)
 	}

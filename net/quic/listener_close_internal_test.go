@@ -23,7 +23,7 @@ func newInternalUDPListener(t *testing.T, network, addr string, lcfg ListenerCon
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := NewListener(pc, ServerTLSForTest(t), DefaultParameters(), lcfg)
+	l, err := NewListener(pc, ServerTLSForTest(t), DefaultConfig(), lcfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +33,7 @@ func newInternalUDPListener(t *testing.T, network, addr string, lcfg ListenerCon
 
 func dialInternal(t *testing.T, pc net.PacketConn, to net.Addr) *Conn {
 	t.Helper()
-	c, err := Dial(context.Background(), pc, to, ClientTLSForTest(), DefaultParameters())
+	c, err := Dial(context.Background(), pc, to, ClientTLSForTest(), DefaultConfig())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestListenerRefusesWhenThePendingTableIsFull(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{MaxPendingConns: 2})
+	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultConfig(), ListenerConfig{MaxPendingConns: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -441,7 +441,7 @@ func TestAFailedHandshakeRepeatsItsCloseToARetransmittedInitial(t *testing.T) {
 		t.Fatal(err)
 	}
 	tap := newTap(spc)
-	l, err := NewListener(tap, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(tap, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -457,7 +457,7 @@ func TestAFailedHandshakeRepeatsItsCloseToARetransmittedInitial(t *testing.T) {
 	cfg.NextProtos = []string{"not-spoken-here"}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := Dial(ctx, initial, l.Addr(), cfg, DefaultParameters()); err == nil {
+	if _, err := Dial(ctx, initial, l.Addr(), cfg, DefaultConfig()); err == nil {
 		t.Fatal("a dial with an ALPN the server refuses succeeded")
 	}
 	first := initial.get()

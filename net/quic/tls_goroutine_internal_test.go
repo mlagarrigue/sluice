@@ -43,7 +43,7 @@ func TestAbandonedDialEndsTheTLSHandshake(t *testing.T) {
 			t.Fatal(err)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-		_, err = Dial(ctx, pc, mute.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+		_, err = Dial(ctx, pc, mute.LocalAddr(), ClientTLSForTest(), DefaultConfig())
 		cancel()
 		_ = pc.Close()
 		if err == nil {
@@ -64,7 +64,7 @@ func TestAbandonedListenerHandshakeEndsTLS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(),
+	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultConfig(),
 		ListenerConfig{HandshakeTimeout: 50 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)

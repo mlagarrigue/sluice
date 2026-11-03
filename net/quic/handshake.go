@@ -49,7 +49,7 @@ func (c *Conn) installInitialKeys(s secrets, opener *packetOpener) error {
 }
 
 func (c *Conn) start() error {
-	c.tls.SetTransportParameters(appendParameters(nil, c.params))
+	c.tls.SetTransportParameters(appendParameters(nil, c.params.TransportParameters))
 	if err := c.tls.Start(context.Background()); err != nil {
 		return fmt.Errorf("quic: starting the handshake: %w", err)
 	}

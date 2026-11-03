@@ -14,7 +14,7 @@ import (
 func TestAParkedWritersFlushErrorIsItsOwn(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		c := newConn(&fuzzSink{addr: "batch:self"}, fakeFuzzAddr("batch:peer"),
-			[]byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+			[]byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 		defer c.Close()
 		mine := errors.New("the parked writer's flush")
 		parked := make(chan error, 1)

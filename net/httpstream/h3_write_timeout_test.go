@@ -35,10 +35,10 @@ func TestH3WriteTimeoutResetsAStarvedResponse(t *testing.T) {
 		}},
 	} {
 		t.Run(mode.name, func(t *testing.T) {
-			clientParams := quic.DefaultParameters()
+			clientParams := quic.DefaultConfig()
 			clientParams.InitialMaxStreamDataBidiLocal = 64
 			yielded := make(chan bool, 1)
-			conn, _, _ := startH3With(t, Config{WriteTimeout: 200 * time.Millisecond}, quic.DefaultParameters(), clientParams,
+			conn, _, _ := startH3With(t, Config{WriteTimeout: 200 * time.Millisecond}, quic.DefaultConfig(), clientParams,
 				func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 					res := make([]Response, b.Len())
 					for i := range res {
@@ -127,9 +127,9 @@ func TestH3SlowReaderAboveTheProgressFloorIsServedToTheEnd(t *testing.T) {
 		timeout = 300 * time.Millisecond
 		bodyLen = 24 << 10
 	)
-	clientParams := quic.DefaultParameters()
+	clientParams := quic.DefaultConfig()
 	clientParams.InitialMaxStreamDataBidiLocal = 4096
-	conn, _, _ := startH3With(t, Config{WriteTimeout: timeout, WriteProgressBytes: 1024}, quic.DefaultParameters(), clientParams,
+	conn, _, _ := startH3With(t, Config{WriteTimeout: timeout, WriteProgressBytes: 1024}, quic.DefaultConfig(), clientParams,
 		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			res := make([]Response, b.Len())
 			for i := range res {
@@ -174,9 +174,9 @@ func TestH3SlowReaderAboveTheProgressFloorIsServedToTheEnd(t *testing.T) {
 // far under the 4 KiB default — so the deadline never moves.
 func TestH3DribbleReaderIsResetWithinTheTimeout(t *testing.T) {
 	const timeout = 300 * time.Millisecond
-	clientParams := quic.DefaultParameters()
+	clientParams := quic.DefaultConfig()
 	clientParams.InitialMaxStreamDataBidiLocal = 1024
-	conn, _, _ := startH3With(t, Config{WriteTimeout: timeout}, quic.DefaultParameters(), clientParams,
+	conn, _, _ := startH3With(t, Config{WriteTimeout: timeout}, quic.DefaultConfig(), clientParams,
 		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			res := make([]Response, b.Len())
 			for i := range res {

@@ -21,11 +21,11 @@ import (
 // preferred socket, and the whole exchange over loopback UDP.
 
 func preferredParams(pa *preferredAddress, dcid, odcid []byte) []byte {
-	p := DefaultParameters()
+	p := DefaultConfig()
 	p.initialSourceCID = dcid
 	p.originalDCID = odcid
 	p.preferredAddress = pa
-	return appendParameters(nil, p)
+	return appendParameters(nil, p.TransportParameters)
 }
 
 // §18.2: the parameter round-trips with both families, with one, and is
@@ -95,7 +95,7 @@ func newPreferredClient(t *testing.T, name string, pref *net.UDPAddr) (*Conn, *r
 	t.Helper()
 	pc := &recordingPC{addr: fakeFuzzAddr(name + ":self")}
 	peer := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1).To4(), Port: 443}
-	c := newConn(pc, peer, []byte("srv-cid0"), []byte("cli-cid0"), true, DefaultParameters())
+	c := newConn(pc, peer, []byte("srv-cid0"), []byte("cli-cid0"), true, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	c.initialDCID = []byte("srv-cid0")
 	c.pinPeerSCID([]byte("srv-cid0"))
@@ -248,7 +248,7 @@ func TestUnansweredPreferredAddressLeavesTheConnectionWhereItIs(t *testing.T) {
 func TestPreferredAddressOfAnotherFamilyIsIgnored(t *testing.T) {
 	pc := &recordingPC{addr: fakeFuzzAddr("fam:self")}
 	peer := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1).To4(), Port: 443}
-	c := newConn(pc, peer, []byte("srv-cid0"), []byte("cli-cid0"), true, DefaultParameters())
+	c := newConn(pc, peer, []byte("srv-cid0"), []byte("cli-cid0"), true, DefaultConfig())
 	defer c.Close()
 	c.initialDCID = []byte("srv-cid0")
 	c.pinPeerSCID([]byte("srv-cid0"))
@@ -291,7 +291,7 @@ func TestListenerRefusesAnUnspecifiedPreferredAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unspecified.Close()
-	if l, err := NewListener(main, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{PreferredAddress: unspecified}); err == nil {
+	if l, err := NewListener(main, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{PreferredAddress: unspecified}); err == nil {
 		l.Close()
 		t.Fatal("a preferred socket on 0.0.0.0 was accepted")
 	}
@@ -313,7 +313,7 @@ func TestPreferredAddressEndToEnd(t *testing.T) {
 		main.Close()
 		t.Skipf("no 127.0.0.2 on this host: %v", err)
 	}
-	l, err := NewListener(main, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{PreferredAddress: pref})
+	l, err := NewListener(main, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{PreferredAddress: pref})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +333,7 @@ func TestPreferredAddressEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cpc.Close()
-	client, err := Dial(context.Background(), cpc, main.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	client, err := Dial(context.Background(), cpc, main.LocalAddr(), ClientTLSForTest(), DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -436,7 +436,7 @@ func TestPreferredAddressEndToEnd(t *testing.T) {
 func TestServerAcceptsItsPreferredIdentifierInLongHeaders(t *testing.T) {
 	pc := &recordingPC{addr: fakeFuzzAddr("pref-srv:self")}
 	peer := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1).To4(), Port: 50000}
-	c := newConn(pc, peer, []byte("cli-cid0"), []byte("srv-cid0"), false, DefaultParameters())
+	c := newConn(pc, peer, []byte("cli-cid0"), []byte("srv-cid0"), false, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	c.localCIDs = append(c.localCIDs, localCID{seq: 1, cid: []byte("pref-cid")})
 
@@ -687,14 +687,14 @@ func TestListenerAnnouncesOneAddressPerFamily(t *testing.T) {
 	defer dual.Close()
 	port := dual.LocalAddr().(*net.UDPAddr).Port
 
-	l, err := NewListener(main, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{
+	l, err := NewListener(main, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{
 		PreferredAddress: dual, PreferredIPv4: netip.MustParseAddr("127.0.0.1"), PreferredIPv6: netip.IPv6Loopback(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer l.Close()
-	c := newConn(main, fakeFuzzAddr("fam:peer"), []byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+	c := newConn(main, fakeFuzzAddr("fam:peer"), []byte("peercid0"), []byte("selfcid0"), false, DefaultConfig())
 	defer c.Close()
 	if err := l.prepareConn(c); err != nil {
 		t.Fatal(err)
@@ -723,7 +723,7 @@ func TestListenerAnnouncesOneAddressPerFamily(t *testing.T) {
 	}
 	for _, r := range refused {
 		r.lcfg.PreferredAddress = dual
-		l, err := NewListener(main, ServerTLSForTest(t), DefaultParameters(), r.lcfg)
+		l, err := NewListener(main, ServerTLSForTest(t), DefaultConfig(), r.lcfg)
 		if err == nil {
 			l.Close()
 			t.Errorf("%s was accepted", r.name)
@@ -731,7 +731,7 @@ func TestListenerAnnouncesOneAddressPerFamily(t *testing.T) {
 			t.Errorf("%s: the error %q does not name %s", r.name, err, r.field)
 		}
 	}
-	if l, err := NewListener(main, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{PreferredIPv4: netip.MustParseAddr("127.0.0.1")}); err == nil {
+	if l, err := NewListener(main, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{PreferredIPv4: netip.MustParseAddr("127.0.0.1")}); err == nil {
 		l.Close()
 		t.Error("PreferredIPv4 without a PreferredAddress socket was accepted")
 	}
@@ -744,7 +744,7 @@ func TestListenerAnnouncesOneAddressPerFamily(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer concrete.Close()
-	if l, err := NewListener(main, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{
+	if l, err := NewListener(main, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{
 		PreferredAddress: concrete, PreferredIPv4: netip.MustParseAddr("127.0.0.2"),
 	}); err == nil {
 		l.Close()
@@ -815,7 +815,7 @@ func TestPathResponseOffThePathCarriesNoAck(t *testing.T) {
 func TestClientRefusesAPreferredAddressUnderAnEmptyServerCID(t *testing.T) {
 	pc := &recordingPC{addr: fakeFuzzAddr("pref-empty:self")}
 	peer := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1).To4(), Port: 443}
-	c := newConn(pc, peer, []byte("srv-cid0"), []byte("cli-cid0"), true, DefaultParameters())
+	c := newConn(pc, peer, []byte("srv-cid0"), []byte("cli-cid0"), true, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	c.initialDCID = []byte("srv-cid0")
 	if !c.pinPeerSCID(nil) {
@@ -849,7 +849,7 @@ func TestClientRefusesAPreferredAddressUnderAnEmptyServerCID(t *testing.T) {
 // identifier an observer just saw toward the preferred one.
 func TestRebindDuringThePreferredProbeRefusesTheOfferedIdentifier(t *testing.T) {
 	first := &recordingPC{addr: fakeFuzzAddr("pref13:first")}
-	c := newConn(first, fakeFuzzAddr("pref13:peer"), []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+	c := newConn(first, fakeFuzzAddr("pref13:peer"), []byte("peercid0"), []byte("selfcid0"), true, DefaultConfig())
 	defer c.Close()
 	installAppSealer(t, c)
 	c.mu.Lock()
@@ -881,7 +881,7 @@ func TestRebindDuringThePreferredProbeRefusesTheOfferedIdentifier(t *testing.T) 
 func TestRebindDuringThePreferredProbeValidatesBothAddresses(t *testing.T) {
 	first := &recordingPC{addr: fakeFuzzAddr("pref14:first")}
 	original, preferred := fakeFuzzAddr("pref14:peer"), fakeFuzzAddr("pref14:preferred")
-	c := newConn(first, original, []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+	c := newConn(first, original, []byte("peercid0"), []byte("selfcid0"), true, DefaultConfig())
 	defer c.Close()
 	installAppSealer(t, c)
 	c.mu.Lock()
@@ -970,15 +970,15 @@ func TestAnUnusablePreferredAddressIsNotTaken(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dcid, scid := []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}
 			peer := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 443}
-			c := assembleConn(&fuzzSink{addr: "pa:self"}, peer, dcid, scid, true, DefaultParameters())
+			c := assembleConn(&fuzzSink{addr: "pa:self"}, peer, dcid, scid, true, DefaultConfig())
 			t.Cleanup(func() { _ = c.Close() })
 			c.initialDCID = dcid
 			c.peerSCID = dcid // the server's own identifier, not zero-length
-			srv := DefaultParameters()
+			srv := DefaultConfig()
 			srv.initialSourceCID = dcid
 			srv.originalDCID = dcid
 			srv.preferredAddress = &preferredAddress{ipv4: tc.offer, cid: []byte{9, 9, 9, 9}}
-			if err := c.handlePeerParameters(appendParameters(nil, srv)); err != nil {
+			if err := c.handlePeerParameters(appendParameters(nil, srv.TransportParameters)); err != nil {
 				t.Fatalf("server parameters: %v", err)
 			}
 			c.mu.Lock()
@@ -1190,7 +1190,7 @@ func TestRetirePriorToMovesThePreferredProbeOffTheRetiredIdentifier(t *testing.T
 func TestRetirePriorToMovesThePreferredCandidateOffTheRetiredIdentifier(t *testing.T) {
 	first := &recordingPC{addr: fakeFuzzAddr("rpt-cand:first")}
 	original, preferred := fakeFuzzAddr("rpt-cand:peer"), fakeFuzzAddr("rpt-cand:preferred")
-	c := newConn(first, original, []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+	c := newConn(first, original, []byte("peercid0"), []byte("selfcid0"), true, DefaultConfig())
 	defer c.Close()
 	installAppSealer(t, c)
 	c.mu.Lock()
@@ -1242,17 +1242,17 @@ func TestPeerParametersArmTheIdleClockOnlyWithATimeout(t *testing.T) {
 		{"neither announces one", 0, 0, 0},
 	} {
 		c := newConn(&recordingPC{addr: fakeFuzzAddr("idle:self")}, fakeFuzzAddr("idle:peer"),
-			[]byte("srv-cid0"), []byte("cli-cid0"), true, DefaultParameters())
+			[]byte("srv-cid0"), []byte("cli-cid0"), true, DefaultConfig())
 		c.initialDCID = []byte("srv-cid0")
 		c.pinPeerSCID([]byte("srv-cid0"))
-		p := DefaultParameters()
+		p := DefaultConfig()
 		p.MaxIdleTimeout = tc.peer
 		p.initialSourceCID, p.originalDCID = []byte("srv-cid0"), []byte("srv-cid0")
 		c.mu.Lock()
 		c.idleTimeout, c.idleDeadline = tc.local, time.Time{}
 		c.mu.Unlock()
 		before := time.Now()
-		if err := c.handlePeerParameters(appendParameters(nil, p)); err != nil {
+		if err := c.handlePeerParameters(appendParameters(nil, p.TransportParameters)); err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
 		c.mu.Lock()
@@ -1281,7 +1281,7 @@ func TestThePreferredAddressIsHeardAfterARebind(t *testing.T) {
 		t.Helper()
 		first := &recordingPC{addr: fakeFuzzAddr("rebind-preferred:first")}
 		original, preferred := fakeFuzzAddr("rebind-preferred:peer"), fakeFuzzAddr("rebind-preferred:preferred")
-		c := newConn(first, original, []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+		c := newConn(first, original, []byte("peercid0"), []byte("selfcid0"), true, DefaultConfig())
 		defer c.Close()
 		sec, err := initialSecrets([]byte("rebind-preferred-keys"))
 		if err != nil {

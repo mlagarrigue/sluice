@@ -737,7 +737,7 @@ func (s *spyController) onMarked(ev markEvent) {
 // this; a site that bypassed the interface would starve it.
 func TestEverySiteReportsToTheController(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)
@@ -1116,7 +1116,7 @@ func TestSpacedWritesAreApplicationLimited(t *testing.T) {
 func memPair(t *testing.T) (client, server *Conn) {
 	t.Helper()
 	clientPC, serverPC := dgram.Pair()
-	l, err := NewListener(serverPC, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(serverPC, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1186,7 +1186,7 @@ func peerSends(t *testing.T, peer *Conn, payload []byte) {
 func plainPairOver(t *testing.T, clientPC net.PacketConn) (client, server *Conn) {
 	t.Helper()
 	serverPC := loopbackSocket(t)
-	l, err := NewListener(serverPC, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(serverPC, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1518,7 +1518,7 @@ func TestLoopbackHandshakeSamplesTheRTT(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := NewListener(pc, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(pc, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1536,7 +1536,7 @@ func TestLoopbackHandshakeSamplesTheRTT(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := Dial(context.Background(), cpc, pc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	client, err := Dial(context.Background(), cpc, pc.LocalAddr(), ClientTLSForTest(), DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -98,7 +98,7 @@ type Stats struct {
 	CongestionWindow int
 
 	// Algorithm is the congestion controller this end sends with
-	// ([TransportParameters.Congestion]), as built: an unknown choice reads
+	// ([Config.Congestion]), as built: an unknown choice reads
 	// back as the default it fell to.
 	Algorithm CongestionAlgorithm
 
@@ -161,7 +161,7 @@ type Stats struct {
 	// DatagramSize is the largest datagram this end sends on the current
 	// path: 1200 until a DPLPMTUD probe proves more (RFC 9000 §14.3),
 	// then the largest size proven, up to
-	// [TransportParameters.MaxDatagramSize]. It starts over at 1200 on
+	// [Config.MaxDatagramSize]. It starts over at 1200 on
 	// every new path.
 	DatagramSize int
 

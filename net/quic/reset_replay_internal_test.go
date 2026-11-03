@@ -10,7 +10,7 @@ import (
 func newResetReplayConn(t *testing.T) *Conn {
 	t.Helper()
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	sec, err := initialSecrets([]byte("appkeys0"))
 	if err != nil {
@@ -368,7 +368,7 @@ func TestALostControlFrameGoesAgainOnlyWhileItHolds(t *testing.T) {
 // counted as progress. One report now, and a packet of copies alone is
 // non-productive.
 func TestARepeatedResetStreamIsReportedOnce(t *testing.T) {
-	c := assembleConn(&fuzzSink{addr: "resets:self"}, fakeFuzzAddr("resets:peer"), []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+	c := assembleConn(&fuzzSink{addr: "resets:self"}, fakeFuzzAddr("resets:peer"), []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	resets := 0
 	c.OnStreamFrames(CreditOnDelivery, func(frames []Frame) error {

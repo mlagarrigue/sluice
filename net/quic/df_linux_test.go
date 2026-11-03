@@ -23,7 +23,7 @@ func TestConnSetsDontFragmentOnABareSocket(t *testing.T) {
 	if got := readSockopt(t, uc, syscall.IPPROTO_IP, syscall.IP_MTU_DISCOVER); got == syscall.IP_PMTUDISC_PROBE {
 		t.Fatalf("fresh socket already has IP_MTU_DISCOVER=PROBE; this test cannot tell the transport's doing from the default")
 	}
-	c := assembleConn(pc, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 4433}, []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := assembleConn(pc, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 4433}, []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 	if got := readSockopt(t, uc, syscall.IPPROTO_IP, syscall.IP_MTU_DISCOVER); got != syscall.IP_PMTUDISC_PROBE {
 		t.Errorf("IP_MTU_DISCOVER = %d after building a connection on a bare socket, want %d (PROBE: Don't Fragment set, §14)", got, syscall.IP_PMTUDISC_PROBE)

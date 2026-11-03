@@ -54,7 +54,7 @@ func TestHandshakeAndStream(t *testing.T) {
 			done <- result{err: err}
 			return
 		}
-		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverTLS(t), quic.DefaultParameters())
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverTLS(t), quic.DefaultConfig())
 		if err != nil {
 			done <- result{err: err}
 			return
@@ -74,7 +74,7 @@ func TestHandshakeAndStream(t *testing.T) {
 		done <- result{got: string(body)}
 	}()
 
-	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultConfig())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestResetStreamReachesTheReader(t *testing.T) {
 			done <- err
 			return
 		}
-		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverTLS(t), quic.DefaultParameters())
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverTLS(t), quic.DefaultConfig())
 		if err != nil {
 			done <- err
 			return
@@ -163,7 +163,7 @@ func TestResetStreamReachesTheReader(t *testing.T) {
 		}
 	}()
 
-	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultConfig())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -223,11 +223,11 @@ func TestStreamFramesBeforeTheCallbackAreHeld(t *testing.T) {
 			up <- server{err: err}
 			return
 		}
-		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverTLS(t), quic.DefaultParameters())
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverTLS(t), quic.DefaultConfig())
 		up <- server{conn: conn, err: err}
 	}()
 
-	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultConfig())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -281,16 +281,16 @@ func TestEmptyALPNIsRefusedAtConstruction(t *testing.T) {
 	noALPN := clientTLS()
 	noALPN.NextProtos = nil
 
-	if _, err := quic.Dial(context.Background(), pc, peer.LocalAddr(), noALPN, quic.DefaultParameters()); err == nil {
+	if _, err := quic.Dial(context.Background(), pc, peer.LocalAddr(), noALPN, quic.DefaultConfig()); err == nil {
 		t.Error("Dial accepted a config with no ALPN")
 	}
-	if _, err := quic.Accept(pc, quic.Datagram{Peer: peer.LocalAddr(), Payload: []byte{0}}, noALPN, quic.DefaultParameters()); err == nil {
+	if _, err := quic.Accept(pc, quic.Datagram{Peer: peer.LocalAddr(), Payload: []byte{0}}, noALPN, quic.DefaultConfig()); err == nil {
 		t.Error("Accept accepted a config with no ALPN")
 	}
-	if _, err := quic.NewListener(pc, noALPN, quic.DefaultParameters(), quic.ListenerConfig{}); err == nil {
+	if _, err := quic.NewListener(pc, noALPN, quic.DefaultConfig(), quic.ListenerConfig{}); err == nil {
 		t.Error("NewListener accepted a config with no ALPN")
 	}
-	if _, err := quic.Dial(context.Background(), pc, peer.LocalAddr(), nil, quic.DefaultParameters()); err == nil {
+	if _, err := quic.Dial(context.Background(), pc, peer.LocalAddr(), nil, quic.DefaultConfig()); err == nil {
 		t.Error("Dial accepted a nil tls.Config")
 	}
 }
@@ -310,14 +310,14 @@ func TestErrReportsThePeersApplicationClose(t *testing.T) {
 			close(accepted)
 			return
 		}
-		c, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverTLS(t), quic.DefaultParameters())
+		c, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverTLS(t), quic.DefaultConfig())
 		if err != nil {
 			close(accepted)
 			return
 		}
 		accepted <- c
 	}()
-	client, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
+	client, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}

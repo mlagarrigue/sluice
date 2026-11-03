@@ -114,7 +114,7 @@ producer may be, per stream.
 
 Each field left at zero takes the value of the "Zero" column; a negative
 value is refused, with the field's name, by `Config.Validate`, `Serve`, `Server`,
-`ServeH2Conn`, `ServeH3Conn` and `Config.TransportParameters`, before
+`ServeH2Conn`, `ServeH3Conn` and `Config.QUICConfig`, before
 anything is read. The "Protocols" column says where the field acts.
 
 | Field | Zero | Unit, bound | Protocols | What it bounds |
@@ -150,7 +150,7 @@ anything is read. The "Protocols" column says where the field acts.
 | `QPACKStatic` | RFC 9204's table | — | 3 | for tests and interop only ([ADR 0013](../design/adr/0013-qpack-static-table.md)) |
 | `EarlyData` | no request | predicate | all | the requests that may be acted on although they could be a replay ([ADR 0019](../design/adr/0019-quic-early-data.md)) |
 
-Over HTTP/3 the windows are the transport's: `Config.TransportParameters()`
+Over HTTP/3 the windows are the transport's: `Config.QUICConfig()`
 derives them from this table — bodies, headers, streams, idle timeout — for
 the QUIC listener.
 
@@ -207,7 +207,7 @@ it, `!` or not. Three symbols stay outside the promise, each documented
 with a paragraph that opens on "Experimental:": the HTTP/3 entry points
 `ServeH3Conn` and `Server.ServeQUIC` (experimental, like the `net/quic`
 they run on; [ADR 0021](../design/adr/0021-net-quic-stays.md)), and
-`Config.TransportParameters`.
+`Config.QUICConfig`.
 
 ```go
 rt := stream.NewRouter(stream.Route{Method: "GET", Pattern: "/orders/{order}"})

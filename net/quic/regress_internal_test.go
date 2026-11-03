@@ -24,7 +24,7 @@ import (
 // by exactly one packet's worth.
 func TestStreamAndResetInOnePacketSettleFlowControlOnce(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "regress:self"}, fakeFuzzAddr("regress:peer"),
-		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
 	defer c.Close()
 	c.OnStreamFrames(CreditOnDelivery, func([]Frame) error { return nil })
 
@@ -59,7 +59,7 @@ func TestStreamAndResetInOnePacketSettleFlowControlOnce(t *testing.T) {
 // talking at it.
 func TestIdleTimerRestartsOnlyOnTheFirstSendAfterAReceive(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)
@@ -130,7 +130,7 @@ func TestOutOfOrderPacketMakesTheAckImmediate(t *testing.T) {
 // stays legal.
 func TestFramelessPacketIsAProtocolViolation(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "regress:self"}, fakeFuzzAddr("regress:peer"),
-		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
 	defer c.Close()
 
 	err := c.frames(spaceApplication, nil, time.Now())
@@ -149,7 +149,7 @@ func TestFramelessPacketIsAProtocolViolation(t *testing.T) {
 // than processing it.
 func TestClientDiscardsAServerInitialCarryingAToken(t *testing.T) {
 	dcid, scid := []byte("dcid0000"), []byte("scid0000")
-	c := newConn(&fuzzSink{addr: "regress:self"}, fakeFuzzAddr("regress:peer"), dcid, scid, true, DefaultParameters())
+	c := newConn(&fuzzSink{addr: "regress:self"}, fakeFuzzAddr("regress:peer"), dcid, scid, true, DefaultConfig())
 	defer c.Close()
 	if err := c.installInitial(dcid); err != nil {
 		t.Fatal(err)
@@ -237,13 +237,13 @@ func TestTransportParameterRefusals(t *testing.T) {
 	})
 
 	clientParams := func(extra func([]byte) []byte) []byte {
-		p := DefaultParameters()
+		p := DefaultConfig()
 		p.initialSourceCID = []byte{1, 2, 3, 4}
-		return extra(appendParameters(nil, p))
+		return extra(appendParameters(nil, p.TransportParameters))
 	}
 	serverConn := func() *Conn {
 		c := newConn(&fuzzSink{addr: "regress:self"}, fakeFuzzAddr("regress:peer"),
-			[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+			[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
 		t.Cleanup(func() { _ = c.Close() })
 		return c
 	}
@@ -296,7 +296,7 @@ func TestEmptyNewTokenIsAFrameEncodingError(t *testing.T) {
 func TestPreConfirmationCloseIsSentAtEverySealableLevel(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
 	dcid := []byte("dcid0000")
-	c := newConn(pcA, pcB.LocalAddr(), dcid, []byte("scid0000"), false, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), dcid, []byte("scid0000"), false, DefaultConfig())
 	defer c.Close()
 	if err := c.installInitial(dcid); err != nil {
 		t.Fatal(err)
@@ -370,7 +370,7 @@ func TestShortClientDCIDIsRefused(t *testing.T) {
 	t.Run("standalone Accept", func(t *testing.T) {
 		pcA, pcB := newLoopbackPair(t)
 		_ = pcB
-		_, err := accept(pcA, datagram{Peer: pcB.LocalAddr(), Payload: syntheticInitial(t, short, scid)}, ServerTLSForTest(t), DefaultParameters())
+		_, err := accept(pcA, datagram{Peer: pcB.LocalAddr(), Payload: syntheticInitial(t, short, scid)}, ServerTLSForTest(t), DefaultConfig())
 		if err == nil {
 			t.Fatal("Accept took an Initial with a 4-byte destination identifier")
 		}
@@ -378,7 +378,7 @@ func TestShortClientDCIDIsRefused(t *testing.T) {
 
 	t.Run("listener", func(t *testing.T) {
 		serverPC, clientPC := newLoopbackPair(t)
-		l, err := NewListener(serverPC, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
+		l, err := NewListener(serverPC, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -401,7 +401,7 @@ func TestShortClientDCIDIsRefused(t *testing.T) {
 // as a RESET_STREAM below the high-water mark has always been.
 func TestFinBelowReceivedBytesIsAFinalSizeError(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "regress:self"}, fakeFuzzAddr("regress:peer"),
-		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
 	defer c.Close()
 	c.OnStreamFrames(CreditOnDelivery, func([]Frame) error { return nil })
 
@@ -485,7 +485,7 @@ func TestProcessAckWithSeveralRanges(t *testing.T) {
 func TestAckDelayClampWaitsForHandshakeConfirmation(t *testing.T) {
 	run := func(confirmed bool) time.Duration {
 		c := newConn(&fuzzSink{addr: "regress:self"}, fakeFuzzAddr("regress:peer"),
-			[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+			[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
 		defer c.Close()
 		c.mu.Lock()
 		c.handshakeConfirmed = confirmed
@@ -520,7 +520,7 @@ func TestAckDelayClampWaitsForHandshakeConfirmation(t *testing.T) {
 // RFC 9114 §6.1: an HTTP/3 server should allow at least 100 request streams,
 // and this transport's default is what ServeH3Conn inherits.
 func TestDefaultBidiStreamLimitCoversH3(t *testing.T) {
-	if got := DefaultParameters().InitialMaxStreamsBidi; got < 100 {
+	if got := DefaultConfig().InitialMaxStreamsBidi; got < 100 {
 		t.Errorf("InitialMaxStreamsBidi = %d, want at least RFC 9114 §6.1's 100", got)
 	}
 }
@@ -531,7 +531,7 @@ func TestDefaultBidiStreamLimitCoversH3(t *testing.T) {
 // 1200-byte minimum (§14.1's amplification guard).
 func TestListenerSendsVersionNegotiation(t *testing.T) {
 	serverPC, clientPC := newLoopbackPair(t)
-	l, err := NewListener(serverPC, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(serverPC, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -609,7 +609,7 @@ func TestInvalidRetryTokenGetsAnImmediateClose(t *testing.T) {
 	// A TTL far below the default, so the token below — one second old,
 	// fresh by the default's measure — is refused only if RetryTokenTTL is
 	// what the listener reads.
-	l, err := NewListener(serverPC, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{AlwaysRetry: true, RetryTokenTTL: 100 * time.Millisecond})
+	l, err := NewListener(serverPC, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{AlwaysRetry: true, RetryTokenTTL: 100 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -700,11 +700,11 @@ func TestAcceptEnforcesTheAmplificationLimit(t *testing.T) {
 			done <- result{nil, err}
 			return
 		}
-		c, err := Accept(serverPC, datagram{Peer: from, Payload: append([]byte(nil), buf[:n]...)}, serverCfg, DefaultParameters())
+		c, err := Accept(serverPC, datagram{Peer: from, Payload: append([]byte(nil), buf[:n]...)}, serverCfg, DefaultConfig())
 		done <- result{c, err}
 	}()
 
-	client, err := Dial(context.Background(), clientPC, serverPC.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	client, err := Dial(context.Background(), clientPC, serverPC.LocalAddr(), ClientTLSForTest(), DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -741,7 +741,7 @@ func streamFrameBytes(id, offset uint64, data []byte) []byte {
 // stream truncated mid-frame, nothing counted — after being credited.
 func TestEveryDeltaBeforeRegistrationIsReplayed(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "regress:self"}, fakeFuzzAddr("regress:peer"),
-		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
 	defer c.Close()
 
 	const packets, size = 48, 100
@@ -789,7 +789,7 @@ func TestEveryDeltaBeforeRegistrationIsReplayed(t *testing.T) {
 // then exceed the connection window by what had arrived before
 // registration.
 func TestManualCreditReplayDoesNotReopenTheWindow(t *testing.T) {
-	params := DefaultParameters()
+	params := DefaultConfig()
 	params.InitialMaxData = 6000
 	c := newConn(&fuzzSink{addr: "regress:self"}, fakeFuzzAddr("regress:peer"),
 		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, params)
@@ -835,7 +835,7 @@ func TestManualCreditReplayDoesNotReopenTheWindow(t *testing.T) {
 // what no Read took is replayed, and credited once.
 func TestRegistrationAfterAReadReplaysWhatWasNotRead(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "regress:self"}, fakeFuzzAddr("regress:peer"),
-		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
 	defer c.Close()
 	for i := range 30 {
 		if err := c.frames(spaceApplication, streamFrameBytes(0, uint64(i)*100, []byte(strings.Repeat("x", 100))), time.Now()); err != nil {
@@ -873,12 +873,12 @@ func TestRegistrationAfterAReadReplaysWhatWasNotRead(t *testing.T) {
 // the connection as idle at once.
 func TestHugePeerIdleTimeoutKeepsTheLocalOne(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "idle:self"}, fakeFuzzAddr("idle:peer"),
-		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
-	p := DefaultParameters()
+	p := DefaultConfig()
 	p.initialSourceCID = []byte{1, 2, 3, 4}
 	p.MaxIdleTimeout = varint.Max
-	if err := c.handlePeerParameters(appendParameters(nil, p)); err != nil {
+	if err := c.handlePeerParameters(appendParameters(nil, p.TransportParameters)); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
@@ -898,7 +898,7 @@ func TestHugePeerIdleTimeoutKeepsTheLocalOne(t *testing.T) {
 // must not double the first PTO of the restarted connection.
 func TestRetryResetsThePTOBackoff(t *testing.T) {
 	dcid, scid := []byte("dcid0000"), []byte("scid0000")
-	c := newConn(&fuzzSink{addr: "retry:self"}, fakeFuzzAddr("retry:peer"), dcid, scid, true, DefaultParameters())
+	c := newConn(&fuzzSink{addr: "retry:self"}, fakeFuzzAddr("retry:peer"), dcid, scid, true, DefaultConfig())
 	defer c.Close()
 	c.initialDCID = dcid
 	if err := c.installInitial(dcid); err != nil {
@@ -931,7 +931,7 @@ func TestRetryResetsThePTOBackoff(t *testing.T) {
 // Retry the connection honours: the next, well-formed one is still taken.
 func TestRetryEchoingTheInitialDCIDIsDiscarded(t *testing.T) {
 	dcid, scid := []byte("dcid0000"), []byte("scid0000")
-	c := newConn(&fuzzSink{addr: "retry:self"}, fakeFuzzAddr("retry:peer"), dcid, scid, true, DefaultParameters())
+	c := newConn(&fuzzSink{addr: "retry:self"}, fakeFuzzAddr("retry:peer"), dcid, scid, true, DefaultConfig())
 	defer c.Close()
 	c.initialDCID = dcid
 	if err := c.installInitial(dcid); err != nil {

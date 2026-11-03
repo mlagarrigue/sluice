@@ -52,7 +52,7 @@ func TestRetryTokenBindsALongZonedAddress(t *testing.T) {
 
 // ActiveConnIDLimit is bounded: every identifier is a routing entry.
 func TestActiveConnIDLimitIsBounded(t *testing.T) {
-	p := DefaultParameters()
+	p := DefaultConfig()
 	p.ActiveConnIDLimit = maxActiveConnIDLimit
 	if err := p.Validate(); err != nil {
 		t.Fatalf("Validate at the bound: %v", err)

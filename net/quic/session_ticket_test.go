@@ -67,7 +67,7 @@ func dialCached(t *testing.T, addr net.Addr, cache tls.ClientSessionCache) *quic
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = pc.Close() })
-	conn, err := quic.Dial(context.Background(), pc, addr, cfg, quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), pc, addr, cfg, quic.DefaultConfig())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestNewListenerRefusesTicketsTheConfigDisables(t *testing.T) {
 	defer pc.Close()
 	cfg := serverTLS(t)
 	cfg.SessionTicketsDisabled = true
-	_, err = quic.NewListener(pc, cfg, quic.DefaultParameters(), quic.ListenerConfig{SessionTickets: true})
+	_, err = quic.NewListener(pc, cfg, quic.DefaultConfig(), quic.ListenerConfig{SessionTickets: true})
 	if !errors.Is(err, quic.ErrQUIC) {
 		t.Fatalf("NewListener = %v, want ErrQUIC naming SessionTicketsDisabled", err)
 	}
@@ -153,16 +153,16 @@ func TestNewListenerRefusesEarlyDataWithoutCredit(t *testing.T) {
 	defer pc.Close()
 	for _, tc := range []struct {
 		name  string
-		set   func(p *quic.TransportParameters)
+		set   func(p *quic.Config)
 		field string
 	}{
-		{"no connection credit", func(p *quic.TransportParameters) { p.InitialMaxData = 0 }, "InitialMaxData"},
-		{"no stream", func(p *quic.TransportParameters) { p.InitialMaxStreamsBidi, p.InitialMaxStreamsUni = 0, 0 }, "InitialMaxStreamsBidi"},
-		{"no stream window", func(p *quic.TransportParameters) {
+		{"no connection credit", func(p *quic.Config) { p.InitialMaxData = 0 }, "InitialMaxData"},
+		{"no stream", func(p *quic.Config) { p.InitialMaxStreamsBidi, p.InitialMaxStreamsUni = 0, 0 }, "InitialMaxStreamsBidi"},
+		{"no stream window", func(p *quic.Config) {
 			p.InitialMaxStreamDataBidiRemote, p.InitialMaxStreamDataUni = 0, 0
 		}, "InitialMaxStreamDataBidiRemote"},
 	} {
-		params := quic.DefaultParameters()
+		params := quic.DefaultConfig()
 		tc.set(&params)
 		_, err := quic.NewListener(pc, serverTLS(t), params, quic.ListenerConfig{EarlyData: true})
 		if !errors.Is(err, quic.ErrQUIC) || !strings.Contains(err.Error(), tc.field) {
@@ -171,14 +171,14 @@ func TestNewListenerRefusesEarlyDataWithoutCredit(t *testing.T) {
 	}
 	// Uni streams alone carry 0-RTT: accepted. So are the same parameters
 	// without EarlyData, which promise nothing of 0-RTT.
-	params := quic.DefaultParameters()
+	params := quic.DefaultConfig()
 	params.InitialMaxStreamsBidi = 0
 	l, err := quic.NewListener(pc, serverTLS(t), params, quic.ListenerConfig{EarlyData: true})
 	if err != nil {
 		t.Fatalf("EarlyData with unidirectional credit only: %v", err)
 	}
 	_ = l.Close()
-	params = quic.DefaultParameters()
+	params = quic.DefaultConfig()
 	params.InitialMaxData = 0
 	if l, err = quic.NewListener(pc, serverTLS(t), params, quic.ListenerConfig{}); err != nil {
 		t.Fatalf("no EarlyData, InitialMaxData at zero: %v", err)

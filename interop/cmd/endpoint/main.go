@@ -79,7 +79,7 @@ const (
 
 	// maxStreamsInFlight bounds how many requests a client keeps open on one
 	// connection at a time, under the server's default MAX_STREAMS grant
-	// (quic.DefaultParameters: 100), so the multiplexing case's 1999 files
+	// (quic.DefaultConfig: 100), so the multiplexing case's 1999 files
 	// flow through the grant as it is replenished.
 	maxStreamsInFlight = 64
 )
@@ -181,7 +181,7 @@ func runServer(testcase string) error {
 		}
 		lcfg.PreferredIPv4, lcfg.PreferredIPv6 = ips[0], ips[1]
 	}
-	l, err := quic.NewListener(pc, cfg, quic.DefaultParameters(), lcfg)
+	l, err := quic.NewListener(pc, cfg, quic.DefaultConfig(), lcfg)
 	if err != nil {
 		return err
 	}
@@ -422,7 +422,7 @@ func fetchAll(requests []string, kl io.Writer, cache tls.ClientSessionCache, ear
 	if early {
 		dial = quic.DialEarly
 	}
-	c, err := dial(context.Background(), pc, addr, cfg, quic.DefaultParameters())
+	c, err := dial(context.Background(), pc, addr, cfg, quic.DefaultConfig())
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", addr, err)
 	}

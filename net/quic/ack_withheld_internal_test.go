@@ -18,7 +18,7 @@ func TestAWithheldPacketOwesAgainOnlyTheAckThatWasDue(t *testing.T) {
 		t.Helper()
 		pcA, pcB := newLoopbackPair(t)
 		tap := newTap(pcA)
-		c := newConn(tap, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
+		c := newConn(tap, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultConfig())
 		t.Cleanup(func() { _ = c.Close() })
 		sec, err := initialSecrets([]byte("dcid0000"))
 		if err != nil {

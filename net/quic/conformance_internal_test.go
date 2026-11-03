@@ -56,7 +56,7 @@ func TestDuplicateAckKeepsTheLossTimerArmed(t *testing.T) {
 // retransmitted.
 func TestClientAckOnlyInitialIsPadded(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)
@@ -88,7 +88,7 @@ func TestClientAckOnlyInitialIsPadded(t *testing.T) {
 // rather than keep degrading the cipher.
 func TestAEADConfidentialityLimitClosesTheConnection(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultConfig())
 	defer c.Close()
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)
@@ -121,7 +121,7 @@ func TestAEADConfidentialityLimitClosesTheConnection(t *testing.T) {
 // unauthenticated bytes are allowed to end a connection.
 func TestAEADIntegrityLimitClosesTheConnection(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)
@@ -194,7 +194,7 @@ func TestAPostHandshakeKeyUpdateClosesAsInternalError(t *testing.T) {
 // never-completing handshake.
 func TestCryptoBufferIsBounded(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 
 	var err error
@@ -223,7 +223,7 @@ func TestCryptoBufferIsBounded(t *testing.T) {
 // timeout instead of closing.
 func TestCryptoFarAheadIsRefused(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 
 	err := c.handleCrypto(spaceHandshake, Frame{Type: frameCrypto, offset: 100_000_000, Data: []byte("x")})
@@ -244,7 +244,7 @@ func TestCryptoFarAheadIsRefused(t *testing.T) {
 // keys for good.
 func TestHandshakeDoneInAnInitialIsRefused(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)
@@ -272,7 +272,7 @@ func TestHandshakeDoneInAnInitialIsRefused(t *testing.T) {
 // connection over.
 func TestStreamDirectionIsEnforced(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 	// Application keys so the pre-fix behaviour (sending the RESET_STREAM)
 	// had somewhere to go; the fix refuses before any send.
@@ -320,7 +320,7 @@ func TestStreamDirectionIsEnforced(t *testing.T) {
 // outstanding are the opposite of idleness.
 func TestIdleTimeoutIsFlooredAtThreePTOs(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	params := DefaultParameters()
+	params := DefaultConfig()
 	params.MaxIdleTimeout = 100 * time.Millisecond
 	c := assembleConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, params)
 	defer c.Close()
@@ -344,7 +344,7 @@ func TestIdleTimeoutIsFlooredAtThreePTOs(t *testing.T) {
 // announcement alone.
 func TestMaxDatagramIgnoresPeerAnnouncementAlone(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("server00"), []byte("client00"), true, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("server00"), []byte("client00"), true, DefaultConfig())
 	defer c.Close()
 	c.initialDCID = []byte("origdcid")
 
@@ -369,7 +369,7 @@ func TestMaxDatagramIgnoresPeerAnnouncementAlone(t *testing.T) {
 // loss recovery.
 func TestPathResponseIsExpandedAndSentOnce(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 	sec, err := initialSecrets([]byte("appkeys0"))
 	if err != nil {
@@ -467,7 +467,7 @@ func TestProcessAckReportsTheLatestLossSendTime(t *testing.T) {
 // Handshake space's own PTO covers the interval.
 func TestApplicationPTOWaitsForHandshakeConfirmation(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 
 	c.mu.Lock()
@@ -490,7 +490,7 @@ func TestApplicationPTOWaitsForHandshakeConfirmation(t *testing.T) {
 // endpoints each waiting on the other was a 10-second deadlock.
 func TestClientAntiDeadlockPTOStaysArmed(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)
@@ -515,7 +515,7 @@ func TestClientAntiDeadlockPTOStaysArmed(t *testing.T) {
 // already about to answer, sooner.
 func TestPTOIsSuppressedWhileALossTimerIsArmed(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := assembleConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
+	c := assembleConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultConfig())
 	defer c.Close()
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)
@@ -544,7 +544,7 @@ func TestPTOIsSuppressedWhileALossTimerIsArmed(t *testing.T) {
 // leaving as an unpaced, window-ignoring burst.
 func TestCryptoObeysTheCongestionWindow(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultConfig())
 	defer c.Close()
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)
@@ -574,7 +574,7 @@ func TestCryptoObeysTheCongestionWindow(t *testing.T) {
 // exactly the stall the backoff is pacing.
 func TestClientKeepsBackoffOnInitialAcks(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)
@@ -622,7 +622,7 @@ func TestClientKeepsBackoffOnInitialAcks(t *testing.T) {
 // that would reopen this end's window.
 func TestControlFramesObeyTheCongestionWindowExceptGrants(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultConfig())
 	defer c.Close()
 	sec, err := initialSecrets([]byte("appkeys0"))
 	if err != nil {
@@ -674,7 +674,7 @@ func TestControlFramesObeyTheCongestionWindowExceptGrants(t *testing.T) {
 // flag governs the first send, not the keepalive.
 func TestBlockedFramesResendPeriodicallyWhileParked(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultConfig())
 	defer c.Close()
 
 	now := time.Now()
@@ -764,7 +764,7 @@ func TestBlockedResendQueuesOneFramePerLimit(t *testing.T) {
 // peer that provably has no state left.
 func TestStatelessResetIsDetectedByItsToken(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 
 	token := [16]byte{9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 1, 2, 3, 4, 5, 6}
@@ -795,7 +795,7 @@ func TestStatelessResetIsDetectedByItsToken(t *testing.T) {
 	}
 
 	// The same bytes with a wrong token are noise, not a reset.
-	c2 := newConn(pcA, pcB.LocalAddr(), []byte("dcid0001"), []byte("scid0001"), true, DefaultParameters())
+	c2 := newConn(pcA, pcB.LocalAddr(), []byte("dcid0001"), []byte("scid0001"), true, DefaultConfig())
 	defer c2.Close()
 	c2.mu.Lock()
 	c2.peerCIDs = []peerCID{{seq: 0, cid: []byte("dcid0001"), used: true, token: token}}
@@ -815,7 +815,7 @@ func TestPersistentCongestionIsASpanOfLosses(t *testing.T) {
 	run := func(t *testing.T, spacing time.Duration, sampled bool) (cwnd, ssthresh, initial int, collapses uint64) {
 		t.Helper()
 		pcA, pcB := newLoopbackPair(t)
-		c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+		c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 		defer c.Close()
 		if err := c.installInitial([]byte("dcid0000")); err != nil {
 			t.Fatal(err)
@@ -871,7 +871,7 @@ func TestPersistentCongestionIsASpanOfLosses(t *testing.T) {
 // persistent-congestion duration: one loss event, no collapse.
 func TestPersistentCongestionIgnoresLossesBeforeTheFirstSample(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)
@@ -923,7 +923,7 @@ func TestAckDeclaresLossesBeforeItGrowsTheWindow(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pcA, pcB := newLoopbackPair(t)
-			c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+			c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 			defer c.Close()
 			if err := c.installInitial([]byte("dcid0000")); err != nil {
 				t.Fatal(err)
@@ -962,7 +962,7 @@ func TestAckDeclaresLossesBeforeItGrowsTheWindow(t *testing.T) {
 // three unanswered probes used to collapse the window on their own.
 func TestProbeTimeoutsAloneLeaveTheWindow(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := assembleConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := assembleConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)
@@ -1004,7 +1004,7 @@ func TestProbeTimeoutsAloneLeaveTheWindow(t *testing.T) {
 // past fires at once.
 func TestNoProbeTimeoutUnderTheAmplificationLimit(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := assembleConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
+	c := assembleConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultConfig())
 	defer c.Close()
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)
@@ -1044,7 +1044,7 @@ func TestNoProbeTimeoutUnderTheAmplificationLimit(t *testing.T) {
 // the backoff was about that space's unanswered probes.
 func TestDiscardingASpaceResetsTheProbeCount(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)
@@ -1065,7 +1065,7 @@ func TestDiscardingASpaceResetsTheProbeCount(t *testing.T) {
 // connection goes on.
 func TestStatelessResetTokenOfAnUnusedIDIsNotCompared(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 	used := [16]byte{9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 1, 2, 3, 4, 5, 6}
 	reserve := [16]byte{1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 121, 98, 219}
@@ -1105,7 +1105,7 @@ func TestStatelessResetTokenOfAnUnusedIDIsNotCompared(t *testing.T) {
 // legal — has not committed.
 func TestCryptoInTooManyFragmentsIsABufferExceeded(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 	var err error
 	for i := range uint64(minCryptoOutOfOrder + 1) {
@@ -1128,16 +1128,16 @@ func TestCryptoInTooManyFragmentsIsABufferExceeded(t *testing.T) {
 // is what tells them apart, as for initial_source_connection_id.
 func TestARetryWithAnEmptySourceIDStillNeedsItsEcho(t *testing.T) {
 	dcid, scid := []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}
-	c := assembleConn(&fuzzSink{addr: "rsc:self"}, fakeFuzzAddr("rsc:peer"), dcid, scid, true, DefaultParameters())
+	c := assembleConn(&fuzzSink{addr: "rsc:self"}, fakeFuzzAddr("rsc:peer"), dcid, scid, true, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	c.initialDCID = dcid
 	c.mu.Lock()
 	c.retried, c.retrySCID = true, nil // the Retry carried an empty Source Connection ID
 	c.mu.Unlock()
-	srv := DefaultParameters()
+	srv := DefaultConfig()
 	srv.initialSourceCID = dcid // what the client checks it against here
 	srv.originalDCID = dcid
-	err := c.handlePeerParameters(appendParameters(nil, srv))
+	err := c.handlePeerParameters(appendParameters(nil, srv.TransportParameters))
 	te := &transportError{}
 	if !errors.As(err, &te) || te.code != transportParameterError {
 		t.Fatalf("parameters without retry_source_connection_id after a Retry: %v, want TRANSPORT_PARAMETER_ERROR", err)

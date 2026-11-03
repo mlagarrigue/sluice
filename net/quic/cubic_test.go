@@ -231,7 +231,7 @@ func TestNewControllerByAlgorithm(t *testing.T) {
 	// An algorithm this build does not know falls to the default, and the
 	// connection's Stats say which one runs.
 	pcA, pcB := newLoopbackPair(t)
-	params := DefaultParameters()
+	params := DefaultConfig()
 	params.Congestion.Algorithm = CongestionAlgorithm(200)
 	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, params)
 	defer c.Close()

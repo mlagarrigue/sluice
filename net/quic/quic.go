@@ -46,7 +46,7 @@
 //   - Recovery per RFC 9002: ACK generation with delayed acknowledgements,
 //     packet- and time-threshold loss detection, probe timeouts,
 //     retransmission; NewReno with slow start and recovery periods by
-//     default, CUBIC or BBR through [TransportParameters.Congestion].
+//     default, CUBIC or BBR through [Config.Congestion].
 //   - Flow control per RFC 9000 §4, both levels and both directions:
 //     senders wait for credit, receivers grant it as data is consumed, and
 //     a peer that overruns its grant loses the connection.
@@ -106,7 +106,7 @@
 //     PING+PADDING probes, 1452 bytes first — an Ethernet MTU less IPv6
 //     and UDP headers — then a search between the size confirmed and the
 //     smallest lost, to 20 bytes, up to
-//     [TransportParameters.MaxDatagramSize] and the peer's
+//     [Config.MaxDatagramSize] and the peer's
 //     [TransportParameters.MaxUDPPayloadSize]; after the handshake and
 //     after each migration. A path that shrinks under the connection (a
 //     black hole: three probe timeouts, or full-size packets lost while

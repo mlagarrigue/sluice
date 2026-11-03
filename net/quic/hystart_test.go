@@ -202,7 +202,7 @@ func TestSlowStartByAlgorithm(t *testing.T) {
 	}
 
 	pcA, pcB := newLoopbackPair(t)
-	params := DefaultParameters()
+	params := DefaultConfig()
 	params.Congestion.SlowStart = SlowStart(200)
 	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, params)
 	defer c.Close()

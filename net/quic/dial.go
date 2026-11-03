@@ -69,7 +69,7 @@ import (
 // ctx's deadline; a ctx without a deadline gives up after
 // [DefaultHandshakeTimeout]. Once Dial has returned, ctx no longer has any
 // hold on the connection.
-func Dial(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls.Config, params TransportParameters) (*Conn, error) {
+func Dial(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls.Config, params Config) (*Conn, error) {
 	c, err := newClientConn(ctx, pc, addr, cfg, params)
 	if err != nil {
 		return nil, err
@@ -84,7 +84,7 @@ func Dial(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls.Config
 // identifiers, the Initial keys, and a crypto/tls client with session
 // events on, so that every ticket is stored with the server's parameters
 // and only DialEarly offers 0-RTT (handleTLSEvent).
-func newClientConn(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls.Config, params TransportParameters) (*Conn, error) {
+func newClientConn(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls.Config, params Config) (*Conn, error) {
 	if err := params.check(); err != nil {
 		return nil, err
 	}
@@ -176,12 +176,12 @@ const DefaultHandshakeTimeout = 10 * time.Second
 // crypto/tls does not do.
 //
 // A server that keeps pc open after the connection, to accept the next one,
-// should set [TransportParameters.HoldClosing]: "Servers that retain an open socket
+// should set [Config.HoldClosing]: "Servers that retain an open socket
 // for accepting new connections SHOULD NOT end the closing or draining
 // state early" (RFC 9000 §10.2). Without it, the connection stops reading
 // pc the moment it closes, and a late packet of the peer reaches whatever
 // reads pc next.
-func accept(pc net.PacketConn, first datagram, cfg *tls.Config, params TransportParameters) (*Conn, error) {
+func accept(pc net.PacketConn, first datagram, cfg *tls.Config, params Config) (*Conn, error) {
 	if err := params.check(); err != nil {
 		return nil, err
 	}
@@ -252,7 +252,7 @@ func accept(pc net.PacketConn, first datagram, cfg *tls.Config, params Transport
 // accept passes nil: no token (which §10.3 permits), no preferred
 // address. keys, when non-nil, are the Initial keys a [Listener]'s decrypt
 // check already derived from h.DCID; nil derives them here.
-func newServerConn(pc net.PacketConn, peer net.Addr, h longHeader, cfg *tls.Config, params TransportParameters, rt *retryToken, keys *initialKeys, prepare func(*Conn) error) (*Conn, error) {
+func newServerConn(pc net.PacketConn, peer net.Addr, h longHeader, cfg *tls.Config, params Config, rt *retryToken, keys *initialKeys, prepare func(*Conn) error) (*Conn, error) {
 	scid, err := randomID(8)
 	if err != nil {
 		return nil, err
@@ -314,7 +314,7 @@ func newServerConn(pc net.PacketConn, peer net.Addr, h longHeader, cfg *tls.Conf
 	return c, nil
 }
 
-func newConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient bool, params TransportParameters) *Conn {
+func newConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient bool, params Config) *Conn {
 	c := assembleConn(pc, peer, dcid, scid, isClient, params)
 	go c.timerLoop()
 	return c
@@ -323,7 +323,7 @@ func newConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient bool,
 // assembleConn is newConn without the timer loop. Tests that call
 // actOnDeadlines themselves build on it: with the loop running, the scheduler
 // decides whether a deadline fires between two of their steps.
-func assembleConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient bool, params TransportParameters) *Conn {
+func assembleConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient bool, params Config) *Conn {
 	// This end always keeps at least one spare identifier slot for the peer
 	// to rotate into; below the protocol minimum of 2 the announcement would
 	// be refused by any conformant peer (§18.2), so the zero value and any

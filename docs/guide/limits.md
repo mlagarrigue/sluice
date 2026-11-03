@@ -171,7 +171,7 @@ Three reasons come up, and the difference matters:
   not arrive whole with its headers reaches the handler through
   `Request.Stream` as it comes, on the three protocols — on HTTP/3 when
   the QUIC windows cover a request's head, which those of
-  `Config.TransportParameters` do; on smaller windows bodies arrive whole.
+  `Config.QUICConfig` do; on smaller windows bodies arrive whole.
   `Config.BodyDelivery: BodyWhole` asks for the other contract, every body
   complete before its handler runs, bounded by `Config.MaxBodyBytes`
   (1 MiB). What is accepted is the same either way
@@ -318,7 +318,7 @@ whichever way the conditions go:
 - **`net/quic` datagram size**: datagrams start at 1200 bytes, the
   smallest maximum RFC 9000 §14.1 guarantees, and rise by a search for the
   largest datagram the path lets through (DPLPMTUD, §14.3, RFC 8899), up to
-  `TransportParameters.MaxDatagramSize` (zero: 1452; 8952 for a 9000-byte
+  `quic.Config.MaxDatagramSize` (zero: 1452; 8952 for a 9000-byte
   jumbo path); the size reached reads in `Stats.DatagramSize`. A path that
   shrinks under a connection is detected and the size falls back to 1200
   (`Stats.MTUBlackHoles`). ICMP "packet too big" messages are ignored, so a
@@ -600,7 +600,7 @@ three unanswered probes. A tunnel with an MTU of 1420 settles within
 20 bytes of its 1372 bytes of payload, the IPv6 minimum of 1280 at 1212
 or more.
 
-The ceiling is `TransportParameters.MaxDatagramSize` (zero:
+The ceiling is `quic.Config.MaxDatagramSize` (zero:
 1452; 8952 for a 9000-byte jumbo path), bounded by the
 `MaxUDPPayloadSize` the peer announces; the size reached reads in
 `Stats.DatagramSize`. The search starts over at 1200 after each

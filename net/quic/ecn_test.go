@@ -224,11 +224,11 @@ func TestECNValidatesBehindAccept(t *testing.T) {
 			done <- result{nil, errors.New("the first datagram arrived without its ECN field")}
 			return
 		}
-		c, err := Accept(server, datagram{Peer: from, Payload: buf[:n], ECN: ecn}, serverCfg, DefaultParameters())
+		c, err := Accept(server, datagram{Peer: from, Payload: buf[:n], ECN: ecn}, serverCfg, DefaultConfig())
 		done <- result{c, err}
 	}()
 
-	client, err := Dial(context.Background(), clientPC, serverPC.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	client, err := Dial(context.Background(), clientPC, serverPC.LocalAddr(), ClientTLSForTest(), DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}

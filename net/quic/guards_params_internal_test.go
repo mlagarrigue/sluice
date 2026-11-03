@@ -94,7 +94,7 @@ func TestARetrySourceIDTheServerDoesNotEchoIsAParameterError(t *testing.T) {
 	retrySCID := []byte{0xa, 0xb, 0xc, 0xd}
 	client := func(t *testing.T) *Conn {
 		t.Helper()
-		c := assembleConn(&fuzzSink{addr: "rsc:self"}, fakeFuzzAddr("rsc:peer"), dcid, scid, true, DefaultParameters())
+		c := assembleConn(&fuzzSink{addr: "rsc:self"}, fakeFuzzAddr("rsc:peer"), dcid, scid, true, DefaultConfig())
 		t.Cleanup(func() { _ = c.Close() })
 		c.initialDCID = dcid
 		c.mu.Lock()
@@ -103,11 +103,11 @@ func TestARetrySourceIDTheServerDoesNotEchoIsAParameterError(t *testing.T) {
 		return c
 	}
 	serverBlock := func(echo []byte) []byte {
-		srv := DefaultParameters()
+		srv := DefaultConfig()
 		srv.initialSourceCID = dcid // what the client checks it against here
 		srv.originalDCID = dcid
 		srv.retrySourceCID = echo
-		return appendParameters(nil, srv)
+		return appendParameters(nil, srv.TransportParameters)
 	}
 
 	err := client(t).handlePeerParameters(serverBlock([]byte{0xa, 0xb, 0xc, 0xe})) // one byte off
@@ -197,7 +197,7 @@ func TestADialEarlyClientHasItsZeroRTTRefusedByAHelloRetryRequest(t *testing.T) 
 			}
 			serverCfg := ServerTLSForTest(t)
 			serverCfg.CurvePreferences = []tls.CurveID{tls.CurveP256}
-			l, err := NewListener(serverPC, serverCfg, DefaultParameters(), ListenerConfig{EarlyData: true})
+			l, err := NewListener(serverPC, serverCfg, DefaultConfig(), ListenerConfig{EarlyData: true})
 			if err != nil {
 				_ = serverPC.Close()
 				t.Fatal(err)
@@ -221,7 +221,7 @@ func TestADialEarlyClientHasItsZeroRTTRefusedByAHelloRetryRequest(t *testing.T) 
 			defer cancel()
 
 			// The first connection, with no retry, leaves the ticket.
-			first, err := Dial(ctx, listen(), l.Addr(), clientCfg, DefaultParameters())
+			first, err := Dial(ctx, listen(), l.Addr(), clientCfg, DefaultConfig())
 			if err != nil {
 				t.Fatalf("first handshake: %v", err)
 			}
@@ -236,7 +236,7 @@ func TestADialEarlyClientHasItsZeroRTTRefusedByAHelloRetryRequest(t *testing.T) 
 			clientCfg.CurvePreferences = []tls.CurveID{tt.firstCurve, tls.CurveP256}
 			held := &heldReads{PacketConn: listen(), release: make(chan struct{})}
 			tap := newTap(held)
-			c, err := DialEarly(ctx, tap, l.Addr(), clientCfg, DefaultParameters())
+			c, err := DialEarly(ctx, tap, l.Addr(), clientCfg, DefaultConfig())
 			if err != nil {
 				t.Fatalf("DialEarly: %v", err)
 			}

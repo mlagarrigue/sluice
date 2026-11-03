@@ -11,7 +11,7 @@ import (
 // cause, ErrVersionNegotiation.
 func TestVersionNegotiationIsReportedByItsSentinel(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 	c.mu.Lock()
 	c.initialDCID = []byte("dcid0000") // what Dial records for the echo check
@@ -43,7 +43,7 @@ func TestVersionNegotiationIsReportedByItsSentinel(t *testing.T) {
 // path saw, so a replay of them after the Retry must not end the handshake.
 func TestVersionNegotiationAfterARetryIsDiscarded(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 	c.mu.Lock()
 	c.initialDCID = []byte("dcid0000")
@@ -89,7 +89,7 @@ func TestVersionNegotiationEmptyOrTruncatedIsIgnored(t *testing.T) {
 	}
 	newClient := func() *Conn {
 		pcA, pcB := newLoopbackPair(t)
-		c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+		c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 		t.Cleanup(func() { _ = c.Close() })
 		c.mu.Lock()
 		c.initialDCID = []byte("dcid0000")
@@ -124,7 +124,7 @@ func TestVersionNegotiationEmptyOrTruncatedIsIgnored(t *testing.T) {
 // client is still honoured after it.
 func TestRetryAddressedToAnotherSCIDIsDiscarded(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 	c.mu.Lock()
 	c.initialDCID = []byte("dcid0000")

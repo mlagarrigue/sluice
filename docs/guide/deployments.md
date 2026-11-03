@@ -228,5 +228,5 @@ Two behaviors of `ServeH3Conn` complete the sections above without fitting
 in one: manual stream credit only turns on if the announced windows cover
 the admission bounds, and otherwise falls back to the transport's automatic
 credit, bounded by the ceilings of `Config` (`net/httpstream/h3serve.go`,
-at the top of `ServeH3Conn`); `Config.TransportParameters` produces
+at the top of `ServeH3Conn`); `Config.QUICConfig` produces
 accepted windows.

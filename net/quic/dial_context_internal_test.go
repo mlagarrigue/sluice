@@ -37,7 +37,7 @@ func TestDialCancelEndsTheHandshake(t *testing.T) {
 	}
 	got := make(chan result, 1)
 	go func() {
-		c, err := Dial(ctx, pc, silent.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+		c, err := Dial(ctx, pc, silent.LocalAddr(), ClientTLSForTest(), DefaultConfig())
 		got <- result{c, err}
 	}()
 	<-pc.written // the first Initial has left: the handshake is underway
@@ -62,7 +62,7 @@ func TestDialDeadlineReplacesTheDefault(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	c, err := Dial(ctx, cli, silent.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	c, err := Dial(ctx, cli, silent.LocalAddr(), ClientTLSForTest(), DefaultConfig())
 	if c != nil {
 		_ = c.Close()
 	}
@@ -80,7 +80,7 @@ func TestDialAlreadyCancelled(t *testing.T) {
 	pc := &signalWritePC{PacketConn: cli, written: make(chan struct{})}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	c, err := Dial(ctx, pc, silent.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	c, err := Dial(ctx, pc, silent.LocalAddr(), ClientTLSForTest(), DefaultConfig())
 	if c != nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("Dial = %v, %v; want no connection and context.Canceled", c, err)
 	}
@@ -95,7 +95,7 @@ func TestDialAlreadyCancelled(t *testing.T) {
 // has returned leaves the connection alone.
 func TestDialCancelAfterReturnKeepsTheConnection(t *testing.T) {
 	cli, srv := newLoopbackPair(t)
-	l, err := NewListener(srv, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(srv, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestDialCancelAfterReturnKeepsTheConnection(t *testing.T) {
 		}
 	}()
 	ctx, cancel := context.WithCancel(context.Background())
-	c, err := Dial(ctx, cli, srv.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	c, err := Dial(ctx, cli, srv.LocalAddr(), ClientTLSForTest(), DefaultConfig())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -133,7 +133,7 @@ func (p *failingWritePC) WriteTo([]byte, net.Addr) (int, error) {
 // counter is what still reports them.
 func TestWriteFailuresCountsFailedSends(t *testing.T) {
 	c := newConn(&failingWritePC{fuzzSink{addr: "wf:self"}}, fakeFuzzAddr("wf:peer"),
-		[]byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+		[]byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)

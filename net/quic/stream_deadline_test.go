@@ -153,7 +153,7 @@ func TestZeroReadDeadlineRemovesIt(t *testing.T) {
 // A Write parked on a peer that never grants credit gives up at the write
 // deadline, after reporting the bytes that did go out. SetDeadline sets both.
 func TestWriteDeadlinePassesWithoutCredit(t *testing.T) {
-	serverParams := quic.DefaultParameters()
+	serverParams := quic.DefaultConfig()
 	serverParams.InitialMaxStreamDataBidiRemote = 64
 	client, server, _, _ := handshakePairParams(t, serverTLS(t), clientTLS(), serverParams)
 	cs, _ := openAccepted(t, client, server)

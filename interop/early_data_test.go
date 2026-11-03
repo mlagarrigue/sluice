@@ -27,7 +27,7 @@ import (
 func earlyServer(t *testing.T, cfg *tls.Config, lcfg quic.ListenerConfig) (addr net.Addr, early <-chan bool) {
 	t.Helper()
 	pc := listenUDP(t)
-	ln, err := quic.NewListener(pc, cfg, quic.DefaultParameters(), lcfg)
+	ln, err := quic.NewListener(pc, cfg, quic.DefaultConfig(), lcfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func TestHTTP3EarlyRequestWaitsForTheHandshake(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
 			cfg := httpstream.Config{IdleTimeout: timeout, ReadTimeout: timeout, WriteTimeout: timeout, EarlyData: tc.early}
-			params, err := cfg.TransportParameters()
+			params, err := cfg.QUICConfig()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -376,7 +376,7 @@ func TestHTTP3EarlyRequestWaitsForTheHandshake(t *testing.T) {
 // stream, and whether DialEarly returned before the handshake completed.
 func sluiceDialEarly(t *testing.T, ctx context.Context, addr net.Addr, cfg *tls.Config, payload string) (*quic.Conn, *quic.Stream, bool) {
 	t.Helper()
-	c, err := quic.DialEarly(ctx, listenUDP(t), addr, cfg, quic.DefaultParameters())
+	c, err := quic.DialEarly(ctx, listenUDP(t), addr, cfg, quic.DefaultConfig())
 	if err != nil {
 		t.Fatalf("DialEarly: %v", err)
 	}
@@ -401,7 +401,7 @@ func sluiceDialEarly(t *testing.T, ctx context.Context, addr net.Addr, cfg *tls.
 // ticket the server issues, stored with the server's parameters.
 func sluicePrime(t *testing.T, ctx context.Context, addr net.Addr, cfg *tls.Config) {
 	t.Helper()
-	c, err := quic.Dial(ctx, listenUDP(t), addr, cfg, quic.DefaultParameters())
+	c, err := quic.Dial(ctx, listenUDP(t), addr, cfg, quic.DefaultConfig())
 	if err != nil {
 		t.Fatalf("first handshake: %v", err)
 	}
@@ -550,7 +550,7 @@ func TestDialDoesNotSpendTheTicketsZeroRTT(t *testing.T) {
 	sluicePrime(t, ctx, addr, cfg)
 	<-accepted
 
-	c, err := quic.Dial(ctx, listenUDP(t), addr, cfg, quic.DefaultParameters())
+	c, err := quic.Dial(ctx, listenUDP(t), addr, cfg, quic.DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}

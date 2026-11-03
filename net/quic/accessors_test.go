@@ -14,12 +14,12 @@ import (
 // ends: the client Dial produced and the connection the listener accepted.
 func handshakePair(t *testing.T, serverCfg, clientCfg *tls.Config) (client, server *quic.Conn, l *quic.Listener, clientPC *net.UDPConn) {
 	t.Helper()
-	return handshakePairParams(t, serverCfg, clientCfg, quic.DefaultParameters())
+	return handshakePairParams(t, serverCfg, clientCfg, quic.DefaultConfig())
 }
 
 // handshakePairParams is handshakePair with the server's transport
 // parameters chosen by the test: a small initial window, typically.
-func handshakePairParams(t *testing.T, serverCfg, clientCfg *tls.Config, serverParams quic.TransportParameters) (client, server *quic.Conn, l *quic.Listener, clientPC *net.UDPConn) {
+func handshakePairParams(t *testing.T, serverCfg, clientCfg *tls.Config, serverParams quic.Config) (client, server *quic.Conn, l *quic.Listener, clientPC *net.UDPConn) {
 	t.Helper()
 	pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
 	if err != nil {
@@ -44,7 +44,7 @@ func handshakePairParams(t *testing.T, serverCfg, clientCfg *tls.Config, serverP
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = clientPC.Close() })
-	client, err = quic.Dial(context.Background(), clientPC, l.Addr(), clientCfg, quic.DefaultParameters())
+	client, err = quic.Dial(context.Background(), clientPC, l.Addr(), clientCfg, quic.DefaultConfig())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestNoCommonALPNFailsTheHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := quic.NewListener(pc, serverCfg, quic.DefaultParameters(), quic.ListenerConfig{})
+	l, err := quic.NewListener(pc, serverCfg, quic.DefaultConfig(), quic.ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestNoCommonALPNFailsTheHandshake(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer clientPC.Close()
-	if c, err := quic.Dial(context.Background(), clientPC, l.Addr(), clientTLS(), quic.DefaultParameters()); err == nil {
+	if c, err := quic.Dial(context.Background(), clientPC, l.Addr(), clientTLS(), quic.DefaultConfig()); err == nil {
 		_ = c.Close()
 		t.Fatalf("Dial succeeded with no ALPN in common; negotiated %q", c.ConnectionState().NegotiatedProtocol)
 	}

@@ -27,10 +27,10 @@ func TestProtocolViolationsCarryTheirNormativeCodes(t *testing.T) {
 	// What a well-behaved client announces to the server under test, which
 	// each parameter row then spoils in one way.
 	clientParams := func(spoil func(p *TransportParameters, raw []byte) []byte) []byte {
-		p := DefaultParameters()
+		p := DefaultConfig()
 		p.initialSourceCID = []byte("cscid000")
-		raw := appendParameters(nil, p)
-		return spoil(&p, raw)
+		raw := appendParameters(nil, p.TransportParameters)
+		return spoil(&p.TransportParameters, raw)
 	}
 	stream := func(offset uint64, data []byte, fin bool) []byte {
 		typ := uint64(FrameStream | streamOFF | streamLEN)
@@ -62,7 +62,7 @@ func TestProtocolViolationsCarryTheirNormativeCodes(t *testing.T) {
 		{
 			name: "a STREAM frame past the stream's window", section: "§4.1", want: transportFlowControl, wrapped: true,
 			provoke: func(c *Conn) error {
-				window := DefaultParameters().InitialMaxStreamDataBidiRemote
+				window := DefaultConfig().InitialMaxStreamDataBidiRemote
 				err := c.frames(spaceApplication, stream(window, []byte("x"), false), time.Now())
 				return err
 			},
@@ -125,7 +125,7 @@ func TestProtocolViolationsCarryTheirNormativeCodes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pcA, pcB := newLoopbackPair(t)
 			dcid := []byte("dcid0000")
-			c := newConn(pcA, pcB.LocalAddr(), dcid, []byte("scid0000"), false, DefaultParameters())
+			c := newConn(pcA, pcB.LocalAddr(), dcid, []byte("scid0000"), false, DefaultConfig())
 			defer c.Close()
 			if err := c.installInitial(dcid); err != nil {
 				t.Fatal(err)

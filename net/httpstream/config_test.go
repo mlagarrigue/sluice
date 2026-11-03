@@ -32,10 +32,10 @@ func (c Config) mustResolve() Config {
 // resolves it.
 func testAssembler(cfg Config) *h3Assembler { return newH3Assembler(cfg.mustResolve()) }
 
-// mustTransportParameters is [Config.TransportParameters] for a valid
+// mustQUICConfig is [Config.QUICConfig] for a valid
 // configuration.
-func mustTransportParameters(cfg Config) quic.TransportParameters {
-	p, err := cfg.TransportParameters()
+func mustQUICConfig(cfg Config) quic.Config {
+	p, err := cfg.QUICConfig()
 	if err != nil {
 		panic(err)
 	}
@@ -131,7 +131,7 @@ func TestConfigRefusesAnOutOfRangeValue(t *testing.T) {
 				t.Errorf("Requests: %v, want an error naming %q", err, want)
 			}
 
-			if _, err := tc.cfg.TransportParameters(); err == nil || !strings.Contains(err.Error(), want) {
+			if _, err := tc.cfg.QUICConfig(); err == nil || !strings.Contains(err.Error(), want) {
 				t.Errorf("TransportParameters: %v, want an error naming %q", err, want)
 			}
 
@@ -201,10 +201,10 @@ func TestZeroConfigResolvesToTheDefaultsItsCommentsName(t *testing.T) {
 // TransportParameters refuses a stream limit ServeH3Conn would refuse every
 // connection for, rather than lowering it to the one it serves.
 func TestTransportParametersRefusesMoreStreamsThanServeH3Serves(t *testing.T) {
-	if _, err := (Config{MaxConcurrentStreams: h3MaxServeStreams + 1}).TransportParameters(); err == nil || !strings.Contains(err.Error(), "Config.MaxConcurrentStreams 4097") {
+	if _, err := (Config{MaxConcurrentStreams: h3MaxServeStreams + 1}).QUICConfig(); err == nil || !strings.Contains(err.Error(), "Config.MaxConcurrentStreams 4097") {
 		t.Errorf("TransportParameters: %v, want an error naming MaxConcurrentStreams", err)
 	}
-	p := mustTransportParameters(Config{MaxConcurrentStreams: h3MaxServeStreams})
+	p := mustQUICConfig(Config{MaxConcurrentStreams: h3MaxServeStreams})
 	if p.InitialMaxStreamsBidi != h3MaxServeStreams {
 		t.Errorf("InitialMaxStreamsBidi = %d, want %d", p.InitialMaxStreamsBidi, h3MaxServeStreams)
 	}

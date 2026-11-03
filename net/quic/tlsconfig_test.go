@@ -21,7 +21,7 @@ func TestConstructorsRefuseAConfigBelowTLS13(t *testing.T) {
 	cli.NextProtos = []string{"h3"}
 	pc := loopbackSocket(t)
 
-	if l, err := NewListener(pc, srv, DefaultParameters(), ListenerConfig{}); err == nil {
+	if l, err := NewListener(pc, srv, DefaultConfig(), ListenerConfig{}); err == nil {
 		_ = l.Close()
 		t.Error("NewListener accepted a Config with MinVersion == 0")
 	} else if !strings.Contains(err.Error(), "MinVersion") {
@@ -31,14 +31,14 @@ func TestConstructorsRefuseAConfigBelowTLS13(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	cpc := loopbackSocket(t)
-	if c, err := Dial(ctx, cpc, pc.LocalAddr(), cli, DefaultParameters()); err == nil {
+	if c, err := Dial(ctx, cpc, pc.LocalAddr(), cli, DefaultConfig()); err == nil {
 		_ = c.Close()
 		t.Error("Dial accepted a Config with MinVersion == 0")
 	} else if !strings.Contains(err.Error(), "MinVersion") {
 		t.Errorf("Dial error does not name MinVersion: %v", err)
 	}
 
-	if c, err := accept(pc, datagram{}, srv, DefaultParameters()); err == nil {
+	if c, err := accept(pc, datagram{}, srv, DefaultConfig()); err == nil {
 		_ = c.Close()
 		t.Error("Accept accepted a Config with MinVersion == 0")
 	} else if !strings.Contains(err.Error(), "MinVersion") {
@@ -49,7 +49,7 @@ func TestConstructorsRefuseAConfigBelowTLS13(t *testing.T) {
 	// minimum, not on the zero value.
 	srv12 := srv.Clone()
 	srv12.MinVersion = tls.VersionTLS12
-	if _, err := NewListener(pc, srv12, DefaultParameters(), ListenerConfig{}); err == nil || !strings.Contains(err.Error(), "MinVersion") {
+	if _, err := NewListener(pc, srv12, DefaultConfig(), ListenerConfig{}); err == nil || !strings.Contains(err.Error(), "MinVersion") {
 		t.Errorf("NewListener with MinVersion TLS 1.2: %v", err)
 	}
 }

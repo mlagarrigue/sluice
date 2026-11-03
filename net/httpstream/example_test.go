@@ -138,7 +138,7 @@ func ExampleServeH3Conn() {
 	)
 	ctx := context.Background()
 	cfg := httpstream.Config{}
-	params, err := cfg.TransportParameters()
+	params, err := cfg.QUICConfig()
 	if err != nil {
 		panic(err)
 	}

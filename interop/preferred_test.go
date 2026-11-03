@@ -27,7 +27,7 @@ func TestQuicGoClientAgainstSluiceServerWithPreferredAddress(t *testing.T) {
 
 	pc := listenUDP(t)
 	preferred := listenUDP(t)
-	ln, err := quic.NewListener(pc, serverTLS(t), quic.DefaultParameters(), quic.ListenerConfig{PreferredAddress: preferred})
+	ln, err := quic.NewListener(pc, serverTLS(t), quic.DefaultConfig(), quic.ListenerConfig{PreferredAddress: preferred})
 	if err != nil {
 		t.Fatal(err)
 	}

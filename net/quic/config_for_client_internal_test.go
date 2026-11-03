@@ -52,7 +52,7 @@ func TestAConfigForClientIsHeldToTLS13(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := NewListener(pc, base, DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(pc, base, DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		_ = pc.Close()
 		t.Fatal(err)

@@ -15,7 +15,7 @@ import (
 // not handed up a second time.
 func TestStopSendingAloneReachesTheCallback(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 
 	// Application keys, so the RESET_STREAM that answers the STOP_SENDING
@@ -76,11 +76,11 @@ func TestStopSendingAloneReachesTheCallback(t *testing.T) {
 func TestStopSendingBehindTheAnswerKeepsTheAnswer(t *testing.T) {
 	// No read loop: frames is fed here alone, as the read loop would.
 	client := newConn(&recordingPC{addr: "stop:self"}, fakeFuzzAddr("stop:peer"),
-		[]byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+		[]byte("peercid0"), []byte("selfcid0"), true, DefaultConfig())
 	t.Cleanup(func() { _ = client.Close() })
 	installAppSealer(t, client)
 	client.mu.Lock()
-	client.hasPeerParams, client.peerParams = true, DefaultParameters()
+	client.hasPeerParams, client.peerParams = true, DefaultConfig().TransportParameters
 	client.peerMaxStreamsBidi = 1
 	client.connSend.grant(1 << 20)
 	client.handshakeConfirmed = true

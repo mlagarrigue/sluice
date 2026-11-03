@@ -15,7 +15,7 @@ import (
 // nor the bytes in flight grow past it.
 func TestPathResponsesStopAtTheCongestionWindow(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 	sec, err := initialSecrets([]byte("appkeys0"))
 	if err != nil {
@@ -84,7 +84,7 @@ func TestPathResponsesStopAtTheCongestionWindow(t *testing.T) {
 func unackedResetServer(t *testing.T) *Conn {
 	t.Helper()
 	c := newConn(&fuzzSink{addr: "unacked-reset:self"}, fakeFuzzAddr("unacked-reset:peer"),
-		[]byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
+		[]byte("dcid0000"), []byte("scid0000"), false, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	sec, err := initialSecrets([]byte("appkeys0"))
 	if err != nil {

@@ -356,7 +356,7 @@ type Listener struct {
 	preferredV4 *net.UDPAddr
 	preferredV6 *net.UDPAddr
 	cfg         *tls.Config
-	params      TransportParameters
+	params      Config
 	// lcfg is the resolved config: every default filled in, the two keys
 	// included (StatelessResetKey for resetTokenFor, TokenKey for Retry).
 	lcfg ListenerConfig
@@ -564,7 +564,7 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 // copy raised to it, so a client offering nothing newer is answered
 // protocol_version (RFC 9846 Appendix E.2). With a GetConfigForClient set,
 // the handshakes run on a copy of cfg taken here.
-func NewListener(pc net.PacketConn, cfg *tls.Config, params TransportParameters, lcfg ListenerConfig) (*Listener, error) {
+func NewListener(pc net.PacketConn, cfg *tls.Config, params Config, lcfg ListenerConfig) (*Listener, error) {
 	if err := params.check(); err != nil {
 		return nil, err
 	}

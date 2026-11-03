@@ -94,7 +94,7 @@ func TestASmallExchangeCostsTheServerOneDatagram(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		left, right := dgram.Pair()
 		serverPC := &countingPC{PacketConn: newDelayedPC(left, pathDelay)}
-		l, err := NewListener(serverPC, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
+		l, err := NewListener(serverPC, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -107,7 +107,7 @@ func TestASmallExchangeCostsTheServerOneDatagram(t *testing.T) {
 			}
 			accepted <- c
 		}()
-		client, err := Dial(context.Background(), right, serverPC.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+		client, err := Dial(context.Background(), right, serverPC.LocalAddr(), ClientTLSForTest(), DefaultConfig())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -157,7 +157,7 @@ func TestASmallExchangeCostsTheServerOneDatagram(t *testing.T) {
 // batch callback runs inside delivery, so it sees the window every time.
 func TestAnAnswerSentDuringDeliveryCarriesTheACK(t *testing.T) {
 	c := assembleConn(&fuzzSink{addr: "exchange:self"}, fakeFuzzAddr("exchange:peer"),
-		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
 	defer c.Close()
 	var pending bool
 	c.OnStreamFrames(CreditOnDelivery, func([]Frame) error {

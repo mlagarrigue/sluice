@@ -112,7 +112,7 @@ func startH3Server(tb testing.TB, handle httpstream.Handler) (base string, ln *q
 	// and trailers included, and a streamed body's trailers are checked
 	// against the header bounds without being kept.
 	cfg := httpstream.Config{BodyDelivery: httpstream.BodyWhole, IdleTimeout: timeout, ReadTimeout: timeout, WriteTimeout: timeout}
-	params, err := cfg.TransportParameters()
+	params, err := cfg.QUICConfig()
 	if err != nil {
 		tb.Fatal(err)
 	}

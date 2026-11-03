@@ -24,7 +24,7 @@ func (p *refusingPC) WriteTo([]byte, net.Addr) (int, error) {
 // same socket survives anywhere else.
 func TestAFailedResetAnswerDoesNotEndTheConnection(t *testing.T) {
 	c := newConn(&refusingPC{fuzzSink{addr: "stop:self"}}, fakeFuzzAddr("stop:peer"),
-		[]byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+		[]byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 	installAppSealer(t, c)
 	c.mu.Lock()

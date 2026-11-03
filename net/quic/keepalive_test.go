@@ -15,7 +15,7 @@ import (
 // is enough to make silence fatal within the test's budget.
 func idlePair(t *testing.T) (client, server *quic.Conn) {
 	t.Helper()
-	params := quic.DefaultParameters()
+	params := quic.DefaultConfig()
 	params.MaxIdleTimeout = 300 * time.Millisecond
 	client, server, _, _ = handshakePairParams(t, serverTLS(t), clientTLS(), params)
 	return client, server

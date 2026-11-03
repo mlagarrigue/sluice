@@ -105,7 +105,7 @@ func newStream(c *Conn, id uint64) *Stream {
 	if c.hasPeerParams {
 		s.sendQ.max = initialStreamSendLimit(c.sendLimitsLocked(), id, c.isClient)
 	}
-	s.recvQ = newRecvQuota(initialStreamRecvLimit(c.params, id, c.isClient))
+	s.recvQ = newRecvQuota(initialStreamRecvLimit(c.params.TransportParameters, id, c.isClient))
 	// A unidirectional stream only ever carries bytes one way: the direction
 	// that does not exist is born closed, so lifecycle accounting does not
 	// wait forever for a FIN nobody can send.

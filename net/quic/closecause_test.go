@@ -25,7 +25,7 @@ func TestDialReportsTheRefusedHandshakeByItsCode(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer clientPC.Close()
-	l, err := quic.NewListener(serverPC, serverTLS(t), quic.DefaultParameters(), quic.ListenerConfig{})
+	l, err := quic.NewListener(serverPC, serverTLS(t), quic.DefaultConfig(), quic.ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestDialReportsTheRefusedHandshakeByItsCode(t *testing.T) {
 
 	cfg := clientTLS()
 	cfg.NextProtos = []string{"not-what-the-server-speaks"}
-	_, err = quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), cfg, quic.DefaultParameters())
+	_, err = quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), cfg, quic.DefaultConfig())
 	ce, ok := errors.AsType[*quic.ConnectionError](err)
 	if !ok || ce.Application || ce.Code != 0x0178 {
 		t.Fatalf("Dial with no ALPN in common = %v, want a ConnectionError with transport code 0x0178 (no_application_protocol)", err)

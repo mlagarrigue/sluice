@@ -11,7 +11,7 @@ import (
 // negative value and ended every connection after three PTOs of silence,
 // the floor its idle deadline is raised to.
 func TestValidateRefusesANegativeIdleTimeout(t *testing.T) {
-	p := DefaultParameters()
+	p := DefaultConfig()
 	p.MaxIdleTimeout = -time.Second
 	if err := p.Validate(); err == nil || !strings.Contains(err.Error(), "MaxIdleTimeout") {
 		t.Fatalf("Validate = %v, want a refusal naming MaxIdleTimeout", err)

@@ -52,6 +52,17 @@ signatures — a value now refused — come last.
 
 ### QUIC: `net/quic`
 
+- **`Dial`, `DialEarly` and `NewListener` take a `quic.Config`**
+  ("feat(quic)!: Config holds what never goes on the wire"): it embeds
+  `TransportParameters`, what is announced to the peer, beside the three
+  settings that stay on this side — `Congestion`, `HoldClosing` and
+  `MaxDatagramSize`, which leave `TransportParameters`. Replace
+  `quic.DefaultParameters()` with `quic.DefaultConfig()`; a field set on it
+  (`p.MaxIdleTimeout = …`, `p.Congestion = …`) reads as before. A
+  `quic.TransportParameters{…}` literal passed to `Dial` becomes
+  `quic.Config{TransportParameters: …}`, and `Validate` moves to `Config`.
+  In `net/httpstream`, `Config.TransportParameters()` becomes
+  `Config.QUICConfig()` and returns a `quic.Config`.
 - **`ActiveConnIDLimit` past 1024 is refused** (`2f3fe1b`):
   `TransportParameters.Validate`, and so `Dial` and `NewListener`, refuse
   it, where the value was taken as given. A configuration that asked for

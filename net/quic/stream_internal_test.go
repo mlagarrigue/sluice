@@ -147,7 +147,7 @@ func TestStopSendingWithNothingLeftToStopGivesBackTheWindow(t *testing.T) {
 	)
 	for _, ending := range []string{"FIN", "RESET_STREAM"} {
 		c := newConn(&fuzzSink{addr: "qual01:self"}, fakeFuzzAddr("qual01:peer"),
-			[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+			[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
 		data := bytes.Repeat([]byte("x"), perBytes)
 		for i := range streams {
 			id := uint64(i) * 4
@@ -204,7 +204,7 @@ func TestStopSendingGivesBackTheConnectionWindow(t *testing.T) {
 		perBytes = 1 << 16 // 64 KiB, under the 256 KiB stream window
 		readN    = 16
 	)
-	params := DefaultParameters()
+	params := DefaultConfig()
 	c := newConn(&fuzzSink{addr: "quict06:self"}, fakeFuzzAddr("quict06:peer"),
 		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, params)
 	defer c.Close()

@@ -33,15 +33,15 @@ func appendParam(dst []byte, id uint64, val []byte) []byte {
 // clientParamsFor is a client's parameter block as the server conn below
 // expects it, with extra appended.
 func clientParamsFor(extra ...byte) []byte {
-	p := DefaultParameters()
+	p := DefaultConfig()
 	p.initialSourceCID = []byte{1, 2, 3, 4}
-	return append(appendParameters(nil, p), extra...)
+	return append(appendParameters(nil, p.TransportParameters), extra...)
 }
 
 func boundsConn(t *testing.T, isClient bool) *Conn {
 	t.Helper()
 	c := newConn(&fuzzSink{addr: "bounds:self"}, fakeFuzzAddr("bounds:peer"),
-		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, isClient, DefaultParameters())
+		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, isClient, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	return c
 }
@@ -419,15 +419,15 @@ func TestCallerValuesPastTheVarintCeilingAreRefused(t *testing.T) {
 			// (TestActiveConnIDLimitIsBounded): 2^62-1 is refused there.
 		} {
 			for _, v := range []uint64{1 << 62, ^uint64(0)} {
-				p := DefaultParameters()
-				tc.set(&p, v)
+				p := DefaultConfig()
+				tc.set(&p.TransportParameters, v)
 				err := p.check()
 				if err == nil || !strings.Contains(err.Error(), tc.name) {
 					t.Errorf("%s = %d: check returned %v, want an error naming the field", tc.name, v, err)
 				}
 			}
-			p := DefaultParameters()
-			tc.set(&p, varint.Max)
+			p := DefaultConfig()
+			tc.set(&p.TransportParameters, varint.Max)
 			if err := p.check(); err != nil {
 				t.Errorf("%s = 2^62-1: check returned %v, want nil — the ceiling itself is encodable", tc.name, err)
 			}
@@ -439,23 +439,23 @@ func TestCallerValuesPastTheVarintCeilingAreRefused(t *testing.T) {
 			{"InitialMaxStreamsBidi", func(p *TransportParameters, v uint64) { p.InitialMaxStreamsBidi = v }},
 			{"InitialMaxStreamsUni", func(p *TransportParameters, v uint64) { p.InitialMaxStreamsUni = v }},
 		} {
-			p := DefaultParameters()
-			tc.set(&p, maxStreamsLimit+1)
+			p := DefaultConfig()
+			tc.set(&p.TransportParameters, maxStreamsLimit+1)
 			if err := p.check(); err == nil || !strings.Contains(err.Error(), tc.name) {
 				t.Errorf("%s = 2^60+1: check returned %v, want an error naming the field (§4.6)", tc.name, err)
 			}
-			tc.set(&p, maxStreamsLimit)
+			tc.set(&p.TransportParameters, maxStreamsLimit)
 			if err := p.check(); err != nil {
 				t.Errorf("%s = 2^60: check returned %v, want nil", tc.name, err)
 			}
 		}
 		// What check accepts, appendParameters encodes without a panic.
-		p := DefaultParameters()
+		p := DefaultConfig()
 		p.InitialMaxData, p.InitialMaxStreamsBidi = varint.Max, maxStreamsLimit
 		if err := p.check(); err != nil {
 			t.Fatal(err)
 		}
-		_ = appendParameters(nil, p)
+		_ = appendParameters(nil, p.TransportParameters)
 	})
 
 	t.Run("close codes", func(t *testing.T) {
@@ -557,7 +557,7 @@ func TestRetiredSelfRingIsBounded(t *testing.T) {
 // not make the connection hold it for its whole life. An ordinary packet's
 // scratch is always kept, which is what the scratch is for.
 func TestParseScratchDoesNotKeepAPacketOfPings(t *testing.T) {
-	c := assembleConn(&fuzzSink{addr: "scratch:self"}, fakeFuzzAddr("scratch:peer"), []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+	c := assembleConn(&fuzzSink{addr: "scratch:self"}, fakeFuzzAddr("scratch:peer"), []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	pings := bytes.Repeat([]byte{framePing}, 1451)
 	if err := c.frames(spaceApplication, pings, time.Now()); err != nil {
@@ -592,7 +592,7 @@ func TestParseScratchDoesNotKeepAPacketOfPings(t *testing.T) {
 // the previous one was let go. The bound is 4 bytes allocated per byte
 // received; the same bytes as PADDING and one PING are the control.
 func TestDensePacketsAllocateAtMostFourBytesPerByte(t *testing.T) {
-	c := assembleConn(&fuzzSink{addr: "dense:self"}, fakeFuzzAddr("dense:peer"), []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+	c := assembleConn(&fuzzSink{addr: "dense:self"}, fakeFuzzAddr("dense:peer"), []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	perPacket := func(payload []byte) uint64 {
 		t.Helper()
@@ -636,7 +636,7 @@ func TestDensePacketsAllocateAtMostFourBytesPerByte(t *testing.T) {
 // checked against, so both passed. The packet's growth is checked against
 // the limit it arrived under now; one alone still passes.
 func TestResetsInOnePacketAreCheckedAgainstTheLimitTheyArrivedUnder(t *testing.T) {
-	params := DefaultParameters()
+	params := DefaultConfig()
 	params.InitialMaxData = 1000
 	params.InitialMaxStreamDataBidiRemote = 1000
 	reset := func(id uint64) []byte {
@@ -670,7 +670,7 @@ func TestResetsInOnePacketAreCheckedAgainstTheLimitTheyArrivedUnder(t *testing.T
 // CRYPTO_BUFFER_EXCEEDED. CRYPTO parks as many fragments as 4096 bytes can
 // make now (minCryptoOutOfOrder).
 func TestCryptoAcceptsFourKilobytesOutOfOrderHoweverCut(t *testing.T) {
-	c := assembleConn(&fuzzSink{addr: "crypto:self"}, fakeFuzzAddr("crypto:peer"), []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+	c := assembleConn(&fuzzSink{addr: "crypto:self"}, fakeFuzzAddr("crypto:peer"), []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	// 300 fragments of 13 or 14 bytes, 4096 bytes in all, each one byte
 	// apart from the next and none at offset 0: nothing is delivered.

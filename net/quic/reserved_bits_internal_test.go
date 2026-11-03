@@ -14,7 +14,7 @@ func TestReservedBitsAreCheckedAfterTheAEADOpens(t *testing.T) {
 		// The server's own identifier is what the client's Initial names,
 		// and what both ends derive the Initial keys from.
 		scid := []byte("scid0000")
-		c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), scid, false, DefaultParameters())
+		c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), scid, false, DefaultConfig())
 		defer c.Close()
 		if err := c.installInitial(scid); err != nil {
 			t.Fatal(err)

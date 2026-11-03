@@ -431,8 +431,8 @@ func loopbackSockets(n int) ([]*net.UDPConn, error) {
 // wideParameters opens flow control far beyond what any benchmark transfer
 // uses, so the only regulator left on the path is congestion control — the
 // thing these benchmarks exist to observe.
-func wideParameters() quic.TransportParameters {
-	p := quic.DefaultParameters()
+func wideParameters() quic.Config {
+	p := quic.DefaultConfig()
 	p.InitialMaxData = 1 << 30
 	p.InitialMaxStreamDataBidiLocal = 1 << 28
 	p.InitialMaxStreamDataBidiRemote = 1 << 28
@@ -587,7 +587,7 @@ func transferAfterSmall(tb testing.TB, link *netemLink, cc quic.CongestionAlgori
 // marking figures in docs/benchmarks.md were measured behind a Listener;
 // the shape stays so they remain comparable. The listener is returned for
 // its counters, nil without one.
-func acceptOne(tb testing.TB, pc net.PacketConn, params quic.TransportParameters, marks bool) (*quic.Conn, *quic.Listener, error) {
+func acceptOne(tb testing.TB, pc net.PacketConn, params quic.Config, marks bool) (*quic.Conn, *quic.Listener, error) {
 	tb.Helper()
 	if marks {
 		l, err := quic.NewListener(pc, serverTLS(tb), params, quic.ListenerConfig{})

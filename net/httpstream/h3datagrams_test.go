@@ -37,7 +37,7 @@ func TestH3SmallResponseIsOneDatagram(t *testing.T) {
 	t.Cleanup(func() { <-served })
 	go func() {
 		defer close(served)
-		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), quic.DefaultConfig())
 		if err != nil {
 			t.Error(err)
 			return
@@ -50,7 +50,7 @@ func TestH3SmallResponseIsOneDatagram(t *testing.T) {
 			return sluice.Batch[Response]{Items: res}
 		})
 	}()
-	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultConfig())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}

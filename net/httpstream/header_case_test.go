@@ -47,7 +47,7 @@ func TestResponseHeaderCaseOnH2(t *testing.T) {
 }
 
 func TestResponseHeaderCaseOnH3(t *testing.T) {
-	conn, _, _ := startH3(t, quic.DefaultParameters(), caseHandler)
+	conn, _, _ := startH3(t, quic.DefaultConfig(), caseHandler)
 	checkLowercaseFields(t, readH3Fields(t, askH3(t, conn, h3Request("GET", "/"))))
 }
 

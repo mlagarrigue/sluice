@@ -24,7 +24,7 @@ func TestAReservationAfterTheCloseIsGivenBack(t *testing.T) {
 	}
 	newServer := func(name string) *Conn {
 		c := newConn(&fuzzSink{addr: fakeFuzzAddr("early:" + name)}, fakeFuzzAddr("early:peer"),
-			[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+			[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
 		c.early = g
 		return c
 	}

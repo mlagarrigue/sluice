@@ -12,7 +12,7 @@ import (
 func TestReceiveCoalescedPackets(t *testing.T) {
 	dcid := []byte{1, 2, 3, 4, 5, 6, 7, 8}
 	scid := []byte{9, 10, 11, 12, 13, 14, 15, 16}
-	c := newConn(&fuzzSink{addr: "coalesced:self"}, fakeFuzzAddr("coalesced:peer"), dcid, scid, false, DefaultParameters())
+	c := newConn(&fuzzSink{addr: "coalesced:self"}, fakeFuzzAddr("coalesced:peer"), dcid, scid, false, DefaultConfig())
 	defer c.Close()
 	if err := c.installInitial(dcid); err != nil {
 		t.Fatal(err)

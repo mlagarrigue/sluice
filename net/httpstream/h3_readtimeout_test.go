@@ -16,7 +16,7 @@ import (
 // as it kept pinging. A timer now runs the sweep at the earliest deadline.
 func TestH3ReadTimeoutRunsWithoutStreamFrames(t *testing.T) {
 	const readTimeout = 200 * time.Millisecond
-	conn, _, _ := startH3With(t, Config{ReadTimeout: readTimeout}, quic.DefaultParameters(), quic.DefaultParameters(), echoTarget)
+	conn, _, _ := startH3With(t, Config{ReadTimeout: readTimeout}, quic.DefaultConfig(), quic.DefaultConfig(), echoTarget)
 	s, err := conn.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)

@@ -118,5 +118,5 @@ question for a CPU profile: no counter can answer it.
 | `quic.ErrStreamLimit` | A stream identifier past the limit of its kind (the peer's `MAX_STREAMS`, or this end's). | Wait for streams to close, or raise the limit this end grants. |
 | `quic.ErrMigrationDisabled` | `Conn.Rebind` while the server announced `disable_active_migration`. | Keep the address the handshake used, or reconnect from the new one. |
 | `quic.ErrNoFreshConnectionID` | `Conn.Rebind` with no connection identifier left that was never used from another address. | Wait for the server to issue more, or reconnect. |
-| `quic.ErrZeroParameters` | A zero `TransportParameters`: no limit of any kind announced. | Start from `quic.DefaultParameters()` and change what you need. |
+| `quic.ErrZeroParameters` | A zero `TransportParameters`: no limit of any kind announced. | Start from `quic.DefaultConfig()` and change what you need. |
 | `quic.ConnectionError` (a type) | The peer closed the connection (`CONNECTION_CLOSE`): a transport error, a handshake it refused (`Code` 0x0100 to 0x01ff, a TLS alert plus 0x0100), an application code, or no error at all. Read from `Conn.Err`. | `errors.As` it and read `Code`, `Application` and `Reason`; 0x0178 is no common ALPN. A handshake this end's own TLS refused is a `tls.AlertError` instead. |

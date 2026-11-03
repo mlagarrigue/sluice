@@ -88,7 +88,7 @@ func listenUDP(tb testing.TB) *net.UDPConn {
 
 // payload is larger than one datagram so the echo crosses packet
 // boundaries, and larger than the initial stream flow-control window of
-// quic.DefaultParameters so both sides must grant credit along the way.
+// quic.DefaultConfig so both sides must grant credit along the way.
 func payload() []byte {
 	p := make([]byte, 256<<10)
 	for i := range p {
@@ -142,7 +142,7 @@ func TestSluiceClientAgainstQuicGoServer(t *testing.T) {
 		}()
 	}()
 
-	client, err := quic.Dial(ctx, listenUDP(t), ln.Addr(), clientTLS(), quic.DefaultParameters())
+	client, err := quic.Dial(ctx, listenUDP(t), ln.Addr(), clientTLS(), quic.DefaultConfig())
 	if err != nil {
 		t.Fatalf("sluice could not complete a handshake with quic-go: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestQuicGoClientAgainstSluiceServer(t *testing.T) {
 	defer cancel()
 
 	pc := listenUDP(t)
-	ln, err := quic.NewListener(pc, serverTLS(t), quic.DefaultParameters(), quic.ListenerConfig{})
+	ln, err := quic.NewListener(pc, serverTLS(t), quic.DefaultConfig(), quic.ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}

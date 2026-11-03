@@ -30,7 +30,7 @@ import (
 // acceptOne serves the first connection that reaches pc, through a
 // [quic.Listener] closed with the test. It gives up after ten seconds, so a
 // client that never dials fails the test rather than hanging it.
-func acceptOne(tb testing.TB, pc net.PacketConn, cfg *tls.Config, params quic.TransportParameters) (*quic.Conn, error) {
+func acceptOne(tb testing.TB, pc net.PacketConn, cfg *tls.Config, params quic.Config) (*quic.Conn, error) {
 	tb.Helper()
 	l, err := quic.NewListener(pc, cfg, params, quic.ListenerConfig{})
 	if err != nil {
@@ -420,7 +420,7 @@ func TestH3OverARealConnection(t *testing.T) {
 	t.Cleanup(func() { <-serverDone })
 	go func() {
 		defer close(serverDone)
-		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), quic.DefaultConfig())
 		if err != nil {
 			serverUp <- err
 			return
@@ -436,7 +436,7 @@ func TestH3OverARealConnection(t *testing.T) {
 		})
 	}()
 
-	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultConfig())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -958,7 +958,7 @@ func TestH3ResetsOneStreamAndServesTheRest(t *testing.T) {
 	t.Cleanup(func() { <-serverDone })
 	go func() {
 		defer close(serverDone)
-		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), quic.DefaultConfig())
 		if err != nil {
 			serverUp <- err
 			return
@@ -973,7 +973,7 @@ func TestH3ResetsOneStreamAndServesTheRest(t *testing.T) {
 		})
 	}()
 
-	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultConfig())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -1041,30 +1041,30 @@ func TestH3ResetsOneStreamAndServesTheRest(t *testing.T) {
 func TestServeH3RefusesTransportParametersItCannotServe(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
-		mutate func(*quic.TransportParameters)
+		mutate func(*quic.Config)
 		cfg    Config
 		want   string
 	}{
-		{"a stream limit past its cap", func(p *quic.TransportParameters) { p.InitialMaxStreamsBidi = h3MaxServeStreams + 1 }, Config{}, "InitialMaxStreamsBidi"},
+		{"a stream limit past its cap", func(p *quic.Config) { p.InitialMaxStreamsBidi = h3MaxServeStreams + 1 }, Config{}, "InitialMaxStreamsBidi"},
 		// The cap holds for the configuration too: with parameters written
 		// by hand, admit counts against MaxConcurrentStreams alone, and the
 		// rapid-reset allowance is four times it.
-		{"a concurrency past its cap", func(*quic.TransportParameters) {}, Config{MaxConcurrentStreams: 1 << 16}, "MaxConcurrentStreams"},
-		{"fewer than three unidirectional streams", func(p *quic.TransportParameters) { p.InitialMaxStreamsUni = 2 }, Config{}, "InitialMaxStreamsUni"},
-		{"no credit on unidirectional streams", func(p *quic.TransportParameters) { p.InitialMaxStreamDataUni = 0 }, Config{}, "InitialMaxStreamDataUni"},
-		{"more unidirectional streams than are read", func(p *quic.TransportParameters) { p.InitialMaxStreamsUni = maxUniStreams + 1 }, Config{}, "InitialMaxStreamsUni"},
+		{"a concurrency past its cap", func(*quic.Config) {}, Config{MaxConcurrentStreams: 1 << 16}, "MaxConcurrentStreams"},
+		{"fewer than three unidirectional streams", func(p *quic.Config) { p.InitialMaxStreamsUni = 2 }, Config{}, "InitialMaxStreamsUni"},
+		{"no credit on unidirectional streams", func(p *quic.Config) { p.InitialMaxStreamDataUni = 0 }, Config{}, "InitialMaxStreamDataUni"},
+		{"more unidirectional streams than are read", func(p *quic.Config) { p.InitialMaxStreamsUni = maxUniStreams + 1 }, Config{}, "InitialMaxStreamsUni"},
 	} {
 		t.Run(tt.name, func(t *testing.T) { refusesH3Params(t, tt.mutate, tt.cfg, tt.want) })
 	}
 }
 
-func refusesH3Params(t *testing.T, mutate func(*quic.TransportParameters), cfg Config, want string) {
+func refusesH3Params(t *testing.T, mutate func(*quic.Config), cfg Config, want string) {
 	t.Helper()
 	serverPC, clientPC := dgram.Pair()
 	defer func() { _ = serverPC.Close() }()
 	defer func() { _ = clientPC.Close() }()
 
-	params := quic.DefaultParameters()
+	params := quic.DefaultConfig()
 	mutate(&params)
 
 	served := make(chan error, 1)
@@ -1079,7 +1079,7 @@ func refusesH3Params(t *testing.T, mutate func(*quic.TransportParameters), cfg C
 		})
 	}()
 
-	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultConfig())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -1197,7 +1197,7 @@ func TestH3StarvedStreamDoesNotBlockOtherResponses(t *testing.T) {
 	t.Cleanup(func() { <-serverDone })
 	go func() {
 		defer close(serverDone)
-		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), quic.DefaultConfig())
 		if err != nil {
 			serverUp <- err
 			return
@@ -1222,7 +1222,7 @@ func TestH3StarvedStreamDoesNotBlockOtherResponses(t *testing.T) {
 	// The client grants each stream it opens a 128-byte window and then
 	// never reads the large response — read-mode credit is granted on Read,
 	// so not reading is exactly how a client starves one stream.
-	params := quic.DefaultParameters()
+	params := quic.DefaultConfig()
 	params.InitialMaxStreamDataBidiLocal = 128
 	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), params)
 	if err != nil {
@@ -1309,7 +1309,7 @@ func TestH3UploadLargerThanTheInitialWindows(t *testing.T) {
 	t.Cleanup(func() { <-serverDone })
 	go func() {
 		defer close(serverDone)
-		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), mustTransportParameters(Config{BodyDelivery: BodyWhole}))
+		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), mustQUICConfig(Config{BodyDelivery: BodyWhole}))
 		if err != nil {
 			serverUp <- err
 			return
@@ -1328,7 +1328,7 @@ func TestH3UploadLargerThanTheInitialWindows(t *testing.T) {
 		})
 	}()
 
-	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultConfig())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -1391,7 +1391,7 @@ func TestH3StreamProducerPanicResetsOneStream(t *testing.T) {
 	t.Cleanup(func() { <-serverDone })
 	go func() {
 		defer close(serverDone)
-		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), quic.DefaultConfig())
 		if err != nil {
 			serverUp <- err
 			return
@@ -1415,7 +1415,7 @@ func TestH3StreamProducerPanicResetsOneStream(t *testing.T) {
 		})
 	}()
 
-	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultConfig())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -1742,7 +1742,7 @@ func TestServeH3RefusesAProtocolOtherThanH3(t *testing.T) {
 
 	served := make(chan error, 1)
 	go func() {
-		conn, err := acceptOne(t, serverPC, serverCfg, quic.DefaultParameters())
+		conn, err := acceptOne(t, serverPC, serverCfg, quic.DefaultConfig())
 		if err != nil {
 			served <- err
 			return
@@ -1753,7 +1753,7 @@ func TestServeH3RefusesAProtocolOtherThanH3(t *testing.T) {
 		})
 	}()
 
-	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), clientCfg, quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), clientCfg, quic.DefaultConfig())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -1832,7 +1832,7 @@ func TestServeH3ShutdownDrainsRequest(t *testing.T) {
 	t.Cleanup(func() { <-serverDone })
 	go func() {
 		defer close(serverDone)
-		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), quic.DefaultConfig())
 		if err != nil {
 			serverUp <- err
 			return
@@ -1849,7 +1849,7 @@ func TestServeH3ShutdownDrainsRequest(t *testing.T) {
 		})
 	}()
 
-	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultConfig())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -2011,7 +2011,7 @@ func TestServeH3ServesARequestSentBeforeTheGoAway(t *testing.T) {
 	t.Cleanup(func() { <-serverDone })
 	go func() {
 		defer close(serverDone)
-		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), quic.DefaultConfig())
 		if err != nil {
 			serverUp <- err
 			return
@@ -2027,7 +2027,7 @@ func TestServeH3ServesARequestSentBeforeTheGoAway(t *testing.T) {
 	}()
 
 	held := &heldPC{PacketConn: clientPC}
-	conn, err := quic.Dial(context.Background(), held, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), held, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultConfig())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}

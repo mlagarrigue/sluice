@@ -57,7 +57,7 @@ func FuzzConnFramesBudget(f *testing.F) {
 		// A fresh connection per input, as in FuzzReceive: a failure must
 		// reproduce from the failing input alone.
 		pc := &recordingPC{addr: "budget:self"}
-		c := newConn(pc, peer, []byte("peercid0"), scid, false, DefaultParameters())
+		c := newConn(pc, peer, []byte("peercid0"), scid, false, DefaultConfig())
 		defer c.Close()
 		opener, err := newPacketOpener(secrets.Client)
 		if err != nil {
@@ -71,7 +71,7 @@ func FuzzConnFramesBudget(f *testing.F) {
 		c.spaces[spaceApplication].opener = opener
 		c.spaces[spaceApplication].sealer = sealer
 		c.hasPeerParams = true
-		c.peerParams = DefaultParameters()
+		c.peerParams = DefaultConfig().TransportParameters
 		c.handshakeConfirmed = true
 		// A started TLS server, as every server connection has: a CRYPTO
 		// frame reaches it like any other, and its refusal is the peer's

@@ -13,7 +13,7 @@ func TestAMaxStreamsThatRaisesNothingWakesNoOne(t *testing.T) {
 	for _, typ := range []byte{frameMaxStreams, frameMaxStreams + 1} {
 		synctest.Test(t, func(t *testing.T) {
 			c := newConn(&fuzzSink{addr: "wake:self"}, fakeFuzzAddr("wake:peer"),
-				[]byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+				[]byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 			defer c.Close()
 			c.mu.Lock()
 			c.peerMaxStreamsBidi, c.peerMaxStreamsUni = 10, 10

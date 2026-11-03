@@ -56,7 +56,7 @@ func writeLong(t *testing.T, s *quic.Stream) {
 func TestUnacceptedUniStreamsHoldTheirSlots(t *testing.T) {
 	client, _, _, _ := handshakePair(t, serverTLS(t), clientTLS())
 
-	limit := int(quic.DefaultParameters().InitialMaxStreamsUni)
+	limit := int(quic.DefaultConfig().InitialMaxStreamsUni)
 	if got := openUntilRefused(t, client, true, 200); got != limit {
 		t.Fatalf("the client opened %d unidirectional streams nobody accepted; the server's limit is %d", got, limit)
 	}
@@ -73,7 +73,7 @@ func TestUnacceptedUniStreamsHoldTheirSlots(t *testing.T) {
 func TestEveryBidiStreamTheLimitAllowsCanWaitForAccept(t *testing.T) {
 	client, _, _, _ := handshakePair(t, serverTLS(t), clientTLS())
 
-	limit := int(quic.DefaultParameters().InitialMaxStreamsBidi)
+	limit := int(quic.DefaultConfig().InitialMaxStreamsBidi)
 	if got := openUntilRefused(t, client, false, limit-1); got != limit-1 {
 		t.Fatalf("the client opened %d bidirectional streams, want %d", got, limit-1)
 	}

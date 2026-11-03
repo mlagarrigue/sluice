@@ -177,7 +177,7 @@ func earlyFileServer(t *testing.T) net.Addr {
 	// a server answering at line rate makes the client acknowledge in
 	// bursts that no real path would let through.
 	pc := &countingPC{PacketConn: listenUDP(t), delay: pathDelay, bps: 10_000_000, queueLen: 25}
-	ln, err := quic.NewListener(pc, serverTLS(t), quic.DefaultParameters(), quic.ListenerConfig{EarlyData: true})
+	ln, err := quic.NewListener(pc, serverTLS(t), quic.DefaultConfig(), quic.ListenerConfig{EarlyData: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +220,7 @@ func TestZeroRTTCarriesTheWholeRequest(t *testing.T) {
 	sluicePrime(t, ctx, addr, cfg)
 
 	pc := &countingPC{PacketConn: listenUDP(t), delay: pathDelay, bps: 10_000_000, queueLen: 25}
-	c, err := quic.DialEarly(ctx, pc, addr, cfg, quic.DefaultParameters())
+	c, err := quic.DialEarly(ctx, pc, addr, cfg, quic.DefaultConfig())
 	if err != nil {
 		t.Fatalf("DialEarly: %v", err)
 	}

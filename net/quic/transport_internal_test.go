@@ -25,7 +25,7 @@ import (
 func newIdleServerConn(t *testing.T) *Conn {
 	t.Helper()
 	pcA, pcB := newLoopbackPair(t)
-	c := assembleConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
+	c := assembleConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)
@@ -87,7 +87,7 @@ func dialAgainst(t *testing.T, answer func(srv net.PacketConn, from net.Addr, h 
 		answer(srv, from, h)
 	}()
 	start := time.Now()
-	c, err := Dial(context.Background(), cli, srv.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	c, err := Dial(context.Background(), cli, srv.LocalAddr(), ClientTLSForTest(), DefaultConfig())
 	if c != nil {
 		_ = c.Close()
 	}
@@ -226,7 +226,7 @@ func TestReadLoopSurvivesATransientReadError(t *testing.T) {
 		scriptedRead{err: errors.New("wsarecvfrom: An existing connection was forcibly closed by the remote host.")},
 		scriptedRead{data: []byte{0x40, 1, 2, 3}, from: peer}, // undecryptable: counted and dropped
 	)
-	c := newConn(pc, peer, []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(pc, peer, []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	c.tls = tls.QUICClient(&tls.QUICConfig{TLSConfig: ClientTLSForTest()})
 	c.closing.loop = true // as the handshake leaves it to the loop it starts
 	loopDone := make(chan struct{})
@@ -306,7 +306,7 @@ func isRefusedClose(err error) bool {
 func TestIdleTimeoutExpiresSilently(t *testing.T) {
 	peer := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 2}
 	pc := newScriptedPC()
-	c := assembleConn(pc, peer, []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := assembleConn(pc, peer, []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)
@@ -457,7 +457,7 @@ func TestProbeLiftsTheOldestPacketsIntoNewOnes(t *testing.T) {
 // been lost, and a probe is the only packet the peer will see for a PTO.
 func TestAHandshakeProbeCarriesTheAckAlreadySent(t *testing.T) {
 	pc := &recordingPC{addr: fakeFuzzAddr("probeack:self")}
-	c := assembleConn(pc, fakeFuzzAddr("probeack:peer"), []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
+	c := assembleConn(pc, fakeFuzzAddr("probeack:peer"), []byte("dcid0000"), []byte("scid0000"), false, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)
@@ -593,7 +593,7 @@ func TestARepeatedClientHelloDrawsAnEarlyResend(t *testing.T) {
 // Manual credit: delivery to the batch consumer earns the peer nothing, and
 // only ReleaseStreamBytes reopens the window — at both levels.
 func TestManualCreditGrantsOnlyOnRelease(t *testing.T) {
-	params := DefaultParameters()
+	params := DefaultConfig()
 	params.InitialMaxData = 1000
 	params.InitialMaxStreamDataBidiRemote = 1000
 	c := newConn(&fuzzSink{addr: "manual:self"}, fakeFuzzAddr("manual:peer"),
@@ -657,7 +657,7 @@ func TestManualCreditGrantsOnlyOnRelease(t *testing.T) {
 // alone leaves the stream at its window, the stream's alone leaves the
 // connection at its own.
 func TestManualCreditReleasesOneLevelAtATime(t *testing.T) {
-	params := DefaultParameters()
+	params := DefaultConfig()
 	params.InitialMaxData = 1000
 	params.InitialMaxStreamDataBidiRemote = 1000
 	c := newConn(&fuzzSink{addr: "split:self"}, fakeFuzzAddr("split:peer"),
@@ -712,7 +712,7 @@ func BenchmarkSameAddr(b *testing.B) {
 // authenticate): what is left is the loop's own overhead per round.
 func BenchmarkReadLoopFed(b *testing.B) {
 	peer := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 4433}
-	c := newConn(&fuzzSink{addr: "bench:self"}, peer, []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
+	c := newConn(&fuzzSink{addr: "bench:self"}, peer, []byte("dcid0000"), []byte("scid0000"), false, DefaultConfig())
 	c.tls = tls.QUICServer(&tls.QUICConfig{TLSConfig: &tls.Config{}})
 	c.incoming = make(chan rawDatagram)
 	done := make(chan struct{})
@@ -759,7 +759,7 @@ func TestSameAddrMatchesTheStringComparison(t *testing.T) {
 // It now fails with the TLS error, alert code intact.
 func TestPumpFailsOnTLSErrorEvent(t *testing.T) {
 	peer := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 2}
-	c := newConn(newScriptedPC(), peer, []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(newScriptedPC(), peer, []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)

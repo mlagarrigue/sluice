@@ -74,14 +74,14 @@ var stopProtocols = []struct {
 		t.Helper()
 		serverPC, clientPC := dgram.Pair()
 		t.Cleanup(func() { _ = serverPC.Close(); _ = clientPC.Close() })
-		ln, err := quic.NewListener(serverPC, h3ServerTLS(t), quic.DefaultParameters(), quic.ListenerConfig{})
+		ln, err := quic.NewListener(serverPC, h3ServerTLS(t), quic.DefaultConfig(), quic.ListenerConfig{})
 		if err != nil {
 			t.Fatal(err)
 		}
 		served := make(chan error, 1)
 		go func() { served <- srv.ServeQUIC(ln) }()
 		t.Cleanup(func() { _ = srv.Close(); _ = ln.Close() })
-		conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+		conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultConfig())
 		if err != nil {
 			t.Fatalf("Dial: %v", err)
 		}
@@ -598,12 +598,12 @@ func (l *lockedWriter) String() string {
 // once the client has ended, or five seconds on: a real socket's datagrams
 // outlive its close, where the pair's would be lost with it — and the
 // CONNECTION_CLOSE a server sends on its way out with them.
-func serveQUICFor(t *testing.T, srv *Server, clientParams quic.TransportParameters) *quic.Conn {
+func serveQUICFor(t *testing.T, srv *Server, clientParams quic.Config) *quic.Conn {
 	t.Helper()
 	serverPC, clientPC := dgram.Pair()
 	clientDone := make(chan struct{})
 	t.Cleanup(func() { _ = serverPC.Close(); _ = clientPC.Close() })
-	ln, err := quic.NewListener(lingerPC{serverPC, clientDone}, h3ServerTLS(t), quic.DefaultParameters(), quic.ListenerConfig{})
+	ln, err := quic.NewListener(lingerPC{serverPC, clientDone}, h3ServerTLS(t), quic.DefaultConfig(), quic.ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -652,7 +652,7 @@ func TestServerCloseEndsHTTP3WithH3NoError(t *testing.T) {
 				handle = echoTarget
 			}
 			srv := &Server{Config: Config{Logger: discardLogger()}, Handler: handle}
-			c := &h3StopClient{conn: serveQUICFor(t, srv, quic.DefaultParameters())}
+			c := &h3StopClient{conn: serveQUICFor(t, srv, quic.DefaultConfig())}
 			c.ask(t)
 			if busy {
 				<-h.entered
@@ -680,7 +680,7 @@ func TestServerCloseEndsHTTP3WithH3NoError(t *testing.T) {
 // do itself: ServeQUIC does not hand the *quic.Conn back.
 func TestServerKeepAliveHoldsAnHTTP3ConnectionPastTheIdleTimeout(t *testing.T) {
 	const idle = 300 * time.Millisecond
-	params := quic.DefaultParameters()
+	params := quic.DefaultConfig()
 	params.MaxIdleTimeout = idle
 	srv := &Server{Config: Config{KeepAlive: 50 * time.Millisecond}, Handler: echoTarget}
 	c := &h3StopClient{conn: serveQUICFor(t, srv, params)}

@@ -19,7 +19,7 @@ func TestASocketHandedBackHasNoDeadlineLeft(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := quic.NewListener(udp, serverTLS(t), quic.DefaultParameters(), quic.ListenerConfig{})
+	l, err := quic.NewListener(udp, serverTLS(t), quic.DefaultConfig(), quic.ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +31,7 @@ func TestASocketHandedBackHasNoDeadlineLeft(t *testing.T) {
 	defer own.Close()
 	// A held closing period, cut short by a Wait whose ctx ends: the path
 	// that leaves the socket with Wait's expired deadline.
-	holding := quic.DefaultParameters()
+	holding := quic.DefaultConfig()
 	holding.HoldClosing = true
 	client, err := quic.Dial(context.Background(), own, l.Addr(), clientTLS(), holding)
 	if err != nil {
@@ -109,7 +109,7 @@ func TestASocketADialFailedOnHasNoDeadlineLeft(t *testing.T) {
 			defer own.Close()
 			ctx, cancel := tc.ctx()
 			defer cancel()
-			if c, err := quic.Dial(ctx, own, silent.LocalAddr(), clientTLS(), quic.DefaultParameters()); err == nil {
+			if c, err := quic.Dial(ctx, own, silent.LocalAddr(), clientTLS(), quic.DefaultConfig()); err == nil {
 				_ = c.Close()
 				t.Fatal("Dial to a silent peer succeeded")
 			}

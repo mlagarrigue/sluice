@@ -174,7 +174,7 @@ func readH3Fields(t *testing.T, s *quic.Stream) map[string][]string {
 // 500 the layer answers a panicking handler with. A handler's own date is
 // not doubled.
 func TestDateHeaderOnH3(t *testing.T) {
-	conn, _, _ := startH3(t, quic.DefaultParameters(), dateHandler)
+	conn, _, _ := startH3(t, quic.DefaultConfig(), dateHandler)
 	for _, tt := range []struct {
 		path string
 		want string

@@ -24,14 +24,14 @@ import (
 // tests were written against it, and their handlers answer without reading
 // a body, which under BodyStreamed resets the stream instead of assembling
 // it. The streaming form has its own tests in h3body_test.go.
-func startH3(t *testing.T, params quic.TransportParameters, handle Handler) (*quic.Conn, context.CancelFunc, <-chan error) {
+func startH3(t *testing.T, params quic.Config, handle Handler) (*quic.Conn, context.CancelFunc, <-chan error) {
 	t.Helper()
-	return startH3With(t, Config{BodyDelivery: BodyWhole}, params, quic.DefaultParameters(), handle)
+	return startH3With(t, Config{BodyDelivery: BodyWhole}, params, quic.DefaultConfig(), handle)
 }
 
 // startH3With is startH3 with the server's Config and the client's transport
 // parameters chosen too.
-func startH3With(t *testing.T, cfg Config, params, clientParams quic.TransportParameters, handle Handler) (*quic.Conn, context.CancelFunc, <-chan error) {
+func startH3With(t *testing.T, cfg Config, params, clientParams quic.Config, handle Handler) (*quic.Conn, context.CancelFunc, <-chan error) {
 	t.Helper()
 	serverPC, clientPC := dgram.Pair()
 	t.Cleanup(func() { _ = serverPC.Close(); _ = clientPC.Close() })
@@ -79,7 +79,7 @@ func startH3With(t *testing.T, cfg Config, params, clientParams quic.TransportPa
 // the server before ServeH3Conn opened stream 3 a STREAM_STATE_ERROR, which is
 // what this test used to race into one run in thirty.
 func TestH3StopSendingOnTheControlStreamClosesTheConnection(t *testing.T) {
-	conn, _, _ := startH3(t, quic.DefaultParameters(), func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+	conn, _, _ := startH3(t, quic.DefaultConfig(), func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		res := make([]Response, b.Len())
 		for i := range res {
 			res[i] = Response{Status: 200}
@@ -128,7 +128,7 @@ func TestH3StopSendingBeforeSettingsClosesTheConnection(t *testing.T) {
 	t.Cleanup(func() { <-serverDone })
 	go func() {
 		defer close(serverDone)
-		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), quic.DefaultConfig())
 		if err != nil {
 			serverUp <- err
 			return
@@ -157,7 +157,7 @@ func TestH3StopSendingBeforeSettingsClosesTheConnection(t *testing.T) {
 		})
 	}()
 
-	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultConfig())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -267,7 +267,7 @@ func readH3Body(t *testing.T, s *quic.Stream) (body string, contentLength bool) 
 // order, an empty batch costs nothing, and the stream ends cleanly with no
 // content-length in the head.
 func TestH3StreamedBodyOverARealConnection(t *testing.T) {
-	conn, _, _ := startH3(t, quic.DefaultParameters(), func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+	conn, _, _ := startH3(t, quic.DefaultConfig(), func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		res := make([]Response, b.Len())
 		for i := range res {
 			res[i] = Response{Status: 200, Stream: func(yield func(sluice.Batch[[]byte]) bool) {
@@ -298,7 +298,7 @@ func TestH3RequestDuringABusyCallIsNotHeldBehindIt(t *testing.T) {
 	release := make(chan struct{})
 	entered := make(chan struct{})
 	var once sync.Once
-	conn, _, _ := startH3(t, quic.DefaultParameters(), func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+	conn, _, _ := startH3(t, quic.DefaultConfig(), func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		if string(b.Items[0].Target) == "/held" {
 			once.Do(func() { close(entered) })
 			<-release
@@ -331,7 +331,7 @@ func TestServeH3ReturnsWhileAProducerIsBlocked(t *testing.T) {
 	blocked := make(chan struct{})
 	release := make(chan struct{})
 	yielded := make(chan bool, 1)
-	conn, cancel, served := startH3With(t, Config{ShutdownGrace: 200 * time.Millisecond}, quic.DefaultParameters(), quic.DefaultParameters(), func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+	conn, cancel, served := startH3With(t, Config{ShutdownGrace: 200 * time.Millisecond}, quic.DefaultConfig(), quic.DefaultConfig(), func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		res := make([]Response, b.Len())
 		for i := range res {
 			res[i] = Response{Status: 200, Stream: func(yield func(sluice.Batch[[]byte]) bool) {
@@ -388,11 +388,11 @@ func TestH3CreditsRequestBytesOnce(t *testing.T) {
 
 	for _, mode := range []struct {
 		name   string
-		params quic.TransportParameters
+		params quic.Config
 		manual bool
 	}{
-		{"delivery", quic.DefaultParameters(), false},
-		{"manual", mustTransportParameters(Config{BodyDelivery: BodyWhole}), true},
+		{"delivery", quic.DefaultConfig(), false},
+		{"manual", mustQUICConfig(Config{BodyDelivery: BodyWhole}), true},
 	} {
 		t.Run(mode.name, func(t *testing.T) {
 			released.Store(0)
@@ -434,7 +434,7 @@ func TestH3ServeCreditsOnRelease(t *testing.T) {
 	t.Cleanup(func() { h3ReleaseStreamBytes = orig })
 
 	got := make(chan int, 8)
-	conn, _, _ := startH3(t, mustTransportParameters(Config{BodyDelivery: BodyWhole}), func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+	conn, _, _ := startH3(t, mustQUICConfig(Config{BodyDelivery: BodyWhole}), func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		for _, r := range b.Items {
 			got <- len(r.Body)
 		}
@@ -496,7 +496,7 @@ func TestServeH3ReturnsAtTheGraceUnderAStuckHandler(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	handlerErr := make(chan error, 1)
-	conn, cancel, served := startH3With(t, Config{ShutdownGrace: grace}, quic.DefaultParameters(), quic.DefaultParameters(), func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+	conn, cancel, served := startH3With(t, Config{ShutdownGrace: grace}, quic.DefaultConfig(), quic.DefaultConfig(), func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		close(entered)
 		select {
 		case <-ctx.Done():
@@ -576,11 +576,11 @@ func waitServedUnder(t *testing.T, conn *quic.Conn, served <-chan error, limit t
 func TestH3AControlStreamWithoutCreditDoesNotOutliveTheGrace(t *testing.T) {
 	const grace = 300 * time.Millisecond
 	cfg := Config{ShutdownGrace: grace}
-	clientParams := quic.DefaultParameters()
+	clientParams := quic.DefaultConfig()
 	// Under the SETTINGS frame: the client never reads stream 3, so it
 	// never grants more.
 	clientParams.InitialMaxStreamDataUni = 8
-	conn, cancel, served := startH3With(t, cfg, mustTransportParameters(cfg), clientParams, h3OKHandler)
+	conn, cancel, served := startH3With(t, cfg, mustQUICConfig(cfg), clientParams, h3OKHandler)
 
 	// The control stream arriving is the sign the server is inside the write:
 	// its first eight bytes are out and the rest waits for credit. Stopped
@@ -602,9 +602,9 @@ func TestH3AControlStreamWithoutCreditDoesNotOutliveTheGrace(t *testing.T) {
 func TestH3AControlStreamWithoutCreditIsClosedAtTheWriteTimeout(t *testing.T) {
 	const timeout = 200 * time.Millisecond
 	cfg := Config{WriteTimeout: timeout}
-	clientParams := quic.DefaultParameters()
+	clientParams := quic.DefaultConfig()
 	clientParams.InitialMaxStreamDataUni = 8
-	conn, _, served := startH3With(t, cfg, mustTransportParameters(cfg), clientParams, h3OKHandler)
+	conn, _, served := startH3With(t, cfg, mustQUICConfig(cfg), clientParams, h3OKHandler)
 
 	select {
 	case err := <-served:
@@ -633,13 +633,13 @@ func TestH3AControlStreamWithoutCreditIsClosedAtTheWriteTimeout(t *testing.T) {
 func TestH3ADrainWithoutControlCreditDoesNotOutliveTheGrace(t *testing.T) {
 	const grace = 300 * time.Millisecond
 	cfg := Config{ShutdownGrace: grace}
-	clientParams := quic.DefaultParameters()
+	clientParams := quic.DefaultConfig()
 	// The longest SETTINGS this end writes: stream type, frame type and
 	// length (3), the two QPACK settings (4), the field-section setting
 	// (1 + its varint), the grease pair (4 + 4). The shortest is six bytes
 	// under it, short of the ten a GOAWAY at 2^62−4 needs.
 	clientParams.InitialMaxStreamDataUni = uint64(3 + 4 + 1 + len(varint.Append(nil, defaultMaxHeaderBytes)) + 4 + 4)
-	conn, cancel, served := startH3With(t, cfg, mustTransportParameters(cfg), clientParams, h3OKHandler)
+	conn, cancel, served := startH3With(t, cfg, mustQUICConfig(cfg), clientParams, h3OKHandler)
 
 	// The SETTINGS frame arriving is the sign the server is past its write.
 	ctx, stop := context.WithTimeout(t.Context(), 5*time.Second)
@@ -707,7 +707,7 @@ func TestH3AnswersAStatusOnAnOversizedStream(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var served atomic.Int32
-			conn, _, _ := startH3With(t, tt.cfg, quic.DefaultParameters(), quic.DefaultParameters(),
+			conn, _, _ := startH3With(t, tt.cfg, quic.DefaultConfig(), quic.DefaultConfig(),
 				func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 					served.Add(int32(b.Len())) //nolint:gosec // G115: a test's batch size
 					res := make([]Response, b.Len())
@@ -745,10 +745,10 @@ func TestH3AnswersAStatusOnAnOversizedStream(t *testing.T) {
 // Config said. The default is written out rather than read from
 // defaultIdleTimeout: it is the value a proxy in front is set against.
 func TestTransportParametersCarryIdleTimeout(t *testing.T) {
-	if got := mustTransportParameters(Config{}).MaxIdleTimeout; got != 2*time.Minute {
+	if got := mustQUICConfig(Config{}).MaxIdleTimeout; got != 2*time.Minute {
 		t.Errorf("zero IdleTimeout → max_idle_timeout %v, want 2m0s", got)
 	}
-	if got := mustTransportParameters(Config{IdleTimeout: 7 * time.Second}).MaxIdleTimeout; got != 7*time.Second {
+	if got := mustQUICConfig(Config{IdleTimeout: 7 * time.Second}).MaxIdleTimeout; got != 7*time.Second {
 		t.Errorf("IdleTimeout 7s → max_idle_timeout %v, want 7s", got)
 	}
 }
@@ -758,7 +758,7 @@ func TestTransportParametersCarryIdleTimeout(t *testing.T) {
 // HTTP/3 carries nowhere else; a HEAD read before the refusal states the
 // line's length and type and gets no DATA (§9.3.2).
 func TestH3TransportErrorCarriesBody(t *testing.T) {
-	conn, _, _ := startH3With(t, Config{BodyDelivery: BodyWhole, MaxBodyBytes: 1024}, quic.DefaultParameters(), quic.DefaultParameters(),
+	conn, _, _ := startH3With(t, Config{BodyDelivery: BodyWhole, MaxBodyBytes: 1024}, quic.DefaultConfig(), quic.DefaultConfig(),
 		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			return sluice.Batch[Response]{Items: make([]Response, b.Len())}
 		})
@@ -930,7 +930,7 @@ func settledH3(s *quic.Stream) <-chan error {
 func TestH3CancelledRequestsDoNotOutrunTheLimit(t *testing.T) {
 	const limit = 8
 	h := newHeldCalls(limit)
-	conn, _, _ := startH3With(t, Config{MaxConcurrentStreams: limit}, quic.DefaultParameters(), quic.DefaultParameters(), h.handle)
+	conn, _, _ := startH3With(t, Config{MaxConcurrentStreams: limit}, quic.DefaultConfig(), quic.DefaultConfig(), h.handle)
 	t.Cleanup(h.unblock)
 
 	h3CancelBurst(t, conn, 2*limit)
@@ -969,7 +969,7 @@ func TestH3CancelledRequestsDoNotOutrunTheLimit(t *testing.T) {
 func TestH3AConnectionThatOnlyCancelsIsClosed(t *testing.T) {
 	const limit = 8
 	h := newHeldCalls(limit)
-	conn, _, _ := startH3With(t, Config{MaxConcurrentStreams: limit}, quic.DefaultParameters(), quic.DefaultParameters(), h.handle)
+	conn, _, _ := startH3With(t, Config{MaxConcurrentStreams: limit}, quic.DefaultConfig(), quic.DefaultConfig(), h.handle)
 	t.Cleanup(h.unblock)
 
 	h3CancelBurst(t, conn, 5*limit)
@@ -999,7 +999,7 @@ func TestH3AConnectionThatOnlyCancelsIsClosed(t *testing.T) {
 func TestH3AnsweredRequestsEarnCancellations(t *testing.T) {
 	const limit = 2
 	h := newHeldCalls(limit)
-	conn, _, _ := startH3With(t, Config{MaxConcurrentStreams: limit}, quic.DefaultParameters(), quic.DefaultParameters(), h.handle)
+	conn, _, _ := startH3With(t, Config{MaxConcurrentStreams: limit}, quic.DefaultConfig(), quic.DefaultConfig(), h.handle)
 	t.Cleanup(h.unblock)
 
 	for range 12 {
@@ -1087,7 +1087,7 @@ func h3Status(t *testing.T, f h3Frame) string {
 // request at its FIN only and nothing was written before that: a conformant
 // client waited out its own timer.
 func TestH3AnswersExpectContinueWithAnInterim100(t *testing.T) {
-	conn, _, _ := startH3(t, quic.DefaultParameters(), echoTarget)
+	conn, _, _ := startH3(t, quic.DefaultConfig(), echoTarget)
 	s, err := conn.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -1118,7 +1118,7 @@ func TestH3AnswersExpectContinueWithAnInterim100(t *testing.T) {
 // FIN that arrives in a later datagram is not told apart from a body to
 // come, and the 100 then precedes the final response, which the MAY allows.
 func TestH3SendsNoInterim100WhenTheHeadEndsTheStream(t *testing.T) {
-	conn, _, _ := startH3(t, quic.DefaultParameters(), echoTarget)
+	conn, _, _ := startH3(t, quic.DefaultConfig(), echoTarget)
 	s, err := conn.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -1137,7 +1137,7 @@ func TestH3SendsNoInterim100WhenTheHeadEndsTheStream(t *testing.T) {
 // unharmed, the handler never called.
 func TestH3AnswersAWellFormedConnectWith501(t *testing.T) {
 	var served atomic.Int32
-	conn, _, _ := startH3With(t, Config{}, quic.DefaultParameters(), quic.DefaultParameters(),
+	conn, _, _ := startH3With(t, Config{}, quic.DefaultConfig(), quic.DefaultConfig(),
 		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			served.Add(int32(b.Len())) //nolint:gosec // G115: a test's batch size
 			res := make([]Response, b.Len())

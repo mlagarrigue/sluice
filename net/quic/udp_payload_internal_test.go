@@ -13,26 +13,26 @@ import (
 // sees it, and a field left at zero goes on the wire as 1452, never as 0.
 func TestMaxUDPPayloadSizeIsAnnouncedWithin18_2(t *testing.T) {
 	for _, n := range []uint64{1, 1199, 65528} {
-		p := DefaultParameters()
+		p := DefaultConfig()
 		p.MaxUDPPayloadSize = n
 		if err := p.check(); err == nil {
 			t.Errorf("MaxUDPPayloadSize %d passed check; §18.2 bounds it to 1200..65527", n)
 		}
 	}
 	for _, n := range []uint64{1200, 65527} {
-		p := DefaultParameters()
+		p := DefaultConfig()
 		p.MaxUDPPayloadSize = n
 		if err := p.check(); err != nil {
 			t.Errorf("MaxUDPPayloadSize %d was refused: %v", n, err)
 		}
 	}
 
-	p := DefaultParameters()
+	p := DefaultConfig()
 	p.MaxUDPPayloadSize = 0
 	if err := p.check(); err != nil {
 		t.Fatalf("MaxUDPPayloadSize 0 (meaning 1452) was refused: %v", err)
 	}
-	again, err := parseParameters(appendParameters(nil, p))
+	again, err := parseParameters(appendParameters(nil, p.TransportParameters))
 	if err != nil {
 		t.Fatalf("a zero MaxUDPPayloadSize was announced as something a peer refuses: %v", err)
 	}

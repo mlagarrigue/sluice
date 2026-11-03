@@ -16,15 +16,15 @@ import (
 )
 
 // h3StreamServer serves HTTP/3 with bodies streaming, on the parameters
-// Config.TransportParameters gives such a server, and returns the client
+// Config.QUICConfig gives such a server, and returns the client
 // side with the server's stream window.
 func h3StreamServer(t *testing.T, cfg Config, handle Handler) (*quic.Conn, int) {
 	t.Helper()
-	params, err := cfg.TransportParameters()
+	params, err := cfg.QUICConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn, _, served := startH3With(t, cfg, params, quic.DefaultParameters(), handle)
+	conn, _, served := startH3With(t, cfg, params, quic.DefaultConfig(), handle)
 	// A failed test says how the server ended, when it has: a client error
 	// such as "the connection is closed" names nothing on its own.
 	t.Cleanup(func() {

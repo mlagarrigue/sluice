@@ -108,7 +108,7 @@ func TestListenerRetransmittedInitialDoesNotDuplicateTheConnection(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestListenerDiscardsAnInitialThatDoesNotDecrypt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestListenerDiscardsSmallInitialDatagrams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{AlwaysRetry: true})
+	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultConfig(), ListenerConfig{AlwaysRetry: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +255,7 @@ func statelessCloseCodes(tb testing.TB, writes [][]byte, dcid []byte) []uint64 {
 // issued and cannot accept.
 func TestForeignTokenIsAnsweredWithARetry(t *testing.T) {
 	pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
-	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{AlwaysRetry: true})
+	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultConfig(), ListenerConfig{AlwaysRetry: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +297,7 @@ func TestForeignTokenIsAnsweredWithARetry(t *testing.T) {
 // amplification limit, and never closed for it.
 func TestForeignTokenStartsAConnectionWithoutRetry(t *testing.T) {
 	pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
-	l, err := NewListener(pc, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(pc, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +334,7 @@ func TestForeignTokenStartsAConnectionWithoutRetry(t *testing.T) {
 // other), not with a second connection that skipped the round trip.
 func TestRetryTokenIsConsumedWithItsConnection(t *testing.T) {
 	pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
-	l, err := NewListener(pc, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{AlwaysRetry: true})
+	l, err := NewListener(pc, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{AlwaysRetry: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +395,7 @@ func TestListenerRetriesPastThePendingHighWaterMark(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{MaxPendingConns: 2})
+	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultConfig(), ListenerConfig{MaxPendingConns: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -477,7 +477,7 @@ func sealedSmallInitial(t *testing.T, dcid, scid []byte) []byte {
 func TestAmplificationLimitBlocksUnvalidatedSends(t *testing.T) {
 	serverPC, clientPC := newLoopbackPair(t)
 
-	c := newConn(serverPC, clientPC.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
+	c := newConn(serverPC, clientPC.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultConfig())
 	defer c.Close()
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)
@@ -524,7 +524,7 @@ func TestListenerValidatesTheAddressDuringTheHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := NewListener(pc, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(pc, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -544,7 +544,7 @@ func TestListenerValidatesTheAddressDuringTheHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := Dial(context.Background(), clientPC, pc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	client, err := Dial(context.Background(), clientPC, pc.LocalAddr(), ClientTLSForTest(), DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -677,7 +677,7 @@ func (c *capturePC) taken() [][]byte {
 // too small to answer without a loop.
 func TestListenerSendsStatelessResetForUnknownShortHeader(t *testing.T) {
 	pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
-	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -727,7 +727,7 @@ func TestListenerSendsStatelessResetForUnknownShortHeader(t *testing.T) {
 // is per IP — varying the port buys nothing.
 func TestStatelessResetBudgetIsPerSource(t *testing.T) {
 	pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
-	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -757,7 +757,7 @@ func TestStatelessResetBudgetIsPerSource(t *testing.T) {
 // from one address goes unanswered, and a second address spends the last.
 func TestStatelessResetBudgetIsConfigured(t *testing.T) {
 	pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
-	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(),
+	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultConfig(),
 		ListenerConfig{StatelessResetsPerSecond: 3, StatelessResetsPerAddress: 2})
 	if err != nil {
 		t.Fatal(err)
@@ -782,7 +782,7 @@ func TestStatelessResetBudgetIsConfigured(t *testing.T) {
 		t.Errorf("three more addresses drew %d resets, want the 1 left of a budget of 3", got)
 	}
 
-	if _, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13}, DefaultParameters(),
+	if _, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13}, DefaultConfig(),
 		ListenerConfig{StatelessResetsPerSecond: -1}); err == nil {
 		t.Error("a negative reset budget was accepted")
 	}
@@ -817,7 +817,7 @@ func (p *erroringPC) Close() error {
 // and Close still ends it promptly.
 func TestListenerReadLoopBacksOffAPersistentError(t *testing.T) {
 	pc := &erroringPC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
-	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -850,7 +850,7 @@ func TestListenerReadLoopBacksOffAPersistentError(t *testing.T) {
 // leaves alone a key the connection registered that now routes elsewhere.
 func TestForgetUsesThePerConnectionIndex(t *testing.T) {
 	pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
-	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -902,7 +902,7 @@ func TestForgetUsesThePerConnectionIndex(t *testing.T) {
 // the table, since every dispatch waits on the same lock.
 func BenchmarkListenerForget(b *testing.B) {
 	pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
-	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -934,7 +934,7 @@ func TestListenerSlowConnectionDoesNotFreezeOthers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := NewListener(spc, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(spc, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -958,7 +958,7 @@ func TestListenerSlowConnectionDoesNotFreezeOthers(t *testing.T) {
 			t.Fatal(err)
 		}
 		go func() {
-			c, err := Dial(context.Background(), pc, addr, ClientTLSForTest(), DefaultParameters())
+			c, err := Dial(context.Background(), pc, addr, ClientTLSForTest(), DefaultConfig())
 			if err != nil {
 				t.Errorf("Dial: %v", err)
 				close(out)
@@ -1073,7 +1073,7 @@ func TestListenerSlowConnectionDoesNotFreezeOthers(t *testing.T) {
 // derived once per Initial, not once per use.
 func BenchmarkListenerRefusedInitial(b *testing.B) {
 	pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
-	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -1094,7 +1094,7 @@ func BenchmarkListenerRefusedInitial(b *testing.B) {
 // is never needed, and never derived.
 func BenchmarkListenerRetriedInitial(b *testing.B) {
 	pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
-	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{AlwaysRetry: true})
+	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultConfig(), ListenerConfig{AlwaysRetry: true})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -1113,7 +1113,7 @@ func BenchmarkListenerRetriedInitial(b *testing.B) {
 // direction and one failed decrypt per datagram, nothing more.
 func BenchmarkListenerUndecryptableInitial(b *testing.B) {
 	pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
-	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -1163,7 +1163,7 @@ func TestListenerExpandsTheServerKeyOnlyToSeal(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
-			l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(), tc.lcfg)
+			l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultConfig(), tc.lcfg)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1202,7 +1202,7 @@ func TestListenerQueuesABurstForABusyConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1244,7 +1244,7 @@ func TestHandshakeTimeoutFreesThePendingSlot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(), lcfg)
+		l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultConfig(), lcfg)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1277,7 +1277,7 @@ func TestHandshakeTimeoutFreesThePendingSlot(t *testing.T) {
 	if pending := pendingAfter(t, ListenerConfig{}, 600*time.Millisecond); pending != 1 {
 		t.Errorf("%d pending connections 600 ms into the default handshake timeout, want 1 still", pending)
 	}
-	if _, err := NewListener(nil, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{HandshakeTimeout: -time.Second}); err == nil {
+	if _, err := NewListener(nil, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultConfig(), ListenerConfig{HandshakeTimeout: -time.Second}); err == nil {
 		t.Error("NewListener accepted a negative HandshakeTimeout")
 	}
 }
@@ -1292,7 +1292,7 @@ func capRefusesTheSecondDial(t *testing.T, lcfg ListenerConfig) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := NewListener(spc, ServerTLSForTest(t), DefaultParameters(), lcfg)
+	l, err := NewListener(spc, ServerTLSForTest(t), DefaultConfig(), lcfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1311,7 +1311,7 @@ func capRefusesTheSecondDial(t *testing.T, lcfg ListenerConfig) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return Dial(context.Background(), pc, spc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+		return Dial(context.Background(), pc, spc.LocalAddr(), ClientTLSForTest(), DefaultConfig())
 	}
 
 	first, err := dial()
@@ -1363,7 +1363,7 @@ func capRefusesTheSecondDial(t *testing.T, lcfg ListenerConfig) {
 // included — the pending table alone would have let the second one in.
 func TestMaxConnsRefusesBeyondTheCap(t *testing.T) {
 	capRefusesTheSecondDial(t, ListenerConfig{MaxConns: 1})
-	if _, err := NewListener(nil, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{MaxConns: -1}); err == nil {
+	if _, err := NewListener(nil, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{MaxConns: -1}); err == nil {
 		t.Error("NewListener accepted a negative MaxConns")
 	}
 }
@@ -1375,7 +1375,7 @@ func TestMaxConnsRefusesBeyondTheCap(t *testing.T) {
 // admitted end to end is TestMaxConnsPerIPCountsEachFamilyApart's.)
 func TestMaxConnsPerIPCountsBySourcePrefix(t *testing.T) {
 	capRefusesTheSecondDial(t, ListenerConfig{MaxConnsPerIP: 1})
-	if _, err := NewListener(nil, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{MaxConnsPerIP: -1}); err == nil {
+	if _, err := NewListener(nil, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{MaxConnsPerIP: -1}); err == nil {
 		t.Error("NewListener accepted a negative MaxConnsPerIP")
 	}
 
@@ -1417,7 +1417,7 @@ func TestMaxConnsPerIPCountsEachFamilyApart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := NewListener(spc, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{MaxConnsPerIP: 1})
+	l, err := NewListener(spc, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{MaxConnsPerIP: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1437,7 +1437,7 @@ func TestMaxConnsPerIPCountsEachFamilyApart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return Dial(context.Background(), pc, &net.UDPAddr{IP: ip, Port: port}, ClientTLSForTest(), DefaultParameters())
+		return Dial(context.Background(), pc, &net.UDPAddr{IP: ip, Port: port}, ClientTLSForTest(), DefaultConfig())
 	}
 	v4, err := dial(net.IPv4(127, 0, 0, 1))
 	if err != nil {
@@ -1459,7 +1459,7 @@ func TestMaxConnsPerIPCountsEachFamilyApart(t *testing.T) {
 // than turned into the default, and every faulty field is named in the one
 // error, with its value and what zero means (docs/design/adr/0018).
 func TestListenerConfigRefusesOutOfRangeValues(t *testing.T) {
-	_, err := NewListener(nil, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{
+	_, err := NewListener(nil, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{
 		MaxPendingConns:  -1,
 		HandshakeTimeout: -time.Second,
 		MaxConns:         -2,
@@ -1499,7 +1499,7 @@ func TestListenerConfigTuningAndKeys(t *testing.T) {
 		{"TokenKey", ListenerConfig{TokenKey: [32]byte{1}, StatelessResetKey: [32]byte{1}}},
 	}
 	for _, r := range refused {
-		_, err := NewListener(nil, ServerTLSForTest(t), DefaultParameters(), r.lcfg)
+		_, err := NewListener(nil, ServerTLSForTest(t), DefaultConfig(), r.lcfg)
 		if err == nil || !strings.Contains(err.Error(), "ListenerConfig."+r.field) {
 			t.Errorf("%s: NewListener returned %v, want an error naming the field", r.field, err)
 		}
@@ -1528,12 +1528,12 @@ func TestListenerConfigTuningAndKeys(t *testing.T) {
 	}
 
 	pc := &capturePC{fuzzSink: fuzzSink{addr: "cfg:self"}, stopped: make(chan struct{})}
-	l, err := NewListener(pc, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{ConnQueueLen: 3})
+	l, err := NewListener(pc, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{ConnQueueLen: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer l.Close()
-	c := newConn(l.pc, fakeFuzzAddr("cfg:peer"), []byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+	c := newConn(l.pc, fakeFuzzAddr("cfg:peer"), []byte("peercid0"), []byte("selfcid0"), false, DefaultConfig())
 	defer c.Close()
 	if err := l.prepareConn(c); err != nil {
 		t.Fatal(err)
@@ -1579,7 +1579,7 @@ func TestRestartedListenerResetsWithTheSameKey(t *testing.T) {
 			}
 			addr := raw.LocalAddr().(*net.UDPAddr)
 			pc := &crashablePC{PacketConn: raw}
-			l1, err := NewListener(pc, ServerTLSForTest(t), DefaultParameters(), first)
+			l1, err := NewListener(pc, ServerTLSForTest(t), DefaultConfig(), first)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1593,7 +1593,7 @@ func TestRestartedListenerResetsWithTheSameKey(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			client, err := Dial(context.Background(), clientPC, addr, ClientTLSForTest(), DefaultParameters())
+			client, err := Dial(context.Background(), clientPC, addr, ClientTLSForTest(), DefaultConfig())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1616,7 +1616,7 @@ func TestRestartedListenerResetsWithTheSameKey(t *testing.T) {
 			if tc.sameKey {
 				second.StatelessResetKey = first.StatelessResetKey
 			}
-			l2, err := NewListener(raw2, ServerTLSForTest(t), DefaultParameters(), second)
+			l2, err := NewListener(raw2, ServerTLSForTest(t), DefaultConfig(), second)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1643,13 +1643,13 @@ func TestRestartedListenerResetsWithTheSameKey(t *testing.T) {
 // own, and the connection ends now rather than at its idle timeout.
 func TestListenerRecognisesAPeersStatelessReset(t *testing.T) {
 	pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
-	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = l.Close() }()
 
-	c := newConn(pc, fakeFuzzAddr("client:peer"), []byte("cli-cid0"), []byte("srv-cid0"), false, DefaultParameters())
+	c := newConn(pc, fakeFuzzAddr("client:peer"), []byte("cli-cid0"), []byte("srv-cid0"), false, DefaultConfig())
 	defer c.Close()
 	token := [16]byte{3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5, 8, 9, 7, 9, 3}
 	c.mu.Lock()
@@ -1692,7 +1692,7 @@ func TestListenerRecognisesAPeersStatelessReset(t *testing.T) {
 func TestAStatelessResetIsOnlyLookedForOnItsOwnAddress(t *testing.T) {
 	pc := &capturePC{fuzzSink: fuzzSink{addr: "reset10:self"}, stopped: make(chan struct{})}
 	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}},
-		DefaultParameters(), ListenerConfig{})
+		DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1705,7 +1705,7 @@ func TestAStatelessResetIsOnlyLookedForOnItsOwnAddress(t *testing.T) {
 	// One live connection, holding that token for an identifier it has
 	// used, with a peer at its own address.
 	peer := fakeFuzzAddr("reset10:peer")
-	c := newConn(pc, peer, []byte("cli-cid0"), []byte("srv-cid0"), false, DefaultParameters())
+	c := newConn(pc, peer, []byte("cli-cid0"), []byte("srv-cid0"), false, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	c.mu.Lock()
 	c.peerCIDs = append(c.peerCIDs, peerCID{seq: 1, cid: []byte("cli-cid1"), token: token, used: true})
@@ -1740,7 +1740,7 @@ func resetConns(t *testing.T, n int, shared bool) (*Listener, []*Conn, [][]byte)
 	t.Helper()
 	pc := &capturePC{fuzzSink: fuzzSink{addr: "reset11:self"}, stopped: make(chan struct{})}
 	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}},
-		DefaultParameters(), ListenerConfig{})
+		DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1754,7 +1754,7 @@ func resetConns(t *testing.T, n int, shared bool) (*Listener, []*Conn, [][]byte)
 		}
 		var token [16]byte
 		token[0], token[1], token[15] = byte(i), byte(i>>8), 0xb0
-		c := newConn(pc, peer, []byte(fmt.Sprintf("cli-c%04d", i)), []byte(fmt.Sprintf("srv-c%04d", i)), false, DefaultParameters())
+		c := newConn(pc, peer, []byte(fmt.Sprintf("cli-c%04d", i)), []byte(fmt.Sprintf("srv-c%04d", i)), false, DefaultConfig())
 		t.Cleanup(func() { _ = c.Close() })
 		c.mu.Lock()
 		c.registrar = l
@@ -1871,7 +1871,7 @@ func (r *tokenRecorder) peerTokenRetired(_ *Conn, t [16]byte) { r.retired = appe
 // passed.
 func TestTheConnectionReportsItsPeersTokens(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "tok:self"}, fakeFuzzAddr("tok:peer"),
-		[]byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+		[]byte("peercid0"), []byte("selfcid0"), false, DefaultConfig())
 	defer c.Close()
 	reg := &tokenRecorder{testRegistrar: newTestRegistrar()}
 	c.mu.Lock()

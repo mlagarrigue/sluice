@@ -156,7 +156,7 @@ func (c *Conn) closeAsyncLocked() { go func() { _ = c.Close() }() }
 // (NO_ERROR) so it can drop its state now rather than wait out an idle
 // period (§10.2). Close never blocks on the peer: the frame is sent once,
 // best effort. If it is lost, a connection that holds the closing period —
-// a [Listener]'s, or one [TransportParameters.HoldClosing] asked — sends it again to
+// a [Listener]'s, or one [Config.HoldClosing] asked — sends it again to
 // the next packet the peer sends; otherwise the peer's idle timer is the
 // fallback the protocol designed for.
 //
@@ -488,7 +488,7 @@ func (c *Conn) idleExpired() {
 // A [Listener]'s connections always hold these states: §10.2 asks servers
 // that keep their socket open not to end them early. A connection that
 // owns its socket ([Dial], the standalone accept) holds them only when
-// [TransportParameters.HoldClosing] asked: by default it gives the socket back to its
+// [Config.HoldClosing] asked: by default it gives the socket back to its
 // caller the moment Close returns — the caller may close it or dial again
 // on it — which §10.2 allows an endpoint able to close its socket. When it
 // holds them, its own read loop keeps reading the socket for the period,
@@ -522,7 +522,7 @@ type closingState struct {
 	nextReply int   // the count at which the close goes out again
 	sent      int64 // bytes sent while closing, against 3× received
 	recv      int64
-	// hold is [TransportParameters.HoldClosing] for a connection that owns
+	// hold is [Config.HoldClosing] for a connection that owns
 	// its socket; end is when its read loop stops answering — zeroed by a
 	// [Conn.Wait] whose context ended — and left records that the state is
 	// over and gone closed or about to be. loop says a socket-owning read
@@ -712,7 +712,7 @@ func (c *Conn) releaseSocket() {
 
 // Wait blocks until the connection has closed and released its socket:
 // at the close for a connection that holds no closing period, at the end
-// of the period for one that does ([TransportParameters.HoldClosing], a
+// of the period for one that does ([Config.HoldClosing], a
 // [Listener]'s connection). It returns nil then. Wait does not close the connection.
 //
 // When ctx ends first, Wait returns its error. If the connection has closed

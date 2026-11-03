@@ -104,7 +104,7 @@ func newKeyedConn(t *testing.T) (c *Conn, peer *packetSealer) {
 // that reads what the Conn writes.
 func newKeyedConnOn(tb testing.TB, pcA, pcB net.PacketConn) (c *Conn, peer *packetSealer) {
 	tb.Helper()
-	c = newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
+	c = newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultConfig())
 	tb.Cleanup(func() { _ = c.Close() })
 	sec, err := initialSecrets([]byte("app-secrets"))
 	if err != nil {
@@ -245,7 +245,7 @@ func TestKeyUpdateInitiatedByEachSide(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := NewListener(pc, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(pc, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +286,7 @@ func TestKeyUpdateInitiatedByEachSide(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := Dial(context.Background(), clientPC, pc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	client, err := Dial(context.Background(), clientPC, pc.LocalAddr(), ClientTLSForTest(), DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}

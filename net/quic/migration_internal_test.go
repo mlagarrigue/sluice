@@ -167,7 +167,7 @@ func TestIssuanceTopsUpToTheLimit(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			reg := newTestRegistrar()
-			params := DefaultParameters()
+			params := DefaultConfig()
 			params.ActiveConnIDLimit = tc.own
 			c := newConn(&fuzzSink{addr: "issue:self"}, fakeFuzzAddr("issue:peer"),
 				[]byte("peercid0"), []byte("selfcid0"), false, params)
@@ -215,7 +215,7 @@ func TestIssuanceTopsUpToTheLimit(t *testing.T) {
 func TestRetireConnectionIDHandling(t *testing.T) {
 	reg := newTestRegistrar()
 	c := newConn(&fuzzSink{addr: "retire:self"}, fakeFuzzAddr("retire:peer"),
-		[]byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+		[]byte("peercid0"), []byte("selfcid0"), false, DefaultConfig())
 	defer c.Close()
 	c.mu.Lock()
 	c.registrar = reg
@@ -288,7 +288,7 @@ func TestRetireConnectionIDHandling(t *testing.T) {
 // retirable sequence is 0 — the identifier in use, which stays forbidden.
 func TestRetireOnAConnectionThatIssuedNothing(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "bare:self"}, fakeFuzzAddr("bare:peer"),
-		[]byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+		[]byte("peercid0"), []byte("selfcid0"), true, DefaultConfig())
 	defer c.Close()
 	err := c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 0), time.Now())
 	wantViolation(t, err, transportProtocolViolation, "retiring sequence 0 on a single-identifier connection")
@@ -453,7 +453,7 @@ func TestAPeerOnItsLastIdentifierIsGivenASpare(t *testing.T) {
 // switches to a fresh one at once.
 func TestRetirePriorToRetiresAndSwitches(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "pool:self"}, fakeFuzzAddr("pool:peer"),
-		[]byte("initial0"), []byte("selfcid0"), true, DefaultParameters())
+		[]byte("initial0"), []byte("selfcid0"), true, DefaultConfig())
 	defer c.Close()
 	c.pinPeerSCID([]byte("srv-cid0"))
 
@@ -510,7 +510,7 @@ func TestNewConnectionIDViolations(t *testing.T) {
 	tok := make([]byte, 16)
 	newClient := func(name string) *Conn {
 		c := newConn(&fuzzSink{addr: fakeFuzzAddr(name + ":self")}, fakeFuzzAddr(name+":peer"),
-			[]byte("initial0"), []byte("selfcid0"), true, DefaultParameters())
+			[]byte("initial0"), []byte("selfcid0"), true, DefaultConfig())
 		t.Cleanup(func() { _ = c.Close() })
 		c.pinPeerSCID([]byte("srv-cid0"))
 		return c
@@ -546,7 +546,7 @@ func TestNewConnectionIDViolations(t *testing.T) {
 		// A server whose client chose a zero-length source identifier: the
 		// peer has nothing to rotate, and §19.15 forbids it the frame.
 		c := newConn(&fuzzSink{addr: "zero:self"}, fakeFuzzAddr("zero:peer"),
-			nil, []byte("selfcid0"), false, DefaultParameters())
+			nil, []byte("selfcid0"), false, DefaultConfig())
 		t.Cleanup(func() { _ = c.Close() })
 		err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("srv-cid1"), tok), time.Now())
 		wantViolation(t, err, transportProtocolViolation, "NEW_CONNECTION_ID under a zero-length peer identifier")
@@ -560,7 +560,7 @@ func TestNewConnectionIDViolations(t *testing.T) {
 func newMigratableServer(t *testing.T, name string) (*Conn, *recordingPC) {
 	t.Helper()
 	pc := &recordingPC{addr: fakeFuzzAddr(name + ":self")}
-	c := newConn(pc, fakeFuzzAddr(name+":peerA"), []byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+	c := newConn(pc, fakeFuzzAddr(name+":peerA"), []byte("peercid0"), []byte("selfcid0"), false, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	installAppSealer(t, c)
 	c.mu.Lock()
@@ -748,7 +748,7 @@ func TestNonProbingPacketFromNewAddressMigrates(t *testing.T) {
 // the datagram is counted and dropped, the path untouched.
 func TestPreConfirmationAddressChangeIsIgnored(t *testing.T) {
 	pc := &recordingPC{addr: fakeFuzzAddr("pre:self")}
-	c := newConn(pc, fakeFuzzAddr("pre:peerA"), []byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+	c := newConn(pc, fakeFuzzAddr("pre:peerA"), []byte("peercid0"), []byte("selfcid0"), false, DefaultConfig())
 	defer c.Close()
 	installAppSealer(t, c)
 
@@ -767,7 +767,7 @@ func TestPreConfirmationAddressChangeIsIgnored(t *testing.T) {
 	}
 	// A client never follows anyone, confirmed or not.
 	cl := newConn(&fuzzSink{addr: "pre:cself"}, fakeFuzzAddr("pre:cpeerA"),
-		[]byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+		[]byte("peercid0"), []byte("selfcid0"), true, DefaultConfig())
 	defer cl.Close()
 	cl.mu.Lock()
 	cl.handshakeConfirmed = true
@@ -793,7 +793,7 @@ func TestListenerIssuedIdentifiersRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := NewListener(pc, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(pc, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -812,7 +812,7 @@ func TestListenerIssuedIdentifiersRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := Dial(context.Background(), clientPC, pc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	client, err := Dial(context.Background(), clientPC, pc.LocalAddr(), ClientTLSForTest(), DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1035,7 +1035,7 @@ func TestServerFollowsClientRebind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := NewListener(pc, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(pc, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1051,7 +1051,7 @@ func TestServerFollowsClientRebind(t *testing.T) {
 	}()
 
 	rp := newRebindablePC(t, 2)
-	client, err := Dial(context.Background(), rp, pc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	client, err := Dial(context.Background(), rp, pc.LocalAddr(), ClientTLSForTest(), DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1157,7 +1157,7 @@ func TestClientIssuesIdentifiersForTheServerToFollow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := NewListener(pc, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(pc, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1173,7 +1173,7 @@ func TestClientIssuesIdentifiersForTheServerToFollow(t *testing.T) {
 	}()
 
 	rp := newRebindablePC(t, 3)
-	client, err := Dial(context.Background(), rp, pc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	client, err := Dial(context.Background(), rp, pc.LocalAddr(), ClientTLSForTest(), DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1269,7 +1269,7 @@ func TestClientRebindMovesThePath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := NewListener(pc, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(pc, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1288,7 +1288,7 @@ func TestClientRebindMovesThePath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := Dial(context.Background(), first, pc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	client, err := Dial(context.Background(), first, pc.LocalAddr(), ClientTLSForTest(), DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1389,7 +1389,7 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 // Rebind's refusals, each on the smallest Conn that exhibits it: a server, a
 // client before confirmation, a closed connection, a nil socket.
 func TestRebindRefusals(t *testing.T) {
-	server := newConn(&recordingPC{addr: fakeFuzzAddr("rb:sself")}, fakeFuzzAddr("rb:speer"), []byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+	server := newConn(&recordingPC{addr: fakeFuzzAddr("rb:sself")}, fakeFuzzAddr("rb:speer"), []byte("peercid0"), []byte("selfcid0"), false, DefaultConfig())
 	defer server.Close()
 	server.mu.Lock()
 	server.handshakeConfirmed = true
@@ -1398,7 +1398,7 @@ func TestRebindRefusals(t *testing.T) {
 		t.Error("a server accepted Rebind")
 	}
 
-	client := newConn(&recordingPC{addr: fakeFuzzAddr("rb:cself")}, fakeFuzzAddr("rb:cpeer"), []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+	client := newConn(&recordingPC{addr: fakeFuzzAddr("rb:cself")}, fakeFuzzAddr("rb:cpeer"), []byte("peercid0"), []byte("selfcid0"), true, DefaultConfig())
 	defer client.Close()
 	if err := client.Rebind(&recordingPC{}); err == nil {
 		t.Error("a client accepted Rebind before its handshake confirmed")
@@ -1424,7 +1424,7 @@ func TestRebindRefusals(t *testing.T) {
 // advanced by hand, so no real seconds pass.
 func TestRebindToADeadPathEndsTheConnection(t *testing.T) {
 	old := &recordingPC{addr: fakeFuzzAddr("dead:old")}
-	c := newConn(old, fakeFuzzAddr("dead:peer"), []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+	c := newConn(old, fakeFuzzAddr("dead:peer"), []byte("peercid0"), []byte("selfcid0"), true, DefaultConfig())
 	defer c.Close()
 	installAppSealer(t, c)
 	c.mu.Lock()
@@ -1469,7 +1469,7 @@ func TestRebindToADeadPathEndsTheConnection(t *testing.T) {
 // The same probe answered in time is not fatal: the response clears the
 // flag along with the probe, and the connection stays up.
 func TestRebindValidatedByAResponseIsNotFatal(t *testing.T) {
-	c := newConn(&recordingPC{addr: fakeFuzzAddr("ok:old")}, fakeFuzzAddr("ok:peer"), []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+	c := newConn(&recordingPC{addr: fakeFuzzAddr("ok:old")}, fakeFuzzAddr("ok:peer"), []byte("peercid0"), []byte("selfcid0"), true, DefaultConfig())
 	defer c.Close()
 	installAppSealer(t, c)
 	c.mu.Lock()
@@ -1674,7 +1674,7 @@ func TestReturnToTheValidatedPathEndsAnUnprovenMigration(t *testing.T) {
 // CONNECTION_ID_LIMIT_ERROR.
 func TestRetirementFloodIsBounded(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "flood:self"}, fakeFuzzAddr("flood:peer"),
-		[]byte("initial0"), []byte("selfcid0"), true, DefaultParameters())
+		[]byte("initial0"), []byte("selfcid0"), true, DefaultConfig())
 	defer c.Close()
 	c.pinPeerSCID([]byte("srv-cid0"))
 	tok := make([]byte, 16)
@@ -1699,7 +1699,7 @@ func TestRetirementFloodIsBounded(t *testing.T) {
 // at the pace they leave are not a flood.
 func TestRetirementsThatLeaveDoNotAccumulate(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "drain:self"}, fakeFuzzAddr("drain:peer"),
-		[]byte("initial0"), []byte("selfcid0"), true, DefaultParameters())
+		[]byte("initial0"), []byte("selfcid0"), true, DefaultConfig())
 	defer c.Close()
 	installAppSealer(t, c)
 	c.pinPeerSCID([]byte("srv-cid0"))
@@ -1759,7 +1759,7 @@ func TestRetirementChainIsBounded(t *testing.T) {
 	reg := newTestRegistrar()
 	pc := &recordingPC{addr: fakeFuzzAddr("chain:self")}
 	c := newConn(pc, fakeFuzzAddr("chain:peer"),
-		[]byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+		[]byte("peercid0"), []byte("selfcid0"), false, DefaultConfig())
 	defer c.Close()
 	installAppSealer(t, c)
 	c.mu.Lock()
@@ -1811,7 +1811,7 @@ func TestRetirementDeficitIsMadeUpOnFlush(t *testing.T) {
 	reg := newTestRegistrar()
 	pc := &recordingPC{addr: fakeFuzzAddr("deficit:self")}
 	c := newConn(pc, fakeFuzzAddr("deficit:peer"),
-		[]byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+		[]byte("peercid0"), []byte("selfcid0"), false, DefaultConfig())
 	defer c.Close()
 	installAppSealer(t, c)
 	c.mu.Lock()
@@ -1860,7 +1860,7 @@ func TestRetirementDeficitIsMadeUpOnFlush(t *testing.T) {
 func TestQueuedFramesLeaveWithinTheMTU(t *testing.T) {
 	pc := &recordingPC{addr: fakeFuzzAddr("mtu:self")}
 	c := newConn(pc, fakeFuzzAddr("mtu:peer"),
-		[]byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+		[]byte("peercid0"), []byte("selfcid0"), false, DefaultConfig())
 	defer c.Close()
 	installAppSealer(t, c)
 	c.mu.Lock()
@@ -1915,7 +1915,7 @@ func TestQueuedFramesLeaveWithinTheMTU(t *testing.T) {
 func TestQueueRidingADataPacketIsCutToTheRoom(t *testing.T) {
 	pc := &recordingPC{addr: fakeFuzzAddr("ride:self")}
 	c := newConn(pc, fakeFuzzAddr("ride:peer"),
-		[]byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+		[]byte("peercid0"), []byte("selfcid0"), false, DefaultConfig())
 	defer c.Close()
 	installAppSealer(t, c)
 	c.mu.Lock()
@@ -1957,8 +1957,8 @@ func TestQueueRidingADataPacketIsCutToTheRoom(t *testing.T) {
 // announced; one that carries bytes is TRANSPORT_PARAMETER_ERROR (§7.4,
 // invalid value), and one repeated is refused like every known identifier.
 func TestDisableActiveMigrationParameter(t *testing.T) {
-	p := DefaultParameters()
-	again, err := parseParameters(appendParameters(nil, p))
+	p := DefaultConfig()
+	again, err := parseParameters(appendParameters(nil, p.TransportParameters))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1966,7 +1966,7 @@ func TestDisableActiveMigrationParameter(t *testing.T) {
 		t.Fatal("the default parameters announce disable_active_migration")
 	}
 	p.DisableActiveMigration = true
-	raw := appendParameters(nil, p)
+	raw := appendParameters(nil, p.TransportParameters)
 	again, err = parseParameters(raw)
 	if err != nil {
 		t.Fatal(err)
@@ -2001,7 +2001,7 @@ func TestDisableActiveMigrationParameter(t *testing.T) {
 func TestRebindRefusedWhenMigrationIsDisabled(t *testing.T) {
 	old := &recordingPC{addr: fakeFuzzAddr("dam:old")}
 	peer := fakeFuzzAddr("dam:peer")
-	c := newConn(old, peer, []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+	c := newConn(old, peer, []byte("peercid0"), []byte("selfcid0"), true, DefaultConfig())
 	defer c.Close()
 	installAppSealer(t, c)
 	c.mu.Lock()
@@ -2245,7 +2245,7 @@ func challengeFromNewAddress(t *testing.T, named []byte, fresh int) (c *Conn, pc
 func sendChallengeFromNewAddress(t *testing.T, named []byte, fresh int) (c *Conn, pc *recordingPC, newAddr net.Addr, seal func(pn uint64, payload []byte) []byte) {
 	t.Helper()
 	pc = &recordingPC{addr: fakeFuzzAddr("np:self")}
-	c = newConn(pc, fakeFuzzAddr("np:peerA"), []byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+	c = newConn(pc, fakeFuzzAddr("np:peerA"), []byte("peercid0"), []byte("selfcid0"), false, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	secrets, err := initialSecrets([]byte("np secrets"))
 	if err != nil {
@@ -2541,7 +2541,7 @@ func TestMigrationWithoutASpareIdentifierDoesNotReuseAnIdentifierAcrossAddresses
 // ignored and the new socket sent under the old path's identifier.
 func TestRebindNeedsAFreshConnectionID(t *testing.T) {
 	first := &recordingPC{addr: fakeFuzzAddr("fresh:first")}
-	c := newConn(first, fakeFuzzAddr("fresh:peer"), []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+	c := newConn(first, fakeFuzzAddr("fresh:peer"), []byte("peercid0"), []byte("selfcid0"), true, DefaultConfig())
 	defer c.Close()
 	installAppSealer(t, c)
 	c.mu.Lock()
@@ -2585,7 +2585,7 @@ func TestRebindNeedsAFreshConnectionID(t *testing.T) {
 // sequence is queued and the entry leaves the pool, so the server issues a
 // replacement and the next Rebind has something fresh to send under.
 func TestRebindRetiresTheOldPathIdentifierOnceValidated(t *testing.T) {
-	c := newConn(&recordingPC{addr: fakeFuzzAddr("retire:first")}, fakeFuzzAddr("retire:peer"), []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+	c := newConn(&recordingPC{addr: fakeFuzzAddr("retire:first")}, fakeFuzzAddr("retire:peer"), []byte("peercid0"), []byte("selfcid0"), true, DefaultConfig())
 	defer c.Close()
 	installAppSealer(t, c)
 	c.mu.Lock()
@@ -2625,7 +2625,7 @@ func TestRebindRetiresTheOldPathIdentifierOnceValidated(t *testing.T) {
 // it is.
 func TestPathChallengeTimerIsNotMoreAggressiveThanThePTO(t *testing.T) {
 	old := &recordingPC{addr: fakeFuzzAddr("timer:old")}
-	c := newConn(old, fakeFuzzAddr("timer:peer"), []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+	c := newConn(old, fakeFuzzAddr("timer:peer"), []byte("peercid0"), []byte("selfcid0"), true, DefaultConfig())
 	defer c.Close()
 	installAppSealer(t, c)
 	c.mu.Lock()
@@ -2660,7 +2660,7 @@ func TestPathChallengeTimerIsNotMoreAggressiveThanThePTO(t *testing.T) {
 // refuses before anything moves, and the new socket sends nothing.
 func TestRebindRefusesAPeerWithZeroLengthIDs(t *testing.T) {
 	old := &recordingPC{addr: fakeFuzzAddr("zero:old")}
-	c := newConn(old, fakeFuzzAddr("zero:peer"), nil, []byte("selfcid0"), true, DefaultParameters())
+	c := newConn(old, fakeFuzzAddr("zero:peer"), nil, []byte("selfcid0"), true, DefaultConfig())
 	defer c.Close()
 	installAppSealer(t, c)
 	c.mu.Lock()
@@ -2683,7 +2683,7 @@ func TestRebindRefusesAPeerWithZeroLengthIDs(t *testing.T) {
 // probe, the second a timer resend, carry different bytes.
 func TestPathChallengeResendsCarryFreshData(t *testing.T) {
 	old := &recordingPC{addr: fakeFuzzAddr("fresh:old")}
-	c := newConn(old, fakeFuzzAddr("fresh:peer"), []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+	c := newConn(old, fakeFuzzAddr("fresh:peer"), []byte("peercid0"), []byte("selfcid0"), true, DefaultConfig())
 	defer c.Close()
 	installAppSealer(t, c)
 	c.mu.Lock()
@@ -2727,7 +2727,7 @@ func TestPathChallengeResendsCarryFreshData(t *testing.T) {
 func TestMigrationToLoopbackIsNotFollowed(t *testing.T) {
 	newServerAt := func(peer *net.UDPAddr) (*Conn, *recordingPC) {
 		pc := &recordingPC{addr: fakeFuzzAddr("loop:self")}
-		c := newConn(pc, peer, []byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+		c := newConn(pc, peer, []byte("peercid0"), []byte("selfcid0"), false, DefaultConfig())
 		t.Cleanup(func() { _ = c.Close() })
 		installAppSealer(t, c)
 		c.mu.Lock()
@@ -2890,7 +2890,7 @@ func TestPreferredMoveRefusesAStaleValidation(t *testing.T) {
 	peerB := fakeFuzzAddr("pref0:peerB")
 
 	// A server whose client chose a zero-length connection identifier.
-	c := newConn(main, peerA, nil, []byte("selfcid0"), false, DefaultParameters())
+	c := newConn(main, peerA, nil, []byte("selfcid0"), false, DefaultConfig())
 	installAppSealer(t, c)
 	c.mu.Lock()
 	c.handshakeConfirmed = true
@@ -3176,7 +3176,7 @@ func newConnectionIDFrame(seq, retire uint64, cid string, tok byte) []byte {
 // CONNECTION_ID_LIMIT_ERROR.
 func TestCopiesOfARetiredNewConnectionIDQueueOneRetirement(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "ncidcopies:self"}, fakeFuzzAddr("ncidcopies:peer"),
-		[]byte("initial0"), []byte("selfcid0"), true, DefaultParameters())
+		[]byte("initial0"), []byte("selfcid0"), true, DefaultConfig())
 	defer c.Close()
 	c.pinPeerSCID([]byte("srv-cid0"))
 	tok := make([]byte, 16)
@@ -3216,7 +3216,7 @@ func TestCopiesOfARetiredNewConnectionIDQueueOneRetirement(t *testing.T) {
 // this end retired of its own accord (peerRetiredSelf), so the frame is
 // answered with RETIRE_CONNECTION_ID again instead of pooled.
 func TestRetransmittedNewConnectionIDOfARetiredSequence(t *testing.T) {
-	params := DefaultParameters()
+	params := DefaultConfig()
 	c := newConn(&recordingPC{addr: fakeFuzzAddr("rp07:first")}, fakeFuzzAddr("rp07:peer"),
 		[]byte("peercid0"), []byte("selfcid0"), true, params)
 	defer c.Close()
@@ -3306,7 +3306,7 @@ func TestRetransmittedNewConnectionIDOfARetiredSequence(t *testing.T) {
 // it, and the peer was never told. It is retired now instead, its path being
 // two Rebinds behind.
 func TestASecondRebindDoesNotLoseThePendingRetirement(t *testing.T) {
-	params := DefaultParameters()
+	params := DefaultConfig()
 	c := newConn(&recordingPC{addr: fakeFuzzAddr("rb07:first")}, fakeFuzzAddr("rb07:peer"),
 		[]byte("peercid0"), []byte("selfcid0"), true, params)
 	defer c.Close()
@@ -3450,7 +3450,7 @@ func TestAZeroLengthCIDPeersOldPathIsChallenged(t *testing.T) {
 	peerB := fakeFuzzAddr("zcid:peerB")
 
 	// A server whose client chose a zero-length connection ID.
-	c := newConn(main, peerA, nil, []byte("selfcid0"), false, DefaultParameters())
+	c := newConn(main, peerA, nil, []byte("selfcid0"), false, DefaultConfig())
 	installAppSealer(t, c)
 	c.mu.Lock()
 	c.handshakeConfirmed = true
@@ -3572,7 +3572,7 @@ func TestPassiveMigrationRetiresTheIdentifierItLeaves(t *testing.T) {
 // RFC 9000 §5.1.2 on the client: once it moves to the server's preferred
 // address, the identifier the handshake's path used serves no address.
 func TestPreferredAddressMoveRetiresTheHandshakeIdentifier(t *testing.T) {
-	c := newConn(&recordingPC{addr: fakeFuzzAddr("retirepa:self")}, fakeFuzzAddr("retirepa:peer"), []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+	c := newConn(&recordingPC{addr: fakeFuzzAddr("retirepa:self")}, fakeFuzzAddr("retirepa:peer"), []byte("peercid0"), []byte("selfcid0"), true, DefaultConfig())
 	defer c.Close()
 	installAppSealer(t, c)
 	c.mu.Lock()
@@ -3651,7 +3651,7 @@ func TestFallbackNeverReusesAnIdentifierSentToAnotherAddress(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pc := &recordingPC{addr: fakeFuzzAddr("fb:self")}
 			validated := fakeFuzzAddr("fb:validated")
-			c := newConn(pc, fakeFuzzAddr("fb:failed"), []byte("peercid1"), []byte("selfcid0"), true, DefaultParameters())
+			c := newConn(pc, fakeFuzzAddr("fb:failed"), []byte("peercid1"), []byte("selfcid0"), true, DefaultConfig())
 			defer c.Close()
 			c.mu.Lock()
 			c.handshakeConfirmed = true

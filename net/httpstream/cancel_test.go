@@ -102,13 +102,13 @@ func TestH3ClientCancelCancelsTheContext(t *testing.T) {
 	served := make(chan struct{})
 	go func() {
 		defer close(served)
-		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), quic.DefaultConfig())
 		if err != nil {
 			return
 		}
 		_ = ServeH3Conn(t.Context(), conn, Config{}, w.handle)
 	}()
-	conn, err := quic.Dial(t.Context(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(t.Context(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultConfig())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}

@@ -36,7 +36,7 @@ func TestHandshakeSurvivesAHelloRetryRequest(t *testing.T) {
 				done <- err
 				return
 			}
-			conn, err := Accept(serverPC, datagram{Peer: peer, Payload: buf[:n]}, serverCfg, DefaultParameters())
+			conn, err := Accept(serverPC, datagram{Peer: peer, Payload: buf[:n]}, serverCfg, DefaultConfig())
 			if err != nil {
 				done <- err
 				return
@@ -46,7 +46,7 @@ func TestHandshakeSurvivesAHelloRetryRequest(t *testing.T) {
 		}()
 		clientCfg := ClientTLSForTest()
 		clientCfg.CurvePreferences = clientCurves
-		client, err := Dial(context.Background(), clientTap, serverPC.LocalAddr(), clientCfg, DefaultParameters())
+		client, err := Dial(context.Background(), clientTap, serverPC.LocalAddr(), clientCfg, DefaultConfig())
 		if err != nil {
 			t.Fatal(err)
 		}

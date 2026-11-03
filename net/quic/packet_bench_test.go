@@ -21,7 +21,7 @@ import (
 func newBenchConn(tb testing.TB) (*Conn, *packetSealer) {
 	tb.Helper()
 	peer := fakeFuzzAddr("bench:peer")
-	params := DefaultParameters()
+	params := DefaultConfig()
 	params.InitialMaxData = 1 << 50
 	params.InitialMaxStreamDataBidiRemote = 1 << 50
 	params.InitialMaxStreamDataBidiLocal = 1 << 50
@@ -47,7 +47,7 @@ func newBenchConn(tb testing.TB) (*Conn, *packetSealer) {
 	c.spaces[spaceApplication].opener = opener
 	c.spaces[spaceApplication].sealer = sealer
 	c.hasPeerParams = true
-	c.peerParams = params
+	c.peerParams = params.TransportParameters
 	c.handshakeConfirmed = true
 	c.reno().cwnd = 1 << 30
 	c.connSend.max = 1 << 50

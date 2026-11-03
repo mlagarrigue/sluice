@@ -32,7 +32,7 @@ func FuzzParseShortHeader(f *testing.F) {
 // FuzzParseParameters: the peer's transport parameters arrive through the
 // TLS handshake, but their encoding is this package's to parse.
 func FuzzParseParameters(f *testing.F) {
-	f.Add(appendParameters(nil, DefaultParameters()))
+	f.Add(appendParameters(nil, DefaultConfig().TransportParameters))
 	f.Add([]byte{0x01, 0x01, 0x40})
 	f.Add([]byte{})
 
@@ -145,7 +145,7 @@ func FuzzReceive(f *testing.F) {
 	peer := fakeFuzzAddr("fuzz:peer")
 	newTarget := func(tb testing.TB) *Conn {
 		tb.Helper()
-		c := newConn(&fuzzSink{addr: "fuzz:self"}, peer, []byte{1, 2, 3, 4, 5, 6, 7, 8}, []byte{9, 10, 11, 12, 13, 14, 15, 16}, false, DefaultParameters())
+		c := newConn(&fuzzSink{addr: "fuzz:self"}, peer, []byte{1, 2, 3, 4, 5, 6, 7, 8}, []byte{9, 10, 11, 12, 13, 14, 15, 16}, false, DefaultConfig())
 		if err := c.installInitial([]byte{1, 2, 3, 4, 5, 6, 7, 8}); err != nil {
 			tb.Fatal(err)
 		}
@@ -166,7 +166,7 @@ func FuzzReceive(f *testing.F) {
 		c.spaces[spaceApplication].opener = opener
 		c.spaces[spaceApplication].sealer = sealer
 		c.hasPeerParams = true
-		c.peerParams = DefaultParameters()
+		c.peerParams = DefaultConfig().TransportParameters
 		c.mu.Unlock()
 		return c
 	}

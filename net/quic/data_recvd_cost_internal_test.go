@@ -21,7 +21,7 @@ func otherStreamPayload(id uint64, n int) []byte {
 // its FIN sent, every byte acknowledged, so nothing tracked carries it — and
 // flight packets of another stream in flight.
 func dataRecvdUnderAFlight(flight int) (*Conn, *Stream) {
-	c := assembleConn(&fuzzSink{addr: "drecvd:self"}, fakeFuzzAddr("drecvd:peer"), []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
+	c := assembleConn(&fuzzSink{addr: "drecvd:self"}, fakeFuzzAddr("drecvd:peer"), []byte("dcid0000"), []byte("scid0000"), false, DefaultConfig())
 	s := newStream(c, 0)
 	s.sendClosed = true
 	c.streams[0] = s

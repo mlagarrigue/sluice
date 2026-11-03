@@ -15,7 +15,7 @@ import (
 // AcceptStream must not block the read loop: the 64-deep channel that used
 // to stand there stopped it on the 65th, with nobody accepting.
 func TestTheLastStreamOfTheLimitDoesNotBlockReception(t *testing.T) {
-	params := DefaultParameters()
+	params := DefaultConfig()
 	c := newConn(&fuzzSink{addr: "accept:self"}, fakeFuzzAddr("accept:peer"),
 		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, params)
 	defer c.Close()
@@ -44,7 +44,7 @@ func TestTheLastStreamOfTheLimitDoesNotBlockReception(t *testing.T) {
 // that opens the peer's streams used to replace it with a fresh one.
 func TestAStreamPickedBeforeThePeerOpensItIsKept(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "accept:self"}, fakeFuzzAddr("accept:peer"),
-		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
 	defer c.Close()
 
 	picked, err := c.Stream(4)
@@ -78,7 +78,7 @@ func TestAStreamPickedBeforeThePeerOpensItIsKept(t *testing.T) {
 func TestAcceptStreamHandsOutWhatTheCloseLeftQueued(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		c := newConn(&fuzzSink{addr: "accept:self"}, fakeFuzzAddr("accept:peer"),
-			[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+			[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
 		type accepted struct {
 			s   *Stream
 			err error
@@ -113,7 +113,7 @@ func TestAcceptStreamHandsOutWhatTheCloseLeftQueued(t *testing.T) {
 func TestATryOpenWithoutCreditSendsStreamsBlocked(t *testing.T) {
 	for _, uni := range []bool{false, true} {
 		c := newConn(&fuzzSink{addr: "open:self"}, fakeFuzzAddr("open:peer"),
-			[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, true, DefaultParameters())
+			[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, true, DefaultConfig())
 		// Under the lock: the timer loop already runs and reads it.
 		c.mu.Lock()
 		c.hasPeerParams = true // limits of zero: no credit of either kind

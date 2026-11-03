@@ -63,7 +63,7 @@ func TestEarlySecretInstallsNoApplicationKeys(t *testing.T) {
 // held for the 1-RTT key to apply again.
 func TestHeldLimitsNeverLowerTheStreamCounts(t *testing.T) {
 	secret := make([]byte, 32)
-	c := assembleConn(&fuzzSink{addr: "held:self"}, fakeFuzzAddr("held:peer"), []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, true, DefaultParameters())
+	c := assembleConn(&fuzzSink{addr: "held:self"}, fakeFuzzAddr("held:peer"), []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, true, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	c.mu.Lock()
 	c.peerParams.InitialMaxStreamsBidi, c.peerParams.InitialMaxStreamsUni = 10, 10
@@ -80,7 +80,7 @@ func TestHeldLimitsNeverLowerTheStreamCounts(t *testing.T) {
 		t.Errorf("after the 1-RTT key: streams (%d, %d), held %v; want (50, 50), false", bidi, uni, held)
 	}
 
-	r := assembleConn(&fuzzSink{addr: "held:self"}, fakeFuzzAddr("held:peer"), []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, true, DefaultParameters())
+	r := assembleConn(&fuzzSink{addr: "held:self"}, fakeFuzzAddr("held:peer"), []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, true, DefaultConfig())
 	t.Cleanup(func() { _ = r.Close() })
 	r.mu.Lock()
 	r.peerParams.InitialMaxStreamsBidi = 10

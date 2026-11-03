@@ -81,7 +81,7 @@ func discardedCount(c *Conn) uint64 {
 // destination choice.
 func serverConnFor(t *testing.T, odcid, clientSCID []byte) *Conn {
 	t.Helper()
-	c := newConn(&fuzzSink{addr: "cid:server"}, fakeFuzzAddr("cid:client"), clientSCID, []byte("srv-scid"), false, DefaultParameters())
+	c := newConn(&fuzzSink{addr: "cid:server"}, fakeFuzzAddr("cid:client"), clientSCID, []byte("srv-scid"), false, DefaultConfig())
 	t.Cleanup(func() { c.Close() })
 	c.odcid = append([]byte(nil), odcid...)
 	if err := c.installInitial(odcid); err != nil {
@@ -98,7 +98,7 @@ func serverConnFor(t *testing.T, odcid, clientSCID []byte) *Conn {
 // same way.
 func TestClientDiscardsALongHeaderPacketUnderAnotherSCID(t *testing.T) {
 	dcid, scid := []byte("dcid0000"), []byte("scid0000")
-	c := newConn(&fuzzSink{addr: "cid:self"}, fakeFuzzAddr("cid:peer"), dcid, scid, true, DefaultParameters())
+	c := newConn(&fuzzSink{addr: "cid:self"}, fakeFuzzAddr("cid:peer"), dcid, scid, true, DefaultConfig())
 	defer c.Close()
 	if err := c.installInitial(dcid); err != nil {
 		t.Fatal(err)
@@ -243,7 +243,7 @@ func TestAcceptRefusesAShortInitial(t *testing.T) {
 	odcid, scid := []byte("odcid-00"), []byte("cli-cid0")
 
 	short := sealedInitialFrom(t, false, odcid, odcid, scid, 0, false)
-	c, err := accept(pc, datagram{Peer: peer, Payload: short}, cfg, DefaultParameters())
+	c, err := accept(pc, datagram{Peer: peer, Payload: short}, cfg, DefaultConfig())
 	if err == nil {
 		c.Close()
 		t.Fatalf("Accept opened a connection on a %d-byte Initial datagram; §14.1 says discard it", len(short))

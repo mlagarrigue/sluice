@@ -12,8 +12,8 @@ import (
 
 // oneStreamParams lets the client open a single bidirectional stream at a
 // time: the second OpenStream has to wait for the first to retire.
-func oneStreamParams() quic.TransportParameters {
-	p := quic.DefaultParameters()
+func oneStreamParams() quic.Config {
+	p := quic.DefaultConfig()
 	p.InitialMaxStreamsBidi = 1
 	return p
 }
@@ -101,8 +101,8 @@ func TestOpenStreamGivesUpWithTheContext(t *testing.T) {
 
 // oneUniStreamParams lets the client open a single unidirectional stream at
 // a time: the second OpenUniStream has to wait for the first to retire.
-func oneUniStreamParams() quic.TransportParameters {
-	p := quic.DefaultParameters()
+func oneUniStreamParams() quic.Config {
+	p := quic.DefaultConfig()
 	p.InitialMaxStreamsUni = 1
 	return p
 }

@@ -60,7 +60,7 @@ func TestServerRefusesAChainTLS13Forbids(t *testing.T) {
 	pcA, _ := newLoopbackPair(t)
 	refused := func(t *testing.T, cfg *tls.Config, want string) {
 		t.Helper()
-		l, err := NewListener(pcA, cfg, DefaultParameters(), ListenerConfig{})
+		l, err := NewListener(pcA, cfg, DefaultConfig(), ListenerConfig{})
 		if err == nil {
 			_ = l.Close()
 			t.Fatalf("NewListener accepted the chain; want a refusal naming %s", want)
@@ -68,7 +68,7 @@ func TestServerRefusesAChainTLS13Forbids(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("NewListener: %v, want %s named", err, want)
 		}
-		if _, err := accept(pcA, datagram{}, cfg, DefaultParameters()); err == nil || !strings.Contains(err.Error(), want) {
+		if _, err := accept(pcA, datagram{}, cfg, DefaultConfig()); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("Accept: %v, want the same refusal", err)
 		}
 	}
@@ -92,7 +92,7 @@ func TestServerRefusesAChainTLS13Forbids(t *testing.T) {
 	// extension absent altogether.
 	for name, usage := range map[string]x509.KeyUsage{"digitalSignature": x509.KeyUsageDigitalSignature, "no key usage": 0} {
 		der, key := mintCert(t, serverTemplate(name, usage), ca, caKey)
-		l, err := NewListener(pcA, serverConfig(der, key, caDER), DefaultParameters(), ListenerConfig{})
+		l, err := NewListener(pcA, serverConfig(der, key, caDER), DefaultConfig(), ListenerConfig{})
 		if err != nil {
 			t.Fatalf("%s: NewListener refused a chain TLS 1.3 allows: %v", name, err)
 		}
@@ -143,7 +143,7 @@ func TestDialRefusesAClientChainTLS13Forbids(t *testing.T) {
 		pc := &recordingPC{addr: fakeFuzzAddr("dialcert:self")}
 		cfg.InsecureSkipVerify = true //nolint:gosec // G402: nothing is dialled; the chain is refused first
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		c, err := Dial(ctx, pc, fakeFuzzAddr("dialcert:peer"), cfg, DefaultParameters())
+		c, err := Dial(ctx, pc, fakeFuzzAddr("dialcert:peer"), cfg, DefaultConfig())
 		cancel()
 		if err == nil {
 			_ = c.Close()

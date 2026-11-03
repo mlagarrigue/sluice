@@ -95,7 +95,7 @@ func TestHandshakeFlightsCoalesce(t *testing.T) {
 			done <- err
 			return
 		}
-		conn, err := Accept(serverTap, datagram{Peer: peer, Payload: buf[:n]}, ServerTLSForTest(t), DefaultParameters())
+		conn, err := Accept(serverTap, datagram{Peer: peer, Payload: buf[:n]}, ServerTLSForTest(t), DefaultConfig())
 		if err != nil {
 			done <- err
 			return
@@ -103,7 +103,7 @@ func TestHandshakeFlightsCoalesce(t *testing.T) {
 		defer conn.Close()
 		done <- nil
 	}()
-	client, err := Dial(context.Background(), clientTap, serverPC.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	client, err := Dial(context.Background(), clientTap, serverPC.LocalAddr(), ClientTLSForTest(), DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +186,7 @@ func carriesLongHeader(types []byte) bool {
 // processed as before.
 func TestCoalescedPacketUnderAnotherDCIDIsIgnored(t *testing.T) {
 	dcid, scid := []byte("dcid0000"), []byte("scid0000")
-	c := newConn(&fuzzSink{addr: "coal:self"}, fakeFuzzAddr("coal:peer"), dcid, scid, true, DefaultParameters())
+	c := newConn(&fuzzSink{addr: "coal:self"}, fakeFuzzAddr("coal:peer"), dcid, scid, true, DefaultConfig())
 	defer c.Close()
 	if err := c.installInitial(dcid); err != nil {
 		t.Fatal(err)
@@ -223,7 +223,7 @@ func TestCoalescedPacketUnderAnotherDCIDIsIgnored(t *testing.T) {
 func TestZeroRTTWritesCoalesceWhileAnotherWriterIsCounted(t *testing.T) {
 	tap := newTap(&fuzzSink{addr: "zrtt:self"})
 	dcid, scid := []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}
-	c := assembleConn(tap, fakeFuzzAddr("zrtt:peer"), dcid, scid, true, DefaultParameters())
+	c := assembleConn(tap, fakeFuzzAddr("zrtt:peer"), dcid, scid, true, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	c.initialDCID = dcid
 	c.remembered = TransportParameters{
@@ -235,10 +235,10 @@ func TestZeroRTTWritesCoalesceWhileAnotherWriterIsCounted(t *testing.T) {
 	if err := c.installEarlySealer(tls.TLS_AES_128_GCM_SHA256, make([]byte, 32)); err != nil {
 		t.Fatalf("early sealer: %v", err)
 	}
-	srv := DefaultParameters()
+	srv := DefaultConfig()
 	srv.initialSourceCID = dcid
 	srv.originalDCID = dcid
-	if err := c.handlePeerParameters(appendParameters(nil, srv)); err != nil {
+	if err := c.handlePeerParameters(appendParameters(nil, srv.TransportParameters)); err != nil {
 		t.Fatalf("server parameters: %v", err)
 	}
 

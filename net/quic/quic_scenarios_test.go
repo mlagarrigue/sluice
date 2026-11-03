@@ -20,14 +20,14 @@ import (
 // not only at HTTP/3's: streamFor (receive.go) checks a newly named stream's
 // ordinal against localMaxStreamsBidi/Uni and refuses with
 // STREAM_LIMIT_ERROR (RFC 9000 §4.6) before the stream is ever created. The
-// stream this test opens last is the first one past [DefaultParameters]'s
+// stream this test opens last is the first one past [DefaultConfig]'s
 // InitialMaxStreamsBidi (100, RFC 9114 §6.1's floor for request streams).
 // This is the transport-level enforcement of the *advertised* limit itself,
 // distinct from HTTP/3's own request accounting (covered separately in
 // net/httpstream/).
 func TestPeerExceedingStreamLimitIsRefused(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "scenario:self"}, fakeFuzzAddr("scenario:peer"),
-		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
 	defer c.Close()
 
 	// Switch to batch mode so a peer-initiated stream never blocks on the
@@ -35,7 +35,7 @@ func TestPeerExceedingStreamLimitIsRefused(t *testing.T) {
 	// drains AcceptStream.
 	c.OnStreamFrames(CreditOnDelivery, func([]Frame) error { return nil })
 
-	limit := DefaultParameters().InitialMaxStreamsBidi
+	limit := DefaultConfig().InitialMaxStreamsBidi
 	streamFrame := func(id uint64) []byte {
 		// A zero-length, non-FIN STREAM frame: enough to name the stream,
 		// nothing for flow control or reassembly to do.
@@ -78,11 +78,11 @@ func TestPeerExceedingStreamLimitIsRefused(t *testing.T) {
 // pattern (id&0x02 != 0) and the other counter (localMaxStreamsUni).
 func TestPeerExceedingUniStreamLimitIsRefused(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "scenario:self"}, fakeFuzzAddr("scenario:peer"),
-		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
 	defer c.Close()
 	c.OnStreamFrames(CreditOnDelivery, func([]Frame) error { return nil })
 
-	limit := DefaultParameters().InitialMaxStreamsUni
+	limit := DefaultConfig().InitialMaxStreamsUni
 	streamFrame := func(id uint64) []byte {
 		frame := varint.Append(nil, FrameStream|streamOFF|streamLEN)
 		frame = varint.Append(frame, id)
@@ -121,12 +121,12 @@ func TestStreamDataBlockedIsCheckedLikeAStreamFrame(t *testing.T) {
 		id   uint64
 		code uint64
 	}{
-		{"past the bidirectional stream limit", DefaultParameters().InitialMaxStreamsBidi * 4, transportStreamLimit},
+		{"past the bidirectional stream limit", DefaultConfig().InitialMaxStreamsBidi * 4, transportStreamLimit},
 		{"on a send-only stream of this end's", 3, transportStreamState}, // server-initiated unidirectional
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			c := newConn(&fuzzSink{addr: "scenario:self"}, fakeFuzzAddr("scenario:peer"),
-				[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+				[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
 			defer c.Close()
 			c.OnStreamFrames(CreditOnDelivery, func([]Frame) error { return nil })
 
@@ -148,7 +148,7 @@ func TestStreamDataBlockedIsCheckedLikeAStreamFrame(t *testing.T) {
 // stream of this end's has no peer sending part at all: an error, no frame.
 func TestStopSendingIsNotSentWhereItMeansNothing(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "scenario:self"}, fakeFuzzAddr("scenario:peer"),
-		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
 	defer c.Close()
 	c.OnStreamFrames(CreditOnDelivery, func([]Frame) error { return nil })
 

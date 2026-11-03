@@ -81,7 +81,7 @@ func TestResponseBufferIsFreeOnceWritten(t *testing.T) {
 	})
 
 	t.Run("h3", func(t *testing.T) {
-		conn, _, _ := startH3(t, quic.DefaultParameters(), lendingHandler())
+		conn, _, _ := startH3(t, quic.DefaultConfig(), lendingHandler())
 		a, _ := readH3Body(t, askH3(t, conn, h3Request("GET", "/")))
 		b, _ := readH3Body(t, askH3(t, conn, h3Request("GET", "/")))
 		if a != first || b != second {

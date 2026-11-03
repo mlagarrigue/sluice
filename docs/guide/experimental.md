@@ -52,15 +52,15 @@ asking anything of anyone — the library's thesis, verified at the transport
 level.
 
 ```go
-client, err := quic.Dial(ctx, pc, addr, tlsConfig, quic.DefaultParameters())               // client side
-ln, err := quic.NewListener(pc, tlsConfig, quic.DefaultParameters(), quic.ListenerConfig{}) // server side
+client, err := quic.Dial(ctx, pc, addr, tlsConfig, quic.DefaultConfig())               // client side
+ln, err := quic.NewListener(pc, tlsConfig, quic.DefaultConfig(), quic.ListenerConfig{}) // server side
 server, err := ln.Accept()
 stats := server.Stats() // counters, RTT, congestion window, bytes in flight, losses
 ```
 
 The **transport parameters** are the limits each end announces to the
 other (how much data, how many streams, what idle timeout). Start from
-`DefaultParameters()`; the zero value is refused, because it would announce
+`DefaultConfig()`; the zero value is refused, because it would announce
 a connection with no credit at all, unable to send anything. What a server
 must do beyond the handshake — route datagrams by connection ID, validate
 addresses against amplification, follow a client whose NAT rebinds — is
@@ -84,8 +84,9 @@ counts the rotations.
 
 ### `net/quic` settings
 
-`DefaultParameters()` fills in the "Default" column. The fields marked
-*local* never go on the wire: they set what this end does, not what it
+`DefaultConfig()` fills in the "Default" column. The fields marked
+*local* are `quic.Config`'s own, beside the `TransportParameters` it
+embeds: they never go on the wire, and set what this end does, not what it
 announces.
 
 | Field | Default | Unit, bound | What it bounds |
@@ -147,10 +148,10 @@ traffic. Without that, leave it at zero.
 > it is never announced to the peer, which sends with its own (RFC 9002
 > §7).
 
-Three controllers, chosen by `TransportParameters.Congestion`:
+Three controllers, chosen by `quic.Config.Congestion`:
 
 ```go
-p := quic.DefaultParameters()
+p := quic.DefaultConfig()
 p.Congestion = quic.CongestionConfig{Algorithm: quic.CongestionCubic} // or quic.CongestionBBR
 ```
 
@@ -185,7 +186,7 @@ with the command that replays the comparison). To judge on yours,
 (`CongestionWindow`), the losses (`LostPackets`) and the round trip
 (`SmoothedRTT` against `MinRTT`: the gap is the queue the flow keeps).
 
-`CongestionConfig`, in `TransportParameters.Congestion`:
+`CongestionConfig`, in `quic.Config.Congestion`:
 
 | Field | Zero | Bounds | What it sets |
 |---|---|---|---|

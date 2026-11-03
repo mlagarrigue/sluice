@@ -26,7 +26,7 @@ func newUDPListener(t *testing.T, lcfg quic.ListenerConfig) (*quic.Listener, net
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := quic.NewListener(pc, serverTLS(t), quic.DefaultParameters(), lcfg)
+	l, err := quic.NewListener(pc, serverTLS(t), quic.DefaultConfig(), lcfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func newUDPListener(t *testing.T, lcfg quic.ListenerConfig) (*quic.Listener, net
 	return l, pc.LocalAddr()
 }
 
-func dialUDP(t *testing.T, serverAddr net.Addr, params quic.TransportParameters) *quic.Conn {
+func dialUDP(t *testing.T, serverAddr net.Addr, params quic.Config) *quic.Conn {
 	t.Helper()
 	pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
 	if err != nil {
@@ -74,7 +74,7 @@ func TestListenerServesTwoConnectionsOnOneSocket(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range n {
 		wg.Go(func() {
-			c := dialUDP(t, addr, quic.DefaultParameters())
+			c := dialUDP(t, addr, quic.DefaultConfig())
 			s, err := c.OpenStream(t.Context())
 			if err != nil {
 				t.Errorf("client %d OpenStream: %v", i, err)
@@ -158,7 +158,7 @@ func TestListenerDropsUnroutableDatagramsWithoutWedgingOthers(t *testing.T) {
 		done <- err
 	}()
 
-	c := dialUDP(t, addr, quic.DefaultParameters())
+	c := dialUDP(t, addr, quic.DefaultConfig())
 	defer c.Close()
 
 	select {
@@ -197,7 +197,7 @@ func TestListenerCloseUnblocksAcceptAndEndsAcceptedConnections(t *testing.T) {
 		accepted <- c
 	}()
 
-	c := dialUDP(t, addr, quic.DefaultParameters())
+	c := dialUDP(t, addr, quic.DefaultConfig())
 
 	var live *quic.Conn
 	select {
@@ -281,7 +281,7 @@ func TestListenerAlwaysRetryStillCompletesTheHandshake(t *testing.T) {
 		done <- nil
 	}()
 
-	c := dialUDP(t, addr, quic.DefaultParameters())
+	c := dialUDP(t, addr, quic.DefaultConfig())
 	s, err := c.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -335,7 +335,7 @@ func TestListenerHandshakeSurvivesAnAmplificationLimitedFirstFlight(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := quic.NewListener(pc, cfg, quic.DefaultParameters(), quic.ListenerConfig{})
+	l, err := quic.NewListener(pc, cfg, quic.DefaultConfig(), quic.ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +349,7 @@ func TestListenerHandshakeSurvivesAnAmplificationLimitedFirstFlight(t *testing.T
 		echoOneStream(t, c)
 	}()
 
-	c := dialUDP(t, pc.LocalAddr(), quic.DefaultParameters())
+	c := dialUDP(t, pc.LocalAddr(), quic.DefaultConfig())
 	s, err := c.OpenStream(t.Context())
 	if err != nil {
 		t.Fatalf("OpenStream: %v", err)
@@ -391,7 +391,7 @@ func TestListenerAnnouncesItsPreferredAddress(t *testing.T) {
 		}
 		accepted <- c
 	}()
-	client := dialUDP(t, addr, quic.DefaultParameters())
+	client := dialUDP(t, addr, quic.DefaultConfig())
 	var server *quic.Conn
 	select {
 	case c, ok := <-accepted:
@@ -558,7 +558,7 @@ func TestALostFinishedOutlivesTheHandshakeTimeout(t *testing.T) {
 		}
 		return [][]byte{b}
 	}
-	conn, err := quic.Dial(context.Background(), client, addr, clientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), client, addr, clientTLS(), quic.DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -594,26 +594,26 @@ func TestALostFinishedOutlivesTheHandshakeTimeout(t *testing.T) {
 // own checks, run without a socket: what NewListener refuses in either,
 // Validate refuses with the same error, and the defaults pass both.
 func TestValidateIsNewListenersCheck(t *testing.T) {
-	if err := quic.DefaultParameters().Validate(); err != nil {
-		t.Fatalf("DefaultParameters().Validate() = %v", err)
+	if err := quic.DefaultConfig().Validate(); err != nil {
+		t.Fatalf("DefaultConfig().Validate() = %v", err)
 	}
 	if err := (quic.ListenerConfig{}).Validate(); err != nil {
 		t.Fatalf("ListenerConfig{}.Validate() = %v", err)
 	}
 	for _, tc := range []struct {
 		name   string
-		params quic.TransportParameters
+		params quic.Config
 		lcfg   quic.ListenerConfig
 		got    error
 	}{
-		{name: "zero parameters", params: quic.TransportParameters{}, got: quic.TransportParameters{}.Validate()},
-		{name: "a negative bound", params: quic.DefaultParameters(), lcfg: quic.ListenerConfig{MaxConns: -1}, got: quic.ListenerConfig{MaxConns: -1}.Validate()},
+		{name: "zero parameters", params: quic.Config{}, got: quic.Config{}.Validate()},
+		{name: "a negative bound", params: quic.DefaultConfig(), lcfg: quic.ListenerConfig{MaxConns: -1}, got: quic.ListenerConfig{MaxConns: -1}.Validate()},
 		// Past what the listener allocates up front: until 2026-10-29
 		// Validate accepted these and NewListener, or the first
 		// connection, panicked in make.
-		{name: "MaxPendingConns past its bound", params: quic.DefaultParameters(), lcfg: quic.ListenerConfig{MaxPendingConns: math.MaxInt}, got: quic.ListenerConfig{MaxPendingConns: math.MaxInt}.Validate()},
-		{name: "ConnQueueLen past its bound", params: quic.DefaultParameters(), lcfg: quic.ListenerConfig{ConnQueueLen: 1<<16 + 1}, got: quic.ListenerConfig{ConnQueueLen: 1<<16 + 1}.Validate()},
-		{name: "StatelessResetsPerSecond past its bound", params: quic.DefaultParameters(), lcfg: quic.ListenerConfig{StatelessResetsPerSecond: math.MaxInt}, got: quic.ListenerConfig{StatelessResetsPerSecond: math.MaxInt}.Validate()},
+		{name: "MaxPendingConns past its bound", params: quic.DefaultConfig(), lcfg: quic.ListenerConfig{MaxPendingConns: math.MaxInt}, got: quic.ListenerConfig{MaxPendingConns: math.MaxInt}.Validate()},
+		{name: "ConnQueueLen past its bound", params: quic.DefaultConfig(), lcfg: quic.ListenerConfig{ConnQueueLen: 1<<16 + 1}, got: quic.ListenerConfig{ConnQueueLen: 1<<16 + 1}.Validate()},
+		{name: "StatelessResetsPerSecond past its bound", params: quic.DefaultConfig(), lcfg: quic.ListenerConfig{StatelessResetsPerSecond: math.MaxInt}, got: quic.ListenerConfig{StatelessResetsPerSecond: math.MaxInt}.Validate()},
 	} {
 		udp, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
 		if err != nil {

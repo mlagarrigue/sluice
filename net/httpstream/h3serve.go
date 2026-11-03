@@ -212,7 +212,7 @@ func refuseH3Conn(c *quic.Conn, cfg Config) error {
 	// RFC 9114 §6.2: the transport parameters MUST let the peer create at
 	// least three unidirectional streams — its control stream and QPACK's
 	// two — and SHOULD give each at least 1,024 bytes of credit. The
-	// defaults hold both (quic.DefaultParameters, Config.TransportParameters);
+	// defaults hold both (quic.DefaultConfig, Config.QUICConfig);
 	// parameters written by hand are checked for the MUST, and for a credit
 	// of zero, under which the client's control stream could never carry
 	// even its type byte: this end grants more credit only as it reads, and
@@ -257,7 +257,7 @@ func refuseH3Conn(c *quic.Conn, cfg Config) error {
 // windows cover the layer's admission bounds (MaxBodyBytes per stream, 4×
 // across the connection, headroom for headers); on smaller windows the
 // transport keeps crediting on delivery and the caps bound the exposure.
-// [Config.TransportParameters] produces windows this check accepts.
+// [Config.QUICConfig] produces windows this check accepts.
 //
 // When request bodies stream (Config.BodyDelivery, BodyStreamed by
 // default), a body is retained whole only when it ended in the delivery
@@ -795,8 +795,8 @@ type h3Batch struct {
 	calls *streamCalls[uint64]
 }
 
-// TransportParameters returns QUIC transport parameters sized to this
-// configuration's own admission bounds, for the connection ServeH3Conn will
+// QUICConfig returns a [quic.Config] whose transport parameters are sized to
+// this configuration's own admission bounds, for the connection ServeH3Conn will
 // serve: stream windows that fit a full request (MaxBodyBytes plus header
 // room) — or, when bodies stream, the transport's default stream window,
 // which is then what bounds a streamed body (see
@@ -821,16 +821,16 @@ type h3Batch struct {
 // Experimental: it takes net/quic's types, and net/quic is experimental, so
 // this entry point is outside the v1 promise the rest of the package makes
 // (ADR 0020, ADR 0021): it may change with net/quic, announced with a `!`.
-func (c Config) TransportParameters() (quic.TransportParameters, error) {
+func (c Config) QUICConfig() (quic.Config, error) {
 	c, err := c.resolve()
 	if err != nil {
-		return quic.TransportParameters{}, err
+		return quic.Config{}, err
 	}
 	if c.MaxConcurrentStreams > h3MaxServeStreams {
-		return quic.TransportParameters{}, fmt.Errorf("httpstream: Config.MaxConcurrentStreams %d is over the %d streams ServeH3Conn serves on one connection",
+		return quic.Config{}, fmt.Errorf("httpstream: Config.MaxConcurrentStreams %d is over the %d streams ServeH3Conn serves on one connection",
 			c.MaxConcurrentStreams, h3MaxServeStreams)
 	}
-	p := quic.DefaultParameters()
+	p := quic.DefaultConfig()
 	p.MaxIdleTimeout = c.IdleTimeout
 	p.InitialMaxData = uint64(4*c.MaxBodyBytes+c.MaxHeaderBytes) + h3FrameSlack //nolint:gosec // G115: positive config
 	if c.BodyDelivery == BodyStreamed {

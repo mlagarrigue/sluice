@@ -44,7 +44,7 @@ func FuzzListenerDispatch(f *testing.F) {
 	f.Add(long(version1, 64))
 
 	pc := &capturePC{fuzzSink: fuzzSink{addr: "dispatch:self"}, stopped: make(chan struct{})}
-	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		f.Fatal(err)
 	}

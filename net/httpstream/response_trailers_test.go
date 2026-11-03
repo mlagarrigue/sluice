@@ -114,7 +114,7 @@ func TestResponseTrailersReachAnHTTP2Client(t *testing.T) {
 // its frames checked in order — the head, the DATA, then a HEADERS frame
 // holding the trailers and nothing after it.
 func TestResponseTrailersReachAnHTTP3Client(t *testing.T) {
-	conn, _, _ := startH3(t, quic.DefaultParameters(), trailerHandler)
+	conn, _, _ := startH3(t, quic.DefaultConfig(), trailerHandler)
 	for _, path := range []string{"/body", "/stream"} {
 		s := askH3(t, conn, h3Request("POST", path))
 		_ = s.SetReadDeadline(time.Now().Add(10 * time.Second))
@@ -173,7 +173,7 @@ func TestResponseTrailerRefusedBeforeTheBodyIsA500(t *testing.T) {
 		client.CloseIdleConnections()
 	}
 
-	conn, _, _ := startH3(t, quic.DefaultParameters(), trailerHandler)
+	conn, _, _ := startH3(t, quic.DefaultConfig(), trailerHandler)
 	if f := readH3Fields(t, askH3(t, conn, h3Request("GET", "/refused"))); f[":status"][0] != "500" {
 		t.Errorf("HTTP/3: status %v, want 500", f[":status"])
 	}

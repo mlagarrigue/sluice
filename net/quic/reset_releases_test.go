@@ -11,7 +11,7 @@ import "testing"
 // InitialMaxData, which the package's documentation gives as the bound.
 func TestAResetReleasesTheBytesParkedOutOfOrder(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "rst:self"}, fakeFuzzAddr("rst:peer"),
-		[]byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
+		[]byte("dcid0000"), []byte("scid0000"), false, DefaultConfig())
 	defer c.Close()
 	const streams, parked = 100, 200 << 10
 	data := make([]byte, parked)

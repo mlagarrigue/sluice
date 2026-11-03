@@ -278,7 +278,7 @@ func TestAnAckOfRefusedZeroRTTIsAViolation(t *testing.T) {
 func TestZeroRTTWritesStayUnderRememberedLimits(t *testing.T) {
 	tap := newTap(&fuzzSink{addr: "held08:self"})
 	dcid, scid := []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}
-	c := assembleConn(tap, fakeFuzzAddr("held08:peer"), dcid, scid, true, DefaultParameters())
+	c := assembleConn(tap, fakeFuzzAddr("held08:peer"), dcid, scid, true, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	c.initialDCID = dcid
 
@@ -297,10 +297,10 @@ func TestZeroRTTWritesStayUnderRememberedLimits(t *testing.T) {
 	// them no smaller than the remembered ones when 0-RTT is accepted, so
 	// holding the raise back can only ever withhold room, never credit
 	// already spent.
-	srv := DefaultParameters()
+	srv := DefaultConfig()
 	srv.initialSourceCID = dcid
 	srv.originalDCID = dcid
-	if err := c.handlePeerParameters(appendParameters(nil, srv)); err != nil {
+	if err := c.handlePeerParameters(appendParameters(nil, srv.TransportParameters)); err != nil {
 		t.Fatalf("server parameters: %v", err)
 	}
 
@@ -370,8 +370,8 @@ func TestZeroRTTWritesStayUnderRememberedLimits(t *testing.T) {
 	if held {
 		t.Error("the server's limits are still held after the 1-RTT write keys landed")
 	}
-	if connMax != DefaultParameters().InitialMaxData {
-		t.Errorf("connSend.max is %d after the 1-RTT keys, want the server's %d", connMax, DefaultParameters().InitialMaxData)
+	if connMax != DefaultConfig().InitialMaxData {
+		t.Errorf("connSend.max is %d after the 1-RTT keys, want the server's %d", connMax, DefaultConfig().InitialMaxData)
 	}
 }
 
@@ -389,7 +389,7 @@ func TestZeroRTTWritesStayUnderRememberedLimits(t *testing.T) {
 func TestZeroRTTStreamWritesStayUnderTheRememberedStreamLimit(t *testing.T) {
 	tap := newTap(&fuzzSink{addr: "held04:self"})
 	dcid, scid := []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}
-	c := assembleConn(tap, fakeFuzzAddr("held04:peer"), dcid, scid, true, DefaultParameters())
+	c := assembleConn(tap, fakeFuzzAddr("held04:peer"), dcid, scid, true, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	c.initialDCID = dcid
 
@@ -410,10 +410,10 @@ func TestZeroRTTStreamWritesStayUnderTheRememberedStreamLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenUniStream before the server's parameters: %v", err)
 	}
-	srv := DefaultParameters() // InitialMaxStreamDataUni 1<<16, far past the ticket's
+	srv := DefaultConfig() // InitialMaxStreamDataUni 1<<16, far past the ticket's
 	srv.initialSourceCID = dcid
 	srv.originalDCID = dcid
-	if err := c.handlePeerParameters(appendParameters(nil, srv)); err != nil {
+	if err := c.handlePeerParameters(appendParameters(nil, srv.TransportParameters)); err != nil {
 		t.Fatalf("server parameters: %v", err)
 	}
 	after, err := c.OpenUniStream(context.Background())
@@ -485,7 +485,7 @@ func TestZeroRTTStreamWritesStayUnderTheRememberedStreamLimit(t *testing.T) {
 // packet drops the 0-RTT opener and whatever 0-RTT packets still wait for
 // it; a 0-RTT packet reordered behind is resent by the client in 1-RTT.
 func TestTheFirst1RTTPacketDropsThe0RTTKeys(t *testing.T) {
-	c := newConn(&recordingPC{addr: fakeFuzzAddr("drop0rtt:self")}, fakeFuzzAddr("drop0rtt:peer"), []byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+	c := newConn(&recordingPC{addr: fakeFuzzAddr("drop0rtt:self")}, fakeFuzzAddr("drop0rtt:peer"), []byte("peercid0"), []byte("selfcid0"), false, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	installAppSealer(t, c)
 	opener, err := newPacketOpener(make([]byte, 32))
@@ -514,7 +514,7 @@ func TestTheFirst1RTTPacketDropsThe0RTTKeys(t *testing.T) {
 // out of the queue required the 0-RTT opener, and they stayed until the
 // connection ended.
 func TestTheFirst1RTTPacketDropsRefused0RTTPackets(t *testing.T) {
-	c := newConn(&recordingPC{addr: fakeFuzzAddr("refuse0rtt:self")}, fakeFuzzAddr("refuse0rtt:peer"), []byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+	c := newConn(&recordingPC{addr: fakeFuzzAddr("refuse0rtt:self")}, fakeFuzzAddr("refuse0rtt:peer"), []byte("peercid0"), []byte("selfcid0"), false, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	c.early = newEarlyGate(0, 0)
 	for i := range 3 {
@@ -538,7 +538,7 @@ func TestTheFirst1RTTPacketDropsRefused0RTTPackets(t *testing.T) {
 // most sixteen: the one memory bound of that path. A peer sending more
 // before its ClientHello is read loses the rest, which its 1-RTT resends.
 func TestDeferred0RTTPacketsAreBounded(t *testing.T) {
-	c := newConn(&recordingPC{addr: fakeFuzzAddr("defer0rtt:self")}, fakeFuzzAddr("defer0rtt:peer"), []byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+	c := newConn(&recordingPC{addr: fakeFuzzAddr("defer0rtt:self")}, fakeFuzzAddr("defer0rtt:peer"), []byte("peercid0"), []byte("selfcid0"), false, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	c.early = newEarlyGate(0, 0) // the queue exists only where 0-RTT is admitted
 	for i := range 40 {
@@ -631,7 +631,7 @@ func monotonicAhead(t *testing.T, at time.Time, d time.Duration) time.Time {
 func TestARetrySendsThe0RTTFlightAgainIn0RTT(t *testing.T) {
 	tap := newTap(&fuzzSink{addr: "retry0:self"})
 	dcid, scid := []byte("dcid0000"), []byte("scid0000")
-	c := assembleConn(tap, fakeFuzzAddr("retry0:peer"), dcid, scid, true, DefaultParameters())
+	c := assembleConn(tap, fakeFuzzAddr("retry0:peer"), dcid, scid, true, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	c.initialDCID = dcid
 	if err := c.installInitial(dcid); err != nil {
@@ -714,7 +714,7 @@ func TestATicketPresentedFourTimesIsAdmittedOnce(t *testing.T) {
 	var conns []*Conn
 	for _, name := range []string{"a", "b", "c", "d"} {
 		c := newConn(&fuzzSink{addr: fakeFuzzAddr("once:" + name)}, fakeFuzzAddr("once:peer"),
-			[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+			[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
 		c.early = g
 		ss := &tls.SessionState{EarlyData: true, Extra: [][]byte{ticket}}
 		if _, err := c.handleTLSEvent(tls.QUICEvent{Kind: tls.QUICResumeSession, SessionState: ss}); err != nil {
@@ -750,7 +750,7 @@ func TestAnUnusedReservationIsGivenBackWhenTheConnectionEnds(t *testing.T) {
 	ticket := g.ticketExtra(time.Now())
 	present := func(name string) (*Conn, bool) {
 		c := newConn(&fuzzSink{addr: fakeFuzzAddr("release:" + name)}, fakeFuzzAddr("release:peer"),
-			[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+			[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
 		c.early = g
 		ss := &tls.SessionState{EarlyData: true, Extra: [][]byte{ticket}}
 		if _, err := c.handleTLSEvent(tls.QUICEvent{Kind: tls.QUICResumeSession, SessionState: ss}); err != nil {

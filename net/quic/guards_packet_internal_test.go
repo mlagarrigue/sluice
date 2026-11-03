@@ -28,7 +28,7 @@ func versionNegotiationFor(dcid, scid string, versions ...uint32) []byte {
 func guardClient(t *testing.T) *Conn {
 	t.Helper()
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })
 	c.mu.Lock()
 	c.initialDCID = []byte("dcid0000")
@@ -124,7 +124,7 @@ func TestAVersionNegotiationNotEchoingOurIdentifiersIsIgnored(t *testing.T) {
 // timeout instead.
 func TestAVersionNegotiationEchoesForeignIdentifiersLongerThanTwenty(t *testing.T) {
 	serverPC, clientPC := newLoopbackPair(t)
-	l, err := NewListener(serverPC, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(serverPC, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}

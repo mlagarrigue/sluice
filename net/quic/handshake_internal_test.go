@@ -32,7 +32,7 @@ func (p *failFirstReadPC) ReadFrom(b []byte) (int, net.Addr, error) {
 // completes the handshake.
 func TestHandshakeSurvivesATransientReadError(t *testing.T) {
 	cli, srv := newLoopbackPair(t)
-	l, err := NewListener(srv, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
+	l, err := NewListener(srv, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestHandshakeSurvivesATransientReadError(t *testing.T) {
 		}
 	}()
 	pc := &failFirstReadPC{PacketConn: cli}
-	c, err := Dial(context.Background(), pc, srv.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	c, err := Dial(context.Background(), pc, srv.LocalAddr(), ClientTLSForTest(), DefaultConfig())
 	if err != nil {
 		t.Fatalf("Dial = %v; one transient read error ended the handshake", err)
 	}
@@ -83,7 +83,7 @@ func TestDialToAClosedPortFailsWithTheRefusal(t *testing.T) {
 	defer uc.Close()
 
 	start := time.Now()
-	c, err := Dial(context.Background(), connectedPC{uc}, raddr, ClientTLSForTest(), DefaultParameters())
+	c, err := Dial(context.Background(), connectedPC{uc}, raddr, ClientTLSForTest(), DefaultConfig())
 	took := time.Since(start)
 	if c != nil {
 		_ = c.Close()
@@ -109,7 +109,7 @@ func TestHandshakeRefusalLimitWithNothingHeard(t *testing.T) {
 	pc := newScriptedPC(script...)
 	peer := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 2}
 	start := time.Now()
-	c, err := Dial(context.Background(), pc, peer, ClientTLSForTest(), DefaultParameters())
+	c, err := Dial(context.Background(), pc, peer, ClientTLSForTest(), DefaultConfig())
 	if c != nil {
 		_ = c.Close()
 	}
@@ -129,14 +129,14 @@ func TestHandshakeRefusalLimitWithNothingHeard(t *testing.T) {
 // the queue, frees the slot, and the next attempt is admitted.
 func TestParkedConnectionHoldsItsPendingSlot(t *testing.T) {
 	srv, _ := newLoopbackPair(t)
-	l, err := NewListener(srv, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{MaxPendingConns: 1})
+	l, err := NewListener(srv, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{MaxPendingConns: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer l.Close()
 	dial := func() (*Conn, error) {
 		cli, _ := newLoopbackPair(t)
-		c, err := Dial(context.Background(), cli, srv.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+		c, err := Dial(context.Background(), cli, srv.LocalAddr(), ClientTLSForTest(), DefaultConfig())
 		if c != nil {
 			t.Cleanup(func() { _ = c.Close() })
 		}
@@ -200,7 +200,7 @@ func TestParkedConnectionHoldsItsPendingSlot(t *testing.T) {
 // readable from another goroutine while the connection bumps it.
 func TestUnknownTLSEventIsCounted(t *testing.T) {
 	peer := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 2}
-	c := newConn(newScriptedPC(), peer, []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := newConn(newScriptedPC(), peer, []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
 	const n = 100
 	read := make(chan struct{})
@@ -233,7 +233,7 @@ func TestDialCancelledEndsWithTheContextsCause(t *testing.T) {
 	time.AfterFunc(50*time.Millisecond, func() { cancel(cause) })
 	done := make(chan error, 1)
 	go func() {
-		c, err := Dial(ctx, pc, peer, ClientTLSForTest(), DefaultParameters())
+		c, err := Dial(ctx, pc, peer, ClientTLSForTest(), DefaultConfig())
 		if c != nil {
 			_ = c.Close()
 		}
@@ -271,7 +271,7 @@ func TestSendRefusalsEndTheHandshakeWithTheRefusal(t *testing.T) {
 	peer := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 2}
 	done := make(chan error, 1)
 	go func() {
-		c, err := Dial(context.Background(), pc, peer, ClientTLSForTest(), DefaultParameters())
+		c, err := Dial(context.Background(), pc, peer, ClientTLSForTest(), DefaultConfig())
 		if c != nil {
 			_ = c.Close()
 		}
@@ -311,7 +311,7 @@ func TestRefusedReadsAfterADatagramAreBackedOff(t *testing.T) {
 	peer := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 2}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	c, err := Dial(ctx, pc, peer, ClientTLSForTest(), DefaultParameters())
+	c, err := Dial(ctx, pc, peer, ClientTLSForTest(), DefaultConfig())
 	if c != nil {
 		_ = c.Close()
 	}
@@ -349,7 +349,7 @@ func TestASendRefusalWakeIsNotTheDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	c, err := Dial(ctx, pc, peer, ClientTLSForTest(), DefaultParameters())
+	c, err := Dial(ctx, pc, peer, ClientTLSForTest(), DefaultConfig())
 	if c != nil {
 		_ = c.Close()
 	}

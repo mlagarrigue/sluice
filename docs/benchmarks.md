@@ -246,7 +246,7 @@ HTTP/3 does not know this step for three batches of eight bytes because its
 first packet waits for its turn in the send loop.
 
 **Why `bulk` is slower over HTTP/3 (measured 2026-10-11).** Not the QUIC
-windows. Server side, `Config.TransportParameters` scaled by 1, 4 and 16
+windows. Server side, `Config.QUICConfig` scaled by 1, 4 and 16
 leaves `bulk` at 47–56, 51–59 and 40–50 MB/s: the spread of one setting is
 wider than the gap between settings. Client side, quic-go's receive windows
 at 512 KiB (its default), 4 MiB and 16 MiB give 48, 50–54 and 53–55 MB/s; only
@@ -716,7 +716,7 @@ the starting ceiling, not a target. Reno fills a 200 ms buffer to the
 brim, declares loss on the reordering profile that the path never had,
 and on the shallow 80 ms path reaches three tenths of the line — those
 are the margins a new controller is measured against. The first one is
-CUBIC (RFC 9438, `CongestionCubic` in `TransportParameters.Congestion`;
+CUBIC (RFC 9438, `CongestionCubic` in `quic.Config.Congestion`;
 NewReno — the classic congestion control of RFC 9002, which slows down on
 loss — stays the default until a controller has been measured against a
 real client):

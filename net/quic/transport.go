@@ -42,14 +42,14 @@ const (
 // endpoint that announces no data credit has announced none, and a peer that
 // honours it can send nothing at all. The zero value is therefore not usable
 // and [Dial], accept and [NewListener] refuse it with [ErrZeroParameters]:
-// start from [DefaultParameters] and change what you need. They refuse too,
+// start from [DefaultConfig] and change what you need. They refuse too,
 // with an error naming the field, a count past 2^62-1 — the most a
 // transport parameter can carry (RFC 9000 §16, §18.2) — and a stream count
 // past 2^60 (§4.6).
 type TransportParameters struct {
 	// MaxIdleTimeout ends a connection nobody is using. Zero means no
 	// timeout, which is the one default the RFC allows and this package does
-	// not: [DefaultParameters] fills it in.
+	// not: [DefaultConfig] fills it in.
 	MaxIdleTimeout time.Duration
 
 	// MaxUDPPayloadSize is the largest datagram this endpoint will read.
@@ -144,43 +144,6 @@ type TransportParameters struct {
 	// client.
 	DisableActiveMigration bool
 
-	// Congestion chooses the congestion controller this endpoint sends
-	// with. It is local: never encoded on the wire, never read from the
-	// peer, which runs whatever it likes (RFC 9002 §7 leaves the choice to
-	// each sender). Experimental: the default is NewReno until another
-	// algorithm has been measured against a real client, and the zero
-	// value is that default.
-	Congestion CongestionConfig
-
-	// HoldClosing makes a connection that owns its socket — one from
-	// [Dial] — hold the closing and draining states of RFC 9000 §10.2
-	// after it closes, as a [Listener]'s connections always do: for three
-	// probe timeouts its read loop keeps reading the socket, answers a peer
-	// that missed this end's CONNECTION_CLOSE with the close again, and
-	// absorbs what arrives after the peer's own close. Without it — the
-	// zero value — the socket is the caller's again the moment Close
-	// returns, and a late packet meets whatever the caller does with it
-	// next, which §10.2 allows an endpoint able to close its socket.
-	//
-	// A caller that keeps the socket open to dial again on it should turn
-	// it on. While the state lasts the socket is not the caller's;
-	// [Conn.Wait] reports when it is, and closing the socket ends the state
-	// early, which §10.2 allows. It is local, never encoded on the wire, and
-	// a [Listener]'s connections hold the states whatever it says.
-	HoldClosing bool
-
-	// MaxDatagramSize is the largest datagram this endpoint sends, once
-	// its probe of the path (DPLPMTUD, RFC 9000 §14.3) proves the path
-	// carries it. Local, like Congestion: never encoded on the wire. Zero
-	// means 1452, an Ethernet MTU less the IPv6 and UDP headers; above
-	// that, the search climbs towards it — 8952 for a 9000-byte jumbo
-	// path. What is probed is also bounded by the peer's announced
-	// MaxUDPPayloadSize, so a jumbo path needs both ends to announce one.
-	// Below 1200 (what every path must carry, §14.1) or above 65527 (the
-	// largest UDP payload), [Dial], accept and [NewListener] refuse it.
-	// The size reached is [Stats.DatagramSize].
-	MaxDatagramSize int
-
 	// sawStatelessResetToken and sawPreferredAddress record that the peer
 	// announced these server-only parameters (§18.2). A *client* announcing
 	// either is a protocol violation a server must refuse with
@@ -206,7 +169,7 @@ type TransportParameters struct {
 }
 
 // CongestionConfig is the congestion-control choice a connection is built
-// with ([TransportParameters.Congestion]): the algorithm, and the two
+// with ([Config.Congestion]): the algorithm, and the two
 // choices its RFCs leave to the sender. Every zero value is the
 // algorithm's default; the other parameters are the RFC's. Experimental.
 type CongestionConfig struct {
@@ -387,14 +350,7 @@ const maxActiveConnIDLimit = 1 << 10
 
 // ErrZeroParameters reports a zero [TransportParameters]: no limit of any
 // kind announced, which no caller can mean literally.
-var ErrZeroParameters = errors.New("quic: zero TransportParameters announce no credit at all — start from DefaultParameters()")
-
-// Validate reports what [Dial], [DialEarly] and [NewListener] would refuse
-// in p — the zero value, a count past what the wire can carry, a
-// MaxDatagramSize no path can carry — and nil when they would accept it. A
-// configuration read at deployment is checked with it before any socket is
-// opened; the three run the same check.
-func (p TransportParameters) Validate() error { return p.check() }
+var ErrZeroParameters = errors.New("quic: zero TransportParameters announce no credit at all — start from DefaultConfig()")
 
 // earlyCredit refuses, for a listener with EarlyData, parameters under
 // which a client can send no stream byte in 0-RTT: the connection's credit
@@ -416,7 +372,7 @@ func (p TransportParameters) earlyCredit() error {
 }
 
 // check refuses the zero value, which would announce a connection that
-// cannot move, and a MaxDatagramSize no path can carry.
+// cannot move, and counts no wire form can carry.
 func (p TransportParameters) check() error {
 	if p.MaxIdleTimeout == 0 && p.MaxUDPPayloadSize == 0 && p.InitialMaxData == 0 &&
 		p.InitialMaxStreamDataUni == 0 && p.InitialMaxStreamDataBidiLocal == 0 && p.InitialMaxStreamDataBidiRemote == 0 &&
@@ -461,9 +417,6 @@ func (p TransportParameters) check() error {
 	if p.ActiveConnIDLimit > maxActiveConnIDLimit {
 		return fmt.Errorf("quic: ActiveConnIDLimit %d is past %d, the most this package keeps", p.ActiveConnIDLimit, maxActiveConnIDLimit)
 	}
-	if n := p.MaxDatagramSize; n != 0 && (n < pmtuBaseSize || n > pmtuMaxSize) {
-		return fmt.Errorf("quic: MaxDatagramSize %d is outside %d..%d", n, pmtuBaseSize, pmtuMaxSize)
-	}
 	// RFC 9000 §18.2: below 1200 the announcement is invalid, and a
 	// conforming peer closes the handshake with TRANSPORT_PARAMETER_ERROR;
 	// above 65527 it names more than a UDP payload can hold.
@@ -483,9 +436,83 @@ func (p TransportParameters) udpPayloadSize() uint64 {
 	return p.MaxUDPPayloadSize
 }
 
-// DefaultParameters are modest limits for a connection that serves requests:
-// enough for a batch of them, not enough to be worth attacking.
-func DefaultParameters() TransportParameters {
+// Config is what [Dial], [DialEarly] and [NewListener] take: the transport
+// parameters this endpoint announces to its peer, and the settings that stay
+// on this side — how it sends, how large, and how it closes — which are
+// never encoded on the wire and which the peer never sees. Start from
+// [DefaultConfig] and change what you need; the embedded parameters' fields
+// read and write as the Config's own (cfg.MaxIdleTimeout).
+type Config struct {
+	// TransportParameters are announced to the peer in the handshake
+	// (RFC 9000 §18.2).
+	TransportParameters
+
+	// Congestion chooses the congestion controller this endpoint sends
+	// with. The peer runs whatever it likes (RFC 9002 §7 leaves the choice
+	// to each sender). Experimental: the default is NewReno until another
+	// algorithm has been measured against a real client, and the zero
+	// value is that default.
+	Congestion CongestionConfig
+
+	// HoldClosing makes a connection that owns its socket — one from
+	// [Dial] — hold the closing and draining states of RFC 9000 §10.2
+	// after it closes, as a [Listener]'s connections always do: for three
+	// probe timeouts its read loop keeps reading the socket, answers a peer
+	// that missed this end's CONNECTION_CLOSE with the close again, and
+	// absorbs what arrives after the peer's own close. Without it — the
+	// zero value — the socket is the caller's again the moment Close
+	// returns, and a late packet meets whatever the caller does with it
+	// next, which §10.2 allows an endpoint able to close its socket.
+	//
+	// A caller that keeps the socket open to dial again on it should turn
+	// it on. While the state lasts the socket is not the caller's;
+	// [Conn.Wait] reports when it is, and closing the socket ends the state
+	// early, which §10.2 allows. A [Listener]'s connections hold the states
+	// whatever it says.
+	HoldClosing bool
+
+	// MaxDatagramSize is the largest datagram this endpoint sends, once
+	// its probe of the path (DPLPMTUD, RFC 9000 §14.3) proves the path
+	// carries it — where MaxUDPPayloadSize, announced, is the largest it
+	// reads. Zero means 1452, an Ethernet MTU less the IPv6 and UDP headers; above
+	// that, the search climbs towards it — 8952 for a 9000-byte jumbo
+	// path. What is probed is also bounded by the peer's announced
+	// MaxUDPPayloadSize, so a jumbo path needs both ends to announce one.
+	// Below 1200 (what every path must carry, §14.1) or above 65527 (the
+	// largest UDP payload), [Dial], accept and [NewListener] refuse it.
+	// The size reached is [Stats.DatagramSize].
+	MaxDatagramSize int
+}
+
+// DefaultConfig is [Config] with modest transport parameters for a
+// connection that serves requests — enough for a batch of them, not enough
+// to be worth attacking — and every local setting at its zero value: NewReno,
+// datagrams up to 1452 bytes, the socket given back at Close.
+func DefaultConfig() Config {
+	return Config{TransportParameters: defaultParameters()}
+}
+
+// Validate reports what [Dial], [DialEarly] and [NewListener] would refuse
+// in c — zero transport parameters, a count past what the wire can carry, a
+// MaxDatagramSize no path can carry — and nil when they would accept it. A
+// configuration read at deployment is checked with it before any socket is
+// opened; the three run the same check.
+func (c Config) Validate() error { return c.check() }
+
+// check is the transport parameters' check and the local settings' bounds:
+// a MaxDatagramSize no path can carry.
+func (c Config) check() error {
+	if err := c.TransportParameters.check(); err != nil {
+		return err
+	}
+	if n := c.MaxDatagramSize; n != 0 && (n < pmtuBaseSize || n > pmtuMaxSize) {
+		return fmt.Errorf("quic: MaxDatagramSize %d is outside %d..%d", n, pmtuBaseSize, pmtuMaxSize)
+	}
+	return nil
+}
+
+// defaultParameters are DefaultConfig's transport parameters.
+func defaultParameters() TransportParameters {
 	return TransportParameters{
 		MaxIdleTimeout:                 30 * time.Second,
 		MaxUDPPayloadSize:              1452, // an Ethernet MTU less IPv6 and UDP headers

@@ -28,7 +28,7 @@ func Example() {
 	if err != nil {
 		panic(err)
 	}
-	ln, err := quic.NewListener(spc, serverTLS, quic.DefaultParameters(), quic.ListenerConfig{})
+	ln, err := quic.NewListener(spc, serverTLS, quic.DefaultConfig(), quic.ListenerConfig{})
 	if err != nil {
 		panic(err)
 	}
@@ -54,7 +54,7 @@ func Example() {
 	defer func() { _ = cpc.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	conn, err := quic.Dial(ctx, cpc, ln.Addr(), clientTLS, quic.DefaultParameters())
+	conn, err := quic.Dial(ctx, cpc, ln.Addr(), clientTLS, quic.DefaultConfig())
 	if err != nil {
 		panic(err)
 	}

@@ -13,7 +13,7 @@ import (
 // packet buffers their Data pointed into, and settleScratch the streams.
 func TestTheReceiveScratchesDoNotKeepOnePacketsSize(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "scratch:self"}, fakeFuzzAddr("scratch:peer"),
-		[]byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
+		[]byte("dcid0000"), []byte("scid0000"), false, DefaultConfig())
 	defer c.Close()
 	installAppSealer(t, c)
 	const parked = 40 << 10

@@ -423,7 +423,7 @@ func TestNewConnLeavesIdleDeadlineZeroWhenIdleTimeoutIsZero(t *testing.T) {
 	defer func() { _ = pc.Close() }()
 	defer func() { _ = peer.Close() }()
 
-	params := DefaultParameters()
+	params := DefaultConfig()
 	params.MaxIdleTimeout = 0
 	c := newConn(pc, peer.LocalAddr(), []byte("dcid"), []byte("scid"), true, params)
 	defer c.Close()
@@ -437,7 +437,7 @@ func TestNewConnLeavesIdleDeadlineZeroWhenIdleTimeoutIsZero(t *testing.T) {
 // in ReadFrom until the next idle wakeup — up to the whole idle period away,
 // the goroutine and its receive buffer lingering the while. The margin is
 // wide enough not to be timing-sensitive: the woken loop exits in
-// microseconds, the broken one after DefaultParameters' 30-second idle
+// microseconds, the broken one after DefaultConfig' 30-second idle
 // deadline, and the test allows five seconds.
 //
 // A real UDP socket, not the dgram pair: the wake-up rides net.PacketConn's
@@ -455,7 +455,7 @@ func TestCloseWakesTheOwnedSocketReadLoop(t *testing.T) {
 	}
 	defer func() { _ = peer.Close() }()
 
-	c := newConn(pc, peer.LocalAddr(), []byte("dcid"), []byte("scid"), true, DefaultParameters())
+	c := newConn(pc, peer.LocalAddr(), []byte("dcid"), []byte("scid"), true, DefaultConfig())
 	c.closing.loop = true // as the handshake leaves it to the loop it starts
 	done := make(chan struct{})
 	go func() {
@@ -482,7 +482,7 @@ func TestNewConnSetsIdleDeadlineWhenIdleTimeoutIsSet(t *testing.T) {
 	defer func() { _ = pc.Close() }()
 	defer func() { _ = peer.Close() }()
 
-	params := DefaultParameters() // MaxIdleTimeoutMS: 30_000
+	params := DefaultConfig() // MaxIdleTimeoutMS: 30_000
 	c := newConn(pc, peer.LocalAddr(), []byte("dcid"), []byte("scid"), true, params)
 	defer c.Close()
 
@@ -504,7 +504,7 @@ func TestRecvBufSizeHonorsMaxUDPPayloadSize(t *testing.T) {
 	defer func() { _ = pc.Close() }()
 	defer func() { _ = peer.Close() }()
 
-	params := DefaultParameters()
+	params := DefaultConfig()
 	params.MaxUDPPayloadSize = 4096
 	c := newConn(pc, peer.LocalAddr(), []byte("dcid"), []byte("scid"), true, params)
 	defer c.Close()
@@ -522,7 +522,7 @@ func TestRecvBufSizeStaysAtTheFloorBelowIt(t *testing.T) {
 	defer func() { _ = pc.Close() }()
 	defer func() { _ = peer.Close() }()
 
-	params := DefaultParameters() // MaxUDPPayloadSize: 1452, under minRecvBuf
+	params := DefaultConfig() // MaxUDPPayloadSize: 1452, under minRecvBuf
 	c := newConn(pc, peer.LocalAddr(), []byte("dcid"), []byte("scid"), true, params)
 	defer c.Close()
 
