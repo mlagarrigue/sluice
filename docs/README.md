@@ -53,7 +53,7 @@ place.
 - [Deployments](guide/deployments.md) — behind nginx or Envoy, TLS in
   front, QUIC behind a NAT, 0-RTT: what is supported and what to set.
 - [Limits](guide/limits.md) — what is not done, module by module, and the
-  [conditions experimental packages leave under](guide/limits.md#experimental-the-exit-conditions).
+  [conditions experimental packages leave under](reference/exit-conditions.md).
 - [Measurements](benchmarks.md) — what each operator costs, and how it is
   measured.
 - [Troubleshooting](reference/troubleshooting.md) — every exported error: when,

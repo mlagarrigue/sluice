@@ -295,7 +295,7 @@ preparation** — scenarios, method and results will be published together.
   ranges, composites).
 - **QUIC is experimental**: crossed every Sunday with the other
   implementations of the QUIC Interop Runner, each case judged against a
-  written record ([the detail](docs/guide/limits.md#the-interop-runner-in-detail)),
+  written record ([the detail](docs/reference/protocol-positions.md#the-interop-runner-in-detail)),
   with no external cryptographic review; HTTP/3 runs over it.
 - **No resumption of a long job** after the process dies
   ([architecture](docs/design/architecture.md#a-stage-is-not-a-phase)).

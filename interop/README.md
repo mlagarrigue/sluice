@@ -63,4 +63,4 @@ the repository root; `scripts/interop-runner.sh` builds it, clones the
 runner and crosses sluice with one peer in both directions, printing one
 row per case. It needs Docker, so it runs in the `Interop runner` workflow
 (every Sunday, and by hand) rather than in the devcontainer. The cases passed and refused are
-recorded in `docs/guide/limits.md`.
+recorded in `docs/reference/protocol-positions.md`.

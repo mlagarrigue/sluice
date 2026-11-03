@@ -277,7 +277,6 @@ const maxGuideTableRows = 6
 var longGuideTables = map[string]string{
 	"docs/guide/deployments.md At a glance":                              "what is supported, the page's first answer",
 	"docs/guide/operators.md One question: what does it keep in memory?": "the one table the operators are placed by",
-	"docs/guide/limits.md Platforms, in detail":                          "the platforms, which the split of limits.md moves",
 }
 
 // A guide teaches and the reference answers: a table of more than six lines

@@ -859,14 +859,14 @@ func TestExperimentalLabelMatchesTheGuides(t *testing.T) {
 	for _, m := range regexp.MustCompile("`([^`]+)`").FindAllStringSubmatch(opening, -1) {
 		named[module+"/"+m[1]] = true
 	}
-	// The limits guide gives each one its exit conditions, one bullet each.
-	b, err = os.ReadFile("docs/guide/limits.md")
+	// The exit conditions page gives each one its conditions, one bullet each.
+	b, err = os.ReadFile("docs/reference/exit-conditions.md")
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, exits, ok := strings.Cut(string(b), "## Experimental: the exit conditions\n")
 	if !ok {
-		t.Fatal("docs/guide/limits.md: no section \"Experimental: the exit conditions\"")
+		t.Fatal("docs/reference/exit-conditions.md: no section \"Experimental: the exit conditions\"")
 	}
 	exits, _, _ = strings.Cut(exits, "\n## ")
 	conditioned := map[string]bool{}
@@ -878,7 +878,7 @@ func TestExperimentalLabelMatchesTheGuides(t *testing.T) {
 			t.Errorf("%s: labelled experimental in its godoc, not named in docs/guide/experimental.md's opening", path)
 		}
 		if !conditioned[path] {
-			t.Errorf("%s: labelled experimental in its godoc, no exit conditions in docs/guide/limits.md", path)
+			t.Errorf("%s: labelled experimental in its godoc, no exit conditions in docs/reference/exit-conditions.md", path)
 		}
 	}
 	for path := range named {
@@ -888,7 +888,7 @@ func TestExperimentalLabelMatchesTheGuides(t *testing.T) {
 	}
 	for path := range conditioned {
 		if !labelled[path] {
-			t.Errorf("%s: has exit conditions in docs/guide/limits.md, its godoc's first sentence does not say so", path)
+			t.Errorf("%s: has exit conditions in docs/reference/exit-conditions.md, its godoc's first sentence does not say so", path)
 		}
 	}
 	// ADR 0020 keeps the labelled packages out of what v1 freezes, by name.
@@ -1044,12 +1044,12 @@ func TestInteropRunnerIsPinned(t *testing.T) {
 	if m == nil {
 		t.Fatal("scripts/interop-runner.sh: RUNNER_REF does not default to a 40-hex commit; a branch moves under the results")
 	}
-	guide, err := os.ReadFile("docs/guide/limits.md")
+	guide, err := os.ReadFile("docs/reference/protocol-positions.md")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if short := string(m[1][:7]); !bytes.Contains(guide, []byte(short)) {
-		t.Errorf("docs/guide/limits.md does not name the runner revision %s the script runs", short)
+		t.Errorf("docs/reference/protocol-positions.md does not name the runner revision %s the script runs", short)
 	}
 }
 

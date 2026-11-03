@@ -113,7 +113,7 @@
 //     smaller ones get through) brings the size back to 1200 and the
 //     search runs again. No ICMP (§14.2.1 does not require it); a lost
 //     probe is not a congestion event (§14.4). [Stats.DatagramSize] is the
-//     size reached. See docs/guide/limits.md.
+//     size reached. See docs/reference/protocol-positions.md.
 //   - Stateless resets (§10.3): a connection recognises a reset by the
 //     tokens its peer announced — NEW_CONNECTION_ID's, and the handshake's
 //     stateless_reset_token — and dies immediately rather than by idle
