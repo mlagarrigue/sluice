@@ -371,13 +371,19 @@ type Config struct {
 	// server hold at once is therefore that sum times MaxConns, and a server
 	// without MaxConns has no such bound. Over HTTP/2 and HTTP/3, where
 	// several bodies assemble at once, four times this value bounds what one
-	// connection holds across all of them. The per-stream bound alone is not
-	// a connection bound: flow-control windows are replenished as DATA is
-	// buffered, so without the aggregate cap a peer could park
-	// MaxConcurrentStreams × MaxBodyBytes — 100 MiB at the defaults — by
-	// never finishing any of its uploads. The factor of four keeps several
-	// full-size concurrent uploads legal while bounding the parked memory to
-	// the same order as one window's worth of honest traffic.
+	// connection holds across the bodies still assembling. The per-stream
+	// bound alone is not a connection bound: flow-control windows are
+	// replenished as DATA is buffered, so without the aggregate cap a peer
+	// could park MaxConcurrentStreams × MaxBodyBytes — 100 MiB at the
+	// defaults — by never finishing any of its uploads. The factor of four
+	// keeps several full-size concurrent uploads legal while bounding the
+	// parked memory to the same order as one window's worth of honest
+	// traffic. A body complete and waiting for its handler, or held while the
+	// handler runs, is out of that count: it is a request in flight, and
+	// those are bounded by the concurrency limit, MaxConcurrentStreams (or
+	// the transport's stream limit over HTTP/3) times MaxBodyBytes at most.
+	// Counted until its response, it would have a fifth full-size upload
+	// refused on a connection whose handlers are merely slow.
 	MaxBodyBytes int
 
 	// BodyDelivery says whether a request body is streamed or held whole.
