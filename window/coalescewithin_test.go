@@ -119,6 +119,36 @@ func TestCoalesceWithinDeadlineRunsFromFirstElement(t *testing.T) {
 	})
 }
 
+// A batch larger than size fills one output batch and leaves a remainder,
+// which starts the next batch: its deadline runs from then, so it leaves
+// within the deadline even if the source then goes quiet, not when the
+// source ends.
+func TestCoalesceWithinRemainderGetsItsOwnDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const deadline = 100 * time.Millisecond
+		src := sluice.Stream[int](func(yield func(sluice.Batch[int]) bool) {
+			if !yield(sluice.Batch[int]{Items: []int{0, 1, 2, 3, 4}}) {
+				return
+			}
+			time.Sleep(10 * deadline) // quiet: only the deadline can flush the rest
+		})
+		start := time.Now()
+		var sizes []int
+		var at []time.Duration
+		CoalesceWithin(src, 4, deadline)(func(b sluice.Batch[int]) bool {
+			sizes = append(sizes, b.Len())
+			at = append(at, time.Since(start))
+			return true
+		})
+		if len(sizes) != 2 || sizes[0] != 4 || sizes[1] != 1 {
+			t.Fatalf("batches %v, want [4 1]", sizes)
+		}
+		if at[1] != deadline {
+			t.Errorf("the remainder left %v after the batch it came in, want the deadline, %v", at[1], deadline)
+		}
+	})
+}
+
 // sluice.Empty batches hold the upstream cadence and carry no element, so they must
 // neither arm the deadline nor produce an empty output batch.
 func TestCoalesceWithinIgnoresEmptyBatches(t *testing.T) {
