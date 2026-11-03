@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -83,5 +84,5 @@ func TestCopyCommitReportsWhyTheServerClosed(t *testing.T) {
 		wantClosedBy(t, err, "57P01")
 		return
 	}
-	wantClosedBy(t, cp.Close(), "57P01")
+	wantClosedBy(t, cp.Close(context.Background()), "57P01")
 }

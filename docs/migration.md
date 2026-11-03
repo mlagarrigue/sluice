@@ -2,11 +2,29 @@
 
 In v0, a minor version may break what the previous one offered; `main`
 groups the breaking changes for the next one, in a "Since v0.4.0" section
-once there are any. Code written against v0.3.0 reads the first section; code written against v0.2.2 reads both, the
-second first. Each entry names the commit that made the change, says what
+once there are any. Code written against v0.4.0 reads the first section;
+code written against an older version reads every section down to its
+own, the oldest first. Each entry names the commit that made the change, says what
 changed, and what to write instead. The packages come in the order a reader
 meets them; within a package, the changes of behavior that keep the
 signatures — a value now refused — come last.
+
+## Since v0.4.0
+
+### Database: `postgres`
+
+- **`Copier.Close` takes a context**
+  ("fix(postgres)!: bound the end of a COPY like a Tx"): `cp.Close(ctx)`.
+  It bounds the commit of the last
+  batch as `Tx.Commit(ctx)` bounds a transaction's — a server that stops
+  answering is sent a cancellation when ctx ends, and the transaction is
+  rolled back; a ctx already done sends nothing and leaves the copy open
+  for `Abort`. Where `cp.Close()` ran after the copy's own ctx was
+  cancelled, to commit what got through, pass a fresh one
+  (`context.WithoutCancel(ctx)` with a timeout of your choosing).
+  `Copier.Abort` keeps its signature and is now bounded by
+  `Config.CancelTimeout`, as `Tx.Rollback` is: `defer cp.Abort(reason)`
+  beside the `Close` is the copy's `defer tx.Rollback()`.
 
 ## From v0.3.0 to v0.4.0
 

@@ -86,7 +86,7 @@ func Example_copy() {
 			return
 		}
 	}
-	if err := cp.Close(); err != nil {
+	if err := cp.Close(context.Background()); err != nil {
 		fmt.Println("finishing:", err)
 	}
 }

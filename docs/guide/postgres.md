@@ -476,6 +476,7 @@ cp, err := conn.CopyFrom(ctx,
     "COPY orders (id, label) FROM STDIN WITH (FORMAT BINARY)",
     postgres.CopyConfig{RowsPerTx: 100_000})
 if err != nil { return err }
+defer cp.Abort("load interrupted") // a no-op after a Close that succeeded
 
 var buf []byte
 for _, o := range orders {
@@ -485,8 +486,13 @@ for _, o := range orders {
     buf = postgres.AppendField(buf, pgtype.AppendText(nil, o.Label))
     if err := cp.WriteTuples(buf, 1); err != nil { return err }
 }
-if err := cp.Close(); err != nil { return err }
+if err := cp.Close(ctx); err != nil { return err }
 ```
+
+`Close(ctx)` commits the last batch as `Tx.Commit(ctx)` commits a
+transaction: the context bounds the commit. `Abort` takes none, like
+`Tx.Rollback`: it is bounded by `CancelTimeout`, and the `defer` makes it
+safe on every path.
 
 `RowsPerTx` is **required**. A **transaction** is a group of writes the
 database commits or discards as a block; putting a whole eight-hour load in
@@ -714,7 +720,8 @@ For COPY and the pipeline, the same cancellation has the effects of their
 shape. A `WriteTuples` that was waiting for the server's answer returns the
 context's error, the transaction rolled back; a context that expires **between**
 two batches leaves the transaction open, and it is up to you to choose
-between `Abort` and `Close` ([In bulk: COPY](#in-bulk-copy)). In a pipeline,
+between `Abort` and `Close`, under a fresh context
+([In bulk: COPY](#in-bulk-copy)). In a pipeline,
 the part in progress fails, the following ones do not run, and `Pipeline`
 returns the context's error next to `ErrPipelineAborted`, the transaction
 aborted as after any failure of a part.

@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -119,7 +120,7 @@ func TestCopyReadsTheServerWhileItSends(t *testing.T) {
 				return
 			}
 		}
-		if err := cp.Close(); err != nil {
+		if err := cp.Close(context.Background()); err != nil {
 			t.Errorf("Close: %v", err)
 		}
 	})
@@ -191,7 +192,7 @@ func TestCopyRefusedRowFailsAWriteBeforeTheCommit(t *testing.T) {
 	if conn.Err() != nil || conn.inTx {
 		t.Errorf("after the refusal: Err %v, inTx %v; want a usable connection with no transaction", conn.Err(), conn.inTx)
 	}
-	if err := cp.Close(); !errors.As(err, &pgErr) {
+	if err := cp.Close(context.Background()); !errors.As(err, &pgErr) {
 		t.Errorf("Close after the refusal returned %v, want the same error", err)
 	}
 }
@@ -216,7 +217,7 @@ func TestExecRefusedWhileACopyIsOpen(t *testing.T) {
 	if strings.Contains(srv.sent.String(), "SELECT 1") {
 		t.Error("the refused statement reached the wire")
 	}
-	if err := cp.Close(); err != nil {
+	if err := cp.Close(context.Background()); err != nil {
 		t.Fatalf("Close after the refused Exec: %v", err)
 	}
 	if conn.Err() != nil {

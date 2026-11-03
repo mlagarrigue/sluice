@@ -306,7 +306,7 @@ func TestIntegrationCopy(t *testing.T) {
 			t.Fatalf("row %d: %v", i, err)
 		}
 	}
-	if err := cp.Close(); err != nil {
+	if err := cp.Close(context.Background()); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
@@ -1463,7 +1463,7 @@ func TestIntegrationCopyVariableWidthTypes(t *testing.T) {
 			t.Fatalf("row %d: %v", i, err)
 		}
 	}
-	if err := cp.Close(); err != nil {
+	if err := cp.Close(context.Background()); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
@@ -2150,7 +2150,7 @@ func TestIntegrationCopyWithANoticePerRow(t *testing.T) {
 	case <-time.After(3 * time.Minute):
 		t.Fatal("the copy did not finish within 3 minutes: client and server are each waiting for the other")
 	}
-	if err := cp.Close(); err != nil {
+	if err := cp.Close(context.Background()); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 	if got := countRows(t, conn, "sluice_copy_notice"); got != rows {

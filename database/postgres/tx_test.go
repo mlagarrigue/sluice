@@ -197,7 +197,7 @@ func TestBeginRefusedWhileACopyHoldsATransaction(t *testing.T) {
 	if _, err := conn.Begin(t.Context(), TxConfig{}); !errors.Is(err, ErrTxOpen) {
 		t.Fatalf("Begin during a copy returned %v, want ErrTxOpen", err)
 	}
-	if err := cp.Close(); err != nil {
+	if err := cp.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if conn.inTx {

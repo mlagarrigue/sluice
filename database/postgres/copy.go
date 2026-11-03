@@ -204,10 +204,13 @@ type Copier struct {
 // A copy cancelled between two batches leaves the open transaction **open**,
 // deliberately. The caller decides what a half-loaded transaction is worth:
 // [Copier.Abort] rolls it back and tells the server why, [Copier.Close]
-// commits what got through. Neither consults ctx — a cleanup path that refuses to run because the
-// context is cancelled is how a transaction is left open for the vacuum
-// horizon to trip over, which is the failure this type spends its
-// documentation avoiding.
+// commits what got through. Neither consults this ctx — a cleanup path that
+// refuses to run because the context is cancelled is how a transaction is
+// left open for the vacuum horizon to trip over, which is the failure this
+// type spends its documentation avoiding. Close takes a ctx of its own for
+// the commit, as [Tx.Commit] does; Abort is bounded by [Config.CancelTimeout],
+// as [Tx.Rollback] is, so `defer cp.Abort(…)` beside a Close on the success
+// path is the copy's `defer tx.Rollback()`.
 func (c *Conn) CopyFrom(ctx context.Context, sql string, cfg CopyConfig) (*Copier, error) {
 	if c.broken != nil {
 		return nil, c.broken
@@ -324,18 +327,40 @@ func (cp *Copier) write(tuples []byte, rows int) error {
 // A copier that is not closed leaves a transaction open on the connection,
 // which is the vacuum horizon problem in its most avoidable form. Close is
 // idempotent.
-func (cp *Copier) Close() error {
+//
+// ctx bounds the commit as it bounds [Tx.Commit]: the last batch's rows, the
+// constraints and triggers they set off, and the COMMIT. A ctx already done
+// abandons the commit without sending it, and the transaction stays open
+// until [Copier.Abort]; one that ends while the server works cancels it, and
+// the transaction is rolled back. The copy's own ctx, given to
+// [Conn.CopyFrom], is not consulted: a copy cancelled between batches can
+// still be committed, under a ctx of the caller's choosing.
+func (cp *Copier) Close(ctx context.Context) error {
 	if cp.err != nil {
 		return cp.err
 	}
 	if !cp.inTx {
 		return nil
 	}
-	if err := cp.conn.claim(cp); err != nil {
-		return err
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("abandoning the commit: %w", err)
 	}
-	defer cp.conn.endBusy()
-	if err := cp.commitTx(); err != nil {
+	c := cp.conn
+	w := c.watchCancel(ctx)
+	if err := c.claim(cp); err != nil {
+		return c.settleCancel(ctx, w, err)
+	}
+	defer c.endBusy()
+	err := c.settleCancel(ctx, w, cp.commitTx())
+	if c.broken == nil && c.inTx {
+		// The cancellation reached the backend after it read the COMMIT and
+		// before it ran it: the block is still open, aborted, as after a
+		// Tx.Commit cancelled the same way.
+		if rbErr := c.rollbackLeftBlock(); rbErr != nil {
+			err = errors.Join(err, rbErr)
+		}
+	}
+	if err != nil {
 		return cp.fail(err)
 	}
 	return nil
@@ -344,17 +369,36 @@ func (cp *Copier) Close() error {
 // Abort ends the copy without committing the open transaction, telling the
 // server why through CopyFail so the reason appears in its log rather than
 // only in the client's.
+//
+// It takes no context, as [Tx.Rollback] does not, and is bounded as it is,
+// by [Config.CancelTimeout]: a server that has not answered the CopyFail and
+// the ROLLBACK by then is sent a cancellation, and one that still does not
+// has the connection closed under it, which rolls the transaction back on
+// the server and leaves [ErrConnBroken] here.
 func (cp *Copier) Abort(reason string) error {
 	if !cp.inTx {
 		return cp.err
 	}
+	c := cp.conn
+	ctx, cancel := context.WithTimeout(context.Background(), c.cancelBound())
+	defer cancel()
+	w := c.watchCancel(ctx)
 	// Claimed before any state is cleared, so a nested Abort leaves the
 	// copier exactly as it found it — still abortable once the outer result
 	// is finished.
-	if err := cp.conn.claim(cp); err != nil {
-		return err
+	if err := c.claim(cp); err != nil {
+		return c.settleCancel(ctx, w, err)
 	}
-	defer cp.conn.endBusy()
+	defer c.endBusy()
+	if err := c.settleCancel(ctx, w, cp.abortTx(reason)); err != nil {
+		return cp.fail(err)
+	}
+	return nil
+}
+
+// abortTx is Abort once the connection is claimed: the CopyFail, the end of
+// the copy, and the ROLLBACK.
+func (cp *Copier) abortTx(reason string) error {
 	cp.inTx = false
 	cp.buf = cp.buf[:0]
 	c := cp.conn
@@ -363,20 +407,17 @@ func (cp *Copier) Abort(reason string) error {
 	// server's log line short; it is spelled out instead.
 	c.w.Message(pgwire.FrontendCopyFail, append([]byte(strings.ReplaceAll(reason, "\x00", `\x00`)), 0))
 	if err := c.w.Flush(); err != nil {
-		return cp.fail(c.breakConn(err))
+		return c.breakConn(err)
 	}
 	// The server answers CopyFail with an ErrorResponse: that is the
 	// acknowledgement, not a failure, so it is discarded here where everywhere
 	// else it would be surfaced. Only a connection-level failure — which is
 	// what breaks the connection — still counts.
 	if err := cp.endCopy(); err != nil && c.broken != nil {
-		return cp.fail(err)
+		return err
 	}
 	c.inTx = false
-	if err := c.exec("ROLLBACK"); err != nil {
-		return cp.fail(err)
-	}
-	return nil
+	return c.exec("ROLLBACK")
 }
 
 func (cp *Copier) beginTx() error {

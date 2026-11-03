@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -80,7 +81,7 @@ func TestCopyFrom(t *testing.T) {
 	if err := cp.WriteTuples(buf, 2); err != nil {
 		t.Fatalf("WriteTuples returned %v", err)
 	}
-	if err := cp.Close(); err != nil {
+	if err := cp.Close(context.Background()); err != nil {
 		t.Fatalf("Close returned %v", err)
 	}
 	if cp.Rows() != 2 {
@@ -132,7 +133,7 @@ func TestCopyCutsIntoTransactions(t *testing.T) {
 			t.Fatalf("row %d: %v", i, err)
 		}
 	}
-	if err := cp.Close(); err != nil {
+	if err := cp.Close(context.Background()); err != nil {
 		t.Fatalf("Close returned %v", err)
 	}
 
@@ -170,7 +171,7 @@ func TestCopyRowsPerTxIsAFloorNotACap(t *testing.T) {
 	if got := bytes.Count(sent, []byte{pgwire.FrontendCopyDone}); got != 1 {
 		t.Errorf("client sent %d CopyDone, want 1: the five-row batch is one transaction", got)
 	}
-	if err := cp.Close(); err != nil {
+	if err := cp.Close(context.Background()); err != nil {
 		t.Fatalf("Close after the committing batch returned %v", err)
 	}
 }
@@ -203,7 +204,7 @@ func TestCopyBatchesRowsIntoMessages(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := cp.Close(); err != nil {
+	if err := cp.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -330,10 +331,10 @@ func TestCopyCloseWithoutRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := cp.Close(); err != nil {
+	if err := cp.Close(context.Background()); err != nil {
 		t.Fatalf("Close returned %v", err)
 	}
-	if err := cp.Close(); err != nil {
+	if err := cp.Close(context.Background()); err != nil {
 		t.Errorf("second Close returned %v — Close is idempotent", err)
 	}
 	if srv.sent.Len() != 0 {
@@ -420,7 +421,7 @@ func TestCopyServerHangsUpMidLoad(t *testing.T) {
 		if err := cp.WriteTuples(tuple(new(int64(1)), nil), 1); err != nil {
 			t.Fatal(err)
 		}
-		if err := cp.Close(); !errors.Is(err, io.ErrUnexpectedEOF) {
+		if err := cp.Close(context.Background()); !errors.Is(err, io.ErrUnexpectedEOF) {
 			t.Fatalf("Close = %v, want io.ErrUnexpectedEOF", err)
 		}
 	})
@@ -457,7 +458,7 @@ func TestCopyWithNullBearingArray(t *testing.T) {
 	if err := cp.WriteTuples(buf, 2); err != nil {
 		t.Fatalf("WriteTuples returned %v", err)
 	}
-	if err := cp.Close(); err != nil {
+	if err := cp.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -550,7 +551,7 @@ func TestCopyDirectAndBufferedPathsAgree(t *testing.T) {
 	if err := dcp.WriteTuples(all, n); err != nil {
 		t.Fatal(err)
 	}
-	if err := dcp.Close(); err != nil {
+	if err := dcp.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -568,7 +569,7 @@ func TestCopyDirectAndBufferedPathsAgree(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := bcp.Close(); err != nil {
+	if err := bcp.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -610,7 +611,7 @@ func TestCopyDirectPathDoesNotRetainTheCallersBuffer(t *testing.T) {
 	for i := range caller {
 		caller[i] = 0xff
 	}
-	if err := cp.Close(); err != nil {
+	if err := cp.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -647,7 +648,7 @@ func TestCopyDirectPathDoesNotOvertakeBufferedRows(t *testing.T) {
 	if err := cp.WriteTuples(second, 40); err != nil { // large: would go direct
 		t.Fatal(err)
 	}
-	if err := cp.Close(); err != nil {
+	if err := cp.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -725,7 +726,7 @@ func TestCopyFailedCommitRollsBackAndLeavesTheConnectionUsable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = cp.Close()
+	err = cp.Close(context.Background())
 	var pgErr *Error
 	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
 		t.Fatalf("Close returned %v, want the server's 23505", err)
@@ -773,7 +774,7 @@ func TestCopyToleratesAsyncMessagesBeforeCopyInResponse(t *testing.T) {
 	if err := cp.WriteTuples(tuple(new(int64(1)), nil), 1); err != nil {
 		t.Fatalf("WriteTuples failed over async messages before CopyInResponse: %v", err)
 	}
-	if err := cp.Close(); err != nil {
+	if err := cp.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if conn.Err() != nil {

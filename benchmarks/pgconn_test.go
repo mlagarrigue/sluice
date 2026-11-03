@@ -537,7 +537,7 @@ func BenchmarkPGCopySluice(b *testing.B) {
 		if err := cp.WriteTuples(buf, copyRows); err != nil {
 			b.Fatal(err)
 		}
-		if err := cp.Close(); err != nil {
+		if err := cp.Close(context.Background()); err != nil {
 			b.Fatal(err)
 		}
 		b.StopTimer()
