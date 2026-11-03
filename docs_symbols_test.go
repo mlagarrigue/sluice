@@ -1,6 +1,7 @@
 package sluice_test
 
 import (
+	"cmp"
 	"go/ast"
 	"go/importer"
 	"go/parser"
@@ -290,4 +291,108 @@ func exportsAt(t *testing.T, tag, dir string) map[string]bool {
 		}
 	}
 	return names
+}
+
+// exportedAt is every exported name the module's non-test Go files declare
+// at a revision: functions, methods, types, variables and constants, and
+// the fields and grouped declarations written one to an indented line.
+func exportedAt(t *testing.T, rev string) map[string]bool {
+	t.Helper()
+	args := []string{"grep", "-h", "-E", "^(func|type|var|const) |^\t[A-Z]"}
+	if rev != "" {
+		args = append(args, rev)
+	}
+	args = append(args, "--", "*.go", ":!*_test.go")
+	out, err := exec.Command("git", args...).Output() //nolint:gosec // G204: fixed arguments and a tag name
+	if err != nil {
+		t.Fatalf("git grep at %q: %v", rev, err)
+	}
+	// A field line may declare several names: "Lower, Upper time.Duration".
+	decl := regexp.MustCompile(`^(?:func (?:\([^)]*\) )?|type |var |const |\t)([A-Z]\w*(?:, [A-Z]\w*)*)`)
+	names := map[string]bool{}
+	for line := range strings.Lines(string(out)) {
+		if m := decl.FindStringSubmatch(line); m != nil {
+			for n := range strings.SplitSeq(m[1], ", ") {
+				names[n] = true
+			}
+		}
+	}
+	return names
+}
+
+// A migration entry tells a reader at one version what to write at the
+// next, so every name it cites existed at one end of its step: in the
+// version left, as what goes, or in the version reached, as what to use. A
+// name that existed at neither end is the state of a commit between two
+// tags, which no reader ever had. And a name absent from the version
+// reached is cited on a line that says it went — gone, removed, renamed,
+// merged — never as an instruction in the present. "Since vX" reaches the
+// working tree.
+func TestMigrationNamesExistedAtOneEnd(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	b, err := os.ReadFile("docs/migration.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := regexp.MustCompile(`^## (?:From (v[\d.]+) to (v[\d.]+)|Since (v[\d.]+))$`)
+	name := regexp.MustCompile(`(?:^|[^\w.-])([A-Z]\w*[a-z]\w*)\b(?:[^-]|$)`)
+	quoted := regexp.MustCompile(`"[^"]*"`)
+	// A rename reads "`Old` is `New`" or "`A` and `B` are `C` and `D`".
+	went := regexp.MustCompile("(?i)\\b(gone|removed|retired|unexported|replaces|replaced|becomes|renamed|merged|no longer|instead|dropped|folded|is now|are now)\\b|` (is|are) `")
+	// Code spans that hold no Go name: a diagnostic code's path, and the
+	// placeholder of a comparison.
+	notGo := map[string]bool{"Transport": true, "ErrX": true}
+	cache := map[string]map[string]bool{}
+	at := func(rev string) map[string]bool {
+		if cache[rev] == nil {
+			if rev != "" {
+				if err := exec.Command("git", "rev-parse", "--verify", "-q", rev+"^{commit}").Run(); err != nil { //nolint:gosec // G204: a tag name from the page
+					t.Skipf("tag %s is not in this clone", rev)
+				}
+			}
+			cache[rev] = exportedAt(t, rev)
+		}
+		return cache[rev]
+	}
+	from, to, checked := "", "", 0
+	fenced := false
+	for i, line := range strings.Split(string(b), "\n") {
+		if m := step.FindStringSubmatch(line); m != nil {
+			from, to = m[1], m[2]
+			if m[3] != "" {
+				from, to = m[3], ""
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "## ") {
+			from = ""
+		}
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			fenced = !fenced
+		}
+		if from == "" || fenced || strings.HasPrefix(line, "#") {
+			continue
+		}
+		for _, span := range codeSpan.FindAllStringSubmatch(line, -1) {
+			for _, m := range name.FindAllStringSubmatch(quoted.ReplaceAllString(span[1], `""`), -1) {
+				n := m[1]
+				if notGo[n] {
+					continue
+				}
+				checked++
+				left, reached := at(from)[n], at(to)[n]
+				switch {
+				case !left && !reached:
+					t.Errorf("docs/migration.md:%d: `%s` exists neither at %s nor at %s", i+1, n, from, cmp.Or(to, "the working tree"))
+				case !reached && !went.MatchString(line):
+					t.Errorf("docs/migration.md:%d: `%s` is gone at %s, and the line does not say so", i+1, n, cmp.Or(to, "the working tree"))
+				}
+			}
+		}
+	}
+	if checked < 100 {
+		t.Fatalf("checked %d names; the extraction changed shape", checked)
+	}
 }

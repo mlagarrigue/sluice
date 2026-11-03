@@ -191,8 +191,7 @@ that never passed a negative value has nothing to change there.
   `postgres.Connect(ctx, postgres.DialTLS(addr, nil), postgres.Config{…})`
   (or `DialTCP` on a loopback): `Connect` takes a recipe that opens a
   connection, not an open one, because cancelling a query opens a second.
-  `StartupConfig` is `Config`, and its `CancelDial` is gone — the recipe
-  serves cancellation.
+  `StartupConfig` is `Config`, and the recipe serves cancellation.
 - **Parameters are `[]postgres.Param`** (`aa67ba7`). `Query`, `Exec` and
   their kin take `[]postgres.Param{{OID: …, Value: …}}` instead of
   `[][]byte` beside `QueryConfig.ParamOIDs`; the statement cache is sized
@@ -205,8 +204,8 @@ that never passed a negative value has nothing to change there.
   `database/postgres/pgtype` holds `Numeric`, `Null`, `ErrCodec` and the
   encoders and decoders; `postgres.ScanNumeric` returns `[]pgtype.Numeric`.
 - **Five internals are unexported** (`30e0381`, ADR 0022):
-  `MaxServerParameters`, `MaxServerParameterBytes`, `ReadBufferSize`,
-  `ParseError` and `ParseRowDescription`. Nothing outside the package
+  `MaxServerParameters`, `MaxServerParameterBytes`, `ReadBufferSize` are gone,
+  and `ParseError` and `ParseRowDescription` are gone. Nothing outside the package
   needed them; an error arrives as a `*postgres.Error` from the calls that
   run statements.
 - **Channel binding is chosen, not just required** (`f831ae9`):
@@ -220,8 +219,8 @@ that never passed a negative value has nothing to change there.
   refused with `ErrProtocolVersion`. `CancelKey.Secret` is a `string`, no
   longer a `uint32`.
 - **A COPY chunk is `CopyConfig.ChunkBytes`** (`32d8386`), formerly
-  `MaxMessage`; `NewRows` takes the byte bound and `Rows.SetMaxBytes` is
-  gone. A batch that reaches its byte bound now ends there and the next
+  `MaxMessage`; `NewRows` is gone (a `Rows` comes from a query) and
+  `Rows.SetMaxBytes` is gone. A batch that reaches its byte bound now ends there and the next
   one carries on, where it used to fail.
 - **The remembered server parameters share one budget** (`e920182`).
 - **An out-of-range batch bound or a negative statement cache bound is
@@ -236,8 +235,9 @@ that never passed a negative value has nothing to change there.
   one (`Close`); `ErrShutdownForced` says a grace passed with requests in
   flight; `Config.Logger` receives the warnings.
 - **`H2Config` is merged into `Config`** (`e8847f8`): its fields
-  (`MaxFrameSize`, `MaxFramesPerBatch`, `MaxContinuationFrames`,
-  `MaxHeaderBlockBytes`…) are fields of `Config`.
+  (`MaxFrameSize`, `MaxFramesPerBatch`, `MaxContinuationFrames`…) are
+  fields of `Config`, and `MaxHeaderBlockBytes` is merged into `MaxHeaderBytes`,
+  one bound for the header section on every protocol.
 - **`ServeH2` and `ServeH3` are `ServeH2Conn` and `ServeH3Conn`**
   (`6131d90`): they serve one connection the caller accepted.
 - **`WriteBatch` takes the `Config`** (`9a24bf1`):
@@ -275,9 +275,9 @@ that never passed a negative value has nothing to change there.
   `Stream.WriteClose` is `WriteFinal`; `Conn.SetManualCredit` and
   `Conn.SetClosingPeriod` are gone — a stream's credit is returned through
   `OnStreamFrames`.
-- **`Accept` takes the first `Datagram`** (`16d8523`):
-  `Accept(pc, quic.Datagram{Peer: …, Payload: …, ECN: …}, cfg, params)`
-  instead of the peer and the bytes apart.
+- **`Accept` is gone** (`bc762a9`): a server takes its connections from a
+  `Listener` — `quic.NewListener(pc, cfg, params, quic.ListenerConfig{…})`
+  and `Listener.Accept` — instead of handing each first datagram to `Accept` itself.
 - **`OpenStream` and `AcceptStream` take a context** (`01548d2`,
   `2738054`); `OpenStream` waits for stream credit instead of failing.
 - **`Conn.Stream(id)` returns an error** (`0f440d6`), `ErrStreamLimit` for
@@ -295,8 +295,6 @@ that never passed a negative value has nothing to change there.
 - **`MaxConnsPerIP` counts an address by its prefix** (`a4178a7`): /32 for
   IPv4 and /64 for IPv6 unless `IPv4PrefixBits` or `IPv6PrefixBits` say
   otherwise; clients that shared a /64 now share a count.
-- **BBR version 1 is retired** (`f209b83`): `CongestionBBRv1` is gone;
-  choose `CongestionBBR`, `CongestionCubic` or the default.
 - **The varints are internal** (`3df8222`): `quic.Varint`,
   `quic.AppendVarint` and `quic.MaxVarint` are gone.
 - **A negative listener bound is refused** (`72c4625`).
