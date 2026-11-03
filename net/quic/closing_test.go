@@ -260,15 +260,23 @@ func drainingAttempt(t *testing.T) bool {
 	// Whatever the server sent before it read the close (an
 	// acknowledgement, a credit update) is held at most the path's delay
 	// on the way: drained up to that point past the moment the server
-	// heard the close, so that only an answer to the late packet can be
-	// read below.
+	// heard the close, then until the socket stays quiet for a quarter of
+	// the delay, so that only an answer to the late packet can be read
+	// below. The quiet spell is for a loaded runner, whose timer can deliver
+	// a datagram held for the delay tens of milliseconds late (one did, on
+	// macOS); the draining period's floor below still bounds the wait.
 	buf := make([]byte, 2048)
-	if err := own.SetReadDeadline(heard.Add(delay + 20*time.Millisecond)); err != nil {
+	if err := own.SetReadDeadline(heard.Add(delay)); err != nil {
 		t.Fatal(err)
 	}
 	for {
 		if _, _, err := own.ReadFrom(buf); err != nil {
-			break
+			if err := own.SetReadDeadline(time.Now().Add(delay / 4)); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := own.ReadFrom(buf); err != nil {
+				break
+			}
 		}
 	}
 	// The draining period is three probe timeouts, each at least the
