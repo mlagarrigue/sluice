@@ -176,6 +176,44 @@ func TestDecisionRecordParagraphsAreShort(t *testing.T) {
 	}
 }
 
+// maxRecordSection is how long a record's Decision or Rationale may run
+// without a subheading.
+const maxRecordSection = 60
+
+// Past sixty lines a Decision or a Rationale is several subjects, and a
+// reader who came for one of them needs its heading to find it: a longer
+// section holds at least one `###`.
+func TestDecisionRecordLongSectionsHaveSubheadings(t *testing.T) {
+	records, err := filepath.Glob("docs/design/adr/[0-9][0-9][0-9][0-9]-*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range records {
+		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		section, n, sub := "", 0, false
+		check := func() {
+			if (section == "Decision" || section == "Rationale") && n > maxRecordSection && !sub {
+				t.Errorf("%s: the %s runs %d lines without a ### subheading", f, section, n)
+			}
+		}
+		for line := range strings.Lines(string(b)) {
+			switch {
+			case strings.HasPrefix(line, "## "):
+				check()
+				section, n, sub = strings.TrimSpace(line[3:]), 0, false
+			case strings.HasPrefix(line, "### "):
+				sub = true
+			default:
+				n++
+			}
+		}
+		check()
+	}
+}
+
 // maxQuoteLines is the longest run of quotation the architecture may hold
 // without a heading: past it, several subjects run together in one aside and
 // a reader cannot find the one they came for.
