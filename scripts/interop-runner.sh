@@ -153,6 +153,9 @@ run() {
     cd "$RUNNER_DIR"
     # The runner refuses a log directory that exists: one per direction.
     rm -rf "logs/$1_$2" "logs/$1_$2-first" "logs/$1_$2-again"
+    # A run that crashes writes no results, and the file of a run before it
+    # would be read in its place: they go first.
+    rm -f "results_$1_$2.json" "results_$1_$2-again.json"
     .venv/bin/python run.py -d -s "$1" -c "$2" -t "$TESTS" -l "logs/$1_$2" -j "results_$1_$2.json" || true
     # A direction that wrote no results at all is run once more: a tool the
     # runner drives can crash mid-direction and leave no file (tshark, from

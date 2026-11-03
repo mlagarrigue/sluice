@@ -1,6 +1,7 @@
 # The public QUIC Interop Runner, sluice against every implementation in the
-# runner's list, one job per peer and direction: 31 at the pinned revision,
-# some eleven runner-hours, under forty-five minutes of wall clock. Weekly,
+# runner's list, one job per peer and direction (as many as
+# interop/expected-results.json records), some eleven runner-hours, under
+# forty-five minutes of wall clock. Weekly,
 # and by hand for one peer or all of them; far beyond what a push should
 # wait for. Each job's table is in its log and the runner's logs of every
 # case (captures, keys, each side's output) are its artifact; the aggregate
