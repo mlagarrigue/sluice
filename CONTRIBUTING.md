@@ -82,7 +82,8 @@ go generate ./...        # generated files are committed; drift fails a test
 
 `scripts/check.sh` runs the first four — vet, format, lint, then the tests —
 and stops at the first failure, then vets and lints the nested modules
-(`interop`, `benchmarks`, `comparison/*`), then `scripts/check-hygiene.sh`,
+(`interop`, `benchmarks`, `comparison/*`, `audit`) and runs the tests of
+all but `benchmarks`, then `scripts/check-hygiene.sh`,
 which refuses personal tool
 configuration and attributions in tracked files and commits. CI runs the
 same scripts, plus `scripts/check-api.sh`, which compares the exported API

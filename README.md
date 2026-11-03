@@ -319,6 +319,7 @@ sluice/                 the core: Stream, Batch, Source, stateless operators
 ├── interop/            confrontation with other implementations (own module)
 ├── benchmarks/         measurements against other libraries (own module)
 ├── comparison/         the comparison study's apparatus
+├── audit/              what a host, an image or a binary is set to (own module)
 ├── scripts/            checks, interop runs, PostgreSQL test setups
 └── docs/               guides, architecture, decisions, measurements
 ```

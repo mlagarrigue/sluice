@@ -12,6 +12,10 @@ supported yet.
 > this page says what the code decides, not what an external review has
 > confirmed.
 
+What the host, the container image or the binary is set to — and what each
+setting costs — is read by the `audit/` module, which changes nothing
+([its README](../../audit/README.md)).
+
 ## At a glance
 
 | Situation | Supported? |
