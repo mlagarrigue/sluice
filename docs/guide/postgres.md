@@ -73,7 +73,8 @@ be bound to its certificate — is set further down, in
 > does with sixty-four, and how many connections to open is a decision for
 > your application, not for the library.
 
-A wrong password arrives as a server error with code `28P01`; an
+A wrong password arrives as a server error whose SQLSTATE — the
+standardised five-character code every server error carries — is `28P01`; an
 authentication method the package refuses (`md5`, deprecated) arrives as
 `ErrAuthUnsupported`. Two different errors because they are fixed
 differently.
@@ -502,6 +503,16 @@ it beyond `DialTLS` and its defaults.
 
 ### Demanding more of authentication
 
+> **In plain words: channel binding.** With SCRAM alone, the server proves
+> it knows your password and you prove you know it too, but neither side
+> proves *which* connection the proof was made on. An attacker who
+> terminates TLS between you and the server can relay the exchange. Channel
+> binding mixes a fingerprint of the server's certificate into the proof: a
+> relay holding another certificate fails. The server offers it when it has
+> a certificate (`ssl = on`); `ChannelBindingRequire` makes its absence an
+> error instead of a silent fallback, `ChannelBindingDisable` turns it off
+> openly.
+
 Two options make the client demand what the server only offers by default.
 `RequireAuth` refuses a server that declares the connection authenticated
 without asking for anything: that is what a role configured for `trust`
@@ -517,16 +528,6 @@ goes the other way: the exchange is never bound, and the client says so
 whose certificate is signed by an algorithm with no hash, Ed25519, for
 which the binding is undefined (RFC 5929 §4.1). The default refuses that
 server rather than fall back without saying so.
-
-> **In plain words: channel binding.** With SCRAM alone, the server proves
-> it knows your password and you prove you know it too, but neither side
-> proves *which* connection the proof was made on. An attacker who
-> terminates TLS between you and the server can relay the exchange. Channel
-> binding mixes a fingerprint of the server's certificate into the proof: a
-> relay holding another certificate fails. The server offers it when it has
-> a certificate (`ssl = on`); `ChannelBindingRequire` makes its absence an
-> error instead of a silent fallback, `ChannelBindingDisable` turns it off
-> openly.
 
 ### Encrypting the connection
 
