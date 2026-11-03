@@ -8,6 +8,22 @@ A question about using it, or feedback after trying it: open a "Question or
 feedback" issue. Everyone here follows the
 [code of conduct](CODE_OF_CONDUCT.md).
 
+## Your first change
+
+```bash
+git clone https://github.com/mlagarrigue/sluice && cd sluice
+git switch -c my-change     # never on the default branch
+scripts/check.sh            # vet, format, lint, tests: green before you start
+```
+
+Go 1.26 or newer is all the core needs; `scripts/check.sh` also wants the
+`gofumpt` and `golangci-lint` the [development container](#the-development-container)
+pins, with PostgreSQL and the rest. Change the code, add the test that
+fails without it, run `scripts/check.sh` again, and commit in the
+[format below](#commits-and-review): one line,
+`<type>(<scope>): <subject>`. Then open a pull request; the
+[rules](#the-rules-that-are-not-negotiable) say what review will ask.
+
 ## Before you write code
 
 Read the [architecture](docs/design/architecture.md) and the
@@ -149,6 +165,34 @@ scripts/fuzz.sh ./join                                  # a package's fuzz targe
 scripts/mutation.sh --out /tmp/mutation join            # a package
 scripts/mutation.sh --out /tmp/mutation net/quic/ack.go # a file
 ```
+
+## Commits and review
+
+[Conventional Commits](https://www.conventionalcommits.org):
+
+```
+<type>(<scope>): <subject>
+```
+
+- **Types**: `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`,
+  `ci`, `chore`. A `!` after the scope marks an API break.
+- **Scopes**, a closed list checked by a test: `core`, `join`, `window`,
+  `parallel`, `distinct`, `postgres`, `quic`, `httpstream`, `web`,
+  `gateway`, `diagnostics`, `bench`, `docs`, `ci`, `devcontainer`, `audit`.
+  The scope is omitted when the change crosses all of them.
+- **Subject**: one line, imperative, no capital after the colon unless the
+  word is a name (`README`, `PostgreSQL`), no trailing period, 50 characters
+  aimed for, 72 at most. A test checks the whole history. A body only when the why is
+  not in the diff. Never a `Co-Authored-By` trailer.
+- **One commit per reason to exist**, but never a commit that fails CI:
+  deleting a dead function the linter found belongs *with* the lint fix,
+  otherwise the commit alone leaves the linter red and breaks bisection.
+- **Never on the default branch.** A work branch is named after the work,
+  not the tool.
+
+In review, comments follow
+[Conventional Comments](https://conventionalcomments.org): `suggestion:`,
+`issue:`, `question:`, `nitpick:`, with `(blocking)` where it applies.
 
 ## The development container
 
@@ -360,34 +404,6 @@ Three places, depending on what the peer or the benchmark needs:
 - Formatting: `gofumpt`. Linting: `golangci-lint` (its configuration is in
   the repository). Go **1.26 or newer** is required.
 - Windows: use WSL; the scripts are `sh`.
-
-## Commits and review
-
-[Conventional Commits](https://www.conventionalcommits.org):
-
-```
-<type>(<scope>): <subject>
-```
-
-- **Types**: `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`,
-  `ci`, `chore`. A `!` after the scope marks an API break.
-- **Scopes**, a closed list checked by a test: `core`, `join`, `window`,
-  `parallel`, `distinct`, `postgres`, `quic`, `httpstream`, `web`,
-  `gateway`, `diagnostics`, `bench`, `docs`, `ci`, `devcontainer`, `audit`.
-  The scope is omitted when the change crosses all of them.
-- **Subject**: one line, imperative, no capital after the colon unless the
-  word is a name (`README`, `PostgreSQL`), no trailing period, 50 characters
-  aimed for, 72 at most. A test checks the whole history. A body only when the why is
-  not in the diff. Never a `Co-Authored-By` trailer.
-- **One commit per reason to exist**, but never a commit that fails CI:
-  deleting a dead function the linter found belongs *with* the lint fix,
-  otherwise the commit alone leaves the linter red and breaks bisection.
-- **Never on the default branch.** A work branch is named after the work,
-  not the tool.
-
-In review, comments follow
-[Conventional Comments](https://conventionalcomments.org): `suggestion:`,
-`issue:`, `question:`, `nitpick:`, with `(blocking)` where it applies.
 
 ## Releases and versions
 
