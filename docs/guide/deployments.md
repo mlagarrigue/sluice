@@ -97,7 +97,7 @@ request opens a connection and `keepalive` does nothing. Since 1.29.7 that
 is the default, and the two lines no longer change anything. If you raise
 `keepalive_timeout` above 2 min, raise `IdleTimeout` above it.
 
-Where it is decided: `net/httpstream/response.go`, `keepAliveField`;
+Where it is decided: `net/httpstream/response.go`, `appendKeepAlive`;
 `httpstream.go`, `defaultIdleTimeout`.
 
 ## HTTP/2 clients with a reduced HPACK table

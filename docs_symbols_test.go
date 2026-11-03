@@ -396,3 +396,50 @@ func TestMigrationNamesExistedAtOneEnd(t *testing.T) {
 		t.Fatalf("checked %d names; the extraction changed shape", checked)
 	}
 }
+
+// The deployments guide ends each case on "Where it is decided:" and the
+// files and symbols that decide it, unexported ones included, which no
+// compiler reads in prose. Each named file exists, and each name after it
+// is in that file; a file given without a directory is in the directory
+// named before it.
+func TestDeploymentsDecisionsPointAtTheCode(t *testing.T) {
+	b, err := os.ReadFile("docs/guide/deployments.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := 0
+	for para := range strings.SplitSeq(string(b), "\n\n") {
+		_, where, ok := strings.Cut(para, "Where it is decided:")
+		if !ok {
+			continue
+		}
+		dir, file, src := "", "", ""
+		for _, span := range codeSpan.FindAllStringSubmatch(where, -1) {
+			tok := span[1]
+			if strings.HasSuffix(tok, ".go") {
+				if strings.Contains(tok, "/") {
+					dir, file = filepath.Dir(tok), tok
+				} else {
+					file = filepath.Join(dir, tok)
+				}
+				s, err := os.ReadFile(file) //nolint:gosec // G304: a repository path from the guide
+				if err != nil {
+					t.Errorf("deployments.md names %s: %v", file, err)
+				}
+				src = string(s)
+				continue
+			}
+			if file == "" {
+				continue
+			}
+			name := tok[strings.LastIndex(tok, ".")+1:]
+			checked++
+			if !regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\b`).MatchString(src) {
+				t.Errorf("deployments.md says %s decides it; %s does not name %s", file, file, name)
+			}
+		}
+	}
+	if checked < 8 {
+		t.Fatalf("checked %d names; the guide's shape changed", checked)
+	}
+}

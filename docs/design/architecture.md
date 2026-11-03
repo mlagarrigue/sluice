@@ -465,15 +465,13 @@ type Diagnostic struct {
     Args      map[string]any  // NAMED arguments, not positional
     Path      Path            // structured, NOT a string
     Origin    Origin          // SQL | Hydration | BusinessRule | Protocol
-    Affords   []Affordance    // what is modifiable, by which action
     cause     error           // NOT exported — never serialized
 }
 ```
 
-> **`Affords` is not a field.** Every other field above exists as sketched,
-> in `diagnostics`, with `NewDiagnostic(severity, code, path)` for the three a
-> diagnostic cannot be useful without and `With…` methods returning copies for
-> the rest. The value receiver is what makes a diagnostic safe to hold as a
+> **Every field above exists as sketched**, in `diagnostics`, with
+> `NewDiagnostic(severity, code, path)` for the three a diagnostic cannot
+> be useful without and `With…` methods returning copies for the rest. The value receiver is what makes a diagnostic safe to hold as a
 > template, and it has a price: building one from a template costs 7.70 ns
 > against 4.68 through a pointer, ×1.65, neither allocating
 > ([measured](../benchmarks.md#the-designs-turned-down)). Three nanoseconds
