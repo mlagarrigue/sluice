@@ -431,6 +431,14 @@ func skipSpaceAndComments(sql string) int {
 // ends while the server has not answered the COMMIT cancels it as it cancels
 // any statement ([Conn.Query], "What ctx stops, and what it does not"): a COMMIT the server
 // completed anyway reports nil, one it did not reports ctx's error.
+//
+// The cancellation can reach the server after it has read the COMMIT and
+// before it runs it. The transaction is then still open on the server,
+// aborted, and Commit ends it with a ROLLBACK, bounded by
+// [Config.CancelTimeout], before returning ctx's error: nothing was
+// committed, and the connection is ready for the next transaction. A
+// ROLLBACK that cannot end it breaks the connection, whose close rolls the
+// transaction back.
 func (tx *Tx) Commit(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("abandoning the commit: %w", err)
@@ -491,7 +499,19 @@ func (tx *Tx) end(ctx context.Context, verb string) error {
 	failed := tx.conn.txFailed
 	w := tx.conn.watchCancel(ctx)
 	rolledBack, execErr := tx.conn.execRolledBack(verb)
-	if err := tx.conn.settleCancel(ctx, w, execErr); err != nil {
+	err := tx.conn.settleCancel(ctx, w, execErr)
+	if tx.conn.broken == nil && tx.conn.inTx {
+		// The server is still in the block: the cancellation reached the
+		// backend after it read the statement and before it ran it, and
+		// query_canceled was raised inside the transaction instead of ending
+		// it (ReadyForQuery 'E'). The Tx is finished on this side, so nothing
+		// else would ever end the block; this does, and err still says the
+		// statement did not run.
+		if rbErr := tx.conn.rollbackLeftBlock(); rbErr != nil {
+			return errors.Join(err, rbErr)
+		}
+	}
+	if err != nil {
 		return err
 	}
 	// Belt and braces: the status byte said the block was aborted, or the
@@ -499,6 +519,25 @@ func (tx *Tx) end(ctx context.Context, verb string) error {
 	// committed nothing, reported without an ErrorResponse.
 	if verb == "COMMIT" && (failed || rolledBack) {
 		return ErrTxCommitRollback
+	}
+	return nil
+}
+
+// rollbackLeftBlock ends a block the server kept after a COMMIT or ROLLBACK
+// that a cancellation stopped before it ran. It is bounded as [Tx.Rollback]
+// is, by [Config.CancelTimeout]; a ROLLBACK that is cancelled in turn, or
+// that leaves the server still in a block, breaks the connection, whose close
+// rolls the transaction back on the server.
+func (c *Conn) rollbackLeftBlock() error {
+	ctx, cancel := context.WithTimeout(context.Background(), c.cancelBound())
+	defer cancel()
+	w := c.watchCancel(ctx)
+	_, execErr := c.execRolledBack("ROLLBACK")
+	if err := c.settleCancel(ctx, w, execErr); err != nil {
+		return c.breakConn(fmt.Errorf("ending the block a cancelled transaction statement left open: %w", err))
+	}
+	if c.inTx {
+		return c.breakConn(errors.New("the server is still in a transaction block after ROLLBACK"))
 	}
 	return nil
 }

@@ -1307,3 +1307,111 @@ func TestTxControlStatementsEndWithTheirContext(t *testing.T) {
 		})
 	}
 }
+
+// A cancellation can reach the backend after it has read the COMMIT and
+// before it runs it: query_canceled is then raised inside the block, which
+// the server keeps, aborted, and says so with ReadyForQuery 'E'. The Tx was
+// already marked finished, so the deferred Rollback did nothing, and the next
+// Begin met ErrTxOpen on a connection nothing could clean. Commit now ends
+// the block itself: it sends the ROLLBACK the server is waiting for, and
+// returns ctx's error — the COMMIT did not happen.
+func TestACommitCancelledBeforeItRanLeavesNoBlockOpen(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, conn := newPipeServer(t)
+		conn.cancelKey = CancelKey{PID: 1, Secret: testSecret}
+		packets := make(chan []byte, 1)
+		dials := 0
+		conn.cancelDial = cancelPipe(&dials, packets)
+		begun := append(frame(pgwire.BackendCommandComplete, "BEGIN\x00"), frame(pgwire.BackendReadyForQuery, "T")...)
+
+		go func() { <-srv.read; srv.write(t, begun) }()
+		tx, err := conn.Begin(t.Context(), TxConfig{})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		sawRollback := make(chan bool, 1)
+		go func() {
+			<-srv.read // the COMMIT
+			<-packets  // the cancellation, which wins the race to the backend
+			srv.write(t, beErrorResponse("57014", "canceling statement due to user request"),
+				frame(pgwire.BackendReadyForQuery, "E"))
+			select {
+			case <-srv.read:
+				sawRollback <- true
+				srv.write(t, frame(pgwire.BackendCommandComplete, "ROLLBACK\x00"), beReadyForQuery())
+			case <-time.After(time.Minute):
+				sawRollback <- false
+				return
+			}
+			<-srv.read // the next Begin
+			srv.write(t, begun)
+		}()
+
+		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		defer cancel()
+		if err := tx.Commit(ctx); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Commit = %v, want ctx's error: the COMMIT did not run", err)
+		}
+		if err := tx.Rollback(); err != nil {
+			t.Errorf("the deferred Rollback = %v", err)
+		}
+		if conn.inTx {
+			t.Error("the connection still believes a transaction is open")
+		}
+		if _, err := conn.Begin(t.Context(), TxConfig{}); err != nil {
+			t.Errorf("Begin after the cancelled COMMIT = %v", err)
+		}
+		if !<-sawRollback {
+			t.Error("no ROLLBACK was sent to end the aborted block")
+		}
+	})
+}
+
+// And when the ROLLBACK that ends the left block fails too, or leaves the
+// server in a block still, the connection is broken rather than handed back
+// in a state nothing on this side knows: its close is what rolls back.
+func TestABlockTheRollbackCannotEndBreaksTheConnection(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		reply [][]byte
+	}{
+		{"the ROLLBACK fails", [][]byte{beErrorResponse("XX000", "internal error"), frame(pgwire.BackendReadyForQuery, "E")}},
+		{"still in a block", [][]byte{frame(pgwire.BackendCommandComplete, "ROLLBACK\x00"), frame(pgwire.BackendReadyForQuery, "T")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				srv, conn := newPipeServer(t)
+				conn.cancelKey = CancelKey{PID: 1, Secret: testSecret}
+				packets := make(chan []byte, 1)
+				dials := 0
+				conn.cancelDial = cancelPipe(&dials, packets)
+				go func() {
+					<-srv.read
+					srv.write(t, frame(pgwire.BackendCommandComplete, "BEGIN\x00"), frame(pgwire.BackendReadyForQuery, "T"))
+				}()
+				tx, err := conn.Begin(t.Context(), TxConfig{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				go func() {
+					<-srv.read
+					<-packets
+					srv.write(t, beErrorResponse("57014", "canceling statement due to user request"),
+						frame(pgwire.BackendReadyForQuery, "E"))
+					<-srv.read
+					srv.write(t, tc.reply...)
+				}()
+				ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+				defer cancel()
+				err = tx.Commit(ctx)
+				if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrConnBroken) {
+					t.Fatalf("Commit = %v, want ctx's error and ErrConnBroken", err)
+				}
+				if conn.Err() == nil {
+					t.Error("the connection is not reported broken")
+				}
+			})
+		})
+	}
+}
