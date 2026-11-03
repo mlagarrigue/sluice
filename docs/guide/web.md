@@ -19,73 +19,6 @@ things:
 - `gateway`: a way to **group** the requests that arrive at the same time,
   so that a database asked sixty-four times is asked once.
 
-## A handler you can read on one screen
-
-```go
-mux := http.NewServeMux() // the standard library's router
-mux.HandleFunc("PATCH /orders/{order}/lines/{line}", func(w http.ResponseWriter, r *http.Request) {
-    var body struct{ SaleQty int64 `json:"saleQty"` }
-    if d, ok := web.DecodeJSON(r, 1<<16, &body); !ok {            // read at most 64 KB of JSON
-        web.WriteJSON(w, web.TransportStatus(d), web.ReportOf(d)) // 415, 413 or 400
-        return
-    }
-    order, d, ok := web.PathInt64(r, "order")                     // the {order} from the address
-    if !ok {
-        web.WriteJSON(w, http.StatusBadRequest, web.ReportOf(d))
-        return
-    }
-    res, err := svc.Apply(r.Context(), Amendment{OrderID: order, SaleQty: body.SaleQty})
-    // …
-    web.WriteJSON(w, web.Status(res.Diagnostics), web.Report{  // 200 or 422, depending on what happened
-        Problems: web.Problems(res.Diagnostics),
-        Remedies: web.Remedies(res.Affordances),
-    })
-})
-```
-
-> **In plain words: why no wrapper around the handler?** Many frameworks
-> have you write a function that returns an object, and choose the status
-> code and the format for you. That is comfortable, and it is precisely
-> what disappears from the code: the two decisions that matter in a handler
-> are the status and the encoding, and you must be able to read them on one
-> line. One screen, no adapter.
-
-`DecodeJSON` requires a maximum size: a body without a limit is an open
-door to a client sending gigabytes. `PathInt64` reads a **wildcard** from
-the address (`{order}`), which `http.ServeMux` can extract since Go 1.22;
-`QueryInt64` reads a query parameter (`?limit=50`) the same way, an absent
-one and an unparseable one being two diagnostics with two fixes.
-`Status` picks the code from the diagnostics (see below); `IsTransport`
-tells one of this package's — a body that would not parse, a parameter
-that was not there — from a business rule's, usually a 422, and
-`TransportStatus` gives the code of such a refusal: 415, 413 or 400, the
-ones `web/stream` writes for the same refusal. `WriteJSON` writes the
-response as JSON.
-
-`DecodeJSON` also requires the request to say it carries JSON: one
-`Content-Type` header, `application/json` or a `+json` subtype (such as
-`application/merge-patch+json`). Any other type, or none, is refused before
-a byte is read, under the code `CodeUnsupportedMediaType`, which
-`TransportStatus` turns into a 415: change the label, not the document (a
-JSON document that does not parse stays a 400, a body too large a 413). The
-reason for the refusal: a browser sends a form or `text/plain` to another
-site without asking permission, and a JSON document hidden in one would
-otherwise be decoded as if the client had meant to send it.
-
-> **In plain words: which type for a PATCH?** `application/json` says
-> "here is a JSON document", not "here are the changes to apply": the PATCH
-> specification (RFC 5789, erratum 3169) asks servers not to read it that
-> way. The type that says it is `application/merge-patch+json` (RFC 7396):
-> the document lists the members to set, which is what this handler does.
-> `DecodeJSON` accepts both; advertise the second. `web/stream` names it in
-> an `Accept-Patch` header when it refuses a PATCH with the wrong label.
-
-With `curl`, remember `-H 'Content-Type: application/merge-patch+json'`.
-
-To stay short, this example authenticates no one. A handler that serves
-protected data authenticates first and decodes after: see
-[Authenticating, authorizing](#authenticating-authorizing).
-
 ## Diagnostics and remedies: refusing cleanly
 
 When a business rule refuses a value ("quantity must be positive"),
@@ -124,6 +57,72 @@ written: the client picks the language.
 produce (`NewCollector(limit)`), keeps the first ones in order and counts
 the others: a pathological batch does not drown the signal.
 
+## A handler you can read on one screen
+
+```go
+mux := http.NewServeMux() // the standard library's router
+mux.HandleFunc("PATCH /orders/{order}/lines/{line}", func(w http.ResponseWriter, r *http.Request) {
+    var body struct{ SaleQty int64 `json:"saleQty"` }
+    if d, ok := web.DecodeJSON(r, 1<<16, &body); !ok {            // read at most 64 KB of JSON
+        web.WriteJSON(w, web.TransportStatus(d), web.ReportOf(d)) // 415, 413 or 400
+        return
+    }
+    order, d, ok := web.PathInt64(r, "order")                     // the {order} from the address
+    if !ok {
+        web.WriteJSON(w, http.StatusBadRequest, web.ReportOf(d))
+        return
+    }
+    res, err := svc.Apply(r.Context(), Amendment{OrderID: order, SaleQty: body.SaleQty})
+    // …
+    web.WriteJSON(w, web.Status(res.Diagnostics), web.Report{  // 200 or 422, depending on what happened
+        Problems: web.Problems(res.Diagnostics),
+        Remedies: web.Remedies(res.Affordances),
+    })
+})
+```
+
+> **In plain words: why no wrapper around the handler?** Many frameworks
+> have you write a function that returns an object, and choose the status
+> code and the format for you. That is comfortable, and it is precisely
+> what disappears from the code: the two decisions that matter in a handler
+> are the status and the encoding, and you must be able to read them on one
+> line. One screen, no adapter.
+
+`DecodeJSON` requires a maximum size: a body without a limit is an open
+door to a client sending gigabytes. `PathInt64` reads a **wildcard** from
+the address (`{order}`), which `http.ServeMux` can extract since Go 1.22;
+`QueryInt64` reads a query parameter (`?limit=50`) the same way, an absent
+one and an unparseable one being two diagnostics with two fixes.
+`Status` picks the code from the diagnostics (see above); `IsTransport`
+tells one of this package's — a body that would not parse, a parameter
+that was not there — from a business rule's, usually a 422, and
+`TransportStatus` gives the code of such a refusal: 415, 413 or 400, the
+ones `web/stream` writes for the same refusal. `WriteJSON` writes the
+response as JSON.
+
+`DecodeJSON` also requires the request to say it carries JSON: one
+`Content-Type` header, `application/json` or a `+json` subtype (such as
+`application/merge-patch+json`). Any other type, or none, is refused before
+a byte is read, under the code `CodeUnsupportedMediaType`, which
+`TransportStatus` turns into a 415: change the label, not the document (a
+JSON document that does not parse stays a 400, a body too large a 413). The
+reason for the refusal: a browser sends a form or `text/plain` to another
+site without asking permission, and a JSON document hidden in one would
+otherwise be decoded as if the client had meant to send it.
+
+> **In plain words: which type for a PATCH?** `application/json` says
+> "here is a JSON document", not "here are the changes to apply": the PATCH
+> specification (RFC 5789, erratum 3169) asks servers not to read it that
+> way. The type that says it is `application/merge-patch+json` (RFC 7396):
+> the document lists the members to set, which is what this handler does.
+> `DecodeJSON` accepts both; advertise the second. `web/stream` names it in
+> an `Accept-Patch` header when it refuses a PATCH with the wrong label.
+
+With `curl`, remember `-H 'Content-Type: application/merge-patch+json'`.
+
+To stay short, this example authenticates no one. A handler that serves
+protected data authenticates first and decodes after: see
+[Authenticating, authorizing](#authenticating-authorizing).
 ## Grouping calls with `gateway`
 
 Picture sixty-four requests arriving within the same millisecond, each
@@ -207,8 +206,13 @@ under `Eager`.
 
 **Authenticating** is knowing who is calling; **authorizing** is deciding
 what they may do. The client sends a **token** (a `Bearer` in the
-`Authorization` header), signed by your authentication service; `web`
-verifies it and derives a **principal** (the identity), then a **grant**.
+`Authorization` header): a **JWT**, a small JSON object of **claims** —
+statements such as who the caller is (`sub`), which service the token is
+for (`aud`) and when it expires (`exp`) — signed by your authentication
+service. The signature here is an **HMAC**: a code computed from the token
+and a secret both services share, which no one without the secret can
+produce. `web` verifies it and derives a **principal** (the identity), then
+a **grant**.
 
 ```go
 verifier, err := web.NewHMACVerifier(web.HMACConfig{
@@ -247,7 +251,9 @@ authentication says nothing about the body: an anonymous client does not
 learn which fields your API expects.
 
 `ClaimAuthorizer` builds the grant from the token's own claims —
-`DimensionClaims` says which claim carries each dimension's values; that is
+`DimensionClaims` says which claim carries each **dimension**'s values, a
+dimension being an axis the grant restricts, such as the tenant or the
+region; that is
 correct only if the token's issuer is your own service. Otherwise,
 implement `Authorizer` against whatever knows the policy. The grant is then
 passed to the database through `tx.SetLocal`, so that PostgreSQL's
@@ -299,7 +305,7 @@ negative value lifts the bound for the whole server.
 `Recover` turns a panic in a handler into a 500 response you observe,
 instead of killing the process and every request in flight.
 
-### Over TLS, and HTTP/2
+## Over TLS: HTTP/2 and early data
 
 Outside the loopback, serve over TLS: `ServeTLS` is `Serve` over TLS, with
 the same default timeouts and the same clean stop.

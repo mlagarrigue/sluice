@@ -169,7 +169,7 @@ Where it is decided: [ADR 0019](../design/adr/0019-quic-early-data.md);
 ## TLS in front
 
 On the `net/http` path, `web.ServeTLS` serves TLS and HTTP/2
-([web](web.md#over-tls-and-http2)). The `httpstream` package does not
+([web](web.md#over-tls-http2-and-early-data)). The `httpstream` package does not
 terminate TLS ([ADR 0014](../design/adr/0014-tls-stays-in-front.md)): `crypto/tls` wraps
 the listener, and `Serve` reads the decrypted stream as it would read a
 bare socket.
