@@ -99,7 +99,10 @@ func TestH2IdleGoAwayOutlivesUnreadPings(t *testing.T) {
 			served <- err
 			return
 		}
-		cfg := Config{Logger: discardLogger(), ReadTimeout: idle, IdleTimeout: idle, LingerTimeout: 1500 * time.Millisecond}
+		// The linger leaves a loaded machine (check.sh runs every package at
+		// once) time to drain what was written; a reverted fix resets the
+		// connection over the unread PINGs however long it is.
+		cfg := Config{Logger: discardLogger(), ReadTimeout: idle, IdleTimeout: idle, LingerTimeout: 3 * time.Second}
 		served <- ServeH2Conn(t.Context(), c, cfg, echoTarget)
 	}()
 
