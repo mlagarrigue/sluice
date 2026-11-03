@@ -211,7 +211,8 @@ func majorMinor(v string) string {
 
 // ciPromises lists what the repository's rules promise CI runs, which no
 // other test would notice going missing: the latest stable toolchain beside
-// the floor, the UDP code on Windows and macOS (test-udp), and the stage
+// the floor, the UDP code on Windows, macOS and Linux arm64 (test-udp), the
+// Windows and macOS code vetted from the Linux runner, and the stage
 // budget's absolute ceiling, which TestStageBudget skips under -race and so
 // holds only in a step without it. It returns one message per broken
 // promise.
@@ -232,9 +233,14 @@ func ciPromises(workflow string) []string {
 		broken = append(broken, "the test job no longer runs the latest stable Go beside the floor")
 	}
 	udp := job("test-udp")
-	for _, platform := range []string{"windows-latest", "macos-latest"} {
+	for _, platform := range []string{"windows-latest", "macos-latest", "ubuntu-24.04-arm"} {
 		if !regexp.MustCompile(`(?m)^\s+os: \[[^\]]*` + platform).MatchString(udp) {
 			broken = append(broken, "test-udp no longer runs on "+platform)
+		}
+	}
+	for _, goos := range []string{"windows", "darwin"} {
+		if !strings.Contains(job("test"), "GOOS="+goos+" go vet ./...") {
+			broken = append(broken, "the test job no longer vets the code for GOOS="+goos)
 		}
 	}
 	budget := false
@@ -249,7 +255,7 @@ func ciPromises(workflow string) []string {
 	return broken
 }
 
-// The rules promise CI three things nothing else checks. Each promise is
+// The rules promise CI five things nothing else checks. Each promise is
 // held here, and each is cut from a copy of the workflow to prove the check
 // sees it go: a check that stays green on a broken workflow is no check.
 func TestCIKeepsItsPromises(t *testing.T) {
@@ -265,6 +271,9 @@ func TestCIKeepsItsPromises(t *testing.T) {
 		{"go: ['1.26', 'stable']", "go: ['1.26']"},
 		{"os: [windows-latest, macos-latest,", "os: [windows-latest,"},
 		{"os: [windows-latest, macos-latest,", "os: [macos-latest,"},
+		{"macos-latest, ubuntu-24.04-arm]", "macos-latest]"},
+		{"GOOS=windows go vet ./...", "true"},
+		{"GOOS=darwin go vet ./...", "true"},
 		{"run: go test -run 'TestStageBudget", "run: go test -race -run 'TestStageBudget"},
 	} {
 		if !strings.Contains(workflow, cut.old) {
