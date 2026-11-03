@@ -60,6 +60,11 @@ func TestImportLayers(t *testing.T) {
 			strings.HasPrefix(pkg, "database/postgres/internal/") {
 			continue
 		}
+		// The root takes no context (architecture.md, "Contexts are
+		// stratified"): an operator ends when its source does.
+		if pkg == "" && slices.Contains(f[1:], "context") {
+			t.Error("the root package imports context: its operators end when their source ends, and a context belongs to the layer that takes one")
+		}
 		ok := allowed[pkg]
 		for _, imp := range f[1:] {
 			if imp != modPath && !strings.HasPrefix(imp, modPath+"/") {

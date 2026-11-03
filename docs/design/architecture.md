@@ -86,9 +86,10 @@ API is wrong, not the documentation.
 
 **Implemented is not recommended.** Some of what this library ships exists
 because an RFC or backward compatibility demands it, not because it should
-be chosen: such code is labelled at its point of use in the godoc —
-*deprecated*, *kept for backward compatibility*, *interop-only* — and the
-library's recommendation is always the performant and secure option:
+be chosen: such code says so at its point of use in the godoc — `Deprecated:`
+for what a newer API replaces, *kept for interoperability* for a cleartext
+transport — and names the option to choose instead, which is always the
+performant and secure one:
 HTTP/3 or HTTP/2 over cleartext HTTP/1.1, AES-GCM where hardware
 accelerates it, Retry-based address validation under forged-address
 pressure. A label at the use site beats a policy page nobody reads next to
@@ -307,8 +308,10 @@ that half the operators must remember to copy is a field that gets silently
 dropped.
 
 Contexts are **stratified**: the HTTP context exists up to the HTTP layer, the
-user/business context beyond it. An operator sees only the stratum that concerns
-it.
+user/business context beyond it. The root package does not import `context`:
+an operator ends when its source ends, and the layers that take a context
+(`web`, `net/httpstream`, `database/postgres`) take the one their caller
+gives them.
 
 ### Four causes of stopping, not to be confused
 
@@ -1047,9 +1050,12 @@ about it, since they pass elements through without inspecting them.
 | Aspect | Rule |
 |---|---|
 | Element context | kept as is — never merged |
-| Pipeline cancellation | separate channel; union of sources, via `context.AfterFunc` (no goroutine) |
-| Deadline | the minimum |
 | Values | **never merged** |
+
+Cancelling a pipeline is ending its source, outside the root, which imports
+no `context`; a caller that unites several sources' cancellations does it
+with `context.AfterFunc`, without a goroutine, and the earliest deadline
+wins.
 
 ### Errors and diagnostics at merge time
 
@@ -1557,8 +1563,12 @@ lying to the user.
 
 **Never materialize intermediate binary results** — that is the state
 amplification that forces Materialize and RisingWave into *delta join*. A
-`.Join().Join()` chain **lies about the real cost**: either an n-ary join, or a
-documented cost.
+`.Join().Join()` chain must not **lie about the real cost**. `join` has
+binary joins only, and the one that materializes — the hash join — holds
+its build side under a bound the caller must state (`BuildLimit.MaxEntries`,
+refused at zero by `StreamTable`):
+an intermediate result chained in as a build side is held under that
+bound, never silently.
 
 ### Scope: no retractions
 
