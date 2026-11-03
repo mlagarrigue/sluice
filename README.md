@@ -162,8 +162,9 @@ group's, which are experimental.
 | `sluice/net/quic` · `net/quic/udp` | QUIC version 1 (RFC 9000/9001/9002) and its UDP socket |
 
 > **In plain words: "experimental".** The code exists, is tested and
-> measured, but nothing promises it will keep this shape, and it has not
-> been confronted with other implementations. The
+> measured, but nothing promises it will keep this shape. It is crossed
+> every Sunday with other implementations on a test bench, never yet on a
+> real network with real clients. The
 > [Experimental](docs/guide/experimental.md) guide says exactly what is
 > promised and what is not.
 
