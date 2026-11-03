@@ -150,7 +150,7 @@ type Response struct {
 	// says cannot be processed after the content — the ones of its own
 	// that frame the message, describe the connection, route it,
 	// authenticate it, control the response or describe the content's
-	// format (see refusedTrailers): those were settled by the time the
+	// format: those were settled by the time the
 	// trailers arrive. Any other field is the handler's to know it may be
 	// sent there, a field from another specification (Set-Cookie, a
 	// Cache-Control of RFC 9111) included. A Trailer header naming

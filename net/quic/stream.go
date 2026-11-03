@@ -20,7 +20,7 @@ import (
 // Data arrives out of order in general — each STREAM frame carries its offset
 // — so a stream holds what it cannot yet deliver and returns it when the gap
 // fills. Retransmissions overlap what was already delivered as a matter of
-// course, and are merged rather than refused; see [reassembly].
+// course, and are merged rather than refused.
 //
 // The two directions fail independently, as RFC 9000 §2.4 draws them: a
 // RESET_STREAM from the peer abandons what it was sending and surfaces to

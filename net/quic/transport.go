@@ -80,13 +80,13 @@ type TransportParameters struct {
 	// AckDelayExponent scales the peer's ACK delay fields. Read so a peer
 	// that announces another value does not skew this end's round-trip
 	// estimate. RFC 9000 §18.2 gives the default of 3 to a peer that is
-	// *silent*, not to one that announces 0: sawAckDelayExponent tells the
+	// *silent*, not to one that announces 0: this package tells the
 	// two apart, and the field here is whatever the peer wrote.
 	AckDelayExponent uint64
 
 	// MaxAckDelay is how long the peer may sit on an acknowledgement,
 	// which loss recovery adds to its probe timeout. As above, the §18.2
-	// default of 25 ms is for an absent parameter (sawMaxAckDelay), and an
+	// default of 25 ms is for an absent parameter, and an
 	// announced 0 is read as 0.
 	MaxAckDelay time.Duration
 
@@ -139,7 +139,7 @@ type TransportParameters struct {
 	// the address the handshake used. A server that announces it changes
 	// nothing in how this package behaves: §9 lets such a server either
 	// drop a client's packets from a new address or validate the path and
-	// follow, and it follows (see maybeMigrate); the announcement is for
+	// follow, and it follows; the announcement is for
 	// deployments whose load balancer, not this server, would lose the
 	// client.
 	DisableActiveMigration bool

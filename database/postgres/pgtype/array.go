@@ -223,8 +223,8 @@ func DecodeNullableFloat8Array(dst []Null[float64], b []byte) ([]Null[float64], 
 
 // AppendByteaArray appends a one-dimensional bytea[].
 //
-// The elements are variable-width, which is why this file writes lengths in
-// place rather than measuring first.
+// The elements are variable-width, which is why each length is written in
+// place rather than measured first.
 func AppendByteaArray(dst []byte, values [][]byte) []byte {
 	return appendArrayOf(dst, OIDBytea, values, AppendBytea)
 }
