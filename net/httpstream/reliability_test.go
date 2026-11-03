@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -110,6 +111,44 @@ func TestIdleConnectionClosesWithoutAStatus(t *testing.T) {
 	}
 	if !errors.Is(err, io.EOF) {
 		t.Errorf("the idle connection ended with %v, want io.EOF", err)
+	}
+}
+
+// The CRLF a client sends after a body (RFC 9112 §2.2 lets the server ignore
+// it) starts no request: the connection rests on the idle clock, not on
+// ReadTimeout, and is not answered 408 for a request it never began. The
+// request that follows still parses past it.
+func TestCRLFAfterABodyLeavesTheConnectionIdle(t *testing.T) {
+	addr, _ := serveTest(t, Config{ReadTimeout: 200 * time.Millisecond, IdleTimeout: 5 * time.Second}, echoTarget)
+	c := dial(t, addr)
+	br := bufio.NewReader(c)
+
+	fmt.Fprint(c, "POST /a HTTP/1.1\r\nHost: h\r\nContent-Length: 2\r\n\r\nhi\r\n")
+	if status := readStatusLine(t, br); !strings.HasPrefix(status, "HTTP/1.1 200") {
+		t.Fatalf("status = %q", status)
+	}
+	headers := readHeaders(t, br)
+	n, err := strconv.Atoi(headers["content-length"])
+	if err != nil {
+		t.Fatalf("content-length %q: %v", headers["content-length"], err)
+	}
+	if _, err := io.ReadFull(br, make([]byte, n)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Five times ReadTimeout, well short of IdleTimeout: nothing is owed.
+	_ = c.SetReadDeadline(time.Now().Add(time.Second))
+	if b, err := br.ReadByte(); err == nil {
+		rest, _ := br.Peek(br.Buffered())
+		t.Fatalf("the resting connection was answered %q, want nothing before IdleTimeout", append([]byte{b}, rest...))
+	} else if !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("the resting connection ended with %v, want it open", err)
+	}
+
+	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	fmt.Fprint(c, "GET /b HTTP/1.1\r\nHost: h\r\n\r\n")
+	if status := readStatusLine(t, br); !strings.HasPrefix(status, "HTTP/1.1 200") {
+		t.Fatalf("the request after the CRLF: status = %q", status)
 	}
 }
 

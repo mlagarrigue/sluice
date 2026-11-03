@@ -378,6 +378,14 @@ func (r *h1Conn) parseBuffered() (batch []Request, used int, err error) {
 	return r.batch, used, nil
 }
 
+// resting reports whether buf holds no part of a request: nothing, or the one
+// empty line RFC 9112 §2.2 lets a client leave after a body, which
+// parseRequest skips — the connection rests on the idle clock, not on a
+// request's ReadTimeout.
+func (r *h1Conn) resting() bool {
+	return r.n <= 2 && string(r.buf[:r.n]) == "\r\n"[:r.n]
+}
+
 // fill reads once, growing the buffer toward the ceiling but never past it.
 func (r *h1Conn) fill() error {
 	limit := r.cfg.maxBuffer()
@@ -405,7 +413,7 @@ func (r *h1Conn) fill() error {
 	// and held there — see the field comment on deadline — so a request has
 	// exactly ReadTimeout to arrive in full, not ReadTimeout since whenever
 	// it last sent a byte.
-	idle := r.n == 0 && (r.held == nil || !r.held.buffered())
+	idle := r.resting() && (r.held == nil || !r.held.buffered())
 	wait := r.cfg.IdleTimeout
 	if r.served == 0 {
 		// Before the first request the connection is not resting between
@@ -449,7 +457,7 @@ func (r *h1Conn) fill() error {
 			return io.EOF
 		}
 		if errors.Is(err, io.EOF) {
-			if r.n == 0 {
+			if r.resting() {
 				return io.EOF // a clean close between requests
 			}
 			return fmt.Errorf("%w: the connection closed mid-request", ErrMalformed)
