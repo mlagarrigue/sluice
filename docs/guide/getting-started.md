@@ -238,34 +238,6 @@ decide to stop (`TakeWhile`, or a terminal returning `false`).
 > diagnostic for "this element has a problem". A warning on one order must
 > not crash the processing of the thousand others.
 
-## When a panic is really an error
-
-A Go iterator has no way to return an error in the middle of a walk.
-Sluice.go therefore uses a *panic* (Go's abrupt stop) for five precise,
-named situations: a bounded operator overflowing under the "fail" policy
-(`ErrOverflow`), data that should have been sorted and is not
-(`ErrUnsorted`), the branches of a `Split` read in the wrong order
-(`ErrSplitStalled`, and `ErrSplitDrained` for a branch read after the
-source ran out), and the state factory of `parallel.OrderedWithState` failing
-(`parallel.ErrState`, which wraps the factory's error too).
-
-In a script run overnight, crashing is the right behaviour: you want to
-know. In a server serving a thousand users, it is not. `Try` converts those
-panics — and only those — into an ordinary error:
-
-```go
-err := sluice.Try(func() {
-    sluice.ForEach(pipeline, handle)
-})
-if errors.Is(err, sluice.ErrOverflow) {
-    // a pathological batch; the server carries on
-}
-```
-
-> **In plain words.** `Try` does not hide your own bugs: a nil pointer in
-> your `Map` function keeps crashing the program, loudly, with its trace.
-> That is deliberate.
-
 ## Several streams at once
 
 - `Split(s, n, route)` sends each batch to one or more of the `n` branches,
@@ -282,13 +254,38 @@ if errors.Is(err, sluice.ErrOverflow) {
   live in the `join` package, because they must keep elements in memory —
   the next guide explains what that costs.
 
+## When a panic is really an error
+
+A Go iterator has no way to return an error in the middle of a walk.
+Sluice.go therefore uses a *panic* (Go's abrupt stop) for a few precise,
+named situations — the branches of a `Split` read in the wrong order
+(`ErrSplitStalled`), for one. The operators you will meet next have theirs,
+each listed with what to do in [Troubleshooting](troubleshooting.md).
+
+In a script run overnight, crashing is the right behaviour: you want to
+know. In a server serving a thousand users, it is not. `Try` converts those
+panics — and only those — into an ordinary error:
+
+```go
+err := sluice.Try(func() {
+    sluice.ForEach(pipeline, handle)
+})
+if errors.Is(err, sluice.ErrSplitStalled) {
+    // branches read in the wrong order: log it; the server carries on
+}
+```
+
+> **In plain words.** `Try` does not hide your own bugs: a nil pointer in
+> your `Map` function keeps crashing the program, loudly, with its trace.
+> That is deliberate.
+
 ## You can now
 
 - build a stream from a slice and pass it through `Filter`, `Map` and
   `Collect`;
 - say which family an error belongs to and where it surfaces;
-- recover a panic that is really an error, with `Try`;
-- bring two streams together with `Merge` or `Concat`.
+- bring two streams together with `Merge` or `Concat`;
+- recover a panic that is really an error, with `Try`.
 
 The examples of the root package run as tests, their output checked:
 
