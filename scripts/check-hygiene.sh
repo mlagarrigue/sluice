@@ -70,9 +70,10 @@ done
 # the architecture's rules). The audited files are listed here, and a new
 # import of unsafe outside a test fails until it is named in S4 and here.
 # gosec does not run under GOOS=windows, where the only exception lives, so
-# this is the check that sees it.
+# this is the check that sees it. An import under a name — u "unsafe",
+# _ "unsafe", . "unsafe" — is an import all the same.
 audited_unsafe=' net/quic/udp/configure_windows.go '
-for f in $(git grep -lE '^import .unsafe.|^[[:space:]]+.unsafe.' -- '*.go' ':!*_test.go'); do
+for f in $(git grep -lE '^import ([[:alnum:]_.]+ )?"unsafe"|^[[:space:]]+([[:alnum:]_.]+ )?"unsafe"' -- '*.go' ':!*_test.go'); do
   case "$audited_unsafe" in
     *" $f "*) ;;
     *) echo "check-hygiene: $f imports unsafe outside the audited list (S4)" >&2; status=1 ;;
