@@ -1048,8 +1048,11 @@ func (c *Conn) noteParsed(n int) {
 }
 
 // putScratch gives s back as the scratch *dst for the next packet, when
-// keepScratch keeps it.
+// keepScratch keeps it. Its frames are cleared first: their Data points into
+// the packet's buffer, which a kept slot would keep alive until a later
+// packet happened to write over it.
 func (c *Conn) putScratch(dst *[]Frame, s []Frame) {
+	clear(s)
 	if c.keepScratch(cap(s)) {
 		*dst = s[:0]
 	}
@@ -2105,7 +2108,17 @@ func (c *Conn) settleBatchConsumption(batch []Frame) {
 	// time.
 	var connBytes uint64
 	settled := c.settleScratch[:0]
-	defer func() { c.settleScratch = settled[:0] }()
+	defer func() {
+		// Kept for the next batch as the frame scratches are, with the
+		// streams it resolved cleared: a stream the application closed is
+		// not held here until a later batch writes over its slot.
+		clear(settled)
+		if cap(settled) <= maxKeptFrames {
+			c.settleScratch = settled[:0]
+		} else {
+			c.settleScratch = nil
+		}
+	}()
 	c.mu.Lock()
 	for i := range batch {
 		f := &batch[i]
@@ -2414,7 +2427,17 @@ func (c *Conn) takeScratch() []byte {
 	return s[:0]
 }
 
+// maxKeptDelta is the largest delta buffer kept from one packet to the next:
+// far past what a packet of in-order data needs (its datagram), far under
+// what a filled gap releases at once — up to the connection's window. Kept
+// at that size, the buffer would be held for the connection's whole life on
+// the strength of one packet; the next gap filled grows it again, once.
+const maxKeptDelta = 64 << 10
+
 func (c *Conn) storeScratch(s []byte) {
+	if cap(s) > maxKeptDelta {
+		s = nil
+	}
 	c.mu.Lock()
 	c.deltaScratch = s
 	c.mu.Unlock()
