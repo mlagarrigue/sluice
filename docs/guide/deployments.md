@@ -222,6 +222,30 @@ gateway and the HTTP timeouts. The tables:
 > **In plain words:** your settings come from wherever you like; check
 > them with `Validate`, and only then open the port.
 
+## What to watch in production
+
+The library pushes nothing to a metrics system. It has one channel, a
+`*slog.Logger` in each `Config` (`postgres`, `httpstream`, `gateway`), and
+counters your program reads when it likes
+([ADR 0025](../design/adr/0025-observability.md)).
+
+- **The log.** At error level: a panic in your code — a handler, a
+  producer, a gateway's pipeline — with its value and stack, and a handler
+  that answers a different number of requests than it was given. At warn
+  level: the error that ended an accepted connection, ordinary ends aside.
+  Nothing else; a panic's value goes to the log, never to a client.
+- **The statement cache** (`postgres.Conn.StatementCacheStats`):
+  statements held prepared, hits and misses. A hit rate near zero means
+  SQL text that changes with every query.
+- **The QUIC transport** (`quic.Conn.Stats`): round trip, congestion
+  window, losses, retransmissions, the datagram size reached; and
+  `Listener.DiscardedPackets` for what never reached a connection.
+- **A pipeline's flow** (`probe`): two counts per point; the difference
+  between two probes says where elements stop.
+
+> **In plain words:** plug the `Logger` into your service's log, and
+> export the counters you want to follow through your own metrics.
+
 ## What applies to every section
 
 Two behaviors of `ServeH3Conn` complete the sections above without fitting
