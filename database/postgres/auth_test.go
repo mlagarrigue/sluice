@@ -1044,6 +1044,36 @@ func TestStartupRefusesAMalformedNegotiation(t *testing.T) {
 	}
 }
 
+// A server not yet authenticated writes nothing of its own into the error
+// the Conn keeps for its life: a client_encoding value (up to 64 KiB during
+// startup) and the name of a declined option are quoted cut to 32 bytes,
+// as SCRAM attributes are, and neither appears whole.
+func TestStartupQuotesTheServerShort(t *testing.T) {
+	long := strings.Repeat("x", 2000)
+	for _, tc := range []struct {
+		name   string
+		params map[string]string
+		msgs   []byte
+	}{
+		{"client_encoding", nil, append(beAuth(0, ""), beParameterStatus("client_encoding", "LATIN"+long)...)},
+		{"a declined option", nil, beNegotiate(0, "_pq_."+long)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := &fakeServer{responses: [][]byte{append(tc.msgs, append(beAuth(0, ""), beReady()...)...)}}
+			_, err := startup(srv, Config{User: "u", MaxProtocol: Protocol32, Params: tc.params})
+			if err == nil {
+				t.Fatal("Startup accepted the message")
+			}
+			if strings.Contains(err.Error(), long[:100]) {
+				t.Fatalf("the error quotes the server at length (%d bytes): %.120s…", len(err.Error()), err)
+			}
+			if !strings.Contains(err.Error(), "…") {
+				t.Fatalf("the error does not show its quote was cut: %v", err)
+			}
+		})
+	}
+}
+
 // Only the versions this package speaks may be asked for or required, a
 // minimum above the maximum satisfies nothing, and each is refused before
 // the server hears anything.

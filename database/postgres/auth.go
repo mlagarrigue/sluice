@@ -803,7 +803,7 @@ func negotiateProtocol(body []byte, asked ProtocolVersion, params map[string]str
 		name := string(rest[:end])
 		rest = rest[end+1:]
 		if _, sent := params[name]; !sent || !strings.HasPrefix(name, "_pq_.") {
-			return 0, fmt.Errorf("%w: NegotiateProtocolVersion declines the option %q, which the startup packet did not carry", ErrProtocol, name)
+			return 0, fmt.Errorf("%w: NegotiateProtocolVersion declines the option %s, which the startup packet did not carry", ErrProtocol, quoteShort(name))
 		}
 	}
 	if len(rest) != 0 {
@@ -944,6 +944,18 @@ const maxServerParameters = 1024
 // of 16 KiB allowed in total, unchanged.
 const maxServerParameterBytes = 16 << 20
 
+// quoteShort quotes a text from a server not yet authenticated — a SCRAM
+// attribute, a declined option, a client_encoding — cut to 32 bytes: enough
+// to name an extension or an encoding, not enough for the server to write
+// what it likes into an error the Conn may keep for its life, or into the
+// caller's logs.
+func quoteShort(val string) string {
+	if len(val) > 32 {
+		return strconv.Quote(val[:32]) + "…"
+	}
+	return strconv.Quote(val)
+}
+
 // recordParameter files a ParameterStatus under its name.
 //
 // The protocol allows one at any point in a session, not only during startup:
@@ -976,7 +988,7 @@ func (c *Conn) recordParameter(body []byte) error {
 		// bytes as UTF-8 without error, so the connection ends at the
 		// announcement. Breaking it here is what makes the read loops stop
 		// rather than carry on as they do for a payload they cannot read.
-		return c.breakConn(fmt.Errorf("the server reports client_encoding %q, and this package decodes text as UTF-8 — set Config.Params[\"client_encoding\"] to decode another encoding yourself", val))
+		return c.breakConn(fmt.Errorf("the server reports client_encoding %s, and this package decodes text as UTF-8 — set Config.Params[\"client_encoding\"] to decode another encoding yourself", quoteShort(val)))
 	}
 	if _, known := c.params[name]; !known && len(c.params) >= maxServerParameters {
 		return fmt.Errorf("%w: the server announced more than %d distinct runtime parameters", ErrProtocol, maxServerParameters)

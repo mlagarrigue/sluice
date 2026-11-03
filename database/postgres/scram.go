@@ -488,7 +488,7 @@ func parseServerFirst(msg, clientNonce string, b scramBounds) (nonce string, sal
 			// RFC 5802: a mandatory extension the client does not recognise
 			// must abort the exchange. Skipping it would be agreeing to a
 			// term this client did not read.
-			return "", nil, 0, fmt.Errorf("%w: the server requires an extension this package does not implement (m=%s)", ErrAuth, scramShort(val))
+			return "", nil, 0, fmt.Errorf("%w: the server requires an extension this package does not implement (m=%s)", ErrAuth, quoteShort(val))
 		default:
 			// Optional attributes are reserved by the RFC for extension, and
 			// refusing an unknown one would turn a server upgrade into an
@@ -522,16 +522,6 @@ var scramServerErrors = []string{
 	"unknown-user", "invalid-username-encoding", "no-resources", "other-error",
 }
 
-// scramShort quotes an attribute value from a server not yet authenticated,
-// cut to 32 bytes: enough to name an extension, not enough for the server to
-// write what it likes into the caller's logs.
-func scramShort(val string) string {
-	if len(val) > 32 {
-		return strconv.Quote(val[:32]) + "…"
-	}
-	return strconv.Quote(val)
-}
-
 // parseServerFinal reads the server's signature, or the error it sent instead.
 //
 // Every attribute is read before the signature is returned: RFC 5802 §5.1
@@ -563,7 +553,7 @@ func parseServerFinal(msg string) ([]byte, error) {
 			}
 			return nil, fmt.Errorf("%w: the server rejected the exchange: %s", ErrAuth, val)
 		case 'm':
-			return nil, fmt.Errorf("%w: the server requires an extension this package does not implement (m=%s)", ErrAuth, scramShort(val))
+			return nil, fmt.Errorf("%w: the server requires an extension this package does not implement (m=%s)", ErrAuth, quoteShort(val))
 		}
 	}
 	if sig == nil {
