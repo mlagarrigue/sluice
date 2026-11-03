@@ -458,7 +458,10 @@ func (tx *Tx) Commit(ctx context.Context) error {
 // within CancelTimeout more has the connection closed under it, which rolls
 // the transaction back on the server and leaves [ErrConnBroken] here. A
 // ROLLBACK is the cheapest statement a server runs, so the bound is for a
-// server gone silent, not for a slow one.
+// server gone silent, not for a slow one. The bound needs the cancellation
+// recipe [Connect] keeps: on a connection [NewConn] built over a stream it
+// was handed, there is no second connection to cancel through, and Rollback
+// waits for the server as long as the stream does.
 func (tx *Tx) Rollback() error {
 	if tx.done {
 		return nil
