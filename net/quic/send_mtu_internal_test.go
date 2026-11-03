@@ -2,7 +2,11 @@ package quic
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/tls"
+	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -424,15 +428,18 @@ func TestResetDuringAwaitSealSendsNoStreamFrame(t *testing.T) {
 // 1134 bytes at a 1200-byte datagram sendCrypto had no room for a CRYPTO
 // byte — an empty frame queued forever under mu, then a negative length and
 // a panic — and from about 1150 the ClientHello resent after the Retry left
-// in a datagram of 1801 bytes. A token over 566 bytes at a 1200-byte
-// datagram, the bound docs/guide/limits.md writes, is now discarded with the
-// Retry; one of 566 is taken, and every Initial, the ClientHello resent
-// under the new keys and a second one sent after it, fits the datagram.
+// in a datagram of 1801 bytes. Until 2026-11-03 the bound was half the
+// room, 566 bytes, which RFC 9000 §17.2.5.3 does not set: a conformant
+// server's 900-byte token went unanswered. A token over 1034 bytes at a
+// 1200-byte datagram, the bound docs/guide/limits.md writes, is discarded
+// with the Retry; one of 1034 is taken, and every Initial, the ClientHello
+// resent under the new keys and a second one sent after it, fits the
+// datagram and carries CRYPTO bytes.
 func TestARetryTokenTheInitialCannotCarryIsDiscarded(t *testing.T) {
 	for _, tc := range []struct {
 		tokenLen int
 		taken    bool
-	}{{1100, false}, {1300, false}, {567, false}, {566, true}, {500, true}} {
+	}{{1100, false}, {1300, false}, {1035, false}, {1034, true}, {900, true}, {566, true}, {500, true}} {
 		tap := newTap(&fuzzSink{addr: "retrytok:self"})
 		dcid, scid := []byte{1, 2, 3, 4, 5, 6, 7, 8}, []byte{9, 10, 11, 12, 13, 14, 15, 16}
 		peer := fakeFuzzAddr("retrytok:peer")
@@ -477,5 +484,88 @@ func TestARetryTokenTheInitialCannotCarryIsDiscarded(t *testing.T) {
 			t.Errorf("%d-byte token: %d datagrams; the resend after the Retry is not reached", tc.tokenLen, len(tap.recorded()))
 		}
 		_ = c.Close()
+	}
+}
+
+// inflatingPC stands for a server whose Retry tokens run long: it rewrites
+// each Retry the Listener writes so that its token is size bytes long,
+// inside the part the token's MAC covers and re-signed with the Listener's
+// key. verifyRetryToken reads its fields from the front and nothing after
+// them, so the client's echo of the long token still verifies.
+type inflatingPC struct {
+	net.PacketConn
+	key      [32]byte
+	size     int
+	inflated atomic.Int32
+}
+
+func (p *inflatingPC) WriteTo(b []byte, addr net.Addr) (int, error) {
+	h, _, err := parseLongHeader(b)
+	if err != nil || h.Type != packetRetry {
+		return p.PacketConn.WriteTo(b, addr)
+	}
+	body := append([]byte(nil), h.Token[:len(h.Token)-sha256.Size]...)
+	_, rest, err := readVarint(body)
+	if err != nil {
+		return 0, err
+	}
+	odcid, _, err := tokenField(rest[sha256.Size:])
+	if err != nil {
+		return 0, err
+	}
+	body = append(body, make([]byte, p.size-len(h.Token))...)
+	mac := hmac.New(sha256.New, p.key[:])
+	mac.Write(body)
+	token := mac.Sum(body)
+	p.inflated.Add(1)
+	if _, err := p.PacketConn.WriteTo(appendRetryPacket(nil, h.DCID, h.SCID, odcid, token), addr); err != nil {
+		return 0, err
+	}
+	return len(b), nil
+}
+
+// RFC 9000 §17.2.5.3 sets no bound on a Retry token and expects the client
+// to need several Initial packets for a long one. Against a Listener that
+// always retries with a 900-byte token, the handshake completes: the
+// ClientHello goes again in as many Initial packets as the token leaves
+// room for. Until 2026-11-03 the client discarded every Retry with a token
+// over 566 bytes, and Dial ran into its deadline.
+func TestDialCompletesPastALongRetryToken(t *testing.T) {
+	serverPC, clientPC := newLoopbackPair(t)
+	var key [32]byte
+	key[0] = 1
+	pc := &inflatingPC{PacketConn: serverPC, key: key, size: 900}
+	l, err := NewListener(pc, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{AlwaysRetry: true, TokenKey: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	accepted := make(chan error, 1)
+	go func() {
+		c, err := l.Accept()
+		if err == nil {
+			_ = c.Close()
+		}
+		accepted <- err
+	}()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	client, err := Dial(ctx, clientPC, serverPC.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	if err != nil {
+		t.Fatalf("Dial past a Retry with a long token: %v", err)
+	}
+	defer client.Close()
+	if err := <-accepted; err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	if pc.inflated.Load() == 0 {
+		t.Fatal("no Retry was inflated; the test proves nothing")
+	}
+	client.mu.Lock()
+	tokenLen := len(client.retryToken)
+	client.mu.Unlock()
+	if tokenLen != 900 {
+		t.Errorf("the client went on with a %d-byte token, want 900", tokenLen)
 	}
 }

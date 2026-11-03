@@ -635,15 +635,16 @@ the backoff is the bound. A lost probe is not a congestion event
 A Retry token (the token a server sends back for the client to prove its
 address, RFC 9000 §8.1.2) is repeated in every Initial packet the client
 sends afterwards, and those packets stay at 1200 bytes until the handshake
-ends. The client therefore takes only a token that fits, with its length
-field, in half the room an Initial has for handshake data: a token of at
-most 566 bytes at a 1200-byte datagram. The token then takes no more of an
-Initial than the CRYPTO bytes beside it, and the ClientHello goes again in
-at most twice as many packets. A Retry with a longer token is ignored as a
-malformed Retry would be — a later, well-formed Retry is still honoured —
-and counted in `Stats.DiscardedPackets`. RFC 9000 sets no bound; a
-server's token is a few dozen to a few hundred bytes, this package's own
-130 at most.
+ends. The client takes any token that leaves, with its length field, 100
+bytes of an Initial for handshake data: a token of at most 1034 bytes at a
+1200-byte datagram. The ClientHello then goes again in as many Initial
+packets as the room left asks — fifteen for a 1500-byte ClientHello beside
+the longest token — as RFC 9000 §17.2.5.3 expects. A Retry with a longer
+token, one no Initial could carry beside a useful piece of the handshake,
+is ignored as a malformed Retry would be — a later, well-formed Retry is
+still honoured — and counted in `Stats.DiscardedPackets`. RFC 9000 sets no
+bound; a server's token is a few dozen to a few hundred bytes, this
+package's own 130 at most.
 
 ### TLS, in detail
 

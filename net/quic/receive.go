@@ -907,19 +907,24 @@ func (c *Conn) handleVersionNegotiation(datagram []byte) {
 
 // retryTokenFits reports whether a Retry's token is one this client can
 // repeat in every Initial packet it sends from here on (RFC 9000 §8.1.2):
-// not empty (§17.2.5.2), and no longer, with its length field, than half
-// the room an Initial has for handshake data (maxStreamChunk). The token
-// then takes no more of each Initial than the CRYPTO bytes it travels
-// beside, and the ClientHello goes again in at most twice the packets it
-// took first. RFC 9000 sets no bound; a server's token is a few dozen bytes
-// to a few hundred (this package's own, appendRetryToken, is at most 130
-// for an IPv6 peer without a zone name). Without the bound, a token of 1134
-// bytes at a 1200-byte datagram leaves sendCrypto no room for a CRYPTO byte,
-// and from about 1150 fitFrames cannot cut the ClientHello resent after the
-// Retry to the datagram. Callers hold mu.
+// not empty (§17.2.5.2), and leaving, with its length field, at least
+// minRetryCryptoRoom bytes of the room an Initial has for handshake data
+// (maxStreamChunk) — 1034 bytes of token at a 1200-byte datagram. RFC 9000
+// sets no bound and §17.2.5.3 expects the client to need several Initial
+// packets for a long one: sendCrypto and fitFrames cut the ClientHello into
+// as many as the room left asks. A server's token is a few dozen bytes to a
+// few hundred (this package's own, appendRetryToken, is at most 130 for an
+// IPv6 peer without a zone name). Past the bound no Initial could carry the
+// token beside a useful CRYPTO fragment: from 1134 bytes at a 1200-byte
+// datagram, not one CRYPTO byte. Callers hold mu.
 func (c *Conn) retryTokenFits(token []byte) bool {
-	return len(token) > 0 && varintBytes(uint64(len(token)))+len(token) <= c.maxStreamChunk()/2
+	return len(token) > 0 && varintBytes(uint64(len(token)))+len(token) <= c.maxStreamChunk()-minRetryCryptoRoom
 }
+
+// minRetryCryptoRoom is the CRYPTO data an Initial keeps beside the longest
+// Retry token retryTokenFits takes: a ClientHello of 1500 bytes, one with a
+// post-quantum key share, then goes in fifteen Initial packets.
+const minRetryCryptoRoom = 100
 
 // handleRetry acts on a Retry packet (§17.2.5): re-derive the Initial keys
 // from the server's new identifier, remember the token, and let loss
