@@ -3,11 +3,32 @@ package quic_test
 import (
 	"errors"
 	"os"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/mlagarrigue/sluice/net/quic"
 )
+
+// waitReadParked returns once a goroutine is blocked inside Stream.Read, its
+// select waiting for data: what a test means by "a Read already parked",
+// observed rather than assumed from a sleep, which on a slow machine lets
+// the test pass without exercising the case.
+func waitReadParked(t *testing.T) {
+	t.Helper()
+	buf := make([]byte, 1<<20)
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		n := runtime.Stack(buf, true)
+		for g := range strings.SplitSeq(string(buf[:n]), "\n\n") {
+			head, _, _ := strings.Cut(g, "\n")
+			if strings.Contains(head, "[select") && strings.Contains(g, "quic.(*Stream).Read(") {
+				return
+			}
+		}
+	}
+	t.Fatal("no goroutine parked in Stream.Read within 5s")
+}
 
 // openAccepted opens a stream on the client, sends one byte so the server
 // learns of it, and returns both ends once the server has accepted it.
@@ -68,7 +89,7 @@ func TestReadDeadlineSetDuringReadWakesIt(t *testing.T) {
 		_, err := ss.Read(make([]byte, 16))
 		done <- err
 	}()
-	time.Sleep(50 * time.Millisecond) // long enough for the goroutine to park
+	waitReadParked(t)
 	select {
 	case err := <-done:
 		t.Fatalf("Read returned %v before any deadline was set", err)
@@ -110,7 +131,7 @@ func TestZeroReadDeadlineRemovesIt(t *testing.T) {
 		}
 		done <- err
 	}()
-	time.Sleep(50 * time.Millisecond)
+	waitReadParked(t)
 	select {
 	case err := <-done:
 		t.Fatalf("Read returned %v with no data and no deadline", err)
