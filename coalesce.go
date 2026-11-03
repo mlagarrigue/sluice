@@ -14,8 +14,8 @@ package sluice
 // other. An input batch already holding size elements or more is passed through
 // in size-element slices without copying while nothing is buffered, so a
 // Coalesce whose upstream already produces full batches costs the boundary
-// test and nothing else — measured at 0.54 ns/element, the cost of the bare
-// pipeline without it. Refilling copies by chunk rather than by element, worth
+// test and nothing else — measured at 0.238 ns/element against 0.226 for the
+// bare loop (docs/benchmarks.md, "The architecture's figures"). Refilling copies by chunk rather than by element, worth
 // −20% on 8-element fragments and −49% when size is far above the incoming
 // batches (paired rounds, sign test).
 //

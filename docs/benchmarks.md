@@ -1086,6 +1086,27 @@ by `iter.Pull`, one value or one batch of 1024 at a time.
 Pulling one value at a time costs ×243 the ceiling (53.3 against 0.219 ns per
 element); pulling a batch of 1024, ×1.4.
 
+The operators' own documentation quotes the figures below, from one more set
+of runs by the same method: six runs of one second, median, 2026-11-03,
+go1.26.9, under WSL2, pinned to one core. `BaselineLoop`, run beside them,
+came within 4% of the table above. `Fragmented` feeds batches of 8 elements;
+`WindowNarrow` closes a window every 8 elements.
+
+| benchmark | ns per element | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkBaselineLoop` | 0.226 | 0.222–0.236 | 0 | 0 |
+| `BenchmarkCoalescePassThrough` | 0.238 | 0.236–0.251 | 0 | 0 |
+| `BenchmarkCoalesceFragmented` | 0.640 | 0.632–0.659 | 8,192 | 1 |
+| `BenchmarkCoalesceWithinPassThrough` | 0.727 | 0.709–0.733 | 25,664 | 21 |
+| `BenchmarkCoalesceWithinFragmented` | 36.9 | 36.7–39.8 | 9,408 | 21 |
+| `BenchmarkSplitPartition` | 0.196 | 0.191–0.219 | 8,752 | 1,039 |
+| `BenchmarkSplitBroadcast` | 0.671 | 0.656–0.674 | 17,344 | 1,047 |
+| `BenchmarkZipLongest` | 2.20 | 2.18–2.34 | 25,304 | 20 |
+| `BenchmarkWindowNarrow` | 8.93 | 8.79–9.33 | 8,388,813 | 131,076 |
+
+`BenchmarkPathHasPrefix` (`diagnostics`, `internal/bench`): 3.01 ns per call,
+2.99–3.11, no allocation.
+
 The joins, the interval join among them, are in
 [the section above](#joins-and-hydration-in-isolation), measured in one set
 of runs.

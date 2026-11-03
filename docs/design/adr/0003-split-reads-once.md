@@ -1,7 +1,7 @@
 # ADR 0003 — `Split` reads the source once, with one batch of slack per branch
 
 - **Created:** 2026-08-17
-- **Revised:** 2026-10-07 (renumbered; content unchanged in substance)
+- **Revised:** 2026-11-03 (the costs remeasured, docs/benchmarks.md); 1 earlier, 2026-10-07, in its `git log`
 - **Theme:** core
 
 ## Problem
@@ -38,8 +38,8 @@ reason to exist. Unbounded buffering — the Web Streams model — violates S1.
 An explicit `Run()` after wiring would preserve independence at the cost of
 the common case: the return would stop being a rangeable `[]Stream[T]`.
 
-Measured: partition costs 0.27 ns/element, broadcast over two branches
-0.94 ns, no allocation. Every branch belongs to one goroutine; consuming
+Measured: partition costs 0.196 ns/element, broadcast over two branches
+0.671 ns, no allocation per element. Every branch belongs to one goroutine; consuming
 two concurrently is a data race that `-race` catches — an entry counter
 strict enough to detect it also rejected the supported `iter.Pull` wiring,
 so detection stays with the race detector.

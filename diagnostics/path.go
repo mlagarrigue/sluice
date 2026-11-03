@@ -90,7 +90,7 @@ func (p Path) Index(i int) Path {
 // allocation per extension — the three-segment example above measures at four
 // allocations including its rendering — and a path is built once per
 // diagnostic, never per element, so it is not on a hot path. Comparison is:
-// [Path.HasPrefix] runs at 3.9 ns without allocating, which is what makes
+// [Path.HasPrefix] runs at 3.01 ns without allocating, which is what makes
 // grouping a report by subtree affordable.
 func (p Path) extend(s segment) Path {
 	out := make([]segment, len(p.segments)+1)

@@ -64,9 +64,9 @@ import (
 // # Cost, and the shape that makes it expensive
 //
 // The hand-off is paid **per upstream batch, not per element**, so the
-// per-element figure is whatever that division gives: 0.79 ns/element on
-// 1024-element upstream batches against [sluice.Coalesce]'s 0.21 — one channel
-// round trip and one copy amortized over a thousand elements — but **35
+// per-element figure is whatever that division gives: 0.727 ns/element on
+// 1024-element upstream batches against [sluice.Coalesce]'s 0.238 — one channel
+// round trip and one copy amortized over a thousand elements — but **36.9
 // ns/element on 8-element upstream batches**, the same absolute cost divided
 // by a hundred and twenty-eight times fewer elements.
 //

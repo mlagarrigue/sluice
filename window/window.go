@@ -159,8 +159,8 @@ func (l Late) String() string {
 //
 // # Cost
 //
-// Measured at 4.5 ns/element on 1024-element windows and 7.4 on 8-element
-// ones, allocation-free but for one slice per pane. That is above the ~1.5 ns
+// Measured at 5.43 ns/element on 1024-element windows and 8.93 on 8-element
+// ones (docs/benchmarks.md, "The architecture's figures"), allocation-free but for one slice per pane. That is above the ~1.5 ns
 // per-stage budget, which bounds stateless operators where the only cost is
 // the indirect call; here every element also pays a caller callback returning
 // a 24-byte [time.Time] and two time comparisons — the order check and the

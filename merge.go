@@ -65,8 +65,8 @@ func (c Completion) valid() bool { return c == WhenAll || c == WhenAny }
 //
 // Cost is O(1) in memory whatever the stream length: one [iter.Pull] per
 // source, no buffering. The batch is what makes this affordable — the pull
-// machinery costs ~68 ns per call, which a 1024-element batch amortizes to
-// ~0.07 ns per element. Element-wise, the same operator would be unusable.
+// machinery costs 53.2 ns per element pulled one at a time, and 0.295 when it
+// pulls batches of 1024 (BenchmarkMergeTwoStreams, docs/benchmarks.md). Element-wise, the same operator would be unusable.
 //
 // Batches are passed through untouched, so an operator upstream that reuses its
 // buffer keeps that contract here: retaining Items requires a copy.

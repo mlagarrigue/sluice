@@ -25,9 +25,9 @@ import "github.com/mlagarrigue/sluice"
 // Pairing runs over what both sides hold in common before it re-tests the batch
 // boundary, rather than asking each side for one element at a time. The check
 // is the same either way; paying it once per batch instead of once per element
-// is what the batch is for. Measured at 2.46 ns/element against 2.69 for the
-// element-at-a-time form, and 2.03 against 2.65 when one side is twice the
-// other — the uneven case gains most, because whole batches of the longer side
+// is what the batch is for. It runs at 2.20 ns/element (docs/benchmarks.md),
+// and the A/B that chose it found the element-at-a-time form 9% slower, 30%
+// when one side is twice the other — the uneven case gains most, because whole batches of the longer side
 // then drain in one pass.
 //
 // Output batches reuse an internal buffer: retaining Items beyond the call that

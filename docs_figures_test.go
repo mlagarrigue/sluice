@@ -545,3 +545,91 @@ func TestBenchmarksPageHoldsEveryConsolidatedBlock(t *testing.T) {
 		t.Errorf("docs/benchmarks.md holds block %q, which consolidate.sh does not produce", b)
 	}
 }
+
+// unsourcedDurations are the durations the comments of the root module's code
+// and the decision records quote that are not measurements of
+// docs/benchmarks.md, keyed by file and figure, each with what it is instead:
+// a setting, a bound, a protocol's figure. Anything else written in ns, µs or
+// ms needs its row there.
+var unsourcedDurations = map[string]string{
+	"operator.go 13.6 ns":                                  "the A/B that chose the appending signature of FlatMap, a function that does not inline",
+	"operator.go 1.4 ns":                                   "the same A/B, the appending form",
+	"database/postgres/conn.go 20.5 ns":                    "BenchmarkPGReadRows after the fix, paired A/B against its parent commit",
+	"database/postgres/conn.go 33.5 ms":                    "a profiled wide scan before buffering, the A/B that decided it",
+	"database/postgres/pipeline.go 660 µs":                 "the sequential form on loopback, the A/B that decided the pipeline",
+	"database/postgres/pipeline.go 2.81 ms":                "the same A/B, four principals sequential",
+	"database/postgres/pipeline.go 547 µs":                 "the same A/B, four principals pipelined",
+	"database/postgres/pipeline.go 42.7 ms":                "the same A/B, sixty-four principals sequential",
+	"database/postgres/pipeline.go 24 µs":                  "the same A/B, the marginal cost of a principal",
+	"net/httpstream/h3conn.go 6.5 ns":                      "the walk of parked streams the deadline sweep replaced",
+	"net/httpstream/h3conn.go 6.7 µs":                      "the same walk at 1024 streams",
+	"net/httpstream/httpstream.go 4 ms":                    "a row of TestTransportBatchingMatrix, a test's table, not a benchmark",
+	"net/httpstream/serve.go 24 µs":                        "the watch's wake-up measured on a GitHub runner, not on the page's machine",
+	"net/httpstream/serve.go 46 µs":                        "the same runner, a request watched one at a time",
+	"docs/design/adr/0008-multiplexed-connection.md 24 µs": "the watch's wake-up on a GitHub runner, as serve.go quotes it",
+	"net/quic/crypto.go 570ms":                             "a dated profile (2026-10-05) of BenchmarkConnReceivePacket, the copy's share",
+	"net/quic/recovery.go 1,000 ms":                        "BenchmarkTransferBottleneck on an emulated path, the A/B that set ssPace",
+	"net/quic/send.go 30 ms":                               "a path's round trip, a condition of the arithmetic",
+	"parallel/parallelunordered.go 2.79 ms":                "BenchmarkParallelSkewed, the A/B against Ordered, in internal/bench but in no section of the page yet",
+}
+
+// Every duration a comment of the root module's code or a decision record
+// quotes is in docs/benchmarks.md, within the figures' tolerance — as
+// TestGuideFiguresHaveASource holds the guides' and TestRatiosHaveASource
+// every multiple. The godoc and the records escaped both: window.go said
+// 4.5 ns per element where the page, regenerated, said 5.43.
+func TestDurationsHaveASource(t *testing.T) {
+	page, err := os.ReadFile("docs/benchmarks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	measured := measuredIn(string(page))
+	files, err := filepath.Glob("docs/design/adr/*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = filepath.WalkDir(".", func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if p == "." {
+				return nil
+			}
+			if strings.HasPrefix(d.Name(), ".") || d.Name() == "testdata" {
+				return filepath.SkipDir
+			}
+			if _, err := os.Stat(filepath.Join(p, "go.mod")); err == nil {
+				return filepath.SkipDir // a nested module, outside the promise of the docs
+			}
+			return nil
+		}
+		if strings.HasSuffix(p, ".go") && !strings.HasSuffix(p, "_test.go") {
+			files = append(files, p)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(b), "\n") {
+			if strings.HasSuffix(f, ".go") && !strings.HasPrefix(strings.TrimSpace(line), "//") {
+				continue
+			}
+			for _, m := range duration.FindAllStringSubmatch(line, -1) {
+				if _, ok := unsourcedDurations[f+" "+m[0]]; ok {
+					continue
+				}
+				v := nanos(m)
+				if !slices.ContainsFunc(measured, func(w float64) bool { return relative(v, w) <= figureTolerance }) {
+					t.Errorf("%s:%d: %s is in no table or sentence of docs/benchmarks.md", f, i+1, m[0])
+				}
+			}
+		}
+	}
+}

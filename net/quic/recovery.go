@@ -1360,7 +1360,7 @@ func (c *newReno) onMarked(ev markEvent) {
 // the paths that tell them apart. At 2.5, a 50 Mbit/s path with five
 // milliseconds of buffer overflows a round early in about half of
 // NewReno's transfers: the slow start's one loss event then halves a
-// window of ~160 kB instead of ~230 kB, and the transfer takes 1 000 ms
+// window of ~160 kB instead of ~230 kB, and the transfer takes 1,000 ms
 // instead of 840 (BenchmarkTransferBottleneck, 74 of 160 in the slow mode;
 // at 2, 80 of 80 within 816-856 ms, and RTT80Shallow 5.4 s → 4.6 s). CUBIC
 // at 2 loses 15% on RTT80Shallow (3.8 s → 4.4 s) and gains nothing on
