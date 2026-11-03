@@ -910,7 +910,8 @@ retransmission: a round that saw one between probes cuts the short-term
 model to 0.7, and while probing the marks count with the losses against
 the 2% that bounds `inflight_longterm`. Reno and CUBIC hear the same
 signal as RFC 9002 §7.3.2 and B.7 have it, a congestion event dated by
-the frame's largest acknowledged packet: the window halves (Reno) or
+the newest tracked packet the frame acknowledges, or by the frame's
+arrival when it acknowledges none: the window halves (Reno) or
 takes β (CUBIC), once per recovery period.
 `BenchmarkTransferDeepBufferECN` is `DeepBuffer` behind an AQM that marks
 a datagram CE once it waits more than 5 ms for the line — the depth of

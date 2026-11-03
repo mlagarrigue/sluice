@@ -118,7 +118,7 @@ func TestECNValidationOutcomes(t *testing.T) {
 		c.spaces[spaceApplication].ecnSent = sent
 		return c
 	}
-	acked := ackOutcome{raisedLargest: true, newlyAckedECT0: 5}
+	acked := ackOutcome{newlyAckedECT0: 5}
 
 	c := fresh(5)
 	if newCE := c.validateECNLocked(spaceApplication, ack(9, [3]uint64{5, 0, 0}, true), acked); newCE != 0 {
@@ -184,7 +184,7 @@ func TestECNValidationOutcomes(t *testing.T) {
 	}
 	// A plain ACK of unmarked packets — before any test packet — is fine.
 	c = fresh(0)
-	c.validateECNLocked(spaceApplication, ack(9, [3]uint64{}, false), ackOutcome{raisedLargest: true})
+	c.validateECNLocked(spaceApplication, ack(9, [3]uint64{}, false), ackOutcome{})
 	if c.ecn.phase != ecnTesting {
 		t.Fatalf("a plain ACK of unmarked packets changed the phase to %d", c.ecn.phase)
 	}

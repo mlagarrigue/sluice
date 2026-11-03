@@ -341,7 +341,6 @@ type ackOutcome struct {
 	lateAcked       [][]byte // payloads queued for packets the frame acknowledged after their loss (sentTracker.lost)
 	sawAckEliciting bool     // any newly acked packet was ack-eliciting
 	newlyAckedECT0  int      // newly acked packets that left marked ECT(0), for ECN validation
-	raisedLargest   bool     // the frame increased the largest acknowledged: validation may fail on it (§13.4.2.1)
 	// latestLossSent is when the *newest* lost packet in this batch was
 	// sent, which is what gates a congestion event (RFC 9002 B.8): one
 	// pre-recovery straggler in a batch must not shield a genuinely new
@@ -434,7 +433,6 @@ func (s *sentTracker) markAcked(largest uint64, rangeData []byte) (ackOutcome, e
 	if out.newlyAckedCount > 0 && (!s.hasLargestAcked || out.largestMarked > s.largestAcked) {
 		s.largestAcked = out.largestMarked
 		s.hasLargestAcked = true
-		out.raisedLargest = true
 	}
 	return out, nil
 }

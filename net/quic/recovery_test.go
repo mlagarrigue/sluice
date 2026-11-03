@@ -1272,8 +1272,8 @@ func TestMarkDatedByAnUntrackedLargestStillReduces(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if out.newlyAckedCount != 3 || !out.raisedLargest {
-				t.Fatalf("newlyAckedCount=%d raisedLargest=%v: the frame should newly acknowledge 0..2", out.newlyAckedCount, out.raisedLargest)
+			if out.newlyAckedCount != 3 {
+				t.Fatalf("newlyAckedCount=%d: the frame should newly acknowledge 0..2", out.newlyAckedCount)
 			}
 			if !out.latestSentAt.Equal(now.Add(2 * time.Millisecond)) {
 				t.Fatalf("latestSentAt = %v, want packet 2's send time", out.latestSentAt)
