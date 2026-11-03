@@ -58,6 +58,12 @@ import (
 // VerifyConnection, on the public keys of [tls.ConnectionState.PeerCertificates]
 // (an *rsa.PublicKey's N.BitLen()); this package adds no bound of its own.
 //
+// A client certificate in cfg.Certificates is refused here when its leaf
+// carries a Key Usage without digitalSignature or a chain member is signed
+// with SHA-1 (RFC 9846 §4.5.1.2, §4.3.3), as [NewListener] refuses a
+// server's; what
+// GetClientCertificate returns is the caller's to hold to the same rules.
+//
 // The handshake runs under ctx. It ends when ctx is cancelled — promptly,
 // with an error that wraps both [ErrQUIC] and the context's cause — or at
 // ctx's deadline; a ctx without a deadline gives up after
