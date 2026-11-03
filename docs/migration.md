@@ -14,8 +14,7 @@ signatures — a value now refused — come last.
 
 ### Joins: `join`
 
-- **`Merge` becomes `MergeJoin`** ("feat(join)!: Merge becomes
-  MergeJoin"): replace `join.Merge(` with `join.MergeJoin(`; the arguments,
+- **`Merge` becomes `MergeJoin`** (`c54b341`): replace `join.Merge(` with `join.MergeJoin(`; the arguments,
   the `EitherOrBoth` rows and the panics are unchanged. `sluice.Merge`, which
   interleaves streams, keeps its name: the two no longer share one.
 

@@ -505,11 +505,12 @@ func TestPgtypeNamesAreDocumentedOrUsed(t *testing.T) {
 const adrRuleSince = "2026-10-28"
 
 // adrNamedLater holds the published commits that changed a record without
-// naming it, each with the record it changed. History is not rewritten, so
-// the commit that adds a line here names the record in its own message,
+// naming it, each with the records it changed. History is not rewritten, so
+// the commit that adds a line here names the records in its own message,
 // and `git log --grep "ADR 0015"` still finds the revision through it.
-var adrNamedLater = map[string]string{
-	"cec438de46da81cb7061c4c65d5808c3d96b6547": "0015", // a /64 bounds a host, not a site
+var adrNamedLater = map[string][]string{
+	"cec438de46da81cb7061c4c65d5808c3d96b6547": {"0015"},         // a /64 bounds a host, not a site
+	"c54b3411f6e4d90d9d03bca4914c3612a5fe5302": {"0001", "0004"}, // join.Merge becomes join.MergeJoin
 }
 
 // unnamedADRChanges lists, for the git repository at dir, every commit after
@@ -557,7 +558,7 @@ func unnamedADRChanges(dir string) ([]string, error) {
 			}
 		}
 		for n := range changed {
-			if namedLater(hash) == n {
+			if slices.Contains(namedLater(hash), n) {
 				continue
 			}
 			if !strings.Contains(msg, "ADR "+n) && !strings.Contains(msg, "adr/"+n) {
@@ -569,14 +570,14 @@ func unnamedADRChanges(dir string) ([]string, error) {
 	return faults, nil
 }
 
-// namedLater is the record adrNamedLater names for an abbreviated hash.
-func namedLater(hash string) string {
+// namedLater is the records adrNamedLater names for an abbreviated hash.
+func namedLater(hash string) []string {
 	for full, n := range adrNamedLater {
 		if strings.HasPrefix(full, hash) {
 			return n
 		}
 	}
-	return ""
+	return nil
 }
 
 // A commit that changes what a decision record decides, or why, names the
@@ -1837,7 +1838,7 @@ var zeroSays = regexp.MustCompile(`(?i)\bzero\b|\bunset\b|\bleft at 0\b|\brequir
 
 // zeroIsTheProtocols names the fields whose zero is not a default but the
 // protocol's own value, carried as is: a transport parameter announced as 0
-// grants nothing (RFC 9000 §18.2), and DefaultParameters fills the defaults.
+// grants nothing (RFC 9000 §18.2), and DefaultConfig fills the defaults.
 var zeroIsTheProtocols = map[string]bool{
 	"TransportParameters.InitialMaxData": true, "TransportParameters.InitialMaxStreamDataUni": true,
 	"TransportParameters.InitialMaxStreamDataBidiLocal": true, "TransportParameters.InitialMaxStreamDataBidiRemote": true,
