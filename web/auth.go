@@ -144,12 +144,13 @@ type Verifier interface {
 // other than JWT is refused, and Audience, Issuer and TenantClaim are the
 // levers.
 type HMACConfig struct {
-	// Secret is the shared HMAC key. It must be at least 32 bytes: shorter
-	// than the hash it feeds, and the security of the whole thing rests on
-	// guessing difficulty this package cannot restore. Only the length is
-	// checked: draw it from crypto/rand, never from a password, however long
-	// (RFC 8725 §3.5). [NewHMACVerifier] copies it, so the caller may zero
-	// its own slice afterwards.
+	// Secret is the shared HMAC key. It must be at least 32 bytes, the size
+	// of the hash output RFC 7518 §3.2 sets as the floor for HS256: shorter,
+	// and the security of the whole thing rests on guessing difficulty this
+	// package cannot restore. Only the length is checked: draw it from
+	// crypto/rand, never from a password, however long (RFC 8725 §3.5).
+	// [NewHMACVerifier] copies it, so the caller may zero its own slice
+	// afterwards.
 	Secret []byte
 
 	// Previous are retired secrets still accepted while a rotation is under
