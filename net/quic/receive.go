@@ -1504,20 +1504,24 @@ func (c *Conn) handleLimitGrant(f Frame) {
 			c.rxProgress = true
 			c.cond.Broadcast()
 		}
+	// A MAX_STREAMS wakes the writers waiting for a stream only when it
+	// raises the limit, as MAX_DATA wakes them only when grant raises the
+	// window: one that repeats the limit has nothing for them, and a peer's
+	// two-byte frame would otherwise buy a wake-up per parked writer.
 	case frameMaxStreams:
 		if f.value > c.peerMaxStreamsBidi {
 			c.peerMaxStreamsBidi = f.value
 			c.bidiBlockedTold = false
 			c.rxProgress = true
+			c.cond.Broadcast()
 		}
-		c.cond.Broadcast()
 	default: // MAX_STREAMS for unidirectional streams
 		if f.value > c.peerMaxStreamsUni {
 			c.peerMaxStreamsUni = f.value
 			c.uniBlockedTold = false
 			c.rxProgress = true
+			c.cond.Broadcast()
 		}
-		c.cond.Broadcast()
 	}
 }
 
