@@ -1,11 +1,13 @@
 package quic_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"net"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -179,26 +181,75 @@ func TestClosingPeriodOnAnOwnedSocketRepeatsALostClose(t *testing.T) {
 // listener is absorbed — no CONNECTION_CLOSE (a draining endpoint sends
 // nothing) and no stateless reset, which a listener that had already
 // forgotten the connection would send to its identifier.
+//
+// What the listener writes is counted where it writes it, not where the
+// client reads it: its datagrams are held on the way for the path's delay,
+// and the one it sent just before it heard the close (114 bytes) reaches
+// the client exactly that long after — a reply window opened at the
+// client's side once those had drained took, on a loaded macOS runner, a
+// datagram a timer delivered late for an answer to the late packet.
 func TestDrainingAbsorbsALatePacketWithoutAReset(t *testing.T) {
-	// The replay must leave inside the draining period, which a loaded
-	// machine can make it miss; such a run measured the load, not the
-	// draining state. It is run again rather than skipped, so that a
-	// machine where it never fits says so instead of passing for nothing.
+	// The late packet must reach the listener inside the draining period,
+	// which a loaded machine can make it miss; such a run measured the
+	// load, not the draining state. It is run again rather than skipped, so
+	// that a machine where it never fits says so instead of passing for
+	// nothing.
 	for attempt := 1; attempt <= 3; attempt++ {
 		if drainingAttempt(t) {
 			return
 		}
-		t.Logf("attempt %d: the replay left after the draining period's floor; again", attempt)
+		t.Logf("attempt %d: the late packet reached the listener after the draining period's floor; again", attempt)
 	}
-	t.Fatal("three attempts, none sent the replay inside the draining period: the machine is too loaded to measure it")
+	t.Fatal("three attempts, none delivered the late packet inside the draining period: the machine is too loaded to measure it")
 }
 
-// drainingAttempt runs the scenario once and reports whether its replay left
-// in time to say anything about the draining state.
+// drainWatch is the listener's socket, seen from the test: it counts the
+// datagrams the listener writes once counting is on, and reports when the
+// listener has read the late packet.
+type drainWatch struct {
+	net.PacketConn
+	mu       sync.Mutex
+	counting bool
+	written  []int // the size of each datagram written while counting
+	late     []byte
+	read     chan struct{} // closed once late has been read
+}
+
+func (w *drainWatch) WriteTo(b []byte, addr net.Addr) (int, error) {
+	w.mu.Lock()
+	if w.counting {
+		w.written = append(w.written, len(b))
+	}
+	w.mu.Unlock()
+	return w.PacketConn.WriteTo(b, addr)
+}
+
+func (w *drainWatch) ReadFrom(p []byte) (int, net.Addr, error) {
+	n, from, err := w.PacketConn.ReadFrom(p)
+	w.mu.Lock()
+	if err == nil && w.late != nil && bytes.Equal(p[:n], w.late) {
+		w.late = nil
+		close(w.read)
+	}
+	w.mu.Unlock()
+	return n, from, err
+}
+
+// drainingAttempt runs the scenario once and reports whether its late packet
+// reached the listener in time to say anything about the draining state.
 func drainingAttempt(t *testing.T) bool {
 	t.Helper()
 	const delay = 200 * time.Millisecond
-	l := delayedListener(t, delay)
+	udp, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	watch := &drainWatch{PacketConn: quic.NewDelayedPC(udp, delay), read: make(chan struct{})}
+	l, err := quic.NewListener(watch, serverTLS(t), quic.DefaultConfig(), quic.ListenerConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
 	addr := l.Addr()
 	own, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
 	if err != nil {
@@ -250,64 +301,46 @@ func drainingAttempt(t *testing.T) bool {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the server never heard the client's close")
 	}
-	heard := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := client.Wait(ctx); err != nil {
 		t.Fatal(err)
 	}
 
-	// Whatever the server sent before it read the close (an
-	// acknowledgement, a credit update) is held at most the path's delay
-	// on the way: drained up to that point past the moment the server
-	// heard the close, then until the socket stays quiet for a quarter of
-	// the delay, so that only an answer to the late packet can be read
-	// below. The quiet spell is for a loaded runner, whose timer can deliver
-	// a datagram held for the delay tens of milliseconds late (one did, on
-	// macOS); the draining period's floor below still bounds the wait.
-	buf := make([]byte, 2048)
-	if err := own.SetReadDeadline(heard.Add(delay)); err != nil {
-		t.Fatal(err)
-	}
-	for {
-		if _, _, err := own.ReadFrom(buf); err != nil {
-			if err := own.SetReadDeadline(time.Now().Add(delay / 4)); err != nil {
-				t.Fatal(err)
-			}
-			if _, _, err := own.ReadFrom(buf); err != nil {
-				break
-			}
-		}
-	}
-	// The draining period is three probe timeouts, each at least the
-	// round trip, so it lasts past closed+3·delay. A replay sent later may
-	// meet a listener that has rightly forgotten the connection and
-	// resets it (§10.2): that run measured the machine's load, not the
-	// draining state.
-	if late := time.Since(closed); late >= 3*delay {
-		t.Logf("the late packet would leave %v after the close, past the draining period's floor of %v", late, 3*delay)
-		return false
-	}
+	// The server writes under its connection's lock and entered draining
+	// under it before Done closed: from here on, any datagram it writes is
+	// an answer to the late packet.
+	watch.mu.Lock()
+	watch.counting = true
+	watch.late = replay
+	watch.mu.Unlock()
 	if _, err := own.WriteTo(replay, addr); err != nil {
 		t.Fatal(err)
 	}
-	if err := own.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
-		t.Fatal(err)
+	select {
+	case <-watch.read:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the listener never read the late packet")
 	}
-	// Only the listener's datagrams count: own's ephemeral port may have
-	// served a connection of another test, whose peer still sends to it.
-	for {
-		n, from, err := own.ReadFrom(buf)
-		if err != nil {
-			if !errors.Is(err, os.ErrDeadlineExceeded) {
-				t.Fatal(err)
-			}
-			return true
-		}
-		if from.String() == addr.String() {
-			t.Fatalf("a late packet after the peer's close earned a %d-byte reply, want silence", n)
-		}
+	// The draining period is three probe timeouts, each at least the
+	// round trip, so it lasts past closed+3·delay. A late packet read later
+	// may meet a listener that has rightly forgotten the connection and
+	// resets it (§10.2): that run measured the machine's load, not the
+	// draining state.
+	if since := time.Since(closed); since >= 3*delay {
+		t.Logf("the late packet reached the listener %v after the close, past the draining period's floor of %v", since, 3*delay)
+		return false
 	}
+	// The listener answers, when it does, from the goroutine that read the
+	// datagram, right after the read: a quarter of the path's delay is
+	// ample, and still inside the draining period's floor.
+	time.Sleep(delay / 4)
+	watch.mu.Lock()
+	defer watch.mu.Unlock()
+	if len(watch.written) > 0 {
+		t.Fatalf("a late packet after the peer's close earned replies of %v bytes, want silence", watch.written)
+	}
+	return true
 }
 
 // Wait under a context that has ended cuts the closing period short rather
