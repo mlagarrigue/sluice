@@ -264,6 +264,16 @@ The other rules follow:
   denominator. And never a global "X% faster": a comparison says what it
   compares, in which situation, and where it loses.
 
+**Leaving.** What you would rewrite to stop using it is small, and named. A
+`Stream[T]` is an `iter.Seq[Batch[T]]`: an ordinary range-over-func, which
+a `for range` reads and a loop over `b.Items` flattens. A `Source` is a
+stream and the error to check after it (`NewSource(stream, err)`), the
+`(iter.Seq, func() error)` pair of any standard iterator. The PostgreSQL
+connector speaks the wire protocol without `database/sql`: the queries stay
+SQL that `database/sql` or pgx take as they are, and only the grouping into
+batches is yours to rewrite. The HTTP and QUIC transports serve behind a
+`net.Listener` or a `net.PacketConn`, like any other server.
+
 ## Comparison
 
 Against what Go developers already use, measured on the same machine:
