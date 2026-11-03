@@ -80,6 +80,24 @@ and that is what decides how the branches are read.
   source's coroutine stays suspended until the process ends: read any
   remaining branch, even an empty one, to release it.
 
+Two branches that both receive every batch, read in turn:
+
+```mermaid
+sequenceDiagram
+    participant G as your goroutine
+    participant A as branch 0
+    participant B as branch 1
+    participant S as source
+    G->>A: next
+    A->>S: read one batch
+    S-->>A: the batch, for 0 and 1
+    A-->>G: the batch
+    G->>B: next
+    B-->>G: the same batch, held for it
+    G->>A: next
+    A->>S: read the following batch
+```
+
 > **In plain words:** one branch, read it like a stream; several, read them
 > in turn in the same goroutine.
 

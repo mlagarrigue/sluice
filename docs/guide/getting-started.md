@@ -29,6 +29,15 @@ program that reads slowly does not overflow memory. That is called
 *back-pressure*; here it is not a mechanism to turn on, it is the very
 shape of the object.
 
+```mermaid
+flowchart LR
+    S[source] -- batch --> F[Filter] -- batch --> M[Map] -- batch --> L[your for loop]
+    L -. "next, please" .-> M -. "next" .-> F -. "next" .-> S
+```
+
+The solid arrows are the buckets going down the river; the dotted ones are
+the requests going up. Nothing moves down until a request has come up.
+
 ## Installing
 
 This guide describes the `main` branch, which carries the additions grouped

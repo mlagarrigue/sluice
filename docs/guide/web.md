@@ -132,6 +132,15 @@ builds the pipeline **once**, when the server starts, and each handler call
 becomes an **element** of a batch. The sixty-four calls leave together,
 after **one** `= ANY($1)` query, and each gets its answer.
 
+```mermaid
+flowchart LR
+    R1[handler call 1] --> G[gateway<br/>one batch]
+    R2[handler call 2] --> G
+    R3[handler call …64] --> G
+    G --> P[your pipeline<br/>built once] --> Q[1 SQL<br/>= ANY] --> D[(Postgres)]
+    P -. "each call its answer" .-> R1
+```
+
 ```go
 pipeline := func(calls sluice.Stream[*gateway.Call[Amendment, Result]]) {
     var keys []LineKey                  // buffers reused for the life of the service
