@@ -702,23 +702,25 @@ func (s *Stream) abandon(code, finalSize uint64) (highGrowth, neverConsumed uint
 // caller's batch, and a stream retired now dropped them unread — a peer that
 // sent its answer, its FIN and a STOP_SENDING together (nginx does) left
 // the reader waiting for bytes that had arrived.
-func (s *Stream) onStopSendingLocked(code uint64) (stopped bool, err error) {
+func (s *Stream) onStopSendingLocked(code uint64) (stopped bool) {
 	if s.writeReset {
-		return false, nil
+		return false
 	}
 	if s.conn.streamDataRecvdLocked(s) {
 		// Everything was delivered and acknowledged before the peer asked
 		// to stop: the direction is in "Data Recvd", from which §3.3 lets
 		// nothing leave, and there is nothing to abandon or to tell.
-		return false, nil
+		return false
 	}
 	s.writeReset, s.writeCode = true, code
 	s.sendClosed = true
 	s.conn.noteResetLocked(s.id)
 	frame := appendFrame(nil, FrameResetStream, s.id, code, s.writeOff)
-	err = s.conn.sendPacketLocked(spaceApplication, frame, sendOpts{}) // ungated: see sendOpts.waitCwnd
+	// Ungated (see sendOpts.waitCwnd), and at the read loop's best effort:
+	// see handleStopSending.
+	_ = s.conn.sendPacketLocked(spaceApplication, frame, sendOpts{})
 	s.conn.cond.Broadcast()
-	return true, err
+	return true
 }
 
 // WasReset reports whether the stream was abandoned — by either end, in

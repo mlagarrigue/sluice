@@ -1474,11 +1474,14 @@ func (c *Conn) handleStopSending(f Frame, space int) (*Stream, error) {
 		return nil, err
 	}
 	c.mu.Lock()
-	stopped, sendErr := s.onStopSendingLocked(f.value)
+	// The RESET_STREAM goes at the best effort the rest of the read loop
+	// sends at (flushAcksLocked, flushControlLocked, retransmitLocked): the
+	// packet is recorded before it is written, so a send the socket refuses
+	// is a loss that recovery repairs, and counted in WriteFailures. Returned,
+	// a refusal the same socket survives anywhere else — ENETUNREACH, a
+	// firewall's EPERM — ended the connection and every stream on it.
+	stopped := s.onStopSendingLocked(f.value)
 	c.mu.Unlock()
-	if sendErr != nil && !errors.Is(sendErr, errClosed) {
-		return nil, sendErr
-	}
 	if !stopped {
 		return nil, nil
 	}

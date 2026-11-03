@@ -44,9 +44,8 @@ func TestARepeatedStopSendingOnDataRecvdChangesNothing(t *testing.T) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for i := range 3 {
-		stopped, err := s.onStopSendingLocked(0x10c)
-		if stopped || err != nil {
-			t.Fatalf("STOP_SENDING %d on a Data Recvd stream: stopped=%v err=%v, want neither", i+1, stopped, err)
+		if s.onStopSendingLocked(0x10c) {
+			t.Fatalf("STOP_SENDING %d on a Data Recvd stream stopped it", i+1)
 		}
 		if s.writeReset {
 			t.Fatalf("STOP_SENDING %d reset a direction in Data Recvd", i+1)
@@ -70,8 +69,8 @@ func BenchmarkStopSendingOnDataRecvd(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for range b.N {
-				if stopped, err := s.onStopSendingLocked(0); stopped || err != nil {
-					b.Fatalf("stopped=%v err=%v: the stream was not read as Data Recvd", stopped, err)
+				if s.onStopSendingLocked(0) {
+					b.Fatal("the stream was not read as Data Recvd")
 				}
 			}
 		})
