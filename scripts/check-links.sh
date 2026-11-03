@@ -25,8 +25,10 @@ skipped() {
   esac
 }
 
+# Every tracked document and workflow, the CHANGELOG, the code of conduct,
+# the nested modules' READMEs and .github/ included, and the Go comments.
 {
-  grep -rohE "$url_pattern" --include='*.md' README.md CONTRIBUTING.md SECURITY.md docs
+  git grep -hoE "$url_pattern" -- '*.md' '*.yml' '*.yaml'
   git grep -hE "^[[:space:]]*//.*https?://" -- '*.go' | grep -oE "$url_pattern"
 } | sed "s/[.,;:']*\$//" | grep -E '^https?://[^/:?#]+\.[^/:?#]+' |
   grep -vE '^https?://(127\.0\.0\.1|example\.com|example\.org)[:/?#]' | sort -u >"${TMPDIR:-/tmp}/check-links.$$"
@@ -39,6 +41,19 @@ while IFS= read -r url; do
     echo "skipped $url: $reason"
     continue
   fi
+  # A commit of this repository — the CHANGELOG links hundreds — is looked
+  # up in the history rather than fetched: the page exists if the commit is
+  # in main's history, which needs a full clone, not one request each.
+  case "$url" in
+    https://github.com/mlagarrigue/sluice/commit/*)
+      checked=$((checked + 1))
+      if ! git cat-file -e "${url##*/}^{commit}" 2>/dev/null; then
+        echo "check-links: $url names a commit not in this history" >&2
+        status=1
+      fi
+      continue
+      ;;
+  esac
   code=$(curl -sSL -o /dev/null -w '%{http_code}' --max-time 20 --retry 2 --retry-delay 3 \
     -A 'sluice-link-check (+https://github.com/mlagarrigue/sluice)' "$url" 2>/dev/null) || code=000
   checked=$((checked + 1))

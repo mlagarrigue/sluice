@@ -20,5 +20,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          # The CHANGELOG's commit links are looked up in the history.
+          fetch-depth: 0
       - name: Fetch every external address
         run: scripts/check-links.sh
