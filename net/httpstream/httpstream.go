@@ -496,13 +496,20 @@ type Config struct {
 	// connection it never uses; over HTTP/3 the transport keeps it, as the
 	// max_idle_timeout that [Config.TransportParameters] derives from this
 	// field, so a connection ServeH3Conn serves on other parameters has the
-	// idle timeout those parameters say, not this one.
+	// idle timeout those parameters say, not this one. That clock is QUIC's,
+	// and any packet from the peer restarts it, PING included (RFC 9000
+	// §10.1; RFC 9114 §5.1 leaves idleness to the transport): an HTTP/3
+	// client that pings is held with no request open, and what bounds such
+	// connections is the listener's, quic.ListenerConfig.MaxConns and
+	// MaxConnsPerIP.
 	IdleTimeout time.Duration
 
 	// ReadTimeout is how long one request has to arrive in full once its
 	// first byte has, and how long a new connection has to send its first
 	// byte at all (the TLS handshake included). Zero means 10s. Every
-	// protocol. This is the bound that answers slowloris: a client that
+	// protocol; over HTTP/3 a connection's first bytes are its QUIC
+	// handshake's, and one that then opens no request is the transport's
+	// idle timeout's to end ([Config.IdleTimeout]), not this one's. This is the bound that answers slowloris: a client that
 	// sends a header byte a minute is disconnected by the clock rather than
 	// tolerated; over HTTP/2 and HTTP/3 it is the stream still assembling
 	// that is reset, not the connection. A streamed body ([Request.Stream])
