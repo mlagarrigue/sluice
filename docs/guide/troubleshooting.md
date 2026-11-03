@@ -26,6 +26,22 @@ accumulates — or which side of a `parallel.Async` waits for the other, see
 the `probe` package. Which stage costs the time on a single goroutine is a
 question for a CPU profile: no counter can answer it.
 
+## By what you see
+
+| You see | Look at |
+|---|---|
+| A 401, with `WWW-Authenticate: Bearer` | `web.ErrCredentialsMissing` and the token errors that follow it, in [Web and gateway](#web-and-gateway-web-gateway) |
+| A 403 | `web.ErrForbidden`, in [Web and gateway](#web-and-gateway-web-gateway) |
+| A 413, 414 or 431 from the native server | `httpstream.ErrTooLarge`, in [HTTP](#http-nethttpstream) |
+| An error status, then the connection closed, from the native server | `httpstream.ErrMalformed`, in [HTTP](#http-nethttpstream) |
+| Gateway calls refused while the service stops | `gateway.ErrClosed`, in [Web and gateway](#web-and-gateway-web-gateway) |
+| Every call of one gateway batch failing together | `gateway.ErrPipelinePanicked`, `gateway.ErrNoReply`, in [Web and gateway](#web-and-gateway-web-gateway) |
+| A panic carrying a sentinel, from the core | `sluice.ErrOverflow`, `ErrUnsorted`, `ErrSplitStalled`, `ErrSplitDrained`, `parallel.ErrState`, in [The core](#the-core-sluice-parallel); `sluice.Try` turns them into errors |
+| A panic whose message holds another goroutine's stack | `sluice.PanicError`, in [The core](#the-core-sluice-parallel) |
+| A panic reading a PostgreSQL row | `postgres.ErrRowRetained`, in [PostgreSQL](#postgresql-databasepostgres-pgtype) |
+| A PostgreSQL connection that refuses every further query | `postgres.ErrConnBroken`, in [PostgreSQL](#postgresql-databasepostgres-pgtype) |
+| A QUIC connection that ends on its own | `quic.ErrIdleTimeout`, `quic.ErrStatelessReset`, `quic.ConnectionError`, in [QUIC](#quic-netquic-experimental) |
+
 ## The core: `sluice`, `parallel`
 
 | Error | When | What to do |
