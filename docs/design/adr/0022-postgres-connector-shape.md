@@ -1,20 +1,20 @@
 # ADR 0022 — The PostgreSQL connector's shape: one connection, binary, the codec apart
 
 - **Created:** 2026-10-23
-- **Revised:** 2026-10-28 (written in the present tense; the statement cache sized once; `NewConn` takes `Config`)
+- **Revised:** 2026-10-28 (written in the present tense; the statement cache sized once; `NewConn` takes `Config`), 2026-11-03 (the Problem told in the past tense)
 - **Theme:** postgres
 
 ## Problem
 
 `database/postgres` took its shapes one at a time — no pool, TLS supplied by
 the caller, two protocol versions, binary format only, batches asked for
-ahead, `FetchAuto`, COPY as successive transactions — and none of them is
-written down as a decision: they live in scattered godoc. Its surface mixes
-two things. `go doc -short` lists 190 lines, about 120 of them codec
+ahead, `FetchAuto`, COPY as successive transactions — and none of them was
+written down as a decision: they lived in scattered godoc. Its surface
+mixed two things. `go doc -short` listed 190 lines, about 120 of them codec
 (`Append*`, `Decode*`, the `OID*` constants, `Numeric`, `Interval`,
-`Null`…); 124 of its symbols have no use outside the package, and
-`cmd/sluicegen` emits about twenty. A reader looking for how to open a
-connection and read a batch reads a hundred encoding functions first.
+`Null`…); 124 of its symbols had no use outside the package, and
+`cmd/sluicegen` emitted about twenty. A reader looking for how to open a
+connection and read a batch read a hundred encoding functions first.
 
 ## Decision
 

@@ -1,7 +1,7 @@
 # ADR 0019 — 0-RTT: accepted once, delivered early, acted on when allowed
 
 - **Created:** 2026-10-23
-- **Revised:** 2026-10-27 (the ticket is entered when the resumption is checked, and given back if unused), 2026-10-28 (a full register is the one load signal, and why; the intermediary role is not this package's; three transport positions written)
+- **Revised:** 2026-11-03 (the ticket entered later told as the road not taken); 2 earlier, from 2026-10-27, in its `git log`
 - **Theme:** quic
 
 ## Problem
@@ -61,11 +61,10 @@ when the handshake completes without the early keys or the connection ends:
 the ticket's 0-RTT, and the slot, are intact, and "at most once" still
 holds, since no 0-RTT handshake with that ticket was accepted.
 
-Until 2026-10-27 the ticket was entered later, once the 0-RTT was accepted;
-a full register or a lost race was then found with `early_data` already
-announced, and the connection kept no early key: its 0-RTT packets were
-dropped, which the client saw as loss and resent in 1-RTT after a probe
-timeout.
+Entering the ticket later, once the 0-RTT is accepted, would find a full
+register or a lost race with `early_data` already announced, and the
+connection would keep no early key: its 0-RTT packets would be dropped,
+which the client sees as loss and resends in 1-RTT after a probe timeout.
 
 A `Listener` with `EarlyData` hands the connection to `Accept` as soon as
 its 0-RTT is accepted, before the handshake ends; `Conn.HandshakeComplete`
