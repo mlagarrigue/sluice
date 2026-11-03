@@ -94,9 +94,10 @@ func (d *Collector) Add(diag Diagnostic) bool {
 		// case" is paid for only as it actually fills. Measured at 2 KB and one
 		// allocation for the first Add under a 1M ceiling.
 		//
-		// Past the ceiling the cost is a counter increment — 1.9 ns, no
-		// allocation — which is what makes a pathological batch cheap to
-		// survive rather than merely bounded.
+		// Past the ceiling the cost is a counter increment — 1.24 ns, no
+		// allocation (BenchmarkDiagnosticsOverCeiling, docs/benchmarks.md) —
+		// which is what makes a pathological batch cheap to survive rather
+		// than merely bounded.
 		d.items = make([]Diagnostic, 0, min(d.limit, initialDiagnostics))
 	}
 	d.items = append(d.items, diag)

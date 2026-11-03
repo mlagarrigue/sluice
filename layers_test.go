@@ -31,7 +31,7 @@ var allowed = map[string][]string{
 	"probe":                    {""},
 	"pushdown":                 {""},
 	"internal/handoff":         {"", "internal/batch"},
-	"window":                   {"", "internal/batch", "internal/handoff"},
+	"window":                   {"", "internal/handoff"},
 	"parallel":                 {"", "internal/batch", "internal/handoff"},
 	"web":                      {"", "diagnostics", "web/internal/reqbody"},
 	"web/internal/reqbody":     {"diagnostics"},

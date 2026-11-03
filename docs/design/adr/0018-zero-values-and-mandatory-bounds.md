@@ -1,7 +1,7 @@
 # ADR 0018 — Zero is the safe default, the bound is mandatory
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-11-03 (subheadings in the Decision); 5 earlier, from 2026-10-21, in its `git log`
+- **Revised:** 2026-11-03 (subheadings in the Decision; the statement cache's negative named); 5 earlier, from 2026-10-21, in its `git log`
 - **Theme:** httpstream
 
 ## Problem
@@ -109,7 +109,9 @@ never removed.**
    connections that do not speak HTTP/3.
 
 6. **The rule holds for every `Config` of the periphery, not for
-   `httpstream` alone.** `postgres.Config` follows it to the letter: zero
+   `httpstream` alone.** `postgres.Config` follows it, with one exception
+   its comment names — a negative `StatementCacheSize` turns the cache off
+   (ADR 0022): zero
    means the default named in the field's comment (`MaxMessage` 64 MiB,
    `CancelTimeout` 5 s, `MinSCRAMIterations` 4096, `MaxSCRAMIterations`
    1,048,576, `MinSCRAMSaltLen` 16), a negative value or one outside what

@@ -279,8 +279,8 @@ func TestH2RefusesMalformedTrailers(t *testing.T) {
 // load and not before.
 //
 // The server is driven through serveH2, whose per-connection goroutine is the
-// test's own: once ServeH2Conn has returned, no goroutine should be running — or
-// have been created by — a function of this package. That is checked by
+// test's own: once ServeH2Conn has returned, no goroutine should be running a
+// function of this package. That is checked by
 // name rather than against a goroutine count, so there is no baseline to
 // guess and no settling to wait for.
 func TestH2ConnectionsLeaveNoGoroutines(t *testing.T) {

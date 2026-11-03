@@ -284,8 +284,8 @@ remains to be verified with several batches alive simultaneously.*
   model** — no "zero-cost" promise is made here.
 - `iter.Pull` (the standard function that turns an iterator into a `next()` call) costs a runtime coroutine — a suspended function the runtime resumes on demand — and a context switch **per value
   pulled**: **53.3 ns/element measured** (×243 the native loop, the ceiling), against 1.05 ns in
-  direct push. It is reserved for lockstep joins and merge, and then **on
-  batches** — never on elements. This is not a recommendation but an
+  direct push. It is reserved for lockstep joins, `Merge` and `Split`'s branches, and
+  then **on batches** — never on elements. This is not a recommendation but an
   **obligation**: see [Measurements](../benchmarks.md#the-architectures-figures).
 
 All-batch amortizes the indirect call over ~1024 elements: the per-stage cost
@@ -733,7 +733,7 @@ operators *are* that point.
 > open window's end first answers for every element but the first of each
 > window, for −56.7% (14/14 paired rounds).
 
-**Blocking — O(n).** `Collect` · `join.StreamTable` (build side).
+**Blocking — O(n).** `Collect` · `Count` · `ForEach` · `Reduce` · `join.StreamTable` (build side).
 **Incompatible with an infinite stream.**
 
 > **No `Sort`, `GroupBy` or `Materialize`.** A caller who needs one collects
@@ -1583,7 +1583,8 @@ choice, not a correction.*
 
 ## The request path
 
-The supported path serves HTTP over `net/http`: `web` reads a request into a
+The `net/http` path — one of the two supported, beside the native one of
+[Two transports](#two-transports) — serves HTTP: `web` reads a request into a
 batch element and renders what comes back, and `gateway` turns concurrent
 request/reply calls into batched stream processing — one pipeline, built at
 startup, serving many callers a batch at a time. Three decisions in the
@@ -1694,7 +1695,7 @@ nested calls, so a chain would break exactly where a pipeline does its work.
 | S2 | No `panic` crosses a public boundary while data flows, other than the sentinels `Try` converts ([ADR 0006](adr/0006-sentinel-panics-and-try.md)). | Fuzzed parsers, where a panic fails the fuzz (`FuzzParseRequest`, `FuzzH2Connection`, `FuzzParseLongHeader`, `FuzzReaderNext`, `FuzzPathJSONPointerRoundTrip`); `TestTryKnowsEverySentinel` |
 | S3 | Restrictive default limits. | The values are fixed in the code, each beside its field; that zero takes them is tested: `TestADR0018ListsMatchConfig`, `TestServeBoundsHeaderReadsAndIdleConnectionsByDefault`, and that zero takes the value each field's comment names: `TestZeroConfigResolvesToTheDefaultsItsCommentsName` |
 | S4 | `unsafe` forbidden except under a named audit. One exception: `net/quic/udp/configure_windows.go`, for the input buffer of `syscall.WSAIoctl`. | `scripts/check-hygiene.sh` fails on any import of `unsafe` outside the audited list |
-| S5 | Mandatory timeouts on all I/O. | Silent connection → released: `TestSilentConnectionHasReadTimeoutToSpeak` (httpstream), `TestIdleTimeoutEndsASilentConnection` (QUIC) |
+| S5 | Mandatory timeouts on all network I/O the library waits on alone; PostgreSQL's is bounded by the caller's context (ADR 0022). | Silent connection → released: `TestSilentConnectionHasReadTimeoutToSpeak` (httpstream), `TestIdleTimeoutEndsASilentConnection` (QUIC) |
 | S6 | No goroutine leak. | A `synctest` bubble that fails while a goroutine is still blocked: `TestParallelLeavesNoGoroutines`, `TestConnectionsLeaveNoGoroutines` (QUIC); for `httpstream`, whose connections run on real sockets, no goroutine of the package left once they close, checked by name: `TestH2ConnectionsLeaveNoGoroutines` |
 | S7 | Internal errors do not leak to the client. | **Guaranteed by structure**: `cause` unexported ([The model adopted](#the-model-adopted)); exercised by `TestDiagnosticCauseIsWrappedNotExported`, `TestAuthenticateDoesNotLeakWhyItFailed` |
 | S8 | Every network input is bounded before allocation. | Fuzzing: `FuzzParseRequest`, `FuzzParseFrame`, `FuzzHPACKDecode`, `FuzzQPACKDecode`, `FuzzParseLongHeader`, `FuzzReaderNext` |
