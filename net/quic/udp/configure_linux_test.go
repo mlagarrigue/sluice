@@ -92,11 +92,27 @@ func TestKernelDefaultIsNotProbe(t *testing.T) {
 // interface MTU with EMSGSIZE instead of fragmenting it. Loopback's MTU admits
 // every UDP datagram, so the datagram goes towards TEST-NET-1 (RFC 5737),
 // which leaves through the default route — MTU 1500 or thereabouts — and
-// reaches no one. A plain socket sending the same datagram is the control:
-// if it fails too, there is no route to measure against.
+// reaches no one. The route's MTU is read rather than assumed (IP_MTU on a
+// connected socket): a runner whose interface carries jumbo frames admitted
+// a 3000-byte datagram with DF set. A plain socket sending the same
+// datagram is the control: if it fails too, there is no route to measure
+// against.
 func TestDontFragmentRefusesOversize(t *testing.T) {
 	dst := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 4433}
-	big := make([]byte, 3000)
+
+	route, err := net.DialUDP("udp4", nil, dst)
+	if err != nil {
+		t.Skipf("no default IPv4 route to send through: %v", err)
+	}
+	mtu := getsockopt(t, route, syscall.IPPROTO_IP, syscall.IP_MTU)
+	_ = route.Close() // only its route's MTU was wanted
+	// 20 bytes of IPv4 header and 8 of UDP: one byte over the MTU, within
+	// the largest UDP payload IPv4 can carry.
+	size := mtu - 28 + 1
+	if size > 65507 {
+		t.Skipf("route MTU %d leaves no oversize UDP datagram", mtu)
+	}
+	big := make([]byte, size)
 
 	plain, err := net.ListenUDP("udp4", nil)
 	if err != nil {
