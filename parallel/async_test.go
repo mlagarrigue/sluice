@@ -64,8 +64,10 @@ func TestAsyncKeepsEmptyBatchCadence(t *testing.T) {
 }
 
 // The point of the operator: the producer runs ahead of a slow consumer, up
-// to its depth of slack. The consumer takes one batch and then holds; the
-// producer must keep going without it.
+// to its depth of slack and no further. The consumer takes one batch and
+// then holds; the producer must keep going without it, and stop once the
+// depth batches in the channel and the one it is filling are out (the
+// architecture's S11: read-ahead is bounded).
 func TestAsyncProducerRunsAhead(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var produced atomic.Int64
@@ -90,6 +92,11 @@ func TestAsyncProducerRunsAhead(t *testing.T) {
 			synctest.Wait()
 			if produced.Load() < depth {
 				t.Errorf("producer stalled at %d batches while the consumer held; want >= %d", produced.Load(), depth)
+			}
+			// The batch held here, depth in the channel; the next one is
+			// in the producer's hands, its yield not yet returned.
+			if produced.Load() > depth+1 {
+				t.Errorf("producer ran %d batches ahead of a consumer holding one; the depth is %d", produced.Load(), depth)
 			}
 			return true
 		})

@@ -209,3 +209,39 @@ func TestParallelUnorderedStopDuringTailDrain(t *testing.T) {
 		})
 	}
 }
+
+// Read-ahead is bounded (the architecture's S11): with every worker stuck
+// in f, the source is read only as far as the 2×workers+1 inputs that can
+// be outstanding — workers jobs queued, workers in hand, one being filled —
+// and then waits for one to come back. The job queue and the slots each
+// hold that bound; lifting only one leaves it standing.
+func TestUnorderedReadsAheadAtMostItsSlots(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const workers = 3
+		var read atomic.Int64
+		src := sluice.Stream[int](func(yield func(sluice.Batch[int]) bool) {
+			for i := range 100 {
+				read.Add(1)
+				if !yield(sluice.Batch[int]{Items: []int{i}}) {
+					return
+				}
+			}
+		})
+		release := make(chan struct{})
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for range Unordered(src, workers, func(b sluice.Batch[int]) sluice.Batch[int] {
+				<-release
+				return b
+			}) {
+			}
+		}()
+		synctest.Wait()
+		if n := read.Load(); n > 2*workers+1 {
+			t.Errorf("the source was read %d batches ahead of %d stuck workers; the bound is %d", n, workers, 2*workers+1)
+		}
+		close(release)
+		<-done
+	})
+}
