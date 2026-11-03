@@ -21,3 +21,18 @@ BEGIN
   END LOOP;
 END
 $$;
+
+-- The extension types the codecs of pgtype cover. Their OIDs are chosen here,
+-- per database, which is what the suite resolves by name. hstore, citext and
+-- ltree ship with every PostgreSQL image; vector only with pgvector's, which
+-- one CI entry runs on.
+CREATE EXTENSION IF NOT EXISTS hstore;
+CREATE EXTENSION IF NOT EXISTS citext;
+CREATE EXTENSION IF NOT EXISTS ltree;
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'vector') THEN
+    CREATE EXTENSION IF NOT EXISTS vector;
+  END IF;
+END
+$$;

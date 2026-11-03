@@ -217,6 +217,13 @@ func TestIntegrationAnonymousRecordDecodes(t *testing.T) {
 // one expr names by the server's own equality.
 func codecMatchesServer[T any](t *testing.T, conn *postgres.Conn, expr string, c pgtype.Codec[T], v T) {
 	t.Helper()
+	codecMatchesServerBy(t, conn, expr, "SELECT $1 = "+expr, c, v)
+}
+
+// codecMatchesServerBy is codecMatchesServer for a type with no equality
+// operator: compare is the query that says whether $1 is the value.
+func codecMatchesServerBy[T any](t *testing.T, conn *postgres.Conn, expr, compare string, c pgtype.Codec[T], v T) {
+	t.Helper()
 	t.Run(expr, func(t *testing.T) {
 		mine := c.Append(nil, v)
 		theirs := serverEncoding(t, conn, expr)
@@ -230,7 +237,7 @@ func codecMatchesServer[T any](t *testing.T, conn *postgres.Conn, expr string, c
 		if again := c.Append(nil, got); !bytes.Equal(again, theirs) {
 			t.Errorf("the server's bytes decode to %+v, which encodes to %x", got, again)
 		}
-		if !serverAgrees(t, conn, "SELECT $1 = "+expr, c.OID, mine) {
+		if !serverAgrees(t, conn, compare, c.OID, mine) {
 			t.Errorf("bound under OID %d, the value is not %s", c.OID, expr)
 		}
 	})

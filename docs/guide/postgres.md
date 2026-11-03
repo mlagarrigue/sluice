@@ -351,7 +351,8 @@ A range's codec puts a range in a container: an `int4range[]` is
 `DecodeArray` over `Int4RangeCodec()`. A range type a database created
 (`CREATE TYPE … AS RANGE`) is read the same way with
 `RangeCodec(Float8Codec(), oid, arrayOID)` — and `MultirangeCodec` for its
-multirange —, the OIDs read from `pg_type`; build it once and keep it.
+multirange —, the OIDs returned by `conn.LookupType` (next section); build
+it once and keep it.
 
 The table's named arrays (`DecodeInt4Array`…) stay the fast path for their
 shape, one dimension numbered from 1. Over 1,000 `int4` elements,
@@ -362,6 +363,36 @@ call per element, the price of code written once for every type.
 > PostgreSQL, and how to write and read it as bytes. A container knows
 > nothing of what it holds; it is handed the card of its contents.
 
+### Types an extension creates
+
+`hstore`, `citext`, `ltree` and pgvector's `vector` have no fixed OID: each
+database that runs `CREATE EXTENSION` gives them the next free one.
+`conn.LookupType(ctx, name)` returns the type's OID and its array's,
+resolved as a cast would be (the search path, or `schema.type`), and
+`ErrUnknownType` when the database does not know it. The codec is built on
+those OIDs, once per database:
+
+```go
+oid, arrayOID, err := conn.LookupType(ctx, "hstore")
+hstore := pgtype.HstoreCodec(oid, arrayOID)
+param := postgres.Param{OID: hstore.OID, Value: hstore.Append(nil, pgtype.Hstore{
+	"color": {Value: "red", Valid: true},
+})}
+```
+
+| Extension | Type | Go | Codec |
+|---|---|---|---|
+| citext | `citext` | `string` | `CitextCodec` |
+| hstore | `hstore` | `Hstore` (`map[string]Null[string]`) | `HstoreCodec` (`AppendHstore`, `DecodeHstore`) |
+| ltree | `ltree`, `lquery`, `ltxtquery` | `string` | `LtreeCodec`, `LqueryCodec`, `LtxtqueryCodec` (`AppendLtree`, `DecodeLtree`) |
+| pgvector | `vector` | `[]float32` | `VectorCodec` (`AppendVector`, `DecodeVector`) |
+
+PostGIS's types (`geometry`, `geography`) stay bytes: their binary form is
+EWKB, a geometry format that a geometry library decodes, not a connector.
+`Rows.Value` returns it as it is, or `ST_AsText` and `ST_AsGeoJSON` convert
+it in the query. pgvector's `halfvec` and `sparsevec` have no codec: cast
+them with `::vector` in the query.
+
 ### The types not covered
 
 Every other built-in type of PostgreSQL 14 to 19, by family. A column of
@@ -370,7 +401,7 @@ you to decode, or the query casts it to `text`.
 
 | Family | Types |
 |---|---|
-| Extensions | `hstore`, `citext`, `ltree`, `vector`, PostGIS's types — their OID too is chosen by each database |
+| Extensions | PostGIS's types (EWKB, [above](#types-an-extension-creates)), pgvector's `halfvec` and `sparsevec`, any other extension's |
 | Internal | `pg_node_tree`, `pg_ndistinct`, `pg_dependencies`, `pg_mcv_list`, the BRIN summaries: the planner's and the statistics' own |
 
 `aclitem` and `gtsvector` have no binary form at all: the server refuses to
@@ -893,9 +924,9 @@ The design is in [ADR 0024](../design/adr/0024-listen-notify.md).
   at-least-once, and the resumption point lives in your schema.
 - **No `COPY ... TO STDOUT`**.
 - **`md5` authentication is refused.**
-- **Types**: the table above and its containers, nothing else — no
-  extension types ([the full list](#the-types-not-covered)); named arrays
-  and column scanners for its first thirteen types only.
+- **Types**: the table above, its containers and four extensions'
+  types, nothing else ([the full list](#the-types-not-covered)); named
+  arrays and column scanners for its first thirteen types only.
 
 The detail: [Limits](limits.md).
 

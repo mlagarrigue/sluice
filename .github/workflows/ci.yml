@@ -301,11 +301,18 @@ jobs:
         include:
           - postgres: "19"
             tag: "19rc1"
+          # pgvector's image is the official one with the extension built in.
+          # The 17 entry runs on it, so the vector codec meets a real server
+          # and SLUICE_PG_VECTOR turns the extension's absence into a failure.
+          - postgres: "17"
+            image: pgvector/pgvector
+            tag: "0.8.2-pg17"
+            vector: "1"
     services:
       postgres:
         # Pinned majors: a new major changes catalogs and error texts, and
         # that should arrive as a reviewed bump, not overnight.
-        image: postgres:${{ matrix.tag || matrix.postgres }}
+        image: ${{ matrix.image || 'postgres' }}:${{ matrix.tag || matrix.postgres }}
         env:
           POSTGRES_PASSWORD: postgres
         ports:
@@ -363,6 +370,7 @@ jobs:
           SLUICE_PG_TLS_CA: ${{ runner.temp }}/pg-rsa/server.crt
           SLUICE_PG_TLS_SIGALG: SHA256-RSA
           SLUICE_PG_HBA: '1'
+          SLUICE_PG_VECTOR: ${{ matrix.vector }}
         run: |
           go test -race -count=1 -v ./database/postgres/... ./example/... | tee test.log
           if grep -E 'SLUICE_PG is not set|is a superuser|may not create roles|SLUICE_PG_TLS_CA is not set|SLUICE_PG_PASSWORD is not set|accepted a wrong password|not logical: the server cannot replicate|lacks the REPLICATION attribute' test.log; then

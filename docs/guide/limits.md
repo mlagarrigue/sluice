@@ -88,8 +88,10 @@ Three reasons come up, and the difference matters:
   names every other built-in type, by family. Arrays of any shape, ranges,
   multiranges and composites go through the
   [generic containers](postgres.md#containers-arrays-ranges-composites).
-  **Missing**: extension types (`hstore`, `vector`…), whose OID each
-  database chooses. Such
+  `hstore`, `citext`, `ltree` and `vector` go through their resolved OID
+  ([`LookupType`](postgres.md#types-an-extension-creates)). **Missing**:
+  PostGIS's types, left as EWKB bytes (a geometry library decodes them),
+  pgvector's `halfvec` and `sparsevec`, and other extensions' types. Such
   a column arrives as raw binary bytes through `Rows.Value`, or cast to
   `text` in the query; `aclitem` and `gtsvector`, which have no binary form,
   must be cast.
