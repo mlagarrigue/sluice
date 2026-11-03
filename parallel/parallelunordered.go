@@ -20,9 +20,10 @@ import (
 // constraint lets every worker's result leave as soon as it exists.
 //
 // Measured on work whose cost varies 8× between batches, four workers
-// (BenchmarkParallelSkewed and its pairs): serial 7.67 ms, [Ordered] 7.45 ms
-// — ×1.03, the fan-out nearly cancelled by its own ordering — against 2.79 ms
-// here, ×2.75. Uniform work gains too, ×1.59 (1.07 ms against 1.70): ordered
+// (BenchmarkParallelSkewed and its pairs, docs/benchmarks.md): serial
+// 8.30 ms, [Ordered] 8.22 ms — ×1.01, the fan-out nearly cancelled by its own
+// ordering — against 3.47 ms here, ×2.40. Uniform work gains too, ×1.58
+// (1.36 ms against 2.15, BenchmarkParallelWorkSize): ordered
 // emission turns even scheduling jitter into window stalls, where this
 // operator carries twice the in-flight slack and lets nothing wait. [Ordered]
 // stays the default all the same: an operator inserted into an existing

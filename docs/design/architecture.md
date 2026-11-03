@@ -731,7 +731,7 @@ operators *are* that point.
 > returning a 24-byte `time.Time` and two time comparisons. Calling
 > `time.Truncate` per element — a 64-bit division — cost twice that; testing the
 > open window's end first answers for every element but the first of each
-> window, for −56.7% (14/14 paired rounds).
+> window.
 
 **Blocking — O(n).** `Collect` · `Count` · `ForEach` · `Reduce` · `join.StreamTable` (build side).
 **Incompatible with an infinite stream.**
@@ -836,7 +836,7 @@ coordination cost is amortized.
 > a batch to a worker and waking it eats what the fan-out would save. With
 > more work per batch the gain grows — ×1.7 at 83 µs, ×2.9 at 850 µs
 > ([Measurements](../benchmarks.md#the-architectures-figures)). On a pass-through `f`,
-> four workers were **3.5× slower** than none. The operator earns its place only
+> four workers were **3.5× slower** than none (56.6 against 16.0 µs). The operator earns its place only
 > where `f` is genuinely expensive, and the numbers are in its documentation so
 > that "add `parallel.Ordered`" is a claim to check rather than an assumption.
 >
@@ -847,15 +847,15 @@ coordination cost is amortized.
 > `parallel.Unordered` emits batches as they complete; the concern
 > above — two operators differing in a way most callers would get wrong — is
 > answered by the name being the contract. Measured on work skewed 8× between
-> batches: ordered fan-out ×1.03 over serial (the fan-out nearly cancelled by
-> its own ordering), unordered ×2.75. Uniform work gains ×1.59 too, since
+> batches: ordered fan-out ×1.01 over serial (the fan-out nearly cancelled by
+> its own ordering), unordered ×2.40. Uniform work gains ×1.58 too, since
 > ordered emission turns scheduling jitter into window stalls. Ordered stays
-> the default. `parallel.OrderedWithState` completes the family: per-worker private
-> state, built up front on the consuming goroutine, closed through `io.Closer`
-> on every exit path — the operator for the decoder table or reader cache that
-> is neither shareable nor worth a mutex (−32% time, −45% memory against
-> allocating the workspace per batch). All three share one worker core and so
-> one ordering, shutdown and panic contract.
+> the default. `parallel.OrderedWithState` completes the family: per-worker
+> private state, built up front on the consuming goroutine, closed through
+> `io.Closer` on every exit path — the operator for the decoder table or
+> reader cache that is neither shareable nor worth a mutex (−34% time, −45%
+> memory against a workspace per batch; all four [measured](../benchmarks.md#the-architectures-figures)).
+> All three share one worker core and so one ordering, shutdown and panic contract.
 >
 > **The input batch is copied at the hand-off (S14).** The operator retains each
 > incoming batch while a worker reads it, and upstream operators legitimately
@@ -1022,8 +1022,9 @@ func Coalesce[T any](s Stream[T], targetSize int) Stream[T]
 
 **Target size: measured.** The plateau starts at 8 elements and does not degrade
 up to 1M ([Batch size](#batch-size-1024-by-default)). The gap with DuckDB (2048) and DataFusion (8192) has no effect
-here. On a filter at 1% selectivity, the batch remains **3.6× faster** than the
-element even without `Coalesce`, and without allocation — `Coalesce` is therefore
+here. On a filter at 1% selectivity, the batch remains **×3.95 faster** than the
+element even without `Coalesce`, and without allocation
+([measured](../benchmarks.md#the-architectures-figures)) — `Coalesce` is therefore
 useful to avoid propagating sparse batches across several stages, but **it is not
 urgent**.
 

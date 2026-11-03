@@ -277,7 +277,7 @@ rows := parallel.Async(readCSV(path), 4)
 > goroutine costs about what light work does, and the operator waits for the
 > oldest batch, so one slow goroutine holds the others. On a trivial `f`, four goroutines are 3.5 times
 > *slower* than none: the coordination costs more than the work.
-> `Unordered` does better when the cost varies (×2.75 on skewed work). And
+> `Unordered` does better when the cost varies (×2.40 on skewed work). And
 > `Async`, which does not parallelise the computation but overlaps the
 > waiting with the work, halves the wall clock of a three-stage ETL.
 > "Adding parallelism" is a claim to check, not a given.

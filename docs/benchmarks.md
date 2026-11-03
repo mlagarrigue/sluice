@@ -1186,6 +1186,33 @@ by the parallel one.
 | 512 | 404 | 25,868 | 9,693 | 8,473 | ×2.67 | ×3.05 |
 | 1024 | 850 | 54,390 | 18,487 | 17,076 | ×2.94 | ×3.19 |
 
+Skewed work, and the state a worker keeps. The three `Skewed` rows run work
+whose cost varies 8× from one batch to the next through one worker, then
+through `parallel.Ordered` and `parallel.Unordered` on four.
+`ParallelFreshScratch` allocates a workspace for every batch;
+`ParallelInitReusedScratch` keeps one per worker, as
+`parallel.OrderedWithState` does (`internal/bench`). Six runs of one second,
+median, 2026-11-03, go1.26.9, 15 cores, under WSL2, not pinned, on mains
+power with a background load of about two cores.
+
+| benchmark | µs per run | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkParallelSkewedSerial` | 8,302 | 8,232–9,307 | 1,048,725 | 70 |
+| `BenchmarkParallelSkewed` | 8,223 | 8,063–8,395 | 1,082,940 | 93 |
+| `BenchmarkParallelUnorderedSkewed` | 3,465 | 3,400–3,595 | 1,124,223 | 98 |
+| `BenchmarkParallelFreshScratch` | 667 | 647–683 | 1,082,902 | 156 |
+| `BenchmarkParallelInitReusedScratch` | 440 | 428–468 | 591,596 | 104 |
+
+On skewed work, ordered fan-out gains ×1.01 over serial and unordered
+×2.40. A workspace kept per worker costs 34% less time and 45% less memory
+than one allocated per batch.
+
+A filter that keeps one element in 100, followed by a map, over 1,048,576
+`int64` (`BenchmarkSelectiveFilter`, same runs): 2.03 ns per element element
+by element (1.97–2.18), 0.513 by batches of 1024 left sparse, without
+`Coalesce` (0.508–0.545), neither allocating per element — the batch ×3.95
+faster.
+
 ### The designs turned down
 
 Five decisions of the architecture compare the shape kept with one it

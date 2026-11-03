@@ -37,10 +37,11 @@ var ErrState = batch.NewSentinel("sluice: OrderedWithState state factory failed"
 // [Ordered]'s: same machinery, same guarantees, same measured costs.
 //
 // What the private state is worth, measured: an f needing a batch-sized
-// workspace ran at 532 µs and 150 allocs/op under [Ordered] — the workspace
-// allocated on every batch — against 360 µs and 98 under OrderedWithState with the
-// workspace owned by the worker: −32% time and −45% memory for the same work
-// (BenchmarkParallelFreshScratch / BenchmarkParallelInitReusedScratch).
+// workspace ran at 667 µs and 156 allocs/op under [Ordered] — the workspace
+// allocated on every batch — against 440 µs and 104 under OrderedWithState with the
+// workspace owned by the worker: −34% time and −45% memory for the same work
+// (BenchmarkParallelFreshScratch / BenchmarkParallelInitReusedScratch,
+// docs/benchmarks.md).
 //
 // # States are created up front, on the consuming goroutine
 //

@@ -570,7 +570,6 @@ var unsourcedDurations = map[string]string{
 	"net/quic/crypto.go 570ms":                             "a dated profile (2026-10-05) of BenchmarkConnReceivePacket, the copy's share",
 	"net/quic/recovery.go 1,000 ms":                        "BenchmarkTransferBottleneck on an emulated path, the A/B that set ssPace",
 	"net/quic/send.go 30 ms":                               "a path's round trip, a condition of the arithmetic",
-	"parallel/parallelunordered.go 2.79 ms":                "BenchmarkParallelSkewed, the A/B against Ordered, in internal/bench but in no section of the page yet",
 }
 
 // Every duration a comment of the root module's code or a decision record
