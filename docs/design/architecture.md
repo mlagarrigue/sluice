@@ -193,13 +193,13 @@ where its codec lives — is [ADR 0022](adr/0022-postgres-connector-shape.md).
 
 **Verified positioning.** No Go web framework is built on an end-to-end stream
 abstraction; no framework, in any language, unifies web + DB + ETL on a single
-stream. Akka Streams is the closest precedent without covering all three. The
+stream. Akka Streams (a Scala and Java library of back-pressured streams) is the closest precedent without covering all three. The
 ground is clear — that is neither a guarantee nor a proof that the idea is good.
 
-**Pull, not push.** Kersten et al. establish that pull/push and granularity
-are orthogonal and that neither direction dominates; DuckDB moved to push for
-architectural reasons without invoking pull performance; and the Timely
-Dataflow README proposes, as a fix for its unbounded push output, having
+**Pull, not push.** Kersten et al. (VLDB 2018, a comparison of the two families of query engines, compiled and vectorized) establish that pull/push and granularity
+are orthogonal and that neither direction dominates; DuckDB (an embedded analytical database) moved to push for
+architectural reasons without invoking pull performance; and the README of Timely
+Dataflow (a dataflow engine in Rust) proposes, as a fix for its unbounded push output, having
 operators return an iterator. Pull is what makes the consumer's refusal reach
 the source and run its `defer`, which is the property everything below leans
 on.
@@ -252,7 +252,7 @@ would be a mistake**, for three reasons:
    amortized context checking, batch-granularity pushdown, one network round-trip
    per batch.
 
-This is also what X100 does: `next()` **always** returns a vector.
+This is also what X100 does — the vectorized engine of MonetDB/X100 (CIDR 2005), ancestor of today's columnar databases: `next()` **always** returns a vector.
 
 ### Beneficial side effect: the stop signal stops being ambiguous
 
@@ -353,10 +353,10 @@ A consumer may want to say something better than "stop": *"skip ahead to key X"*
 *"I no longer need column Y"*. This mechanism exists and has a name: **sideways
 information passing**.
 
-The modern reference implementation is DataFusion's *dynamic filters*: a
-downstream `TopK` operator passes the current threshold to the upstream scan,
+The modern reference implementation is DataFusion's (a query engine in Rust, part of Apache Arrow) *dynamic filters*: a
+downstream `TopK` operator (the one that keeps the k best rows, behind `ORDER BY … LIMIT k`) passes the current threshold to the upstream scan,
 **which tightens as execution proceeds**; the scan then skips rows, then whole
-files. Gains measured up to **22×** (ClickBench Q23) and **25×** on joins.
+files. Gains measured up to **22×** (ClickBench Q23 — ClickBench is a public benchmark of analytical databases) and **25×** on joins.
 
 The mechanism is transposable and 0dep-compatible: a shared demand object plus an
 **atomic generation counter** that the reader compares without a lock. The hot
@@ -433,13 +433,13 @@ constraint at read time, or a hydration failure.
 
 ### This model already exists — twice
 
-**FHIR OperationOutcome** (HL7) carries exactly this shape: `severity`
+**FHIR OperationOutcome** (FHIR is the healthcare data-exchange standard HL7 publishes; OperationOutcome is its resource for the issues an operation met) carries exactly this shape: `severity`
 (`fatal | error | warning | information`), `code`, `details`, and `expression` — a
 path with indices, `Patient.identifier[2].value`. A point that settles the
 hesitation between "code 1000" and "classification Sales\Order": FHIR uses
 **both**, a code from a closed vocabulary *and* an application code in `details`.
 
-**SARIF 2.1.0** (OASIS) brings the two missing pieces:
+**SARIF 2.1.0** (Static Analysis Results Interchange Format, the OASIS standard code analysers report their findings in) brings the two missing pieces:
 
 - **i18n** (internationalisation: rendering the same message in any language): a `message` object with `id` (the key) and `arguments` (the values);
   the rule catalog is separate from the occurrences. **The key travels, not the
@@ -506,7 +506,7 @@ two orthogonal axes.
 ### Affordances — the gap to fill
 
 No format merges validation and affordances. The building blocks exist
-separately: HAL-FORMS has `readOnly`, `regex`, `required` per property; Siren has
+separately in two hypermedia formats for JSON APIs — formats that describe, in a response, the actions a client may take next: HAL-FORMS has `readOnly`, `regex`, `required` per property; Siren has
 `method`, `href` and `fields` for the action.
 
 **The join nobody has standardized: attaching the affordance to the same `Path`
@@ -813,7 +813,7 @@ Never build an implicit unbounded tee.
 
 ### `parallel.Ordered` — structural limit
 
-Rayon (Rust) parallelizes because its sources are *splittable* (`split_at`). An
+Rayon (Rust's data-parallelism library) parallelizes because its sources are *splittable* (`split_at`). An
 opaque `iter.Seq` **is not**. Our only option is per-batch fan-out, hence:
 
 - either loss of ordering (`parallel.Unordered`), or an O(k) reordering buffer (`parallel.Ordered`);
@@ -949,7 +949,9 @@ current equal-key run.
 
 > **The order is always checked.** On inputs that are **not actually sorted**,
 > `join.MergeJoin` would produce a wrong result with no error whatsoever — a silent
-> failure of the same kind as Kafka co-partitioning
+> failure of the same kind as Kafka co-partitioning (a join of two Kafka topics
+> is right only if both were partitioned by the same key with the same function,
+> which nothing verifies when they are written)
 > ([hash join](#hash-join--the-build-side-is-a-table)), and unacceptable.
 >
 > So key monotonicity is checked **always**, not behind a debug flag: the
@@ -996,7 +998,7 @@ default semantics is considered dangerous.
 wants stopping at the shortest asks for it explicitly.
 
 > **Structural advantage to document.** In push, `Zip` is a memory bomb: RxJava
-> has a dedicated ticket showing that an unbounded queue per source is necessary,
+> (a push-based reactive-streams library for Java) has a dedicated ticket showing that an unbounded queue per source is necessary,
 > and that **a single slow producer forces all the others to buffer**. Our pull
 > model is immune to this by construction.
 
@@ -1561,7 +1563,10 @@ lying to the user.
 ### n-ary joins
 
 **Never materialize intermediate binary results** — that is the state
-amplification that forces Materialize and RisingWave into *delta join*. A
+amplification that forces Materialize and RisingWave (two streaming SQL databases that keep query
+results up to date as their inputs change) into *delta join* — a join that keeps
+no intermediate result and, for each change on one input, looks up the matching
+rows in indexes of the others. A
 `.Join().Join()` chain must not **lie about the real cost**. `join` has
 binary joins only, and the one that materializes — the hash join — holds
 its build side under a bound the caller must state (`BuildLimit.MaxEntries`,
@@ -1769,7 +1774,8 @@ The library imposes no project structure. A `Stream` is a function: nothing to
 inject, no global registry, no implicit runtime (but a stratified context, see
 [Context travels in the element](#context-travels-in-the-element)).
 
-- **DDD / Clean** — the domain manipulates `Stream[Entity]` without importing the
+- **DDD / Clean** (Domain-Driven Design and Clean Architecture, two ways of keeping
+  business code free of technical dependencies) — the domain manipulates `Stream[Entity]` without importing the
   web package; adapters live at the periphery.
 - **Monolith** — in-memory composition, without serialization.
 - **Microservices** — the network boundary is one more operator; the logical
