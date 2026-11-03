@@ -35,6 +35,7 @@ question for a CPU profile: no counter can answer it.
 | `sluice.ErrSplitDrained` | A `Split` branch was read after a sibling had drained the source, which is read once. | Attach every branch before reading any. |
 | `sluice.ErrUnsorted` | An operator that needs ordered input saw its key go backwards (`join.Merge`, `join.Interval`), or `window.Tumbling` under `LateFail` saw an element older than its open window. | Sort the input, or use an operator that does not need order (`join.StreamTable`); for a window, pass `window.LateDrop` to step over a late element instead. |
 | `parallel.ErrState` | The state factory of `OrderedWithState` failed. Panicked, like `ErrOverflow`. | Fix what the factory needs (a connection, a file); `Try` gives you its error. |
+| `sluice.PanicError` (a type) | A panic on one of an operator's goroutines — a worker of `parallel.Ordered`, the producer of `parallel.Async` or `window.CoalesceWithin` — raised again on yours, with the stack it happened on. | Read the stack in its message: the faulty line is there. `errors.Is` and `errors.As` see through it to an error value; any other value is in its `Value` field. |
 
 ## PostgreSQL: `database/postgres`, `pgtype`
 
@@ -46,6 +47,7 @@ question for a CPU profile: no counter can answer it.
 | `postgres.ErrProtocol` | A backend message could not be parsed, arrived where none of its kind belongs, or, before the answer to LISTEN, came with more notifications than are kept. The connection is finished. | Close and reconnect; if it repeats, report it with the server version. |
 | `postgres.ErrMessageTooLarge` | A message exceeded `Config.MaxMessage`. The connection is finished. | Raise `Config.MaxMessage` if the value is legitimate (a large `bytea`, a long text). |
 | `postgres.ErrMalformedMessage` | A message length field cannot be right. The connection is finished. | Close and reconnect; check what sits between you and the server. |
+| `postgres.ErrOutgoingTooLarge` | A message this end would send is past what a server accepts (1 GiB less one byte) — typically a query parameter that large. Refused before a byte leaves; the connection stays usable. | Split the value: PostgreSQL could not store it whole anyway. No setting moves the bound. |
 | `postgres.ErrConnBroken` | The connection's position in the protocol is no longer known: a malformed message, a failed write, a read stopped mid-message — or the server closed it after saying why ("connection closed by the server"; `errors.As` finds its `*postgres.Error`: 57P01 terminated, 57P05 idle session, 25P03 idle in transaction). | Close it and open another; nothing more can be sent on it. If the server closed it on a timeout, raise that timeout or keep the session busy. |
 | `postgres.ErrConnBusy` | A query started while another is still being consumed on the same connection — typically from inside a consumer's own callback. | Finish (or stop) the first result before starting the next, or use a second connection. |
 | `postgres.ErrRowRetained` | A `Row` was read after its query: the batch it came in was valid only during the call. Panicked. | Copy what you keep (`slices.Clone`, a string conversion) inside the callback. |
@@ -57,6 +59,7 @@ question for a CPU profile: no counter can answer it.
 | `postgres.ErrTxCommitRollback` | `Commit` on a transaction in an aborted state: the server rolled back, and nothing was persisted. | Find the statement that failed earlier in the transaction; the commit did not happen. |
 | `postgres.ErrCopyRefused` | The server answered a `COPY` with something other than "go ahead" — almost always a missing table or a column mismatch, wrapped here. | Read the wrapped server error; check the table and the column list. |
 | `postgres.ErrNullValue` | A `Scan*` met a NULL in a column scanned as not-null. Wraps `pgtype.ErrCodec`. | Scan into `pgtype.Null[T]`, or `COALESCE` in the query. |
+| `postgres.ErrUnknownType` | A type name the database does not resolve: no such type on the search path, or an extension not created in this database. | Check the name and the `search_path`; `CREATE EXTENSION` in this database for an extension's type. |
 | `pgtype.ErrCodec` | A value's bytes do not match the type they were read as. The stream and its description disagree. | Check the column type against the decoder you used (`DecodeInt8` on an `int4` column, for one). |
 
 ## Web and gateway: `web`, `gateway`
@@ -100,3 +103,4 @@ question for a CPU profile: no counter can answer it.
 | `quic.ErrMigrationDisabled` | `Conn.Rebind` while the server announced `disable_active_migration`. | Keep the address the handshake used, or reconnect from the new one. |
 | `quic.ErrNoFreshConnectionID` | `Conn.Rebind` with no connection identifier left that was never used from another address. | Wait for the server to issue more, or reconnect. |
 | `quic.ErrZeroParameters` | A zero `TransportParameters`: no limit of any kind announced. | Start from `quic.DefaultParameters()` and change what you need. |
+| `quic.ConnectionError` (a type) | The peer closed the connection (`CONNECTION_CLOSE`): a transport error, a handshake it refused (`Code` 0x0100 to 0x01ff, a TLS alert plus 0x0100), an application code, or no error at all. Read from `Conn.Err`. | `errors.As` it and read `Code`, `Application` and `Reason`; 0x0178 is no common ALPN. A handshake this end's own TLS refused is a `tls.AlertError` instead. |

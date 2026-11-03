@@ -1416,23 +1416,20 @@ func TestHTTPStreamStatusIsSaidOnce(t *testing.T) {
 	}
 }
 
-// Every error the library exports is named in a document a reader reaches —
-// the troubleshooting guide at least — so that someone who meets it in a log
-// finds when it happens and what to do (docs/guide/troubleshooting.md). The
-// examples and internal packages are not the library's surface; the nested
-// modules are measured, not imported.
+// Every error the library exports — an Err variable or an *Error type — is
+// named in the troubleshooting guide, which says it lists them all, so that
+// someone who meets it in a log finds when it happens and what to do. A
+// name cited only elsewhere (a limit, a migration note) is not where that
+// reader looks. The examples and internal packages are not the library's
+// surface; the nested modules are measured, not imported.
 func TestEveryErrorIsDocumented(t *testing.T) {
-	var docs strings.Builder
-	for _, f := range markdownFiles(t) {
-		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
-		if err != nil {
-			t.Fatal(err)
-		}
-		docs.Write(b)
+	b, err := os.ReadFile("docs/guide/troubleshooting.md")
+	if err != nil {
+		t.Fatal(err)
 	}
-	text := docs.String()
-	skip := []string{"example", "internal", "cmd", "benchmarks", "comparison", "interop"}
-	err := filepath.WalkDir(".", func(p string, d os.DirEntry, err error) error {
+	text := string(b)
+	skip := []string{"example", "internal", "cmd", "benchmarks", "comparison", "interop", "audit"}
+	err = filepath.WalkDir(".", func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -1452,6 +1449,15 @@ func TestEveryErrorIsDocumented(t *testing.T) {
 		}
 		for _, decl := range f.Decls {
 			gen, ok := decl.(*ast.GenDecl)
+			if ok && gen.Tok == token.TYPE {
+				for _, spec := range gen.Specs {
+					n := spec.(*ast.TypeSpec).Name
+					if n.IsExported() && strings.HasSuffix(n.Name, "Error") &&
+						!regexp.MustCompile(`\b`+n.Name+`\b`).MatchString(text) {
+						t.Errorf("%s: %s.%s is not in docs/guide/troubleshooting.md", p, f.Name.Name, n.Name)
+					}
+				}
+			}
 			if !ok || gen.Tok != token.VAR {
 				continue
 			}
@@ -1463,7 +1469,7 @@ func TestEveryErrorIsDocumented(t *testing.T) {
 						continue
 					}
 					if !regexp.MustCompile(`\b` + n + `\b`).MatchString(text) {
-						t.Errorf("%s: %s.%s is named in no document; add it to docs/guide/troubleshooting.md", p, f.Name.Name, n)
+						t.Errorf("%s: %s.%s is not in docs/guide/troubleshooting.md", p, f.Name.Name, n)
 					}
 					// go doc shows a grouped variable under the group's
 					// comment: each error says its own action, on its own
