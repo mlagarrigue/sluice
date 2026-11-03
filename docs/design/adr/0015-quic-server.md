@@ -1,7 +1,7 @@
 # ADR 0015 — The QUIC server: transport machinery, a real listener, a moving client
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-28 (the old path's answer proves it; the peer's packets there move back); 17 earlier, from 2026-10-03, in its `git log`
+- **Revised:** 2026-11-03 (a /64 bounds a host, not a site); 18 earlier, from 2026-10-03, in its `git log`
 - **Theme:** quic
 
 ## Problem
@@ -52,10 +52,13 @@ included, is bounded by `MaxConns` and per source address by
 `MaxConnsPerIP`, both unset by default and refused the same way.
 
 `MaxConnsPerIP` counts an address by its prefix — /32 for IPv4 and /64 for
-IPv6 by default, set by `IPv4PrefixBits` and `IPv6PrefixBits` — because an
-IPv6 host is handed a whole /64 (RFC 6177) and a bound on the full 128 bits
-is one it steps around by changing address; `httpstream.Config` counts the
-same way, through the same function. The stateless reset budget stays per
+IPv6 by default, set by `IPv4PrefixBits` and `IPv6PrefixBits` — because
+every IPv6 host has at least a /64 of its own (RFC 4291 §2.5.4) and a bound
+on the full 128 bits is one it steps around by changing address. A site
+usually holds more (RFC 6177 recommends significantly more than one /64):
+the /64 default bounds a host, not a site, and `IPv6PrefixBits` at 56 or 48
+bounds the site, at the price of counting its hosts together.
+`httpstream.Config` counts the same way, through the same function. The stateless reset budget stays per
 whole address: it bounds what a forged source reflects to one victim, and a
 victim is an address. In plain words: two machines on one home IPv6 network
 share a count — the price of a bound one host cannot multiply; an operator

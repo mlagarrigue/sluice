@@ -596,9 +596,11 @@ type Config struct {
 
 	// IPv4PrefixBits and IPv6PrefixBits are how much of a remote address
 	// MaxConnsPerIP counts by: two addresses that share that many leading
-	// bits share one count. Zero means 32 and 64. An IPv6 host is handed a
-	// whole /64 (RFC 6177), so a count by the full 128 bits is one it steps
-	// around by changing address; an IPv4 host rarely holds more than one.
+	// bits share one count. Zero means 32 and 64. Every IPv6 host has at
+	// least a /64 (RFC 4291 §2.5.4), so a count by the full 128 bits is one
+	// it steps around by changing address; a site usually holds more (RFC
+	// 6177), so the /64 bounds a host and 56 or 48 bounds the site. An IPv4
+	// host rarely holds more than one address.
 	// A value outside 1..32 or 1..128 is a configuration error. The QUIC
 	// listener's fields of the same names count the same way.
 	IPv4PrefixBits int

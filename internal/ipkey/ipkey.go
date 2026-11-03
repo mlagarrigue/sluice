@@ -2,12 +2,15 @@
 // under: net/quic's ListenerConfig.MaxConnsPerIP and net/httpstream's
 // Config.MaxConnsPerIP share it, so that the two bounds cannot drift apart.
 //
-// The key is a prefix, not the whole address. An IPv6 host is handed a /64
-// as a matter of course (RFC 4291 §2.5.4, RFC 6177), so a bound on the
-// full 128 bits is a bound the peer steps around by changing address; a
-// bound on the /64 is the one it cannot. An IPv4 address is counted whole
-// by default: a host rarely holds more than one, and a shorter prefix would
-// fold unrelated neighbours together.
+// The key is a prefix, not the whole address. Every IPv6 host has at least
+// a /64 of its own (RFC 4291 §2.5.4's 64-bit interface identifier), so a
+// bound on the full 128 bits is a bound the peer steps around by changing
+// address; the /64 bounds the host. A site usually holds more — RFC 6177
+// recommends significantly more than one /64 — and a peer that controls one
+// multiplies a /64 bound by its subnets: a shorter IPv6 prefix (56, 48)
+// bounds the site, at the price of counting its hosts together. An IPv4
+// address is counted whole by default: a host rarely holds more than one,
+// and a shorter prefix would fold unrelated neighbours together.
 package ipkey
 
 import (
