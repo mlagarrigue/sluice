@@ -88,12 +88,14 @@ func TestDarwinDefaultIsNotDontFrag(t *testing.T) {
 // larger than the outgoing interface MTU with EMSGSIZE instead of
 // fragmenting it. Loopback's MTU admits every UDP datagram, so the
 // datagram goes towards TEST-NET-1 (RFC 5737), which leaves through the
-// default route and reaches no one. A plain socket sending the same
-// datagram is the control: if it fails too, there is no route to measure
-// against.
+// default route and reaches no one. The datagram is net.inet.udp.maxdgram's
+// default, 9216 bytes, the largest a plain socket sends and past a 9000-byte
+// jumbo-frame MTU: a Linux runner whose interface carries jumbo frames
+// admitted 3000 bytes with DF set. A plain socket sending the same datagram
+// is the control: if it fails too, there is no route to measure against.
 func TestDontFragRefusesOversize(t *testing.T) {
 	dst := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 4433}
-	big := make([]byte, 3000)
+	big := make([]byte, 9216)
 
 	plain, err := net.ListenUDP("udp4", nil)
 	if err != nil {

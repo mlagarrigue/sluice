@@ -151,11 +151,13 @@ func TestWinsockDefaultIsNotDontFragment(t *testing.T) {
 // interface MTU with WSAEMSGSIZE instead of fragmenting it. Loopback's MTU
 // admits every UDP datagram, so the datagram goes towards TEST-NET-1
 // (RFC 5737), which leaves through the default route and reaches no one.
-// A plain socket sending the same datagram is the control: if it fails
-// too, there is no route to measure against.
+// The datagram is near the largest IPv4 can carry, past any interface's
+// MTU but loopback's: a Linux runner whose interface carries jumbo frames
+// admitted 3000 bytes with DF set. A plain socket sending the same datagram
+// is the control: if it fails too, there is no route to measure against.
 func TestDontFragmentRefusesOversize(t *testing.T) {
 	dst := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 4433}
-	big := make([]byte, 3000)
+	big := make([]byte, 65000)
 
 	plain, err := net.ListenUDP("udp4", nil)
 	if err != nil {
