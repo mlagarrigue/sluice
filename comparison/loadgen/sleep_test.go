@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -265,6 +266,53 @@ func hostQueues(t *testing.T, proto, url string, rate, slots int) (why string, h
 	return why, rep.Queued > 0 || rep.TTLB.Max >= span
 }
 
+// hostBusy is the share of the host's CPU time past which TestFreshConnections
+// does not judge the SLO. On an idle host of fifteen cores, the stage and
+// whatever else runs keep 11 to 19 % of the CPU time busy, its p99 at 3 to
+// 5 ms; under a load of 30 the host is all busy and the stage's tail
+// stretches — a p99 of 71 to 226 ms, no request lost — while the
+// calibration below, a tenth of the stage's rate, still holds its p90
+// (measured on 2026-11-03).
+const hostBusy = 0.5
+
+// cpuSample is the host's CPU time from /proc/stat, in clock ticks.
+type cpuSample struct{ busy, total uint64 }
+
+// readCPU samples /proc/stat's aggregate line; where there is none (not
+// Linux), the sample is zero and busySince reports -1.
+func readCPU() cpuSample {
+	b, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return cpuSample{}
+	}
+	line, _, _ := strings.Cut(string(b), "\n")
+	fields := strings.Fields(line)
+	if len(fields) < 5 || fields[0] != "cpu" {
+		return cpuSample{}
+	}
+	var s cpuSample
+	for i, f := range fields[1:] {
+		v, err := strconv.ParseUint(f, 10, 64)
+		if err != nil {
+			return cpuSample{}
+		}
+		s.total += v
+		if i != 3 && i != 4 { // idle and iowait
+			s.busy += v
+		}
+	}
+	return s
+}
+
+// busySince is the share of CPU time spent busy between s and a later
+// sample, or -1 when either sample is missing.
+func (s cpuSample) busySince(later cpuSample) float64 {
+	if s.total == 0 || later.total <= s.total {
+		return -1
+	}
+	return float64(later.busy-s.busy) / float64(later.total-s.total)
+}
+
 // hostHandshakes is the calibration TestFreshConnections' verdict is held
 // to. A tenth of that stage's requests open a connection, so its p99 falls
 // among them, near their own p90. A stage where every request opens one,
@@ -381,8 +429,9 @@ func TestBudget(t *testing.T) {
 // A loaded host may not give that (2026-10-28): under a load of 20 on 15
 // cores and the race detector, the stage misses the SLO, then deadlines —
 // requests timed out, connections still opening at theirs. A stage that
-// fails only so is held to hostHandshakes, which says from a measurement
-// whether the host was the cause; only then is it skipped. Any other
+// fails only so is held to two measurements of the host — the share of
+// its CPU time busy during the stage (hostBusy), then hostHandshakes —
+// and is skipped only when one says the host was the cause. Any other
 // failure — a refusal, a reset, the tester's own — fails the test.
 func TestFreshConnections(t *testing.T) {
 	protos(t, testFreshConnections)
@@ -391,12 +440,18 @@ func TestFreshConnections(t *testing.T) {
 func testFreshConnections(t *testing.T, proto string) { //nolint:thelper // a sub-test body
 	srv := sleepServer(t, proto, 0, nil)
 	c := testCampaign(t, proto, srv.URL, "-scenario", "unit", "-rate", "500", "-duration", "2s", "-conns", "8", "-new-conns", "10")
+	before := readCPU()
 	rep := runStage(t, c)
-	t.Logf("sent %d handshakes %d tester %d ttlb p50 %.3f p99 %.3f ms", rep.Sent, rep.Handshakes, rep.Tester, rep.TTLB.P50, rep.TTLB.P99)
+	busy := before.busySince(readCPU())
+	t.Logf("sent %d handshakes %d tester %d ttlb p50 %.3f p99 %.3f ms, host CPUs %.0f %% busy",
+		rep.Sent, rep.Handshakes, rep.Tester, rep.TTLB.P50, rep.TTLB.P99, busy*100)
 	if rep.Tester > 0 || rep.BadKey > 0 || rep.Errors != rep.ConnectTimeout {
 		t.Fatalf("errors %d (connect timeouts %d) bad_key %d tester %d", rep.Errors, rep.ConnectTimeout, rep.BadKey, rep.Tester)
 	}
 	if rep.Failed() || !rep.Held {
+		if busy >= hostBusy {
+			t.Skipf("the host, not the generator: its CPUs were %.0f %% busy during the stage, past %.0f %%", busy*100, hostBusy*100)
+		}
 		if why, host := hostHandshakes(t, proto, srv.URL, 500); host {
 			t.Skip(why)
 		}
