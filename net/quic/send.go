@@ -1731,8 +1731,13 @@ func (c *Conn) waitForCreditLocked(deadline time.Time) error {
 	// waiting for the very data that opens it.
 	c.flushDatagramLocked()
 	c.batching = false
+	// The flush's error is this writer's, kept aside while it sleeps: the
+	// writers that take mu meanwhile reset the field as they start and
+	// return it as they end, and would erase it or return it as theirs.
+	batchErr := c.batchErr
+	c.batchErr = nil
 	c.cond.Wait()
-	c.batching = batching
+	c.batching, c.batchErr = batching, batchErr
 	select {
 	case <-c.closed:
 		return errClosed
