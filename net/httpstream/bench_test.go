@@ -103,3 +103,39 @@ func BenchmarkWriteBatch(b *testing.B) {
 		b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*len(responses)), "ns/response")
 	})
 }
+
+// What a buffer full of small pipelined requests costs per request, as the
+// buffer grows: a buffer grown once (a large body under BodyWhole, up to
+// maxBuffer) stays grown, and a client that pipelines fills all of it in one
+// read. The cost per request must not grow with the buffer — which it does
+// if every batch moves what is left of the buffer down to its front.
+func BenchmarkReadPipelinedBuffer(b *testing.B) {
+	const req = "GET / HTTP/1.1\r\nHost: h\r\n\r\n"
+	for _, size := range []int{4 << 10, 64 << 10, 1 << 20} {
+		b.Run(fmt.Sprintf("buffer=%dKiB", size>>10), func(b *testing.B) {
+			requests := size / len(req)
+			cfg := Config{MaxRequestsPerBatch: 64, MaxRequestsPerConn: requests, BodyDelivery: BodyWhole}.mustResolve()
+			if size > cfg.maxBuffer() {
+				b.Skipf("buffer %d is past maxBuffer %d", size, cfg.maxBuffer())
+			}
+			data := []byte(strings.Repeat(req, requests))
+			buf := make([]byte, size)
+			b.ReportAllocs()
+			for b.Loop() {
+				r := &h1Conn{cfg: cfg, conn: &replayConn{data: data, max: len(data)}, buf: buf}
+				n := 0
+				for {
+					batch, ok := r.next()
+					if !ok {
+						break
+					}
+					n += len(batch)
+				}
+				if n != requests {
+					b.Fatalf("read %d requests, want %d: %v", n, requests, r.err)
+				}
+			}
+			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*requests), "ns/request")
+		})
+	}
+}

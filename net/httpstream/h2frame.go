@@ -138,6 +138,9 @@ type frameReader struct {
 	busy func() bool
 	buf  []byte
 	n    int
+	// base is the array buf is a window of, as for h1Conn: consume moves
+	// the window, fill moves the tail down when there is no room after it.
+	base []byte
 	err  error
 
 	prefaced bool
@@ -243,8 +246,17 @@ func (r *frameReader) usesStream(f h2Frame) bool {
 	return false
 }
 
+// consume drops what was parsed by moving the window past it, not the tail
+// down: see h1Conn.consume.
 func (r *frameReader) consume(used int) {
-	copy(r.buf, r.buf[used:r.n])
+	if r.base == nil {
+		r.base = r.buf
+	}
+	if used == r.n {
+		r.buf = r.base
+	} else {
+		r.buf = r.buf[used:]
+	}
 	r.n -= used
 }
 
@@ -336,11 +348,15 @@ func (r *frameReader) fill() error {
 	if r.n >= limit {
 		return fmt.Errorf("%w: a frame fills the %d-byte buffer without completing", ErrTooLarge, limit)
 	}
+	if len(r.buf) == r.n && len(r.buf) < len(r.base) {
+		copy(r.base, r.buf[:r.n])
+		r.buf = r.base
+	}
 	if len(r.buf) == r.n {
 		grown := min(max(2*len(r.buf), 4<<10), limit)
 		next := make([]byte, grown)
 		copy(next, r.buf[:r.n])
-		r.buf = next
+		r.buf, r.base = next, next
 	}
 	// A silent round that began while answers were owed never ends the
 	// connection; it is followed by a fresh round instead, so the idle close

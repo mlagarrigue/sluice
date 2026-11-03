@@ -297,7 +297,7 @@ func (b *bodyStream) read() error {
 		// borrow the head in the old one, which stays as it is.
 		grown := make([]byte, min(max(2*len(r.buf), r.n+minBodyRead), r.cfg.maxBuffer()))
 		copy(grown, r.buf[:r.n])
-		r.buf = grown
+		r.buf, r.base = grown, grown
 	}
 	if r.n == len(r.buf) {
 		return fmt.Errorf("%w: a body framing line fills the %d-byte buffer", ErrTooLarge, len(r.buf))

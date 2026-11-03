@@ -63,10 +63,14 @@ func (c Config) maxBuffer() int {
 // requests are read from, and whether the last one left its body unread.
 // h2Conn and h3Assembler are the same for HTTP/2 and HTTP/3.
 type h1Conn struct {
-	conn   net.Conn
-	cfg    Config
-	buf    []byte
-	n      int // bytes held in buf
+	conn net.Conn
+	cfg  Config
+	buf  []byte
+	n    int // bytes held in buf
+	// base is the array buf is a window of: consume moves the window past
+	// what was parsed instead of moving the rest of the buffer down, and
+	// fill moves it down once, when there is no room after it.
+	base   []byte
 	served int
 	err    error
 
@@ -359,11 +363,17 @@ func (r *h1Conn) fill() error {
 		// front is larger than the bounds allow.
 		return fmt.Errorf("%w: a request fills the %d-byte buffer without completing", ErrTooLarge, limit)
 	}
+	if len(r.buf) == r.n && len(r.buf) < len(r.base) {
+		// The window has no room after it, and the array has some before:
+		// the tail moves down, once.
+		copy(r.base, r.buf[:r.n])
+		r.buf = r.base
+	}
 	if len(r.buf) == r.n {
 		grown := min(max(2*len(r.buf), 4<<10), limit)
 		next := make([]byte, grown)
 		copy(next, r.buf[:r.n])
-		r.buf = next
+		r.buf, r.base = next, next
 	}
 
 	// Idle while nothing has arrived: that deadline is free to slide, since
@@ -444,8 +454,22 @@ func (r *h1Conn) write100Continue() error {
 }
 
 // consume drops what was parsed, keeping the tail that has not been.
+//
+// The tail is not moved: the window starts past what was parsed, and fill
+// moves it down to the front of the array when a read finds no room after
+// it. Moved after every batch, a buffer full of small pipelined requests —
+// grown once to maxBuffer, a client fills all of it in one read — was copied
+// once per 64 requests, a cost per request that grew with the buffer
+// (BenchmarkReadPipelinedBuffer: a third of the time at 1 MiB).
 func (r *h1Conn) consume(used int) {
-	copy(r.buf, r.buf[used:r.n])
+	if r.base == nil {
+		r.base = r.buf
+	}
+	if used == r.n {
+		r.buf = r.base
+	} else {
+		r.buf = r.buf[used:]
+	}
 	r.n -= used
 	r.head.n = 0
 	// The pending request's saved walk indexes the buffer; it shifted down
