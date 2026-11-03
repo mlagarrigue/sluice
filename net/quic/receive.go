@@ -354,9 +354,9 @@ func (c *Conn) admitSource(datagram []byte, from net.Addr) bool {
 			// address, authenticated or not — a datagram that fails to
 			// parse still proves nothing about whether *this* end was
 			// tricked into answering it, which is the only thing the limit
-			// defends against. Bytes from any other address count only if
-			// their packet migrates the path, where they seed the new
-			// path's own accounting.
+			// defends against. Bytes from any other address count on
+			// arrival too, apart, in offPath: what answers that address
+			// before anything validates it is bounded by them.
 			c.amplRecv += int64(len(datagram))
 		}
 		if !fromPeer {

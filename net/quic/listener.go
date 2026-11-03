@@ -1065,8 +1065,9 @@ func (l *Listener) handleNewInitial(datagram []byte, from net.Addr, h longHeader
 	// destination identifier, so the check needs no state and costs one
 	// key schedule; what it buys is that a flood of sealed-looking noise
 	// cannot occupy MaxPendingConns slots for the price of sending it:
-	// each slot holds TLS state and two goroutines for up to the
-	// 10-second handshake deadline.
+	// each slot holds TLS state and two goroutines (runHandshake and the
+	// handshake it waits on; three once 0-RTT is accepted, with the one
+	// that waits for gone) for up to the 10-second handshake deadline.
 	keys, ok := initialPacketDecrypts(h)
 	if !ok {
 		l.noteDiscard()
