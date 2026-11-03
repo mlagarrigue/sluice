@@ -686,6 +686,11 @@ func (s *Stream) abandon(code, finalSize uint64) (highGrowth, neverConsumed uint
 	// over-grant the connection window by exactly that delta.
 	neverConsumed = finalSize - s.rasm.consumed
 	s.recvQ.consumed += neverConsumed
+	// The bytes parked past a gap are among them, and go with their credit:
+	// kept until the application closes the stream, the memory would
+	// outlive the window the connection just reopened, on every stream the
+	// peer may open (deliver parks nothing once the stream is reset).
+	s.rasm.release()
 	s.signal()
 	return finalSize - oldHigh, neverConsumed, nil
 }

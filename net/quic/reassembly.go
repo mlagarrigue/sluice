@@ -89,6 +89,12 @@ type reassembly struct {
 	floor int
 }
 
+// release drops every parked chunk, keeping where the delivered prefix
+// ends: the stream they belonged to was reset, and none will be delivered.
+func (r *reassembly) release() {
+	r.chunks, r.held = nil, 0
+}
+
 // chunkLimit is how many chunks r may hold at its current size.
 func (r *reassembly) chunkLimit() int {
 	return min(max(r.held/reassemblyChunkBytes, reassemblyChunkFloor, r.floor), reassemblyChunkCeiling)
