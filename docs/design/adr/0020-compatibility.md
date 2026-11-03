@@ -1,7 +1,7 @@
 # ADR 0020 — What v1 freezes
 
 - **Created:** 2026-10-23
-- **Revised:** 2026-10-28 (`gateway.Partitions` listed experimental; written in the present tense; `audit` among the nested modules)
+- **Revised:** 2026-10-28 (`gateway.Partitions` listed experimental; written in the present tense; `audit` among the nested modules), 2026-11-03 (`web/stream` off the experimental list, as its documentation has been since 2026-10-29)
 - **Theme:** docs
 
 ## Problem
@@ -35,8 +35,8 @@ Part of the contract, like the signatures:
   minor version, announced in the CHANGELOG, when a measurement justifies
   it; that zero means the safe default (ADR 0018) does not.
 
-Not part of the contract: the experimental packages (today `net/quic`,
-`net/quic/udp`, `web/stream`), whose breaks are still announced with `!` and
+Not part of the contract: the experimental packages (today `net/quic`
+and `net/quic/udp`), whose breaks are still announced with `!` and
 listed in the CHANGELOG; the few symbols of a stable package whose
 documentation opens a paragraph with "Experimental:", listed in
 `scripts/api-experimental.txt` — a listed type with its fields and methods

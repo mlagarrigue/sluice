@@ -1,13 +1,13 @@
 # ADR 0011 — The middle arrows ship beside the core, as `web/stream`
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-07 (renumbered; `webstream` became `web/stream`), 2026-10-23 (the stages are functions over a batch; what the exchange carries)
+- **Revised:** 2026-10-07 (renumbered; `webstream` became `web/stream`), 2026-10-23 (the stages are functions over a batch; what the exchange carries), 2026-11-03 (the stages are out of the experimental label)
 - **Theme:** web
 
 ## Problem
 
 The architecture draws the web vertical as a chain of batch-shaped stages,
-and the transport arrows existed on the experimental path. The middle
+and the transport arrows existed in `net/httpstream`. The middle
 arrows — routing, authentication, authorisation, body decoding, response
 rendering — were either `net/http`-typed functions in `web` or nothing at
 all, so a handler over `httpstream` switched on raw target bytes by hand.
@@ -17,8 +17,8 @@ Which stages become shipped operators, and where do they live?
 
 **Beside the core, not in it.** Nothing in `Stream`/`Batch` needs routing
 or principals, so the stages live in `web/stream`, under `web` because
-they are the same middle for another transport, and they inherit the
-experimental caveat. **The stages are functions over a batch, not stream
+they are the same middle for another transport, and they share
+its compatibility promise (ADR 0020). **The stages are functions over a batch, not stream
 operators**: an `httpstream.Handler` answers one batch per call, and inside
 it `Route`, `Authenticate`, `Authorize` and `Render` each take the
 `[]Exchange` built from that batch and record what they learn on it in

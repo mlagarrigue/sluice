@@ -164,7 +164,7 @@ Three reasons come up, and the difference matters:
   at a glance; an adapter would hide the status code and the encoding. Two
   wrappers exist, and neither picks the status or the encoding of an
   ordinary response: `web.Recover` turns a panic into an observed 500, and
-  `web.TryHandler` a sentinel panic into the answer the caller writes. The experimental
+  `web.TryHandler` a sentinel panic into the answer the caller writes. The
   `web/stream` path has its own router (`stream.NewRouter`), because
   `http.ServeMux` does not see a batch.
 - **`net/httpstream` streams request bodies by default.** A body that did
@@ -470,8 +470,8 @@ comparative study, streaming compression, and the exit from experimental
 of what meets its conditions. The end-to-end bench and the comparative
 study have their apparatus in `comparison/` (the study's server, one flag
 per axis, and its load generator); what they lack is the campaign on the
-machines the protocol names, and its results. `pushdown` and
-`net/httpstream` are out of the label; for the rest, each item needs a
+machines the protocol names, and its results. `pushdown`,
+`net/httpstream` and `web/stream` are out of the label; for the rest, each item needs a
 written decision first.
 
 ## Details

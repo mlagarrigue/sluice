@@ -885,6 +885,50 @@ func TestExperimentalLabelMatchesTheGuides(t *testing.T) {
 			t.Errorf("%s: has exit conditions in docs/guide/limits.md, its godoc's first sentence does not say so", path)
 		}
 	}
+	// ADR 0020 keeps the labelled packages out of what v1 freezes, by name.
+	b, err = os.ReadFile("docs/design/adr/0020-compatibility.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`the experimental packages \(today ([^)]*)\)`).FindStringSubmatch(strings.Join(strings.Fields(string(b)), " "))
+	if m == nil {
+		t.Fatal(`ADR 0020: no "the experimental packages (today …)" list`)
+	}
+	frozen := map[string]bool{}
+	for _, p := range regexp.MustCompile("`([^`]+)`").FindAllStringSubmatch(m[1], -1) {
+		frozen[module+"/"+p[1]] = true
+	}
+	for path := range labelled {
+		if !frozen[path] {
+			t.Errorf("%s: labelled experimental in its godoc, missing from ADR 0020's list", path)
+		}
+	}
+	for path := range frozen {
+		if !labelled[path] {
+			t.Errorf("%s: listed experimental by ADR 0020, its godoc's first sentence does not say so", path)
+		}
+	}
+	// Anywhere else, "experimental `pkg`" names a package that carries the label.
+	pages, err := filepath.Glob("docs/*/*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	more, err := filepath.Glob("docs/design/adr/*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := regexp.MustCompile("(?i)experimental `([a-z/]+)`")
+	for _, page := range append(append(pages, more...), "README.md") {
+		b, err := os.ReadFile(page) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range called.FindAllStringSubmatch(strings.Join(strings.Fields(string(b)), " "), -1) {
+			if path := module + "/" + c[1]; docs[path] != "" && !labelled[path] {
+				t.Errorf("%s: says %q, the package's godoc does not carry the label", page, c[0])
+			}
+		}
+	}
 }
 
 // TestWorkflowCheckoutsDropTheirCredentials: a checkout leaves the job's
