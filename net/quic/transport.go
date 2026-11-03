@@ -444,6 +444,13 @@ func (p TransportParameters) check() error {
 	if n := p.InitialMaxStreamsUni; n > maxStreamsLimit {
 		return fmt.Errorf("quic: InitialMaxStreamsUni %d is past 2^60, the most streams RFC 9000 §4.6 allows", n)
 	}
+	// A negative idle timeout has no wire form: appendParameters would
+	// announce zero — no timeout — while this end kept the negative value
+	// and ended the connection at the floor its idle deadline is raised
+	// to, three PTOs of silence.
+	if p.MaxIdleTimeout < 0 {
+		return fmt.Errorf("quic: MaxIdleTimeout %v is negative; zero means no timeout", p.MaxIdleTimeout)
+	}
 	if n := p.MaxDatagramSize; n != 0 && (n < pmtuBaseSize || n > pmtuMaxSize) {
 		return fmt.Errorf("quic: MaxDatagramSize %d is outside %d..%d", n, pmtuBaseSize, pmtuMaxSize)
 	}
