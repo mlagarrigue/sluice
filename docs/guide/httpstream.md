@@ -165,7 +165,7 @@ at the second or when the wait runs out.
 ```go
 srv := &httpstream.Server{Config: httpstream.Config{MaxConns: 10_000}, Handler: handle}
 go srv.Serve(ln)         // HTTP/1.1 and HTTP/2; an error here is a failed listener
-go srv.ServeQUIC(quicLn) // HTTP/3
+go srv.ServeQUIC(quicLn) // HTTP/3, experimental
 
 sig, unsig := signal.NotifyContext(context.Background(), os.Interrupt)
 <-sig.Done() // first signal
@@ -203,7 +203,11 @@ HTTP/2, HTTP/3 — are in [the benchmarks](../benchmarks.md). It is under
 the compatibility promise ([ADR 0020](../design/adr/0020-compatibility.md)):
 until v1 a break is
 announced with `!` as everywhere; from v1 `scripts/check-api.sh` refuses
-it, `!` or not.
+it, `!` or not. Three symbols stay outside the promise, each documented
+with a paragraph that opens on "Experimental:": the HTTP/3 entry points
+`ServeH3Conn` and `Server.ServeQUIC` (experimental, like the `net/quic`
+they run on; [ADR 0021](../design/adr/0021-net-quic-stays.md)), and
+`Config.TransportParameters`.
 
 ```go
 rt := stream.NewRouter(stream.Route{Method: "GET", Pattern: "/orders/{order}"})
