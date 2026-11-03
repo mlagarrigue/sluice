@@ -50,63 +50,18 @@
 // problems attached and keeps moving — so reject by replying with a
 // rejection, never by filtering.
 //
-// The gateway deliberately does not check, batch by batch, that every call
-// came back answered. Returning from a yield means the batch was accepted
-// downstream, not that it was handled: [github.com/mlagarrigue/sluice/parallel.Async] and
-// [github.com/mlagarrigue/sluice/parallel.Unordered] return as soon as a worker has taken it, with
-// the replies still to come. A check there would fail calls the pipeline is
-// about to answer, and the real answer arriving afterwards would panic as a
-// second one — so composing a fan-out inside the pipeline, which is exactly
-// what a batched gateway wants, would be broken by the convenience.
-//
 // # Failure is not left hanging
 //
-// What is guaranteed instead is that no caller waits on a pipeline that is
+// What is guaranteed is that no caller waits on a pipeline that is
 // gone. If the pipeline panics, or returns while calls are outstanding, every
 // caller is released at once with that cause — [ErrPipelinePanicked], or
 // [ErrNoReply] — and later calls are refused with the same. The cost of
 // dropping a call is therefore bounded by the caller's context deadline while
 // the pipeline lives, and by nothing at all once it does not.
 //
-// # A client that pipelines gets the worst of this
-//
-// The batch is formed from calls that coincide, and over `net/http` two
-// requests pipelined on one connection never do: the standard server reads a
-// connection's requests strictly in sequence, so the second is not read until
-// the first has been answered. Each call therefore reaches Do alone, waits out
-// the whole of Within with nobody to join, and pays that latency for a batch
-// of one.
-//
-// Measured (TestTransportBatchingMatrix, with a 500 µs backend round trip and
-// Within at 2 ms): 32 requests pipelined on one connection cost **32 round
-// trips and 108 ms**, against 2 trips and 27 ms for the same 32 requests on
-// separate connections. The gateway is not at fault and neither is net/http —
-// they simply cannot see the same thing at the same time. What removes it is
-// a transport that hands over what arrived together, which is what
-// [httpstream] exists to measure — and [Gateway.DoBatch] is how such a
-// transport submits its batch in one motion, joining the same window every
-// other caller shares.
-//
-// So: a gateway suits many callers, not one caller in a hurry. If the clients
-// pipeline, the wait is pure cost and Within should be small, the gateway
-// [Config.Eager], or left out.
-//
-// # Waiting only when it pays
-//
-// A window costs every call of a quiet moment its whole length.
-// [Config.Eager] has none: a batch leaves as soon as the loop holds a call,
-// with everyone queued behind it, and batches grow on their own as the
-// backend slows — the lowest latency at low traffic, more queries while the
-// backend has room to spare. The default keeps the window.
-//
-// # Fan out inside the pipeline, not around the gateway
-//
-// One gateway drives one pipeline on one goroutine, so batches are served one
-// after another. That is a ceiling, and lifting it is a composition rather
-// than a setting: put [github.com/mlagarrigue/sluice/parallel.Unordered] inside the pipeline and
-// several batches are in flight at once. Unordered rather than ordered,
-// because nothing downstream of a request/reply gateway cares which batch
-// finishes first — every call carries its own way back.
+// A gateway suits many callers, not one caller in a hurry: [Config.Within]
+// says what a window costs, and why a client that pipelines over net/http
+// gets the worst of it.
 //
 // The guide: docs/guide/web.md (Grouping calls with gateway).
 package gateway
@@ -133,6 +88,16 @@ var ErrClosed = errors.New("gateway: closed")
 // filtered out, or the pipeline stopped mid-batch. It is a wiring mistake in
 // the pipeline, surfaced rather than left to the caller's deadline when the
 // gateway can tell.
+//
+// The gateway deliberately does not check, batch by batch, that every call
+// came back answered. Returning from a yield means the batch was accepted
+// downstream, not that it was handled:
+// [github.com/mlagarrigue/sluice/parallel.Async] and
+// [github.com/mlagarrigue/sluice/parallel.Unordered] return as soon as a
+// worker has taken it, with the replies still to come. A check there would
+// fail calls the pipeline is about to answer, and the real answer arriving
+// afterwards would panic as a second one — so composing a fan-out inside the pipeline, which is exactly
+// what a batched gateway wants, would be broken by the convenience.
 var ErrNoReply = errors.New("gateway: the pipeline consumed the call without replying")
 
 // ErrPipelinePanicked reports a pipeline that panicked. Every caller the
@@ -171,7 +136,26 @@ type Config struct {
 	// inside the pipeline ([parallel.Unordered]) is what returns the
 	// loop to gathering quickly. Pick Within against the round trip it
 	// saves: 2 ms of waiting to turn 64 round trips into one is a bargain,
-	// 200 ms is not.
+	// 200 ms is not. The fan-out is [parallel.Unordered] rather than an
+	// ordered one, because nothing downstream of a request/reply gateway
+	// cares which batch finishes first — every call carries its own way back.
+	//
+	// A client that pipelines gets the worst of the window. The batch is
+	// formed from calls that coincide, and over net/http two requests
+	// pipelined on one connection never do: the standard server reads a
+	// connection's requests strictly in sequence, so the second is not read
+	// until the first has been answered. Each call therefore reaches Do
+	// alone, waits out the whole of Within with nobody to join, and pays
+	// that latency for a batch of one. Measured (TestTransportBatchingMatrix,
+	// with a 500 µs backend round trip and Within at 2 ms): 32 requests
+	// pipelined on one connection cost **32 round trips and 108 ms**, against
+	// 2 trips and 27 ms for the same 32 requests on separate connections.
+	// What removes it is a transport that hands over what arrived together —
+	// [github.com/mlagarrigue/sluice/net/httpstream] — and [Gateway.DoBatch]
+	// is how such a transport submits its batch in one motion, joining the
+	// same window every other caller shares. If the clients pipeline over
+	// net/http, the wait is pure cost: keep Within small, set Eager, or leave
+	// the gateway out.
 	Within time.Duration
 
 	// Eager sends a batch as soon as the run loop holds a call, with every

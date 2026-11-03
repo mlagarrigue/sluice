@@ -560,7 +560,7 @@ var unsourcedDurations = map[string]string{
 	"database/postgres/pipeline.go 24 µs":                  "the same A/B, the marginal cost of a principal",
 	"net/httpstream/h3conn.go 6.5 ns":                      "the walk of parked streams the deadline sweep replaced",
 	"net/httpstream/h3conn.go 6.7 µs":                      "the same walk at 1024 streams",
-	"net/httpstream/httpstream.go 4 ms":                    "a row of TestTransportBatchingMatrix, a test's table, not a benchmark",
+	"net/httpstream/serve.go 4 ms":                         "a row of TestTransportBatchingMatrix, a test's table, not a benchmark",
 	"net/httpstream/serve.go 24 µs":                        "the watch's wake-up measured on a GitHub runner, not on the page's machine",
 	"net/httpstream/serve.go 46 µs":                        "the same runner, a request watched one at a time",
 	"docs/design/adr/0008-multiplexed-connection.md 24 µs": "the watch's wake-up on a GitHub runner, as serve.go quotes it",

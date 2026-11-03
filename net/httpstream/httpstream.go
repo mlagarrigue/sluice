@@ -7,221 +7,44 @@
 //
 // This package parses bytes that arrive from whoever dialled the socket.
 // docs/design/architecture.md ("What this is — and is not") refuses to ship
-// such a parser, in those words — "rewriting a parser exposed to hostile
-// input is how CVEs are manufactured" — and that judgement is not revised
-// here: [web] over net/http leaves that parsing to the standard library.
+// such a parser — "rewriting a parser exposed to hostile input is how CVEs
+// are manufactured" — and that judgement is not revised here: [web] over
+// net/http leaves that parsing to the standard library.
 //
 // net/httpstream is supported — outside the experimental label and
 // under the compatibility promise — and fuzzed in CI without
 // a public corpus; it has neither run in production nor had an outside
-// security review. It has faced curl, h2spec, h2load, h3spec, aioquic,
+// security review. It faces curl, h2spec, h2load, h3spec, aioquic,
 // quic-go's HTTP/3 client, and nginx, HAProxy and Envoy in front of it, in
 // continuous integration. Put it behind something you trust, or do not
-// expose it at all. Which deployments it is written for — HTTP/1.1 exposed
-// directly, cleartext only behind a terminating proxy, clients with a
-// reduced HPACK table — is gathered in docs/guide/deployments.md; each
-// section names where the code decides it.
+// expose it at all.
 //
 // # The thesis
 //
-// The library's table promises this for the web vertical:
+// Over net/http the server owns the read loop and the pipeline begins at
+// Request, one element at a time. Here a connection is a [sluice.Source] of
+// requests: one read that brings several — pipelined HTTP/1.1, multiplexed
+// HTTP/2 and HTTP/3 — hands them to one [Handler] call as one batch, and
+// the responses go back out a batch at a time ([Handler] says where the
+// batch comes from and what it is worth).
 //
-//	byte → Frame → Request → … → Response → byte
+//	handle := func(ctx context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
+//		out := make([]httpstream.Response, 0, b.Len())
+//		for _, r := range b.Items {
+//			out = append(out, httpstream.Response{Status: 200, Body: r.Target})
+//		}
+//		return sluice.Batch[httpstream.Response]{Items: out} // one per request, in order
+//	}
+//	err := httpstream.Serve(ctx, ln, httpstream.Config{}, handle) // HTTP/1.1 and HTTP/2
 //
-// Over net/http the first two arrows are not the library's. The standard
-// server owns the read loop, parses one request, and calls a handler — so the
-// pipeline begins at Request, one element at a time, and the all-batch model
-// meets its worst case at the boundary it was supposed to own. Measured, that
-// costs ×141 against the same six steps written by hand
-// (BenchmarkWebBatchOne), which is 0.14% of what the transport itself costs
-// and therefore affordable — but the model does not apply there.
-//
-// Here the arrows are all stream stages. A connection is a [sluice.Source]
-// of requests, a pipeline is a Stream-to-Stream function, and the responses
-// go back out a batch at a time. Both halves are streams: [Response.Stream]
-// lets the transport pull the batches of an answer at the socket's pace —
-// chunks over HTTP/1.1, DATA frames over /2 and /3, no total needed in
-// advance — and a producer learns that the connection is gone, or its stream
-// reset, by its yield returning false on its next batch. That is the only
-// signal: no transport interrupts a producer blocked in its own code.
-//
-// # Where the batch comes from
-//
-// Not from waiting. Over HTTP/1.1, keep-alive makes one connection a
-// *sequence* of requests and pipelining (RFC 9112 §6.3.2) lets a client put
-// several on the wire before reading any answer; one read then yields
-// several complete requests, handed over as one [sluice.Batch] — the one
-// thing net/http cannot express, since it serves a pipelined connection
-// strictly one request at a time. Over HTTP/2 the connection multiplexes by
-// design, so one read routinely carries frames for several streams and the
-// batch is the ordinary case (measured in
-// TestH2MultiplexedRequestsArriveAsOneBatch: six requests, one batch). Over
-// HTTP/3 a QUIC datagram has always carried frames for several streams
-// (TestH3RequestsFromOneDatagramAreOneBatch: four requests from one
-// datagram, one batch). Three protocols, one [Handler], and the pipeline
-// never learns which carried it.
-//
-// So the batch is opportunistic: it is whatever arrived together. The
-// measurement that matters is therefore not "is this faster than net/http"
-// but "what does a batch of k requests buy at k > 1". Measured by
-// BenchmarkReadPipelined, reading only — no socket, so the syscall a real
-// connection would also amortize is not in these figures:
-//
-//	depth   ns/request   buffer
-//	    1        139       4.7 KB
-//	    2        107       5.1 KB
-//	    8         84.5     7.9 KB
-//	   64         81       37 KB
-//
-// −42% per request at depth 64, and the curve is flat past 8: the read, the
-// refill and the hand-off are paid once per batch while the parse is paid
-// once per request, so what batching removes runs out. Depth 8 is the number
-// to set [Config.MaxRequestsPerBatch] from rather than a reason to raise it.
-//
-// # What it is worth against a real backend, and where it is worth nothing
-//
-// The transport's nanoseconds are noise beside a database round trip, so the
-// unit that decides is **round trips**. TestTransportBatchingMatrix runs the
-// same clients against the same backend — one call per batch, 500 µs each,
-// which is what `= ANY($1)` buys — over three servers:
-//
-//	server                   pipelined client      concurrent clients
-//	net/http + gateway       32 trips, 108 ms       2 trips,  27 ms
-//	httpstream                1 trip,    1 ms      32 trips,   3 ms
-//	httpstream + gateway      1 trip,    4 ms       1 trip,    5 ms
-//
-// Three things are in that table, and only one of them flatters this package.
-//
-// **It does nothing for separate connections.** One request per connection is
-// one batch of one however good the transport is, and the middle row says so.
-// The mechanism that serves that shape is [gateway], which batches by waiting.
-//
-// **The pipelined client is where net/http costs something real.** Not the
-// 0.14% of transport overhead, but 32 round trips against one — because the
-// standard server serves a connection's requests strictly in sequence, so
-// requests that arrived together reach the gateway one at a time and each
-// waits out its Within alone.
-//
-// **The two mechanisms compose.** The bottom row costs one round trip in both
-// shapes: the connection's batch is submitted to the gateway together —
-// [github.com/mlagarrigue/sluice/gateway.Gateway.DoBatch], one submission, no goroutine per element — and
-// callers on other connections still join the same batch. Neither mechanism
-// subsumes the other.
-//
-// # One connection, three goroutines and a call per batch
-//
-// A multiplexed connection is a reader, a responder and a writer. The reader
-// parses frames, owns the receive side and hands each batch to one [Handler]
-// call on a goroutine of its own — one call per batch, not per request, so a
-// batch that arrived together is still served together, and the calls in
-// flight are bounded by MaxConcurrentStreams; the responder frames what the
-// calls return; the writer owns the socket's write side, the send windows and
-// the scheduling. ADR 0008 records the bounds each hand-off has and what was
-// deliberately left out.
-//
-// A response larger than the window the peer granted waits for credit rather
-// than failing the connection, and the connection stays answerable while a
-// handler runs: PING is answered, SETTINGS acknowledged, and a peer's
-// RST_STREAM reaches the producer still working for it. A failure is
-// classified rather than escalated: a malformed request, a per-stream
-// flow-control violation, a body past [Config.MaxBodyBytes], a handler that
-// panics, a [Response.Stream] producer that panics partway through — each
-// costs its own stream and nothing else. GOAWAY is kept for what cannot be
-// resynchronised once in doubt: framing and HPACK state.
-//
-// HTTP/1.1 and HTTP/2 pull a producer on the goroutine that serves the
-// connection, so [Serve] and [ServeH2Conn] wait for a producer blocked in its
-// own code, however long it stays there — releasing one would take a context
-// the producer's signature does not carry. [ServeH3Conn] pulls each on its own
-// stream's goroutine and returns once the connection has ended.
-//
-// # HTTP/2 and HTTP/3
-//
-// [Serve] chooses between HTTP/1.1 and prior-knowledge HTTP/2 by what the
-// client sends first — the HTTP/2 preface can begin no HTTP/1.1 request, so
-// one listener serves both — or after ALPN behind a TLS listener (ADR 0014).
-// [ServeH2Conn] applies the rules RFC 9113 §8.3 states — pseudo-headers first and
-// unrepeated, lowercase field names, no connection-specific fields, TE only
-// "trailers", origin-form :path — which exist because an HTTP/2 request
-// reaching an HTTP/1.1 hop unchecked is how a smuggled request is written.
-// It answers PING, acknowledges SETTINGS, grants flow-control windows as it
-// consumes DATA, bounds concurrent streams, counts RST_STREAM against the
-// rapid-reset bound (CVE-2023-44487), and tracks a header block across
-// CONTINUATION with the count and total bounded (CVE-2024-27316). Trailers
-// are delivered in [Request.Trailers], whichever way the body is, behind a
-// body that has ended; on a stream already ended or reset
-// they are decoded then discarded rather than refused, because HPACK's
-// shared table means an undecoded block corrupts every one after it.
-//
-// HPACK and QPACK are transcribed from their RFCs rather than typed, and
-// pinned by the RFCs' own vectors (RFC 7541 Appendix C, including C.4 for
-// the Huffman codes; RFC 9204 Appendix A) and by structural checks. The
-// QPACK static table ships; [Config.QPACKStatic] remains as an interop and
-// testing override (ADR 0013).
-//
-// [ServeH3Conn] runs over [github.com/mlagarrigue/sluice/net/quic] — a real
-// TLS 1.3 handshake on a UDP socket, RFC 9001 packet protection, RFC 9002
-// recovery — not on a dependency, since the standard library has no QUIC.
-// That package is still experimental, in a sense this one has left: checked
-// against itself, against published vectors, against a harness that drops,
-// reorders and forges datagrams, and against two peers that share no code
-// (quic-go, in the interop/ module, where its HTTP/3 client also reads
-// [ServeH3Conn]'s responses, and ngtcp2, in the QUIC Interop Runner).
-// [ServeH3Conn] and [Server.ServeQUIC] take its types, and so stay outside
-// the compatibility promise with it (ADR 0021).
-//
-// # The codec layer is not exported
-//
-// The frame-level codecs under [Serve], [ServeH2Conn] and [ServeH3Conn] — HTTP/2
-// framing and HPACK, HTTP/3 framing and QPACK — are unexported. The servers
-// above them are built from them and the benchmark harness measures them one
-// stage at a time from inside the package; a caller wants one of the three
-// Serve functions, and [web] over net/http before any of them. [Preface] is
-// the one piece of the layer a caller may need, to recognise a
-// prior-knowledge HTTP/2 client in front of the server.
-//
-// # What it refuses
-//
-// A parser is judged on what it declines. This one implements the smallest
-// HTTP/1.1 that can serve a JSON API, and refuses the rest rather than
-// guessing:
-//
-//   - **Transfer-Encoding, except "chunked" alone.** A chunked body with no
-//     Content-Length beside it is decoded — bounded like any body, by
-//     [Config.MaxBodyBytes] or, streamed, [Config.MaxStreamedBodyBytes];
-//     chunk extensions ignored, trailers delivered in [Request.Trailers]
-//     once the body has ended. A
-//     coding this server does not implement is answered 501;
-//     Transfer-Encoding beside Content-Length — the request-smuggling pair
-//     in its entirety — or on an HTTP/1.0 request is answered 400.
-//   - **A repeated or non-numeric Content-Length**, answered 400.
-//   - **Authority-form targets** — origin-form, a target starting with "/",
-//     is what the handler sees, or the asterisk "*" of an OPTIONS request
-//     (§3.2.4); an absolute-form target is accepted as RFC 9112 §3.2.2
-//     requires, its authority replacing the Host and its path delivered as
-//     origin-form. The authority-form is CONNECT's, and a
-//     CONNECT is answered 501 on every protocol: this server opens no
-//     tunnel, and the handler never sees the request.
-//   - **A missing or repeated Host**, answered 400, as HTTP/1.1 requires.
-//   - **Whitespace between a header name and its colon**, answered 400: RFC
-//     9112 §5.1 requires rejection precisely because tolerating it is how two
-//     hops disagree about where a header ends.
-//   - **CR or LF inside a header value**, in both directions — refused on the
-//     way in, and refused again when a response is written, which is response
-//     splitting closed at the only place it can be closed.
-//   - **Connection upgrades and WebSocket.** Upgrades are a deployment choice,
-//     not a protocol feature this package implements. TLS is wrapped outside
-//     this package: the server takes a [net.Listener], and [crypto/tls]
-//     wraps one.
-//
-// Request bodies stay bounded whether they stream or arrive whole. A body
-// streams by default ([Config.BodyDelivery]): the handler's batch holds
-// requests whose head is complete, a body already whole within
-// [Config.MaxBodyBytes] in [Request.Body], any other read through
-// [Request.Stream] as it arrives. Every limit is a number the caller sets in
-// [Config]; none of them has a value that suits every deployment, so none
-// has a default that pretends otherwise beyond the modest ones a zero field
-// takes, each named in the field's own documentation.
+// Where to read on:
+//   - docs/guide/httpstream.md — the guide: serving, bodies, streamed
+//     responses, stopping in two steps;
+//   - docs/reference/httpstream.md — every Config setting, the three
+//     goroutines of a connection, HTTP/2 and HTTP/3, what the parser
+//     refuses;
+//   - docs/guide/deployments.md — HTTP/1.1 exposed directly, cleartext only
+//     behind a terminating proxy, clients with a reduced HPACK table.
 package httpstream
 
 import (

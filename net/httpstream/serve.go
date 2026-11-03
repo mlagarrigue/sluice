@@ -102,6 +102,74 @@ import (
 // the handler returns is still written, until a write fails. The context
 // lives until the batch's responses are written, which is when a streamed
 // response's producer stops needing it.
+//
+// # Where the batch comes from
+//
+// Not from waiting. Over HTTP/1.1, keep-alive makes one connection a
+// *sequence* of requests and pipelining (RFC 9112 §6.3.2) lets a client put
+// several on the wire before reading any answer; one read then yields
+// several complete requests, handed over as one batch — the one thing
+// net/http cannot express, since it serves a pipelined connection strictly
+// one request at a time. Over HTTP/2 the connection multiplexes by design,
+// so one read routinely carries frames for several streams and the batch is
+// the ordinary case (TestH2MultiplexedRequestsArriveAsOneBatch: six
+// requests, one batch). Over HTTP/3 a QUIC datagram has always carried
+// frames for several streams (TestH3RequestsFromOneDatagramAreOneBatch: four
+// requests from one datagram, one batch). Three protocols, one Handler, and
+// the pipeline never learns which carried it.
+//
+// Over net/http, by contrast, the standard server owns the read loop and
+// calls a handler per request, so the pipeline begins at Request, one
+// element at a time. Measured, that costs ×141 against the same six steps
+// written by hand (BenchmarkWebBatchOne), which is 0.14% of what the
+// transport itself costs — affordable, but the batch model does not apply
+// there.
+//
+// # What a batch is worth
+//
+// The batch is opportunistic: it is whatever arrived together. What matters
+// is what a batch of k requests buys at k > 1. Measured by
+// BenchmarkReadPipelined, reading only — no socket, so the syscall a real
+// connection would also amortize is not in these figures:
+//
+//	depth   ns/request   buffer
+//	    1        139       4.7 KB
+//	    2        107       5.1 KB
+//	    8         84.5     7.9 KB
+//	   64         81       37 KB
+//
+// −42% per request at depth 64, and the curve is flat past 8: the read, the
+// refill and the hand-off are paid once per batch while the parse is paid
+// once per request, so what batching removes runs out. Depth 8 is the number
+// to set [Config.MaxRequestsPerBatch] from rather than a reason to raise it.
+//
+// Against a real backend the transport's nanoseconds are noise beside a
+// database round trip, so the unit that decides is **round trips**.
+// TestTransportBatchingMatrix runs the same clients against the same backend
+// — one call per batch, 500 µs each, which is what `= ANY($1)` buys — over
+// three servers:
+//
+//	server                   pipelined client      concurrent clients
+//	net/http + gateway       32 trips, 108 ms       2 trips,  27 ms
+//	httpstream                1 trip,    1 ms      32 trips,   3 ms
+//	httpstream + gateway      1 trip,    4 ms       1 trip,    5 ms
+//
+// **It does nothing for separate connections.** One request per connection
+// is one batch of one however good the transport is, and the middle row says
+// so. The mechanism that serves that shape is the gateway package, which
+// batches by waiting.
+//
+// **The pipelined client is where net/http costs something real.** Not the
+// 0.14% of transport overhead, but 32 round trips against one — because the
+// standard server serves a connection's requests strictly in sequence, so
+// requests that arrived together reach the gateway one at a time and each
+// waits out its Within alone.
+//
+// **The two mechanisms compose.** The bottom row costs one round trip in
+// both shapes: the connection's batch is submitted to the gateway together —
+// [github.com/mlagarrigue/sluice/gateway.Gateway.DoBatch], one submission,
+// no goroutine per element — and callers on other connections still join the
+// same batch. Neither mechanism subsumes the other.
 type Handler func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response]
 
 // Serve accepts connections on ln and drives handle over each one until ctx

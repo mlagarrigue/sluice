@@ -175,8 +175,39 @@ package's own 130 at most.
 
 The handshake is `crypto/tls`'s, from the Go release
 `go.mod` names as the floor, run through `tls.QUICClient` and
-`tls.QUICServer`; what it refuses leaves as CRYPTO_ERROR, as the package
-documentation says.
+`tls.QUICServer`. None of the cryptography is invented here. The key
+schedule is HKDF from `crypto/hkdf` with the labels RFC 9001 §5.1
+publishes, the packet protection is the AEAD of the negotiated suite —
+AES-GCM from `crypto/cipher`, or ChaCha20-Poly1305 from
+`golang.org/x/crypto`, the only module outside the standard library
+`net/quic` imports ([ADR 0002](../design/adr/0002-dependency-graph.md)) — and
+the header protection is one block of the same suite's cipher over a
+sample, as RFC 9001 §5.4 specifies. What `net/quic` contributes is the
+plumbing, and the plumbing is pinned two ways: RFC 9001 Appendix A.1's
+published derivation vectors, and seal/open round trips for what the
+vectors do not reach.
+
+What `crypto/tls` refuses, `net/quic` reports as `crypto/tls` says it: a
+TLS alert leaves in a CONNECTION_CLOSE with code 0x0100 plus the alert
+(RFC 9001 §4.8), which is also how the codes that RFC mandates — 0x0178
+for no application protocol (§8.1), 0x016d for missing transport
+parameters (§8.2) — reach the wire.
+
+Two refusals RFC 9001 names
+PROTOCOL_VIOLATION (0x0a) go out under their alert's code instead:
+CRYPTO data of a level already finished, past the end received (§4.1.3,
+internal_error); data of a level left unconsumed when the next level's
+keys arrive (§4.1.3, unexpected_message). After the handshake,
+`crypto/tls` gives no alert at all: its post-handshake path sends the
+alert on a record layer QUIC does not have and returns an error without
+it, so a KeyUpdate message (§6, which wants 0x010a), a CertificateRequest
+on a client (§4.4) and a NewSessionTicket whose early_data is not
+0xffffffff (§4.6.1) — the last two PROTOCOL_VIOLATION — close as
+internal_error, 0x0150. The connection closes in each case; only the code
+differs. The error is all `net/quic` sees, and the same alert serves other
+causes — an internal_error is also a real one — so no translation is made.
+To revisit when `crypto/tls` states the cause of an alert, or surfaces the
+one it records after the handshake.
 
 The ClientHello's X25519 key share repeats the key inside the hybrid
 X25519MLKEM768 share, the group RFC 10024 defines. RFC 9846 §4.3.8 asks
@@ -224,8 +255,8 @@ Accepted where the text asks for a refusal:
 This end's own certificate chain is checked before a packet leaves, in
 `Dial`, `DialEarly` and `NewListener`: a leaf with a Key Usage that lacks
 digitalSignature, or a member signed with SHA-1, is refused (§4.5.1.2,
-§4.3.3). Two cases stay with the caller, as the package documentation
-says: a chain that `GetCertificate`, `GetConfigForClient` or
+§4.3.3). Two cases stay with the caller, as the godoc of `Dial` and
+`NewListener` says: a chain that `GetCertificate`, `GetConfigForClient` or
 `GetClientCertificate` returns during the handshake, which the package
 never sees; and, with several chains configured, the choice of one signed
 with an algorithm the peer's `signature_algorithms_cert` lists, which
