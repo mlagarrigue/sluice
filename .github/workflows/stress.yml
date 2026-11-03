@@ -1,0 +1,57 @@
+name: stress
+
+# One test, run many times under the race detector on the runner where it
+# failed. A test that went red once on one platform and green on the next
+# push says nothing until it has passed a hundred times there: this is that
+# hundred, on the runner and the Go version chosen. Started by hand; nothing
+# gates on it.
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: 'Runner (macos-latest, windows-latest, ubuntu-24.04-arm, ubuntu-latest)'
+        default: 'macos-latest'
+      go:
+        description: 'Go version (1.26 or stable)'
+        default: '1.26'
+      package:
+        description: 'Package holding the test'
+        default: './net/httpstream'
+      run:
+        description: 'Test regex, anchored (^TestName$)'
+        required: true
+      count:
+        description: 'go test -count'
+        default: '100'
+
+permissions:
+  contents: read
+
+jobs:
+  stress:
+    runs-on: ${{ inputs.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ inputs.go }}
+      # The loopback addresses test-udp gives macOS, so that a test run here
+      # sees the host it sees there.
+      - name: Second loopback addresses
+        if: runner.os == 'macOS'
+        run: |
+          sudo ifconfig lo0 alias 127.0.0.2 up
+          sudo ifconfig lo0 inet6 fd00::2 prefixlen 128 alias
+      # The inputs reach the command as environment variables, never spliced
+      # into it.
+      - name: Repeated runs
+        env:
+          PKG: ${{ inputs.package }}
+          RUN: ${{ inputs.run }}
+          COUNT: ${{ inputs.count }}
+        run: go test -race -count="$COUNT" -run "$RUN" "$PKG"
