@@ -1042,18 +1042,23 @@ func TestServeH3RefusesTransportParametersItCannotServe(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
 		mutate func(*quic.TransportParameters)
+		cfg    Config
 		want   string
 	}{
-		{"a stream limit past its cap", func(p *quic.TransportParameters) { p.InitialMaxStreamsBidi = h3MaxServeStreams + 1 }, "InitialMaxStreamsBidi"},
-		{"fewer than three unidirectional streams", func(p *quic.TransportParameters) { p.InitialMaxStreamsUni = 2 }, "InitialMaxStreamsUni"},
-		{"no credit on unidirectional streams", func(p *quic.TransportParameters) { p.InitialMaxStreamDataUni = 0 }, "InitialMaxStreamDataUni"},
-		{"more unidirectional streams than are read", func(p *quic.TransportParameters) { p.InitialMaxStreamsUni = maxUniStreams + 1 }, "InitialMaxStreamsUni"},
+		{"a stream limit past its cap", func(p *quic.TransportParameters) { p.InitialMaxStreamsBidi = h3MaxServeStreams + 1 }, Config{}, "InitialMaxStreamsBidi"},
+		// The cap holds for the configuration too: with parameters written
+		// by hand, admit counts against MaxConcurrentStreams alone, and the
+		// rapid-reset allowance is four times it.
+		{"a concurrency past its cap", func(*quic.TransportParameters) {}, Config{MaxConcurrentStreams: 1 << 16}, "MaxConcurrentStreams"},
+		{"fewer than three unidirectional streams", func(p *quic.TransportParameters) { p.InitialMaxStreamsUni = 2 }, Config{}, "InitialMaxStreamsUni"},
+		{"no credit on unidirectional streams", func(p *quic.TransportParameters) { p.InitialMaxStreamDataUni = 0 }, Config{}, "InitialMaxStreamDataUni"},
+		{"more unidirectional streams than are read", func(p *quic.TransportParameters) { p.InitialMaxStreamsUni = maxUniStreams + 1 }, Config{}, "InitialMaxStreamsUni"},
 	} {
-		t.Run(tt.name, func(t *testing.T) { refusesH3Params(t, tt.mutate, tt.want) })
+		t.Run(tt.name, func(t *testing.T) { refusesH3Params(t, tt.mutate, tt.cfg, tt.want) })
 	}
 }
 
-func refusesH3Params(t *testing.T, mutate func(*quic.TransportParameters), want string) {
+func refusesH3Params(t *testing.T, mutate func(*quic.TransportParameters), cfg Config, want string) {
 	t.Helper()
 	serverPC, clientPC := dgram.Pair()
 	defer func() { _ = serverPC.Close() }()
@@ -1069,7 +1074,7 @@ func refusesH3Params(t *testing.T, mutate func(*quic.TransportParameters), want 
 			served <- err
 			return
 		}
-		served <- ServeH3Conn(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		served <- ServeH3Conn(t.Context(), conn, cfg, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			return sluice.Batch[Response]{}
 		})
 	}()

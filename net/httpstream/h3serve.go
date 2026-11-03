@@ -132,7 +132,7 @@ func ServeH3Conn(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) 
 func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Handler) error {
 	// The handshake is done: one copy for every request of the connection.
 	state := c.ConnectionState()
-	if err := refuseH3Conn(c); err != nil {
+	if err := refuseH3Conn(c, cfg); err != nil {
 		return err
 	}
 	if cfg.KeepAlive > 0 {
@@ -189,7 +189,7 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 // refuseH3Conn refuses, and closes, a connection serveH3 cannot serve. The
 // connection is closed with the refusal, as on every other way out of
 // ServeH3Conn: left open, the client would wait on a server nobody runs.
-func refuseH3Conn(c *quic.Conn) error {
+func refuseH3Conn(c *quic.Conn, cfg Config) error {
 	// The goroutines a connection runs are bounded by the request streams
 	// the transport admits, and h3MaxServeStreams is where that bound is
 	// capped. A connection whose announced stream limit exceeds it is
@@ -199,6 +199,15 @@ func refuseH3Conn(c *quic.Conn) error {
 		return fmt.Errorf(
 			"httpstream: InitialMaxStreamsBidi %d is over the %d streams ServeH3Conn serves on one connection",
 			lim, h3MaxServeStreams)
+	}
+	// The configuration is held to the same cap, as TransportParameters
+	// holds it: with parameters written by hand, admission counts requests
+	// in flight against MaxConcurrentStreams alone, and the rapid-reset
+	// allowance is four times it.
+	if cfg.MaxConcurrentStreams > h3MaxServeStreams {
+		_ = c.CloseWithError(h3InternalError)
+		return fmt.Errorf("httpstream: Config.MaxConcurrentStreams %d is over the %d streams ServeH3Conn serves on one connection",
+			cfg.MaxConcurrentStreams, h3MaxServeStreams)
 	}
 	// RFC 9114 §6.2: the transport parameters MUST let the peer create at
 	// least three unidirectional streams — its control stream and QPACK's
