@@ -343,18 +343,17 @@ whichever way the conditions go:
   one byte per frame, who would otherwise choose this end's bookkeeping
   cost. In plain words: a stream may be delivered in any order, but not
   as confetti.
-- **`net/quic` closing period and idle floor**: a closed connection stays
-  closing or draining for three probe timeouts (PTO, the delay after which
-  a sender resends what was not acknowledged), as RFC 9000 §10.2 asks, and
-  ten seconds at most; the idle timeout's §10.1 floor of three PTOs stops
-  at ten seconds too. The peer chooses most of a PTO — its
-  `max_ack_delay`, legal up to 2^14 ms — and uncapped, legal parameters
-  would hold a listener's `MaxConns` and `MaxConnsPerIP` slots for 49 s
-  from `max_ack_delay` alone (three times 16.4 s), longer with a slow
-  round trip. Ten seconds covers three PTOs of a
-  2.5 s round trip; a late packet is then answered with a Stateless Reset.
-  In plain words: a closed connection keeps its place ten seconds at most,
-  an idle one its idle timeout or ten seconds, whichever is longer.
+- **`net/quic` closing period**: a closed connection stays closing or
+  draining for three probe timeouts (PTO, the delay after which a sender
+  resends what was not acknowledged), as RFC 9000 §10.2 recommends, and
+  ten seconds at most — the peer chooses most of a PTO (its
+  `max_ack_delay`, legal up to 2^14 ms), and uncapped, a closed
+  connection would hold a listener's `MaxConns` slot 49 s. A late packet
+  is then answered with a Stateless Reset. The §10.1 floor of three PTOs
+  on the idle timeout, a MUST, has no cap: a peer that wants a slot keeps
+  it anyway with a PING now and then, and `MaxConns` and `MaxConnsPerIP`
+  bound that. In plain words: a closed connection keeps its place ten
+  seconds at most; an idle one, its idle timeout or three resend delays.
 - **`net/quic` versions**: version 1 only. QUIC version 2 (RFC 9369) and
   compatible version negotiation (RFC 9368) are not implemented: a server
   that does not speak version 1 ends the dial, and a peer's
@@ -695,6 +694,16 @@ Accepted where the text asks for a refusal:
   is accepted (§9.2);
 - a `pre_shared_key` without `psk_key_exchange_modes`: the handshake
   continues without the PSK (§4.3.9).
+
+This end's own certificate chain is checked before a packet leaves, in
+`Dial`, `DialEarly` and `NewListener`: a leaf with a Key Usage that lacks
+digitalSignature, or a member signed with SHA-1, is refused (§4.5.1.2,
+§4.3.3). Two cases stay with the caller, as the package documentation
+says: a chain that `GetCertificate`, `GetConfigForClient` or
+`GetClientCertificate` returns during the handshake, which the package
+never sees; and, with several chains configured, the choice of one signed
+with an algorithm the peer's `signature_algorithms_cert` lists, which
+`crypto/tls` does not compare (§4.5.1.2).
 
 The TLS 1.3 compatibility mode is neither asked for by this
 client nor policed by this server: `crypto/tls` sends no

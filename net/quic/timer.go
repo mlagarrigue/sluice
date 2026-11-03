@@ -34,35 +34,11 @@ func (c *Conn) timerLoop() {
 	}
 }
 
-// maxIdleFloor caps §10.1's floor on the idle timeout, which the section
-// states as a MUST — "endpoints MUST increase the idle timeout period to be
-// at least three times the current Probe Timeout (PTO)" — with no bound on
-// the result. The PTO is current() + max(4 x variance, granularity) + the
-// peer's max_ack_delay, and §18.2 lets the peer announce a max_ack_delay of
-// up to 2^14-1 ms, which the PTO adds whole; the smoothed RTT it can inflate
-// by delaying its acknowledgements adds to it with no ceiling of its own.
-// Uncapped, the floor therefore passed DefaultParameters' MaxIdleTimeout by
-// a factor the peer chose with a single transport parameter, and a
-// Listener's connection keeps its routing entry and its MaxConns and
-// MaxConnsPerIP slots for the whole of it.
-//
-// This is the same deviation, for the same root, that maxClosingPeriod takes
-// against §10.2's "at least three times the current PTO" (close.go), and the
-// same bound: ten seconds is three PTOs of a path with a 2.5 s round trip,
-// past any satellite hop. What ending earlier costs is what the MUST buys —
-// room for several probes to be sent and lost before the connection is given
-// up — and ten seconds is room for three on any path that exists.
-//
-// The floor is left unconditional otherwise. §10.1 states it without one:
-// its "allows for multiple PTOs to expire" is the reason for the rule, not a
-// condition on it, and applying the floor only with something in flight
-// would be a second deviation where the cap already closes the exposure.
-const maxIdleFloor = 10 * time.Second
-
 // idleDeadlineLocked is the idle deadline the connection acts on: the last
 // activity plus the effective timeout, floored at three probe timeouts
-// (RFC 9000 §10.1) and capped at maxIdleFloor. Zero when no idle timeout
-// runs. Every loop that waits for the idle timeout reads it from here, never
+// (RFC 9000 §10.1: "endpoints MUST increase the idle timeout period to be at
+// least three times the current Probe Timeout (PTO)"). Zero when no idle
+// timeout runs. Every loop that waits for the idle timeout reads it from here, never
 // c.idleDeadline: the raw deadline is past while the floor still holds the
 // connection, and a loop that waited on it would wake at once and spin,
 // holding c.mu at each turn, until the floored one.
@@ -70,14 +46,23 @@ const maxIdleFloor = 10 * time.Second
 // On a lossy or high-RTT path the recovery probes still legitimately
 // outstanding are the opposite of idleness, and tearing down under them
 // abandons a connection that was busy repairing itself: that is what the
-// floor is for. Its cap is what §10.1's MUST does not allow for — see
-// maxIdleFloor.
+// floor is for. It applies whether or not something is in flight: §10.1's
+// "allows for multiple PTOs to expire" is the reason for the rule, not a
+// condition on it.
+//
+// The floor has no cap. The peer chooses most of a PTO — its max_ack_delay,
+// legal up to 2^14-1 ms (§18.2), and the smoothed RTT its delayed
+// acknowledgements inflate — so a Listener's connection may keep its slot
+// for three times that once the peer goes silent: 49 s from max_ack_delay
+// alone. A peer that wants to hold a slot can already do so for as long as
+// it likes by sending a PING now and then; what bounds that is MaxConns and
+// MaxConnsPerIP, and a cap here would break the MUST without bounding it.
 func (c *Conn) idleDeadlineLocked() time.Time {
 	if c.idleTimeout == 0 || c.idleDeadline.IsZero() {
 		return time.Time{}
 	}
 	deadline := c.idleDeadline
-	if floor := min(3*c.rtt.pto(c.peerMaxAckDelayLocked()), maxIdleFloor); c.idleTimeout < floor {
+	if floor := 3 * c.rtt.pto(c.peerMaxAckDelayLocked()); c.idleTimeout < floor {
 		deadline = deadline.Add(floor - c.idleTimeout)
 	}
 	return deadline

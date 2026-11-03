@@ -293,37 +293,39 @@ func TestDeferredEarlyReplayIsNotCountedTwice(t *testing.T) {
 	}
 }
 
-// RFC 9000 §10.1 floors the idle timeout at three probe timeouts, and says
-// so as a MUST with no bound on the result. The PTO adds the peer's
-// max_ack_delay whole, which §18.2 lets it announce up to 2^14-1 ms, plus a
-// smoothed RTT its delayed acknowledgements inflate with no ceiling: the
-// floor therefore passed DefaultParameters' MaxIdleTimeout by a factor the
-// peer chose with one transport parameter, and a Listener's connection keeps
-// its routing entry and its MaxConns and MaxConnsPerIP slots for the whole
-// of it. maxIdleFloor caps it, the same deviation maxClosingPeriod takes
-// against §10.2.
-func TestTheIdleFloorIsCapped(t *testing.T) {
+// RFC 9000 §10.1 floors the idle timeout at three probe timeouts, as a MUST
+// with no bound on the result. A peer that announces max_idle_timeout 1 s
+// and max_ack_delay 5 s, both legal (§18.2), gets three PTOs of more than
+// fifteen seconds before the connection is given up. Until 2026-11-03 the
+// floor stopped at ten seconds, for the Listener slot such a peer holds;
+// but a peer that wants to keep a slot sends a PING now and then, and the
+// bound on that is MaxConns and MaxConnsPerIP, not the floor.
+func TestTheIdleFloorIsNotCapped(t *testing.T) {
 	c := boundsConn(t, false)
 	c.mu.Lock()
-	c.idleTimeout = 100 * time.Millisecond
-	c.peerParams.MaxAckDelay = (1<<14 - 1) * time.Millisecond // §18.2's ceiling
+	c.idleTimeout = time.Second
+	c.peerParams.MaxAckDelay = 5 * time.Second
 	c.peerParams.sawMaxAckDelay = true
 	c.hasPeerParams = true
-	// Last activity long enough ago that the capped floor has passed and the
-	// uncapped one has not: the cap is the only thing that decides.
-	c.idleDeadline = time.Now().Add(-maxIdleFloor - time.Second)
-	uncapped := 3 * c.rtt.pto(c.peerMaxAckDelayLocked())
+	// Last activity eleven seconds ago: past the old ten-second cap, short
+	// of the three PTOs.
+	last := time.Now().Add(-11 * time.Second)
+	c.idleDeadline = last.Add(c.idleTimeout)
+	floor := 3 * c.rtt.pto(c.peerMaxAckDelayLocked())
+	deadline := c.idleDeadlineLocked()
 	c.mu.Unlock()
-	if uncapped <= maxIdleFloor {
-		t.Fatalf("three PTOs come to %v, not over the cap of %v; the case under test is not reached", uncapped, maxIdleFloor)
+	if floor <= 15*time.Second {
+		t.Fatalf("three PTOs come to %v, not over fifteen seconds; the case under test is not reached", floor)
+	}
+	if want := last.Add(floor); !deadline.Equal(want) {
+		t.Errorf("idle deadline %v after the last activity, want three PTOs, %v", deadline.Sub(last), floor)
 	}
 
 	c.actOnDeadlines(time.Now())
 	select {
 	case <-c.closed:
+		t.Errorf("the connection was given up 11s after its last activity, before three PTOs (%v): §10.1's floor was cut short", floor)
 	default:
-		t.Errorf("the connection is still live %v after its last activity, with an idle timeout of %v: three uncapped PTOs come to %v, which a peer chooses with one transport parameter, and a Listener holds its MaxConns slot for all of it",
-			maxIdleFloor+time.Second, c.idleTimeout, uncapped)
 	}
 }
 
@@ -341,9 +343,9 @@ func TestTheIdleFloorStillDefersTheTimeout(t *testing.T) {
 	c.idleDeadline = time.Now().Add(-5 * time.Millisecond)
 	floor := 3 * c.rtt.pto(c.peerMaxAckDelayLocked())
 	c.mu.Unlock()
-	if floor <= c.idleTimeout || floor > maxIdleFloor {
-		t.Fatalf("three PTOs come to %v, want between the idle timeout %v and the cap %v; the case under test is not reached",
-			floor, c.idleTimeout, maxIdleFloor)
+	if floor <= c.idleTimeout {
+		t.Fatalf("three PTOs come to %v, not over the idle timeout %v; the case under test is not reached",
+			floor, c.idleTimeout)
 	}
 	c.actOnDeadlines(time.Now())
 	select {
@@ -370,9 +372,9 @@ func TestIdleFloorDoesNotSpinTheLoops(t *testing.T) {
 	floor := 3 * c.rtt.pto(c.peerMaxAckDelayLocked())
 	floored := c.idleDeadline.Add(floor - c.idleTimeout)
 	c.mu.Unlock()
-	if floor <= c.idleTimeout || floor > maxIdleFloor {
-		t.Fatalf("three PTOs come to %v, want between the idle timeout %v and the cap %v; the case under test is not reached",
-			floor, c.idleTimeout, maxIdleFloor)
+	if floor <= c.idleTimeout {
+		t.Fatalf("three PTOs come to %v, not over the idle timeout %v; the case under test is not reached",
+			floor, c.idleTimeout)
 	}
 
 	now := time.Now()
