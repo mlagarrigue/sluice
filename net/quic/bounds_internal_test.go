@@ -413,7 +413,8 @@ func TestCallerValuesPastTheVarintCeilingAreRefused(t *testing.T) {
 			{"InitialMaxStreamDataUni", func(p *TransportParameters, v uint64) { p.InitialMaxStreamDataUni = v }},
 			{"InitialMaxStreamDataBidiLocal", func(p *TransportParameters, v uint64) { p.InitialMaxStreamDataBidiLocal = v }},
 			{"InitialMaxStreamDataBidiRemote", func(p *TransportParameters, v uint64) { p.InitialMaxStreamDataBidiRemote = v }},
-			{"ActiveConnIDLimit", func(p *TransportParameters, v uint64) { p.ActiveConnIDLimit = v }},
+			// ActiveConnIDLimit has a lower bound of its own, maxActiveConnIDLimit
+			// (TestActiveConnIDLimitIsBounded): 2^62-1 is refused there.
 		} {
 			for _, v := range []uint64{1 << 62, ^uint64(0)} {
 				p := DefaultParameters()

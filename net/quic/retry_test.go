@@ -31,6 +31,38 @@ func TestRetryTokenRoundTrips(t *testing.T) {
 	}
 }
 
+// An address's text has no length bound — an IPv6 zone name is as long as
+// the system lets it be — and the token binds it whatever its length: a
+// length byte would have wrapped past 255 and left the token unreadable.
+func TestRetryTokenBindsALongZonedAddress(t *testing.T) {
+	key, err := newRetryTokenKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := &net.UDPAddr{IP: net.IPv6loopback, Port: 4242, Zone: string(bytes.Repeat([]byte("z"), 300))}
+	token := appendRetryToken(nil, key, peer, []byte("original-dcid00"), []byte("server-scid"))
+	if _, err := verifyRetryToken(token, key, defaultRetryTokenTTL, peer); err != nil {
+		t.Fatalf("verifyRetryToken for a %d-byte address: %v", len(peer.String()), err)
+	}
+	other := &net.UDPAddr{IP: net.IPv6loopback, Port: 4242, Zone: string(bytes.Repeat([]byte("y"), 300))}
+	if _, err := verifyRetryToken(token, key, defaultRetryTokenTTL, other); err == nil {
+		t.Error("a token for one long zone verified for another")
+	}
+}
+
+// ActiveConnIDLimit is bounded: every identifier is a routing entry.
+func TestActiveConnIDLimitIsBounded(t *testing.T) {
+	p := DefaultParameters()
+	p.ActiveConnIDLimit = maxActiveConnIDLimit
+	if err := p.Validate(); err != nil {
+		t.Fatalf("Validate at the bound: %v", err)
+	}
+	p.ActiveConnIDLimit++
+	if err := p.Validate(); err == nil {
+		t.Errorf("Validate accepted ActiveConnIDLimit %d", p.ActiveConnIDLimit)
+	}
+}
+
 func TestRetryTokenRejectsAWrongKey(t *testing.T) {
 	key, _ := newRetryTokenKey()
 	other, _ := newRetryTokenKey()

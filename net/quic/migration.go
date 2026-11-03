@@ -596,7 +596,7 @@ func (c *Conn) queueRetireLocked(seq uint64) error {
 	if c.controlHoldsLocked(frame) {
 		return nil
 	}
-	limit := max(2*min(c.params.ActiveConnIDLimit, 1<<10), 8)
+	limit := max(2*min(c.params.ActiveConnIDLimit, maxActiveConnIDLimit), 8)
 	if uint64(c.controlRetires) >= limit { //nolint:gosec // G115: a count, never negative
 		return &transportError{
 			code: transportConnectionIDLimit,

@@ -126,7 +126,8 @@ type TransportParameters struct {
 	// for the peer to rotate into. It also caps how many identifiers this
 	// endpoint issues for itself, whatever the peer's own limit invites:
 	// each is a routing entry a [Listener] holds, so a figure raised for
-	// the peer is one this end pays for too.
+	// the peer is one this end pays for too — which is why
+	// [TransportParameters.Validate] refuses more than 1024.
 	ActiveConnIDLimit uint64
 
 	// DisableActiveMigration announces that this endpoint cannot follow a
@@ -380,6 +381,10 @@ func parsePreferredAddress(val []byte) (*preferredAddress, error) {
 	return p, nil
 }
 
+// maxActiveConnIDLimit is the most connection identifiers
+// [TransportParameters.ActiveConnIDLimit] may ask this end to keep.
+const maxActiveConnIDLimit = 1 << 10
+
 // ErrZeroParameters reports a zero [TransportParameters]: no limit of any
 // kind announced, which no caller can mean literally.
 var ErrZeroParameters = errors.New("quic: zero TransportParameters announce no credit at all — start from DefaultParameters()")
@@ -450,6 +455,11 @@ func (p TransportParameters) check() error {
 	// to, three PTOs of silence.
 	if p.MaxIdleTimeout < 0 {
 		return fmt.Errorf("quic: MaxIdleTimeout %v is negative; zero means no timeout", p.MaxIdleTimeout)
+	}
+	// Every identifier this end keeps or issues is a routing entry its
+	// Listener holds for the connection, so the figure is bounded here.
+	if p.ActiveConnIDLimit > maxActiveConnIDLimit {
+		return fmt.Errorf("quic: ActiveConnIDLimit %d is past %d, the most this package keeps", p.ActiveConnIDLimit, maxActiveConnIDLimit)
 	}
 	if n := p.MaxDatagramSize; n != 0 && (n < pmtuBaseSize || n > pmtuMaxSize) {
 		return fmt.Errorf("quic: MaxDatagramSize %d is outside %d..%d", n, pmtuBaseSize, pmtuMaxSize)

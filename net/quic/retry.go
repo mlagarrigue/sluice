@@ -168,9 +168,11 @@ func appendRetryTokenAt(dst []byte, key [32]byte, issued time.Time, peer net.Add
 	// what it says, and a second-truncated issue time ages a token by up
 	// to a second at birth.
 	dst = varint.Append(dst, uint64(issued.UnixMilli())) //nolint:gosec // G115: milliseconds since epoch, nowhere near overflowing a varint
-	addr := []byte(peer.String())
-	dst = append(dst, byte(len(addr))) //nolint:gosec // G115: an IP address and port in text, 47 bytes for IPv6 and a zone name past that, far under 256
-	dst = append(dst, addr...)
+	// The address is bound by its digest, fixed in length: its text has
+	// none, an IPv6 zone name being as long as the system lets it be, and a
+	// length byte would wrap past 255.
+	addr := sha256.Sum256([]byte(peer.String()))
+	dst = append(dst, addr[:]...)
 	dst = append(dst, byte(len(odcid))) //nolint:gosec // G115: a connection ID is at most 20 bytes
 	dst = append(dst, odcid...)
 	dst = append(dst, byte(len(newSCID))) //nolint:gosec // G115: a connection ID is at most 20 bytes
@@ -221,13 +223,14 @@ func verifyRetryToken(token []byte, key [32]byte, ttl time.Duration, peer net.Ad
 	if time.Since(time.UnixMilli(int64(issued))) > ttl { //nolint:gosec // G115: a Unix millisecond count from a clock holding this key
 		return retryToken{}, fmt.Errorf("%w: an expired Retry token", ErrQUIC)
 	}
-	addr, rest, err := tokenField(rest)
-	if err != nil {
-		return retryToken{}, err
+	if len(rest) < sha256.Size {
+		return retryToken{}, ErrTruncated
 	}
-	if string(addr) != peer.String() {
+	addr := sha256.Sum256([]byte(peer.String()))
+	if subtle.ConstantTimeCompare(rest[:sha256.Size], addr[:]) != 1 {
 		return retryToken{}, fmt.Errorf("%w: a Retry token issued to a different address", ErrQUIC)
 	}
+	rest = rest[sha256.Size:]
 	odcid, rest, err := tokenField(rest)
 	if err != nil {
 		return retryToken{}, err

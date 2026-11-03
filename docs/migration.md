@@ -43,6 +43,16 @@ signatures — a value now refused — come last.
   accepted on a PATCH; the type that states the semantics of a PATCH that
   sets members is `application/merge-patch+json` (RFC 7396).
 
+### QUIC: `net/quic`
+
+- **`ActiveConnIDLimit` past 1024 is refused** ("fix(quic)!: bound
+  ActiveConnIDLimit; bind a token's address"): `TransportParameters.Validate`,
+  and so `Dial` and `NewListener`, refuse it, where the value was taken as
+  given. A configuration that asked for more asks for 1024 or less.
+- **A Retry token binds the client's address by its digest**: a token a
+  server issued before the upgrade does not verify after it, and its client
+  is sent a new Retry, within `RetryTokenTTL` of the restart.
+
 ## From v0.3.0 to v0.4.0
 
 ### Fan-out: `parallel`
