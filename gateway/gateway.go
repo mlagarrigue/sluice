@@ -380,95 +380,119 @@ func (g *Gateway[In, Out]) run(pipeline func(sluice.Stream[*Call[In, Out]])) {
 		// and doing so costs it a goroutine and a channel hand-off. Here the
 		// channel and the goroutine already exist, so the same select does the
 		// job with neither.
-		buf := make([]*Call[In, Out], 0, g.size)
+		b := &batcher[In, Out]{g: g, yield: yield, buf: make([]*Call[In, Out], 0, g.size)}
 		// Created stopped, with no drain: since Go 1.23 (and this module
 		// requires 1.26) Stop guarantees no stale value is left in C, so the
 		// old `if !Stop() { <-C }` idiom has nothing to drain.
-		timer := time.NewTimer(time.Hour)
-		timer.Stop()
-		defer timer.Stop()
-
-		flush := func() bool {
-			if len(buf) == 0 {
-				return true
-			}
-			timer.Stop()
-			ok := yield(sluice.Batch[*Call[In, Out]]{Items: buf})
-			// No "did they all answer?" sweep here, deliberately. Returning
-			// from yield means the batch was accepted downstream, not that it
-			// was handled: an asynchronous operator — [parallel.Async],
-			// [parallel.Unordered] — returns as soon as a worker has taken it,
-			// with the replies still to come. Checking here would fail calls
-			// the pipeline is about to answer correctly, and the answer that
-			// followed would then panic as a second one. The only safe moment
-			// is after the pipeline returns, and by the architecture's S6 that
-			// is after every worker it started has stopped.
-			//
-			// A fresh slice per batch, because the batch may now outlive this
-			// call: an asynchronous operator holds it while the loop moves on,
-			// and the batch contract says a retained batch must be copied —
-			// here the copy is simply not reusing the buffer.
-			buf = make([]*Call[In, Out], 0, g.size)
-			return ok
-		}
+		b.timer = time.NewTimer(time.Hour)
+		b.timer.Stop()
+		defer b.timer.Stop()
 
 		for {
 			select {
 			case c := <-g.in:
-				if g.eager {
-					// Everyone who arrived while the last batch was served
-					// leaves with this call, and nobody waits for more.
-					buf = append(buf, c)
-				take:
-					for len(buf) < g.size {
-						select {
-						case c := <-g.in:
-							buf = append(buf, c)
-						default:
-							break take
-						}
-					}
-					if !flush() {
-						return
-					}
-					continue
-				}
-				if len(buf) == 0 {
-					// The ceiling is on how long a call waits, so it runs from
-					// the first call of the batch, not the last.
-					timer.Reset(g.within)
-				}
-				buf = append(buf, c)
-				if len(buf) == g.size && !flush() {
+				if !b.add(c) {
 					return
 				}
-			case <-timer.C:
-				if !flush() {
+			case <-b.timer.C:
+				if !b.flush() {
 					return
 				}
 			case <-g.closing:
 				asked = true
-				// Serve what is held, then take whatever is already queued
-				// behind it rather than making those callers wait for their
-				// deadlines to learn the gateway shut.
-				if !flush() {
-					return
-				}
-				for {
-					select {
-					case c := <-g.in:
-						buf = append(buf, c)
-						if len(buf) == g.size && !flush() {
-							return
-						}
-					default:
-						flush()
-						return
-					}
-				}
+				b.drainClosing()
+				return
 			}
 		}
 	})
+}
+
+// batcher is the run loop's batch being formed: the calls held, the timer of
+// the Within ceiling, and the pipeline's yield. Each of the loop's three
+// regimes — the window, Eager, the close — is one of its methods.
+type batcher[In, Out any] struct {
+	g     *Gateway[In, Out]
+	yield func(sluice.Batch[*Call[In, Out]]) bool
+	buf   []*Call[In, Out]
+	timer *time.Timer
+}
+
+// add takes one call in and reports whether the pipeline still accepts
+// batches.
+func (b *batcher[In, Out]) add(c *Call[In, Out]) bool {
+	if b.g.eager {
+		// Everyone who arrived while the last batch was served leaves with
+		// this call, and nobody waits for more.
+		b.buf = append(b.buf, c)
+		b.takeReady()
+		return b.flush()
+	}
+	if len(b.buf) == 0 {
+		// The ceiling is on how long a call waits, so it runs from the first
+		// call of the batch, not the last.
+		b.timer.Reset(b.g.within)
+	}
+	b.buf = append(b.buf, c)
+	return len(b.buf) < b.g.size || b.flush()
+}
+
+// takeReady adds the calls already queued, up to a full batch, without
+// waiting for any.
+func (b *batcher[In, Out]) takeReady() {
+	for len(b.buf) < b.g.size {
+		select {
+		case c := <-b.g.in:
+			b.buf = append(b.buf, c)
+		default:
+			return
+		}
+	}
+}
+
+// drainClosing serves what is held, then takes whatever is already queued
+// behind it rather than making those callers wait for their deadlines to
+// learn the gateway shut.
+func (b *batcher[In, Out]) drainClosing() {
+	if !b.flush() {
+		return
+	}
+	for {
+		select {
+		case c := <-b.g.in:
+			b.buf = append(b.buf, c)
+			if len(b.buf) == b.g.size && !b.flush() {
+				return
+			}
+		default:
+			b.flush()
+			return
+		}
+	}
+}
+
+// flush hands the held calls to the pipeline as one batch and reports whether
+// it accepted them.
+func (b *batcher[In, Out]) flush() bool {
+	if len(b.buf) == 0 {
+		return true
+	}
+	b.timer.Stop()
+	ok := b.yield(sluice.Batch[*Call[In, Out]]{Items: b.buf})
+	// No "did they all answer?" sweep here, deliberately. Returning from
+	// yield means the batch was accepted downstream, not that it was handled:
+	// an asynchronous operator — [parallel.Async], [parallel.Unordered] —
+	// returns as soon as a worker has taken it, with the replies still to
+	// come. Checking here would fail calls the pipeline is about to answer
+	// correctly, and the answer that followed would then panic as a second
+	// one. The only safe moment is after the pipeline returns, and by the
+	// architecture's S6 that is after every worker it started has stopped.
+	//
+	// A fresh slice per batch, because the batch may now outlive this call:
+	// an asynchronous operator holds it while the loop moves on, and the
+	// batch contract says a retained batch must be copied — here the copy is
+	// simply not reusing the buffer.
+	b.buf = make([]*Call[In, Out], 0, b.g.size)
+	return ok
 }
 
 // sweepIn discards calls parked in the buffered channel after the run loop
