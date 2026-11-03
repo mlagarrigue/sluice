@@ -206,7 +206,8 @@ and <!-- figure: BenchmarkWebDBPgxPool64 -->1.28 ms<!-- /figure --> for pgx on a
 ([measured](docs/benchmarks.md#the-gateway-with-a-database-behind-it) on one laptop under WSL2, session of 2026-08-21).
 → [`example/orders`](example/orders), run by
 `go test ./example/orders -run TestIntegration -v` against the PostgreSQL the
-`SLUICE_PG` variables name (the test skips without one).
+[`SLUICE_PG` variables](docs/guide/postgres.md#running-the-examples-against-a-server)
+name (the test skips without one).
 
 ### 2. A large result, constant memory
 
@@ -339,7 +340,9 @@ runnable example per operator. Two complete examples:
 PostgreSQL (`go test ./example/orders -run TestIntegration -v`), and
 [`example/vertical`](example/vertical), the same over the native transport
 (`go test ./example/vertical -run TestVerticalEndToEnd -v`); both take their
-PostgreSQL from the `SLUICE_PG` variables and skip without one. A third,
+PostgreSQL from the
+[`SLUICE_PG` variables](docs/guide/postgres.md#running-the-examples-against-a-server)
+and skip without one. A third,
 [`example/settings`](example/settings), reads a deployment's settings from
 its environment and refuses a bad value before it opens a socket.
 

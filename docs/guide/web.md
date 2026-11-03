@@ -343,7 +343,8 @@ real PostgreSQL, refusals answered with their remedy, and an integration
 test that counts the round trips to prove there is only one per batch:
 `go test ./example/orders -run TestIntegration -v`, against the PostgreSQL the
 `SLUICE_PG`, `SLUICE_PG_USER`, `SLUICE_PG_DB` and `SLUICE_PG_PASSWORD`
-variables name (it skips without them).
+[variables](postgres.md#running-the-examples-against-a-server) name (it
+skips without them).
 
 ## You can now
 

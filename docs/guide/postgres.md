@@ -86,6 +86,22 @@ settings, their zero values and their bounds:
 `QueryConfig` and `CopyConfig` are set per query, in the code beside it;
 their fields are in the package documentation.
 
+### Running the examples against a server
+
+> **In plain words: the `SLUICE_PG` variables.** The examples and the
+> integration tests that talk to a real PostgreSQL find it through four
+> environment variables, and skip without the first: `SLUICE_PG`, the
+> server's `host:port` (`127.0.0.1:5432`); `SLUICE_PG_USER`, the role;
+> `SLUICE_PG_DB`, the database; `SLUICE_PG_PASSWORD`, the role's password.
+> Any PostgreSQL from 14 to 18 serves: one in a container, or the
+> throwaway cluster `internal/bench/scripts/pgdev.sh start` sets up and
+> exports the variables for ([Contributing](../../CONTRIBUTING.md)).
+>
+> ```sh
+> SLUICE_PG=127.0.0.1:5432 SLUICE_PG_USER=sluice SLUICE_PG_DB=sluice \
+>   SLUICE_PG_PASSWORD=secret go test ./example/orders/ -run TestIntegration
+> ```
+
 ## Reading
 
 A query returns a `Source[Row]`: a stream of batches of rows, and the error

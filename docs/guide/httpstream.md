@@ -236,5 +236,6 @@ security, and answered with its problems and their remedies. Every arrow
 of the journey is a stream stage, and the example counts its round trips.
 `go test ./example/vertical -run TestVerticalEndToEnd -v` runs it, against the
 PostgreSQL the `SLUICE_PG`, `SLUICE_PG_USER`, `SLUICE_PG_DB` and
-`SLUICE_PG_PASSWORD` variables name; without them it skips. Its twin on the
+`SLUICE_PG_PASSWORD` [variables](postgres.md#running-the-examples-against-a-server)
+name; without them it skips. Its twin on the
 supported path is `example/orders`.
