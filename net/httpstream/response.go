@@ -25,9 +25,9 @@ type Response struct {
 	// Status is the HTTP status code. Zero means 200. The writers refuse,
 	// with [ErrMalformed], a code outside 200..599 (a 1xx is never a final
 	// answer), a 426 (RFC 9110 §15.5.22 demands an Upgrade field, and this
-	// server never switches protocols; advertise one with Alt-Svc instead)
-	// and a 205 carrying a Body or a Stream (§15.3.6: no content on a
-	// "reset the form" answer; a bare 205 leaves with Content-Length: 0).
+	// server never switches protocols; advertise one with Alt-Svc, RFC 7838,
+	// instead) and a 205 carrying a Body or a Stream (§15.3.6: no content on
+	// a "reset the form" answer; a bare 205 leaves with Content-Length: 0).
 	Status int
 
 	// Headers are sent as given. Names are case-insensitive (RFC 9110
@@ -724,7 +724,7 @@ func appendResponse(dst, method []byte, closing, http10 bool, keepAlive []byte, 
 // (and HTTP/2 and HTTP/3 forbid the field outright). A 426 without Upgrade
 // is a MUST violation; a 426 with it is a promise this package will not keep.
 // A handler that wants a client on another protocol advertises it with
-// Alt-Svc. Revisit if an upgrade is ever implemented.
+// Alt-Svc (RFC 7838). Revisit if an upgrade is ever implemented.
 //
 // It is shared by the three protocols rather than written once: HTTP/1.1 puts
 // the number in a status line, HTTP/2 and HTTP/3 in a :status field, and a
