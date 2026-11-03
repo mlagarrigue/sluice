@@ -2347,18 +2347,26 @@ func sameAddr(a, b net.Addr) bool {
 	return a.Network() == b.Network() && a.String() == b.String()
 }
 
+// readBufs are the socket read buffers of one handshake, allocated by its
+// first read and reused by the next, as readLoop reuses its own: receive
+// copies what it keeps of a datagram (a packet held for its keys), never the
+// buffer itself.
+type readBufs struct{ buf, oob []byte }
+
 // readOne reads one datagram and folds it in — the handshake's synchronous
 // read path. got reports that a datagram was read: an error with got false
 // is the socket's (or the deadline's), one with got true is what the
 // datagram provoked. For a [Listener]-managed connection (c.incoming set),
 // it waits on the listener's feed instead of the socket, which it does not
 // own exclusively; see readLoopFed's longer explanation of why.
-func (c *Conn) readOne(deadline time.Time) (got bool, err error) {
+func (c *Conn) readOne(deadline time.Time, rb *readBufs) (got bool, err error) {
 	if c.incoming != nil {
 		return c.readOneFed(deadline)
 	}
-	buf := make([]byte, c.recvBufSize())
-	oob := make([]byte, udp.PacketInfoLen)
+	if rb.buf == nil {
+		rb.buf, rb.oob = make([]byte, c.recvBufSize()), make([]byte, udp.PacketInfoLen)
+	}
+	buf, oob := rb.buf, rb.oob
 	if err := c.pc.SetReadDeadline(deadline); err != nil {
 		return false, err
 	}

@@ -160,6 +160,7 @@ func (c *Conn) driveHandshake(ctx context.Context) error {
 		sockErr   error // the last socket read error
 		sockErrs  int   // socket read errors so far
 		readFails int   // consecutive ones, for the backoff
+		rb        readBufs
 	)
 	for {
 		// The flight TLS produces leaves as one datagram where it fits
@@ -224,7 +225,7 @@ func (c *Conn) driveHandshake(ctx context.Context) error {
 			return c.endedDuringHandshakeErr()
 		default:
 		}
-		got, err := c.readOne(deadline)
+		got, err := c.readOne(deadline, &rb)
 		if got {
 			heard = true
 			readFails = 0
