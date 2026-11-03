@@ -83,7 +83,7 @@ Three reasons come up, and the difference matters:
   `Config.MinSCRAMIterations`, `MaxSCRAMIterations` and `MinSCRAMSaltLen`.
   Where this departs from RFC 5802 and RFC 4013, and why:
   [Authentication, in detail](#authentication-in-detail).
-- **Types**: the [PostgreSQL guide's table](postgres.md#the-codecs-in-one-table)
+- **Types**: the [PostgreSQL reference's table](../reference/postgres.md#the-codecs-in-one-table)
   says which has what; [the types not covered](postgres.md#the-types-not-covered)
   names every other built-in type, by family. Arrays of any shape, ranges,
   multiranges and composites go through the

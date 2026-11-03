@@ -408,19 +408,24 @@ func TestDecisionRecordsDateTheirLastRevision(t *testing.T) {
 }
 
 // Every exported name of database/postgres/pgtype is one a reader can find:
-// derived from the guide's table of codecs (AppendX and DecodeX for each X,
-// the array and the array with NULLs where the table says yes, and the OID
-// constants of the same types), named in the PostgreSQL guide itself, or used
-// outside the package. A codec is the caller's to call, so a consumer in the
-// tree is not required of it; a name nothing documents and nothing uses is.
+// derived from the reference's table of codecs (AppendX and DecodeX for each
+// X, the array and the array with NULLs where the table says yes, and the OID
+// constants of the same types), named in the PostgreSQL guide or reference,
+// or used outside the package. A codec is the caller's to call, so a consumer
+// in the tree is not required of it; a name nothing documents and nothing
+// uses is.
 //
 // The guide states one rule for the OID constants — every type's OIDX has an
 // OIDXArray for its array and an XCodec for its Codec — so a type's OID
 // constant, documented or used, accounts for those two.
 func TestPgtypeNamesAreDocumentedOrUsed(t *testing.T) {
-	guide, err := os.ReadFile("docs/guide/postgres.md")
-	if err != nil {
-		t.Fatal(err)
+	var guide []byte
+	for _, page := range []string{"docs/guide/postgres.md", "docs/reference/postgres.md"} {
+		b, err := os.ReadFile(page) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		guide = append(guide, b...)
 	}
 	documented := map[string]bool{}
 	row := regexp.MustCompile("(?m)^\\| `([a-z0-9_]+)`.*\\| `([A-Za-z0-9]+)`[^|]*\\| (yes|—) \\| (yes|—) \\|")
@@ -1424,7 +1429,7 @@ func TestHTTPStreamStatusIsSaidOnce(t *testing.T) {
 // reader looks. The examples and internal packages are not the library's
 // surface; the nested modules are measured, not imported.
 func TestEveryErrorIsDocumented(t *testing.T) {
-	b, err := os.ReadFile("docs/guide/troubleshooting.md")
+	b, err := os.ReadFile("docs/reference/troubleshooting.md")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1455,7 +1460,7 @@ func TestEveryErrorIsDocumented(t *testing.T) {
 					n := spec.(*ast.TypeSpec).Name
 					if n.IsExported() && strings.HasSuffix(n.Name, "Error") &&
 						!regexp.MustCompile(`\b`+n.Name+`\b`).MatchString(text) {
-						t.Errorf("%s: %s.%s is not in docs/guide/troubleshooting.md", p, f.Name.Name, n.Name)
+						t.Errorf("%s: %s.%s is not in docs/reference/troubleshooting.md", p, f.Name.Name, n.Name)
 					}
 				}
 			}
@@ -1470,7 +1475,7 @@ func TestEveryErrorIsDocumented(t *testing.T) {
 						continue
 					}
 					if !regexp.MustCompile(`\b` + n + `\b`).MatchString(text) {
-						t.Errorf("%s: %s.%s is not in docs/guide/troubleshooting.md", p, f.Name.Name, n)
+						t.Errorf("%s: %s.%s is not in docs/reference/troubleshooting.md", p, f.Name.Name, n)
 					}
 					// go doc shows a grouped variable under the group's
 					// comment: each error says its own action, on its own
@@ -1493,10 +1498,7 @@ func TestEveryErrorIsDocumented(t *testing.T) {
 // tabulates has a row whose first cell names it, so a field added without a
 // row fails here rather than at the next review.
 func TestSettingsHaveATableRow(t *testing.T) {
-	guides, err := filepath.Glob("docs/guide/*.md")
-	if err != nil {
-		t.Fatal(err)
-	}
+	guides := guidePages(t)
 	rows := map[string]bool{}
 	firstCell := regexp.MustCompile("^\\| `([A-Za-z0-9]+)` \\|")
 	for _, g := range guides {
@@ -1515,7 +1517,7 @@ func TestSettingsHaveATableRow(t *testing.T) {
 	// packages and the nested modules.
 	skip := []string{"example", "internal", "cmd", "benchmarks", "comparison", "interop", "audit"}
 	configs := 0
-	err = filepath.WalkDir(".", func(p string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(".", func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -1672,10 +1674,7 @@ func TestGuideCodeBlocksTypeCheck(t *testing.T) {
 	packages := importablePackages(t)
 	fset := token.NewFileSet()
 	conf := types.Config{Importer: importer.ForCompiler(fset, "source", nil)}
-	files, err := filepath.Glob("docs/guide/*.md")
-	if err != nil {
-		t.Fatal(err)
-	}
+	files := guidePages(t)
 	files = append([]string{"README.md"}, files...)
 	tolerated := regexp.MustCompile(`^(undefined: \w+|declared and not used: \w+|"[\w/.]+" imported and not used)$`)
 	qualifier := regexp.MustCompile(`\b([a-z][a-z0-9]*)\.[A-Za-z]`)

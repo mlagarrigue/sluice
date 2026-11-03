@@ -209,15 +209,15 @@ program reads its settings, with `os.LookupEnv`, `flag` or `encoding/json`,
 and puts them in the `Config` types. A field left at zero takes the default
 the tables give. Before listening, call `Validate` (`httpstream.Config`,
 `gateway.Config`, `postgres.Config`, `quic.ListenerConfig`,
-`quic.TransportParameters`): a value the server would refuse stops the
+`quic.Config`): a value the server would refuse stops the
 program at start, naming the field, before it takes its port.
 [`example/settings`](../../example/settings/settings.go) does it for the
 gateway and the HTTP timeouts. The tables:
-[PostgreSQL](postgres.md#connection-settings),
+[PostgreSQL](../reference/postgres.md#connection-settings),
 [gateway](web.md#gateway-settings),
-[token verifier](web.md#verifier-settings),
-[`net/quic`](experimental.md#netquic-settings) and
-[`net/httpstream`](httpstream.md#nethttpstream-settings).
+[token verifier](../reference/web.md#verifier-settings),
+[`net/quic`](../reference/quic.md#netquic-settings) and
+[`net/httpstream`](../reference/httpstream.md#nethttpstream-settings).
 
 > **In plain words:** your settings come from wherever you like; check
 > them with `Validate`, and only then open the port.

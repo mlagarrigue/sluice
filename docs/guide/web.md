@@ -260,18 +260,10 @@ scopes.
 
 ### Verifier settings
 
-`NewHMACVerifier` refuses what cannot be safe.
-
-| Field | Zero | Bounds | What it sets |
-|---|---|---|---|
-| `Secret` | — (required) | ≥ 32 bytes, from `crypto/rand` | the HMAC key |
-| `Previous` | none | each ≥ 32 bytes | retired keys still accepted during a rotation |
-| `Audience` | none: a token carrying `aud` is refused | | the `aud` value required |
-| `Issuer` | any issuer | | the `iss` value required |
-| `TenantClaim` | none | | the claim holding the tenant, then required |
-| `Leeway` | none | ≥ 0 | clock skew allowed on `exp`, `nbf`, `iat` |
-| `MaxTokenBytes` | 8 KiB | ≥ 0 | the largest token read |
-| `Now` | `time.Now` | | the clock, for tests |
+`NewHMACVerifier` refuses what cannot be safe: a secret under 32 bytes, a
+negative leeway. Its eight settings — the key and the keys being retired,
+the audience, issuer and tenant required, the leeway, the largest token and
+the clock: [reference](../reference/web.md#verifier-settings).
 
 ## Starting and stopping cleanly
 

@@ -335,10 +335,7 @@ func TestGuideFiguresHaveASource(t *testing.T) {
 		t.Fatal(err)
 	}
 	bySection := sections(string(page))
-	guides, err := filepath.Glob("docs/guide/*.md")
-	if err != nil {
-		t.Fatal(err)
-	}
+	guides := guidePages(t)
 	for _, f := range append([]string{"README.md", "docs/design/architecture.md"}, guides...) {
 		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
 		if err != nil {
@@ -435,7 +432,7 @@ func TestRatiosHaveASource(t *testing.T) {
 	}
 
 	files := []string{"README.md"}
-	for _, root := range []string{"docs/design", "docs/guide"} {
+	for _, root := range []string{"docs/design", "docs/guide", "docs/reference"} {
 		err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 			if err == nil && !d.IsDir() && strings.HasSuffix(p, ".md") {
 				files = append(files, p)

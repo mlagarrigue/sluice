@@ -260,7 +260,7 @@ A Go iterator has no way to return an error in the middle of a walk.
 Sluice.go therefore uses a *panic* (Go's abrupt stop) for a few precise,
 named situations — the branches of a `Split` read in the wrong order
 (`ErrSplitStalled`), for one. The operators you will meet next have theirs,
-each listed with what to do in [Troubleshooting](troubleshooting.md).
+each listed with what to do in [Troubleshooting](../reference/troubleshooting.md).
 
 In a script run overnight, crashing is the right behaviour: you want to
 know. In a server serving a thousand users, it is not. `Try` converts those

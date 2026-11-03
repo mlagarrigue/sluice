@@ -252,15 +252,78 @@ const maxParagraphLines = 18
 
 var numbered = regexp.MustCompile(`^\d+\. `)
 
+// guidePages are the guides and the reference pages they hand their tables
+// of settings to: the documents a reader of the guides reads.
+func guidePages(t *testing.T) []string {
+	t.Helper()
+	var pages []string
+	for _, dir := range []string{"docs/guide", "docs/reference"} {
+		p, err := filepath.Glob(dir + "/*.md")
+		if err != nil {
+			t.Fatal(err)
+		}
+		pages = append(pages, p...)
+	}
+	return pages
+}
+
+// maxGuideTableRows is the longest table a guide carries, header and rule
+// included; a longer one is reference and lives in docs/reference.
+const maxGuideTableRows = 6
+
+// longGuideTables are the guide tables allowed past maxGuideTableRows, each
+// a summary a beginner reads before anything else, keyed by file and the
+// heading of the section that holds it.
+var longGuideTables = map[string]string{
+	"docs/guide/deployments.md At a glance":                              "what is supported, the page's first answer",
+	"docs/guide/operators.md One question: what does it keep in memory?": "the one table the operators are placed by",
+	"docs/guide/limits.md Platforms, in detail":                          "the platforms, which the split of limits.md moves",
+}
+
+// A guide teaches and the reference answers: a table of more than six lines
+// in a guide is a list of settings or types the beginner reads across to
+// reach the next paragraph, and it lives in docs/reference, one click away
+// and announced (docs/README.md, "I am looking for a setting").
+func TestGuideTablesAreShort(t *testing.T) {
+	guides, err := filepath.Glob("docs/guide/*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, page := range guides {
+		b, err := os.ReadFile(page) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		heading, start, n := "", 0, 0
+		flush := func() {
+			if _, ok := longGuideTables[page+" "+heading]; n > maxGuideTableRows && !ok {
+				t.Errorf("%s:%d: a table of %d lines under %q; move it to docs/reference and link it", page, start, n, heading)
+			}
+			n = 0
+		}
+		for i, line := range strings.Split(string(b), "\n") {
+			if strings.HasPrefix(line, "#") {
+				heading = strings.TrimSpace(strings.TrimLeft(line, "#"))
+			}
+			if !strings.HasPrefix(line, "|") {
+				flush()
+				continue
+			}
+			if n == 0 {
+				start = i + 1
+			}
+			n++
+		}
+		flush()
+	}
+}
+
 // Every paragraph of prose in the README, CONTRIBUTING, the guides and the
 // architecture runs maxParagraphLines lines at most. Code blocks and tables
 // do not count; a list item counts as a paragraph of its own, from its
 // marker; a quoted box counts without its "> ".
 func TestProseParagraphsAreShort(t *testing.T) {
-	guides, err := filepath.Glob("docs/guide/*.md")
-	if err != nil {
-		t.Fatal(err)
-	}
+	guides := guidePages(t)
 	for _, page := range append(guides, "README.md", "CONTRIBUTING.md", "docs/design/architecture.md", "docs/benchmarks.md") {
 		b, err := os.ReadFile(page) //nolint:gosec // G304: a repository path, not input
 		if err != nil {

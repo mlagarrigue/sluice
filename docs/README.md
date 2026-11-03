@@ -56,9 +56,20 @@ place.
   [conditions experimental packages leave under](guide/limits.md#experimental-the-exit-conditions).
 - [Measurements](benchmarks.md) — what each operator costs, and how it is
   measured.
-- [Troubleshooting](guide/troubleshooting.md) — every exported error: when,
+- [Troubleshooting](reference/troubleshooting.md) — every exported error: when,
   why, what to do.
 - [SECURITY](../SECURITY.md) — reporting a vulnerability, privately.
+
+## I am looking for a setting
+
+Every setting of a package, its zero value, its bounds and what it sets, on
+one page per package; the guides say when to reach for them.
+
+- [PostgreSQL](reference/postgres.md) — connection, query and replication
+  settings, and the types the codec reads and writes.
+- [HTTP](reference/httpstream.md) — `net/httpstream.Config`.
+- [QUIC](reference/quic.md) — `quic.Config` and `ListenerConfig`.
+- [Web](reference/web.md) — the token verifier.
 
 ## What changed
 
@@ -69,7 +80,7 @@ place.
 
 ## Something is wrong
 
-- [Troubleshooting](guide/troubleshooting.md) — every error the library
+- [Troubleshooting](reference/troubleshooting.md) — every error the library
   exports, by package: when it happens, why, and what to do.
 - [Limits](guide/limits.md) — when the thing you need is simply not there.
 

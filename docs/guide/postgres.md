@@ -78,29 +78,10 @@ authentication method the package refuses (`md5`, deprecated) arrives as
 `ErrAuthUnsupported`. Two different errors because they are fixed
 differently.
 
-### Connection settings
-
-Each field left at zero takes the value of the "Zero" column; what
-`Connect` refuses, it refuses before anything is sent, naming the field.
-
-| Field | Zero | Bounds | What it sets |
-|---|---|---|---|
-| `User` | — (required) | | the role |
-| `Database` | the database named like `User` | | the database |
-| `Password` | none | | sent only if the server asks for one |
-| `AllowCleartextPassword` | refused | | answering a cleartext password request; only over verified TLS or a local socket |
-| `RequireAuth` | not required | | refusing a server that asked for no credential |
-| `ChannelBinding` | `ChannelBindingPrefer` | Prefer, Require, Disable | binding SCRAM to the server's certificate |
-| `MinSCRAMIterations` | 4096 | ≥ 0, ≤ Max | PBKDF2 iterations below which the server is refused |
-| `MaxSCRAMIterations` | 1,048,576 | ≥ Min | above which it is refused |
-| `MinSCRAMSaltLen` | 16 bytes | ≥ 0 | a shorter salt is refused |
-| `Params` | none | not `user`, `database`, `replication` | runtime parameters sent at startup |
-| `MaxMessage` | 64 MiB | 64 KiB to 1 GiB | the largest message accepted from the server |
-| `MaxProtocol` | `Protocol32` | versions this package speaks | the version asked for |
-| `MinProtocol` | any known version | ≤ `MaxProtocol` | the version below which the connection is refused |
-| `StatementCacheSize` | 512 | negative: no cache | statements kept prepared on the server |
-| `CancelTimeout` | 5 s | ≥ 0 | how long a cancellation the connection sends may take |
-| `Logger` | `slog.Default` | | warnings with no error to return through |
+Each field of `Config` left at zero takes a default, and what `Connect`
+refuses it refuses before anything is sent, naming the field. The sixteen
+settings, their zero values and their bounds:
+[reference](../reference/postgres.md#connection-settings).
 
 `QueryConfig` and `CopyConfig` are set per query, in the code beside it;
 their fields are in the package documentation.
@@ -181,18 +162,9 @@ trip per batch.
 > other; your program asks again, and pays a round trip to learn there is
 > nothing. Ask for one more than you expect.
 
-### Query settings
-
-`QueryConfig`, the last argument of `Query`:
-
-| Field | Zero | Bounds | What it sets |
-|---|---|---|---|
-| `BatchRows` | `sluice.DefaultBatchSize` | ≥ 0 | rows per batch, and rows asked of the server at a time |
-| `BatchBytes` | 64 MiB | 0 to 1 GiB | bytes of values per batch; a wider row travels alone |
-| `Fetch` | `FetchAuto` | | everything at once when the statement fits one batch, in batches otherwise |
-| `Demand` | none | exclusive of `FetchAll` | what the consumer no longer needs (a limit, a lower bound) |
-| `KeyParam` | the bound is not pushed down | 1-based | the parameter the demand's lower bound replaces |
-| `Tag` | nothing copied | | receives the command tag, read once the source is consumed |
+`QueryConfig`, the last argument of `Query`, sets the batch bounds, how the
+rows are fetched, the demand pushed down and where the command tag goes:
+[reference](../reference/postgres.md#query-settings).
 
 ## Decoding
 
@@ -210,56 +182,14 @@ for a date with a time zone, `DecodeNumeric` for an exact amount. The `Scan*` fu
 (`ScanInt8(dst, rows, col)`) — the shape that produces the next array of
 keys to send as `= ANY`.
 
-### The codecs, in one table
+### The codecs
 
-Every type below has the same pair in `pgtype`, `AppendX`/`DecodeX`, named
-after the PostgreSQL type, and its codec, `XCodec()`, which opens the
-containers (arrays of any shape, ranges, composites:
-[below](#containers-arrays-ranges-composites)). The first thirteen also
-have a named one-dimensional array (`AppendXArray`/`DecodeXArray`), the
-same array with NULL elements
-(`AppendNullableXArray`/`DecodeNullableXArray`, over `[]Null[T]`), and a
-column scanner (`ScanX`). What is missing is listed in
-[Limits](limits.md), not discovered at use.
-
-| PostgreSQL | Go | X | Array | Array with NULLs | Scan |
-|---|---|---|---|---|---|
-| `bool` | `bool` | `Bool` | yes | yes | yes |
-| `int2` | `int16` | `Int2` | yes | yes | yes |
-| `int4` | `int32` | `Int4` | yes | yes | yes |
-| `int8` | `int64` | `Int8` | yes | yes | yes |
-| `float4` | `float32` | `Float4` | yes | yes | yes |
-| `float8` | `float64` | `Float8` | yes | yes | yes |
-| `text`, `varchar`, `char(n)`, `name` | `string` | `Text` | yes | yes | yes |
-| `bytea` | `[]byte` | `Bytea` | yes | yes | yes |
-| `uuid` | `[16]byte` | `UUID` | yes | yes | yes |
-| `timestamptz` | `time.Time` (UTC) | `TimestampTZ` | yes | yes | yes |
-| `timestamp` | `time.Time` (no zone) | `Timestamp` | yes | yes | yes |
-| `date` | `time.Time` (midnight UTC) | `Date` | yes | yes | yes |
-| `numeric` | `Numeric` (exact) | `Numeric` | yes | yes | yes |
-| `json` | `[]byte` | `JSON` | — | — | as text |
-| `jsonb` | `[]byte` | `JSONB` | — | — | — |
-| `inet`, `cidr` | `netip.Prefix` | `Inet`, `CIDR` (one decoder) | — | — | — |
-| `interval` | `Interval` | `Interval` | — | — | — |
-| `time` | `TimeOfDay` | `Time` | — | — | — |
-| `timetz` | `TimeTZ` | `TimeTZ` | — | — | — |
-| `macaddr`, `macaddr8` | `[6]byte`, `[8]byte` | `Macaddr`, `Macaddr8` | — | — | — |
-| `bit`, `varbit` | `Bits` | `Bits` | — | — | — |
-| `point`, `line`, `lseg`, `box`, `circle` | `Point`, `Line`, `LSeg`, `Box`, `Circle` | `Point`, `Line`, `LSeg`, `Box`, `Circle` | — | — | — |
-| `path`, `polygon` | `Path`, `[]Point` | `Path`, `Polygon` | — | — | — |
-| `money` | `int64` (units) | `Money` | — | — | — |
-| `oid` and the `reg*` aliases (`regclass`, `regtype`…, `regdatabase` in 19) | `uint32` | `OID` | — | — | — |
-| `oid8` (19), `xid8` | `uint64` | `OID8`, `XID8` | — | — | — |
-| `xid`, `cid` | `uint32` | `XID`, `CID` | — | — | — |
-| `tid` | `TID` | `TID` | — | — | — |
-| `pg_lsn` | `uint64` (`postgres.LSN(v)`) | `PGLSN` | — | — | — |
-| `pg_snapshot`, `txid_snapshot` | `Snapshot` | `Snapshot` | — | — | — |
-| `int2vector`, `oidvector` | `[]int16`, `[]uint32` | `Int2Vector`, `OIDVector` | — | — | — |
-| `char`, the quoted `"char"` (not `char(n)`) | `byte` | `Char` | — | — | — |
-| `xml`, `refcursor` | `string` | `Text` | — | — | as text |
-| `jsonpath` | `string` | `JSONPath` | — | — | — |
-| `tsvector` | `[]Lexeme` | `TSVector` | — | — | — |
-| `tsquery` | `[]TSQueryItem` | `TSQuery` | — | — | — |
+Every type the codec covers has the same pair in `pgtype`, `AppendX`/`DecodeX`,
+named after the PostgreSQL type, and its codec, `XCodec()`, which opens the
+containers ([below](#containers-arrays-ranges-composites)). The table of
+every type, its Go type, its arrays and its column scanner:
+[reference](../reference/postgres.md#the-codecs-in-one-table). What is
+missing is listed in [Limits](limits.md), not discovered at use.
 
 Each type's OID — the number the server names it by — is `OIDX` in `pgtype`,
 `OIDXArray` for its array and `XCodec()` for its codec, after the same X;
@@ -335,17 +265,8 @@ r, err := pgtype.DecodeRange(raw, pgtype.DateCodec())         // a daterange
   named composite (`$1::my_type`, OID 0); the anonymous `record` is read
   and cannot be sent.
 
-The six built-in ranges and their multiranges have their codecs and
-OIDs, arrays included (`OIDInt4RangeArray`…):
-
-| PostgreSQL | Go | Codec | OID |
-|---|---|---|---|
-| `int4range`, `int4multirange` | `Range[int32]`, `Multirange[int32]` | `Int4RangeCodec()`, `Int4MultirangeCodec()` | `OIDInt4Range`, `OIDInt4Multirange` |
-| `int8range`, `int8multirange` | `Range[int64]`, `Multirange[int64]` | `Int8RangeCodec()`, `Int8MultirangeCodec()` | `OIDInt8Range`, `OIDInt8Multirange` |
-| `numrange`, `nummultirange` | `Range[Numeric]`, `Multirange[Numeric]` | `NumRangeCodec()`, `NumMultirangeCodec()` | `OIDNumRange`, `OIDNumMultirange` |
-| `tsrange`, `tsmultirange` | `Range[time.Time]`, `Multirange[time.Time]` | `TSRangeCodec()`, `TSMultirangeCodec()` | `OIDTSRange`, `OIDTSMultirange` |
-| `tstzrange`, `tstzmultirange` | `Range[time.Time]`, `Multirange[time.Time]` | `TSTZRangeCodec()`, `TSTZMultirangeCodec()` | `OIDTSTZRange`, `OIDTSTZMultirange` |
-| `daterange`, `datemultirange` | `Range[time.Time]`, `Multirange[time.Time]` | `DateRangeCodec()`, `DateMultirangeCodec()` | `OIDDateRange`, `OIDDateMultirange` |
+The six built-in ranges and their multiranges have their codecs and OIDs,
+arrays included: [reference](../reference/postgres.md#ranges-and-multiranges).
 
 A range's codec puts a range in a container: an `int4range[]` is
 `DecodeArray` over `Int4RangeCodec()`. A range type a database created
@@ -872,16 +793,9 @@ nothing of it before the server has committed it. The values are binary and
 decode with `pgtype`, like a query's; a `NULL` has `Status` `ValueNull`. The
 design is in [ADR 0023](../design/adr/0023-logical-replication.md).
 
-`ReplicationConfig`, the argument of `Replicate`:
-
-| Field | Zero | Bounds | What it sets |
-|---|---|---|---|
-| `Slot` | — (required) | ≤ 63 bytes | the logical slot, created with pgoutput |
-| `Publications` | — (required) | ≤ 63 bytes each | the publications whose tables are streamed |
-| `Start` | the slot's `confirmed_flush_lsn` | | the position to stream from |
-| `BatchChanges` | `sluice.DefaultBatchSize` | ≥ 0 | changes per batch |
-| `BatchBytes` | 64 MiB | 0 to 1 GiB | bytes of messages per batch |
-| `StatusInterval` | 10 s | ≥ 0 | how often, at most, the acknowledged position is reported |
+`ReplicationConfig`, the argument of `Replicate`, has six settings — the slot,
+the publications, where to start, the batch bounds and how often the position
+is reported: [reference](../reference/postgres.md#logical-replication-settings).
 
 ### Signals: LISTEN and NOTIFY
 
