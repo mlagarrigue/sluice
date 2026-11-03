@@ -49,7 +49,7 @@ const pathProbeMaxRetransmits = 3
 // quic-go logs "skipping validation of new path … since no connection ID is
 // available" and keeps sending to the address the NAT abandoned, until the
 // idle timer ends the connection (the runner's rebind-port and rebind-addr
-// cases, 2026-10-10, before Dial issued any).
+// cases, against a Dial that issued none).
 //
 // Lock order: these are called with the connection's mu held and take the
 // listener's own lock inside — Conn.mu before Listener.mu, never the

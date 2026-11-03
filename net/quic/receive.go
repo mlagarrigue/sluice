@@ -971,8 +971,7 @@ func (c *Conn) handleRetry(h longHeader) {
 	// connection (a post-quantum key share makes one span two Initial
 	// packets), and against it the QUIC Interop Runner's zerortt case saw
 	// 34 requests sent in 0-RTT dropped and sent again in 1-RTT after the
-	// handshake: 9868 bytes of 1-RTT against a bound of 5000 (pass
-	// 40655823065, 2026-10-28).
+	// handshake: 9868 bytes of 1-RTT against a bound of 5000.
 	for _, space := range []int{spaceInitial, spaceApplication} {
 		sp := &c.spaces[space]
 		payloads, inFlight := sp.sent.takeAll()

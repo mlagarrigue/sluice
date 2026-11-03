@@ -349,8 +349,9 @@ whichever way the conditions go:
   ten seconds at most; the idle timeout's §10.1 floor of three PTOs stops
   at ten seconds too. The peer chooses most of a PTO — its
   `max_ack_delay`, legal up to 2^14 ms — and uncapped, legal parameters
-  gave 3 min 25 s during which a listener keeps the connection's
-  `MaxConns` and `MaxConnsPerIP` slots. Ten seconds covers three PTOs of a
+  would hold a listener's `MaxConns` and `MaxConnsPerIP` slots for 49 s
+  from `max_ack_delay` alone (three times 16.4 s), longer with a slow
+  round trip. Ten seconds covers three PTOs of a
   2.5 s round trip; a late packet is then answered with a Stateless Reset.
   In plain words: a closed connection keeps its place ten seconds at most,
   an idle one its idle timeout or ten seconds, whichever is longer.
