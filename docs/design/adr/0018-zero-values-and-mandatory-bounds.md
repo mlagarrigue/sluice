@@ -11,7 +11,7 @@ value was safe — while the code filled every zero, and every negative value
 with it: a `-1` typed for `1` became the default without a word, and an
 `H2Config.MaxFrameSize` outside RFC 9113's range was moved to the nearest
 bound, again without a word. The godoc of `MaxConcurrentStreams` announced
-64, "the transport's own MAX_STREAMS grant", while `quic.DefaultParameters`
+64, "the transport's own MAX_STREAMS grant", while `quic.DefaultConfig`
 grants 100 (RFC 9114 §6.1: an HTTP/3 server SHOULD grant at least 100) and
 `H2Config` advertised 100 on its own side; `Serve` carried a special case so
 that a zero would not become 64 over HTTP/2.
@@ -43,7 +43,7 @@ never removed.**
    stands for another: a negative value, or one outside the range the
    protocol allows (`MaxFrameSize` in 16384..2^24−1,
    `InitialWindowSize` at most 2^31−1, RFC 9113 §6.5.2;
-   `MaxConcurrentStreams` at most 4096 for `Config.TransportParameters`,
+   `MaxConcurrentStreams` at most 4096 for `Config.QUICConfig`,
    the streams `ServeH3Conn` serves on one connection), is refused before the
    first byte: `Serve`, `Server`, `ServeH2Conn`, `ServeH3Conn` and `TransportParameters`
    return an error naming the field, the value and what zero would have
@@ -96,7 +96,7 @@ never removed.**
    `InitialWindowSize`, `MaxPendingControlBytes`, `MaxWriteBufferBytes`;
    "HTTP/3 only": `QPACKStatic`). A field that reaches a protocol through another object
    says so and is derived there: `IdleTimeout` becomes the
-   `max_idle_timeout` that `Config.TransportParameters` produces, and a
+   `max_idle_timeout` that `Config.QUICConfig` produces, and a
    connection served on other parameters has those parameters' timeout.
 
 5. **The boundary is the package, not the name on the wire.** `Config`
@@ -104,7 +104,7 @@ never removed.**
    protocol names it on the wire: an HTTP/2 `SETTINGS_*` such as
    `InitialWindowSize` or `MaxFrameSize` is a field like any other there.
    What belongs to the transport stays in its package: the QUIC windows are
-   `quic.TransportParameters`, which `Config.TransportParameters` derives
+   `quic.Config`'s transport parameters, which `Config.QUICConfig` derives
    and `ServeH3Conn` takes as they are, because `net/quic` also serves
    connections that do not speak HTTP/3.
 

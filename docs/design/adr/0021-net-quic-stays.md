@@ -11,7 +11,7 @@ label through its exit conditions "or move to a separate module before a
 v1". Three facts weighed for the move: `golang.org/x/crypto` is in the
 module's graph for it alone; `net/httpstream`, stable, exposes its types
 (`ServeH3Conn` takes a `*quic.Conn`, `Server.ServeQUIC` a `*quic.Listener`,
-`Config.TransportParameters` returns `quic.TransportParameters`), so the
+`Config.QUICConfig` returns a `quic.Config`), so the
 promise of `httpstream` rested on a type with none; and `Varint`,
 `AppendVarint`, `MaxVarint` were public for the sole use of `httpstream`'s
 HTTP/3.

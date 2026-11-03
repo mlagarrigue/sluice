@@ -96,7 +96,7 @@ enforces it:
      most. On smaller windows streaming is off and bodies arrive whole. A
      DATA frame is taken as each packet brings it, not once whole: one larger
      than the stream window would otherwise never end.
-     `Config.TransportParameters` gives a streaming server the transport's
+     `Config.QUICConfig` gives a streaming server the transport's
      default stream window rather than one sized to `MaxBodyBytes`, since
      that window, not `MaxBodyBytes`, bounds a streamed body.
 

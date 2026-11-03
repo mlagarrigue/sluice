@@ -27,7 +27,7 @@ because it is what delivers it. Unauthenticated input never ends a
 connection: it is counted (`Stats`) and dropped; fatality is reserved for
 what an authenticated packet proves the peer did. Recovery is RFC 9002's —
 packet- and time-threshold loss detection, probe timeouts — and congestion
-control is the controller the caller picks (`TransportParameters.Congestion`):
+control is the controller the caller picks (`quic.Config.Congestion`):
 NewReno by default (RFC 9002 §7), `CongestionCubic` (RFC 9438) and
 `CongestionBBR` (draft-ietf-ccwg-bbr), the last two experimental.
 
