@@ -15,6 +15,12 @@
 //
 //	//go:generate go run github.com/mlagarrigue/sluice/cmd/sluicegen -type Order
 //
+// The flags:
+//
+//	-type  the struct type to generate a hydrator for (required)
+//	-in    the source file holding the type (default: $GOFILE, which go:generate sets)
+//	-out   the file to write (default: <type>_hydrate.go, lowercased)
+//
 // Two properties of the generated code are worth more than its speed.
 //
 // **Columns bind by name, never by position.** A SELECT whose columns are

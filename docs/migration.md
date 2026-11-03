@@ -106,7 +106,8 @@ signatures — a value now refused — come last.
 ### Instrumentation: `probe`
 
 - **`Counter.Elems` is `Counter.Elements`** ("Counter.Elements replaces
-  Elems"): the same count, its name spelled out as everywhere else in the
+  Elems", listed under the CHANGELOG's `diagnostics` scope, which covers
+  `probe`): the same count, its name spelled out as everywhere else in the
   API. Rename the call; `Counter.Batches` and `probe.Probe` keep theirs.
 
 ### PostgreSQL: `database/postgres`
@@ -179,7 +180,9 @@ that never passed a negative value has nothing to change there.
 
 ### Deduplication: `distinct`
 
-- **A negative window panics** (`3cf7f66`).
+- **A negative window panics** (`3cf7f66`). `distinct.By` took a negative
+  window as zero; pass zero for "remember nothing", which still passes
+  every element through. Nothing to change for a window of zero or more.
 
 ### Demand: `pushdown`
 
@@ -202,7 +205,8 @@ that never passed a negative value has nothing to change there.
   `Exchange` field `Route` is `RouteIndex`.
 - **A zero shutdown grace is five seconds** (`66a4787`,
   `web.DefaultShutdownGrace`), not "no grace".
-- **A negative `MaxTokenBytes` is refused** (`dae2743`).
+- **A negative `MaxTokenBytes` is refused** (`dae2743`). It meant the
+  default, 8 KiB, as zero does: write zero. Nothing to change otherwise.
 - **`HMACVerifier` refuses what RFC 7519 and RFC 8725 refuse**
   (`fix(web)!: verify tokens as RFC 7519 and 8725 ask`). A token that
   carries an `aud` claim is refused when `HMACConfig.Audience` is empty:
@@ -250,9 +254,17 @@ that never passed a negative value has nothing to change there.
   `MaxMessage`; `NewRows` is gone (a `Rows` comes from a query) and
   `Rows.SetMaxBytes` is gone. A batch that reaches its byte bound now ends there and the next
   one carries on, where it used to fail.
-- **The remembered server parameters share one budget** (`e920182`).
+- **The remembered server parameters share one budget** (`e920182`):
+  `MaxServerParameterBytes` is gone — an exported constant, 16 KiB for one
+  parameter — and the names and values of every parameter share a 16 MiB
+  budget the package keeps to itself. Code that named the constant drops
+  it; nothing else to change.
 - **An out-of-range batch bound or a negative statement cache bound is
-  refused** (`a3b3f23`, `655ba3b`).
+  refused** (`a3b3f23`, `655ba3b`). A negative `QueryConfig` row or byte
+  bound fell back to the default; write zero for the default, and keep a
+  byte bound under the maximum its documentation names. The cache's bound
+  moved: `PrepareStatements` is gone, replaced by `Config.StatementCacheSize`
+  (above, with the parameters).
 
 ### HTTP: `net/httpstream`
 

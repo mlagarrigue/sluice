@@ -347,7 +347,8 @@ There is no default policy. A policy nobody chose is a policy nobody owns.
 The figures on this page come from [Measurements](../benchmarks.md), and so
 does the method that makes them credible: on a laptop, two runs of the same
 program differ by 14%. Before deciding that one operator is worth another
-in your pipeline, `compare.sh` runs both versions alternately and counts
+in your pipeline, `internal/bench/scripts/compare.sh` runs both versions
+alternately ([Measuring on a laptop](../benchmarks.md#measuring-on-a-laptop)) and counts
 the wins.
 
 ## You can now

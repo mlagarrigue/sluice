@@ -37,7 +37,9 @@ sender; the server does not know the other schemes).
 HTTP exists in three versions. HTTP/1.1 sends requests one at a time over
 a connection (or several in a row, "pipelined"). HTTP/2 **multiplexes**:
 several requests travel interleaved over the same connection. HTTP/3 does
-the same over QUIC, a newer protocol described above. In `httpstream`, all
+the same over QUIC, a newer protocol the
+[experimental guide](experimental.md#netquic--a-recent-transport-reimplemented)
+describes. In `httpstream`, all
 three produce the same thing: **batches of requests**, and one handler type
 serves them without knowing which carried them.
 
@@ -239,3 +241,18 @@ PostgreSQL the `SLUICE_PG`, `SLUICE_PG_USER`, `SLUICE_PG_DB` and
 `SLUICE_PG_PASSWORD` [variables](postgres.md#running-the-examples-against-a-server)
 name; without them it skips. Its twin on the
 supported path is `example/orders`.
+
+## You can now
+
+- serve HTTP/1.1, HTTP/2 and HTTP/3 with one handler that receives the
+  requests that arrived together as one batch;
+- bound everything a client controls through `httpstream.Config`, and
+  stream a request body or a response at the client's pace;
+- push a limit and a key bound down to the PostgreSQL query that feeds a
+  response.
+
+The examples of the three packages run as tests, their output checked:
+
+```sh
+go test -run Example -v ./net/httpstream/ ./web/stream/ ./pushdown/
+```

@@ -67,7 +67,7 @@ func TestLimitsAreShort(t *testing.T) {
 func TestGuidesEndOnWhatYouCanDo(t *testing.T) {
 	for _, page := range []string{
 		"docs/guide/getting-started.md", "docs/guide/operators.md",
-		"docs/guide/postgres.md", "docs/guide/web.md",
+		"docs/guide/postgres.md", "docs/guide/web.md", "docs/guide/httpstream.md",
 	} {
 		b, err := os.ReadFile(page) //nolint:gosec // G304: a repository path, not input
 		if err != nil {

@@ -86,7 +86,8 @@ directory.
 
 ## Checking
 
-Before every commit, all of this, and none of it may print anything:
+Before every commit, all of this; the first three print nothing when the
+tree is clean, and `go test` prints one `ok` line per package:
 
 ```bash
 go vet ./...

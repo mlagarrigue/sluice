@@ -246,11 +246,16 @@ counters your program reads when it likes
 > **In plain words:** plug the `Logger` into your service's log, and
 > export the counters you want to follow through your own metrics.
 
-## What applies to every section
+## HTTP/3: flow-control credit, in every section
 
-Two behaviors of `ServeH3Conn` complete the sections above without fitting
-in one: manual stream credit only turns on if the announced windows cover
-the admission bounds, and otherwise falls back to the transport's automatic
-credit, bounded by the ceilings of `Config` (`net/httpstream/h3serve.go`,
-at the top of `ServeH3Conn`); `Config.QUICConfig` produces
-accepted windows.
+One behavior of `ServeH3Conn` completes the sections above without fitting
+in one. Its server grants a stream new flow-control credit — the right to
+send more bytes — only once it has released the bytes it holds (*manual
+credit*), so that what a client sends stays under the announced windows.
+That mode turns on only if the windows the connection announces cover the
+layer's *admission bounds*: under `BodyWhole`, `MaxBodyBytes` per stream,
+four times that across the connection, and room for headers; when bodies
+stream, a request's head. On smaller windows the transport grants credit
+as data arrives, and the ceilings of `Config` bound what is held
+(`net/httpstream/h3serve.go`, at the top of `ServeH3Conn`).
+`Config.QUICConfig` produces windows the check accepts.

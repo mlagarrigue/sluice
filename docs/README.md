@@ -56,11 +56,16 @@ place.
   [conditions experimental packages leave under](reference/exit-conditions.md).
 - [Measurements](benchmarks.md) — what each operator costs, and how it is
   measured.
-- [Troubleshooting](reference/troubleshooting.md) — every exported error: when,
-  why, what to do.
+- [Troubleshooting](reference/troubleshooting.md) — every error the library
+  exports, by package: when it happens, why, and what to do; when the thing
+  you need is simply not there, Limits above.
 - [SECURITY](../SECURITY.md) — reporting a vulnerability, privately.
+- [CHANGELOG](../CHANGELOG.md) — each release: what it adds, fixes or
+  breaks.
+- [Migrating between versions](migration.md) — what to change in code
+  written against v0.3.0 or v0.2.2.
 
-## I am looking for a setting
+## Reference: settings and API
 
 Every setting of a package, its zero value, its bounds and what it sets, on
 one page per package; the guides say when to reach for them.
@@ -71,18 +76,8 @@ one page per package; the guides say when to reach for them.
 - [QUIC](reference/quic.md) — `quic.Config` and `ListenerConfig`.
 - [Web](reference/web.md) — the token verifier.
 
-## What changed
-
-- [CHANGELOG](../CHANGELOG.md) — each release: what it adds, fixes or
-  breaks.
-- [Migrating between versions](migration.md) — what to change in code
-  written against v0.3.0 or v0.2.2.
-
-## Something is wrong
-
-- [Troubleshooting](reference/troubleshooting.md) — every error the library
-  exports, by package: when it happens, why, and what to do.
-- [Limits](guide/limits.md) — when the thing you need is simply not there.
+The API documentation is the code's own: `go doc github.com/mlagarrigue/sluice`
+and its packages, or pkg.go.dev.
 
 ## I want to understand the choices
 
@@ -121,13 +116,8 @@ An integration is requested with the "Integration request" issue template.
 
 ## I am contributing
 
-- [CONTRIBUTING](../CONTRIBUTING.md) — rules, checks, commit format, releases.
-- [SECURITY](../SECURITY.md) — reporting a vulnerability, privately.
+- [CONTRIBUTING](../CONTRIBUTING.md) — rules, checks, commit format, releases;
+  a vulnerability is reported privately, as [SECURITY](#i-operate-it-in-production) says.
 - [Code of conduct](../CODE_OF_CONDUCT.md) — what everyone here keeps to.
 - A question about using the library, or feedback after trying it: the
   "Question or feedback" issue template.
-
-## Reference
-
-The API documentation is the code's own: `go doc github.com/mlagarrigue/sluice`
-and its packages, or pkg.go.dev.

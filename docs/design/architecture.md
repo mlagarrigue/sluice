@@ -1458,10 +1458,9 @@ thrashing*.
 
 > `join.StreamTable` takes `join.BuildLimit` positionally, and its zero value
 > is refused: a limit of zero under the zero policy would drop every row,
-> which is what the type exists to prevent. Overflow is loud — `Fail` panics
-> with `ErrOverflow`; `DropNewest` joins against the truncated table and calls
-> the limit's `Report` once, which is where the caller raises its `Critical`
-> diagnostic — `join` itself knows nothing of diagnostics. The bound counts
+> which is what the type exists to prevent. Under `DropNewest` it joins
+> against the truncated table, and `join` itself knows nothing of
+> diagnostics: the `Report` above is the caller's. The bound counts
 > **values, not distinct keys**, since one skewed key is exactly the shape a
 > key-based bound would not see. See [ADR 0016](adr/0016-hash-join-bound.md).
 >

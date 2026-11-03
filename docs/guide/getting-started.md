@@ -152,7 +152,10 @@ be overwritten without warning.
 ```go
 var kept [][]Order
 for b := range s {
-    kept = append(kept, b.Items)               // WRONG: they will all end up identical
+    kept = append(kept, b.Items) // WRONG: they will all end up identical
+}
+
+for b := range s {
     kept = append(kept, slices.Clone(b.Items)) // RIGHT: a copy is yours
 }
 ```

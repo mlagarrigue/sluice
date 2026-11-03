@@ -6,6 +6,10 @@ body:
     id: component
     attributes:
       label: Component
+      description: >-
+        Where the bug is. "core" is the root package (Stream, Batch and the
+        operators); the next names are packages; bench, docs, ci,
+        devcontainer and audit are the repository around the library.
       options:
         - core
         - join
