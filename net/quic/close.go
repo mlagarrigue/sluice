@@ -369,12 +369,9 @@ func (c *Conn) closeOnce(code uint64, app bool) {
 // last, it still exits promptly. A listener-fed connection selects on
 // c.closed directly and needs no jolt.
 func (c *Conn) wakeOwnedReadLoop() {
-	if c.incoming == nil {
-		c.mu.Lock()
-		pc := c.pc
-		c.mu.Unlock()
-		_ = pc.SetReadDeadline(time.Now())
-	}
+	c.mu.Lock()
+	c.joltLocked()
+	c.mu.Unlock()
 }
 
 // sendCloseLocked writes the CONNECTION_CLOSE, once, unless the peer closed
@@ -530,11 +527,38 @@ type closingState struct {
 	// [Conn.Wait] whose context ended — and left records that the state is
 	// over and gone closed or about to be. loop says a socket-owning read
 	// loop runs: then the loop's exit, not the close, is what frees the
-	// socket, so it is the loop that closes gone (releaseSocket).
-	hold bool
-	end  time.Time
-	left bool
-	loop bool
+	// socket, so it is the loop that closes gone (releaseSocket). returned
+	// says a socket this connection owned was handed back (returnSocketLocked):
+	// its read deadline cleared, and nothing here touches it again.
+	hold     bool
+	end      time.Time
+	left     bool
+	loop     bool
+	returned bool
+}
+
+// returnSocketLocked hands a socket the connection owned back to its caller
+// when its read loop has stopped reading it, as gone is about to say
+// (releaseSocket, leaveClosing): the read deadline the jolts left expired
+// (wakeOwnedReadLoop, Wait) is cleared, or the caller's next ReadFrom — a
+// NewListener on the same socket, whose read loop never sets one, or a read
+// of its own — would fail with os.ErrDeadlineExceeded, every time. A
+// listener's connection owns no socket. Callers hold mu.
+func (c *Conn) returnSocketLocked() {
+	if c.incoming != nil || c.closing.returned {
+		return
+	}
+	c.closing.returned = true
+	_ = c.pc.SetReadDeadline(time.Time{})
+}
+
+// jolt expires the owned socket's read deadline, so a read loop parked in
+// ReadFrom sees the close; a socket already handed back is not the
+// connection's to touch. Callers hold mu.
+func (c *Conn) joltLocked() {
+	if c.incoming == nil && !c.closing.returned {
+		_ = c.pc.SetReadDeadline(time.Now())
+	}
 }
 
 // holdsClosingLocked reports whether a close keeps the closing or draining
@@ -590,6 +614,9 @@ func (c *Conn) enterClosingLocked() {
 	if len(c.closing.datagrams) == 0 && (!c.draining || !c.holdsClosingLocked()) {
 		c.closing.left = true
 		if !c.closing.loop {
+			// Not handed back here: a close during the handshake runs while
+			// Dial still reads the socket, and only the jolt that follows
+			// (wakeOwnedReadLoop) gets that read out.
 			close(c.gone)
 		}
 		return
@@ -617,6 +644,7 @@ func (c *Conn) leaveClosing() {
 	c.closing.left = true
 	c.closing.active.Store(false)
 	c.closing.datagrams = nil
+	c.returnSocketLocked()
 	c.mu.Unlock()
 	close(c.gone)
 }
@@ -671,6 +699,9 @@ func (c *Conn) releaseSocket() {
 	c.mu.Lock()
 	release := c.closing.loop && c.closing.left
 	c.closing.loop = false
+	if release {
+		c.returnSocketLocked()
+	}
 	c.mu.Unlock()
 	if release {
 		close(c.gone)
@@ -707,9 +738,8 @@ func (c *Conn) Wait(ctx context.Context) error {
 	} else {
 		c.mu.Lock()
 		c.closing.end = time.Time{}
-		pc := c.pc
+		c.joltLocked()
 		c.mu.Unlock()
-		_ = pc.SetReadDeadline(time.Now())
 	}
 	<-c.gone
 	return ctx.Err()
