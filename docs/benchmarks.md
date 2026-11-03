@@ -496,10 +496,10 @@ the shortest round trip measured here (162 µs), that is 0.17%. Nothing to
 optimise at this point: the cost of a request is the transport's, not the
 stages'.
 
-**The exit from experimental.** This measurement was one of the two
-conditions; the other, a first real consumer building its request path on
-these stages, was met on 0.3.0, and the label left in 0.4.0
-(`docs/guide/httpstream.md`).
+**What this measurement holds.** It is one of the two conditions under
+which these stages carry the compatibility promise; the other is a first
+real consumer building its request path on them
+([the httpstream guide](guide/httpstream.md)).
 
 ## Request bodies, whole or streamed
 

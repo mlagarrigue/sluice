@@ -259,8 +259,7 @@ Three reasons come up, and the difference matters:
 - **Unknown HTTP/3 elements are skipped, not counted.** A frame, a setting
   or a stream of an unknown type is ignored as RFC 9114 §9 requires, with
   no counter and no cap on their number (§10.5 asks to track their use).
-  Measured before it was written (`TestH3UnknownControlFramesCostNothingHere`):
-  a control stream fed GREASE frames, empty or a kilobyte each, leaves
+  Measured (`TestH3UnknownControlFramesCostNothingHere`): a control stream fed GREASE frames, empty or a kilobyte each, leaves
   nothing in the carry buffer and allocates nothing per frame — they are
   skipped by counter, never buffered. A peer that sends them without end
   pays its own bandwidth, and the transport's flow control bounds it: credit
@@ -528,19 +527,19 @@ before anything is sent.
 
 ### The interop runner, in detail
 
-The `Interop runner` workflow (the runner at revision `ab039a4`) crosses
+The `Interop runner` workflow (the runner at revision `ab039a4`, the one
+`scripts/interop-runner.sh` pins) crosses
 every implementation in its list every Sunday, on each side its role
 allows — 29 peer-directions — except those whose image the registry no
-longer serves: mvfst since October 2026 (the registry answers 403). Every
+longer serves: mvfst (the registry answers 403). Every
 case against such a peer would fail before reaching sluice;
 `scripts/interop-runner.sh` keeps them in `UNPULLABLE`, leaves them out of
 the matrix, and a run started against one says so. The Sunday pass
 builds the endpoint from `main`, so a regression shows up before a
 release carries it; the table names the commit it crossed. A release is
 crossed on request: the workflow's `image` input pulls the image the
-`Interop image` workflow builds from each release tag from v0.3.0 on
-(`ghcr.io/mlagarrigue/sluice-interop`; the three tags before it carry
-images pushed by hand, and `latest` never moves back to them). The
+`Interop image` workflow builds from each release tag
+(`ghcr.io/mlagarrigue/sluice-interop`, `latest` for the newest). The
 table of its latest complete pass is on the
 [`interop-results` branch](https://github.com/mlagarrigue/sluice/tree/interop-results);
 a failed case, or a direction that wrote no results, is run once more.

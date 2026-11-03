@@ -1,6 +1,6 @@
 # Native HTTP: `net/httpstream`, `web/stream` and `pushdown`
 
-Three packages that left the experimental label, and what each is held to:
+Three packages under the compatibility promise, and what each is held to:
 `net/httpstream`, the native request path — HTTP/1.1, HTTP/2 and HTTP/3
 read as a stream of batches of requests —; `web/stream`, the stages that
 route, authenticate and decode its requests; and `pushdown`, through which
@@ -195,11 +195,10 @@ wraps the request. Why these stages ship beside the core rather than in
 it is [ADR 0011](../design/adr/0011-web-stream-beside-core.md).
 
 What it is held to: a first real consumer, an application outside this
-repository, has served its requests through these stages since 0.3.0
-(2026-10-25), and what it asked for landed before the label left:
-`fb899a8` (a streamed body reaches `DecodeJSON`), `86a1325` (a late
-element in a window meets a policy, not a panic), `473d1ce` (two dead
-ends signposted). Its figures against third-party clients — HTTP/1.1,
+repository, serves its requests through these stages, and what it needs
+is in them: a streamed body reaches `DecodeJSON`, a late element in a
+window meets a policy rather than a panic, and the two dead ends it met
+are signposted. Its figures against third-party clients — HTTP/1.1,
 HTTP/2, HTTP/3 — are in [the benchmarks](../benchmarks.md). It is under
 the compatibility promise ([ADR 0020](../design/adr/0020-compatibility.md)):
 until v1 a break is
