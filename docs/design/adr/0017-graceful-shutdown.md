@@ -1,7 +1,7 @@
 # ADR 0017 — Shutdown drains, it does not cut
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-11-03 (`Close` in the present tense); 5 earlier, from 2026-10-15, in its `git log`
+- **Revised:** 2026-11-03 (`Close` in the present tense; subheadings); 5 earlier, from 2026-10-15, in its `git log`
 - **Theme:** httpstream
 
 ## Problem
@@ -43,6 +43,8 @@ sequenceDiagram
     M->>B: close the PostgreSQL pools and clients
 ```
 
+### How a stop proceeds
+
 1. **Order.** A layer stops after the layer that calls it: the server
    first (nothing new admitted, the responses in flight finish), then the
    gateway (its pending batches go out, nothing new accepted), then the
@@ -72,6 +74,8 @@ sequenceDiagram
    `Config.Logger` receives a warning with the number of connections cut;
    a drain that ends within the grace returns `nil`.
 
+### What closes, what finishes
+
 4. **What closes at once.** The listener, and every HTTP/1.1 connection
    with no request in flight: between two keep-alive requests, or accepted
    and silent. Nothing is owed to it; waiting for it means returning one
@@ -82,6 +86,8 @@ sequenceDiagram
 5. **What finishes.** A connection on which a request has begun to arrive,
    is being handled or is being answered. The response goes out whole; no
    new request is read after it.
+
+### What each protocol tells the client
 
 6. **What each protocol tells the client.**
    - HTTP/1.1: the last response carries `Connection: close` (RFC 9112

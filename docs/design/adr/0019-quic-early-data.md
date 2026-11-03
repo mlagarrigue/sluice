@@ -1,7 +1,7 @@
 # ADR 0019 — 0-RTT: accepted once, delivered early, acted on when allowed
 
 - **Created:** 2026-10-23
-- **Revised:** 2026-11-03 (the ticket entered later told as the road not taken); 2 earlier, from 2026-10-27, in its `git log`
+- **Revised:** 2026-11-03 (the ticket entered later told as the road not taken; subheadings); 2 earlier, from 2026-10-27, in its `git log`
 - **Theme:** quic
 
 ## Problem
@@ -26,7 +26,9 @@ complete before processing it.
 
 ## Decision
 
-**Server, transport.** `ListenerConfig.EarlyData` (zero: off) issues tickets
+### Server, transport
+
+`ListenerConfig.EarlyData` (zero: off) issues tickets
 that allow 0-RTT, as `SessionTickets` issues tickets that do not. The ticket
 carries, in `SessionState.Extra` (encrypted and authenticated with the
 ticket), an instance identifier drawn at random when the `Listener` is
@@ -81,7 +83,9 @@ a `Listener` served by `Server.ServeQUIC`. With `ServeH3Conn` and a `Config`
 smaller than the previous connection's, a 0-RTT request larger than the new
 bound is refused like any oversized request: the connection holds.
 
-**Server, HTTP.** `httpstream.Config.EarlyData` is a predicate on the request
+### Server, HTTP
+
+`httpstream.Config.EarlyData` is a predicate on the request
 (method, path) saying whether it may be processed before the handshake
 ends; nil: none may. An HTTP/3 request that arrives while the handshake is
 not complete is held until it is when the predicate does not allow it, and
@@ -93,7 +97,9 @@ not make it safe (RFC 8470 §5.2). The intermediary's own duties in RFC 8470
 this package's: it is a server, never a proxy. A handler's own
 `Early-Data` field in a response is refused, as §5.1 asks.
 
-**Client.** `quic.DialEarly` returns the connection as soon as the 0-RTT key
+### Client
+
+`quic.DialEarly` returns the connection as soon as the 0-RTT key
 is installed, when the ticket allows it, and otherwise when the handshake
 ends, as `Dial` does. The client keeps the server's transport parameters
 with the ticket (RFC 9000 §7.4.1) and applies them to what it sends in
@@ -102,7 +108,9 @@ with the ticket (RFC 9000 §7.4.1) and applies them to what it sends in
 replays, because RFC 9001 §4.6.2 requires resetting the application state
 bound to those streams, which the transport does not know.
 
-**Three positions around it.** A burst of writes in 0-RTT leaves as several
+### Three positions around it
+
+A burst of writes in 0-RTT leaves as several
 0-RTT packets in one datagram, one packet per writer, where RFC 9000 §12.2
 would have frames of the same encryption level share one packet: a
 datagram per write lost most of a 40-request burst to a 25-datagram queue

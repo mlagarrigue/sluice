@@ -1,7 +1,7 @@
 # ADR 0018 — Zero is the safe default, the bound is mandatory
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-10-28 (written in the present tense; the rule's reader across every configuration); 4 earlier, from 2026-10-21, in its `git log`
+- **Revised:** 2026-11-03 (subheadings in the Decision); 5 earlier, from 2026-10-21, in its `git log`
 - **Theme:** httpstream
 
 ## Problem
@@ -34,6 +34,8 @@ on its defaults.
 
 **Zero is the default, named in the field's comment; the bound itself is
 never removed.**
+
+### What a zero value means
 
 1. **Zero means the default.** Every field of `Config` says
    what its zero is worth ("Zero means 32 KiB"). The default is safe on a
@@ -75,6 +77,8 @@ never removed.**
    per-connection bounds hold without them, and their godoc says a public
    socket sets them. `TestADR0018ListsMatchConfig` holds this list and the
    next one to the fields' own documentation.
+
+### Where the defaults live
 
 3. **One configuration, one default, one place.** The three protocols read
    the same `Config`, and each default is chosen once, in `Config.resolve`.

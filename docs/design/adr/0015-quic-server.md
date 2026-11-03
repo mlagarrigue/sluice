@@ -1,7 +1,7 @@
 # ADR 0015 — The QUIC server: transport machinery, a real listener, a moving client
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-11-03 (a /64 bounds a host, not a site; what moving the deadline costs, in the present tense); 18 earlier, from 2026-10-03, in its `git log`
+- **Revised:** 2026-11-03 (a /64 bounds a host, not a site; what moving the deadline costs, in the present tense; subheadings); 18 earlier, from 2026-10-03, in its `git log`
 - **Theme:** quic
 
 ## Problem
@@ -16,6 +16,8 @@ its port, which from the server's side is indistinguishable from
 deliberate migration.
 
 ## Decision
+
+### The connection
 
 **One connection is a read loop, a timer loop, and synchronous writers.**
 The read loop owns decryption, frame dispatch, ACK bookkeeping and the idle
@@ -36,6 +38,8 @@ instead of refusing, grants follow consumption, retired streams give their
 slots back with `MAX_STREAMS` (the frame that lets the peer open more
 streams). The batch seam, `OnStreamFrames`, delivers each packet's newly
 contiguous bytes per stream, so the layer above never sees an offset.
+
+### The listener
 
 **A `Listener` owns the socket; connections are fed, not readers.** One
 goroutine runs the only `ReadFrom` loop and routes each datagram by
@@ -79,6 +83,8 @@ address answers from the address each datagram reached. Unroutable
 short-header datagrams get a stateless reset whose token derives from a
 listener key, rate-limited per source IP.
 
+### Keys shared between instances
+
 That key, `StatelessResetKey`, and the one that authenticates Retry tokens,
 `TokenKey`, are drawn at random per listener when the caller gives none;
 given, they survive a restart and are shared by the instances behind one
@@ -103,6 +109,8 @@ refused (ADR 0018). The number of identifiers a connection issues for itself
 is the minimum of the peer's limit and its own `ActiveConnIDLimit`: each
 identifier is an entry in the listener's table, and the figure a deployment
 chooses for the peer's is the one it pays for its own.
+
+### Identifiers, and a client that moves
 
 **Identifiers rotate and the server survives a moving client.** A
 listener-managed connection issues additional identifiers via
