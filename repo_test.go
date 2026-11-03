@@ -71,7 +71,9 @@ func markdownFiles(t *testing.T) []string {
 // do not read them.
 func linkedPages(t *testing.T) []string {
 	t.Helper()
-	out := append(markdownFiles(t), "CHANGELOG.md", "CODE_OF_CONDUCT.md")
+	// llms.txt is the plain-text index at the root that code assistants look
+	// for; its links are Markdown and resolve like the pages'.
+	out := append(markdownFiles(t), "CHANGELOG.md", "CODE_OF_CONDUCT.md", "llms.txt")
 	for _, dir := range []string{"benchmarks", "comparison", "interop", ".github"} {
 		err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
 			if err == nil && !d.IsDir() && strings.HasSuffix(p, ".md") {

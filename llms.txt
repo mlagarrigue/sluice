@@ -1,0 +1,37 @@
+# Sluice.go
+
+> A Go library for streaming data in batches: two core types, Stream[T] and
+> Batch[T], operators placed by what they retain between two batches, and a
+> periphery by external system — a PostgreSQL connector, native HTTP/1.1, 2
+> and 3, a QUIC transport, and a web layer that groups handler calls into
+> batches. The batch is the unit of transport, never the element. Go 1.26 or
+> newer; the standard library plus golang.org/x/crypto and golang.org/x/text.
+
+Start with the index, which sorts every page by what the reader wants to do.
+
+## Docs
+
+- [Documentation index](docs/README.md): every page, by use.
+- [Getting started](docs/guide/getting-started.md): install, a first pipeline, the rules a batch follows.
+- [Operators](docs/guide/operators.md): what each operator keeps in memory.
+- [PostgreSQL](docs/guide/postgres.md): connecting, reading as a stream, writing in batches, replication.
+- [Web](docs/guide/web.md): handlers, diagnostics, gateway, authentication, a clean stop.
+- [Native HTTP](docs/guide/httpstream.md): net/httpstream over HTTP/1.1, 2 and 3.
+- [Deployments](docs/guide/deployments.md): behind a proxy, TLS in front, what to watch.
+- [Limits](docs/guide/limits.md): what is not done, and why.
+
+## Reference
+
+- [PostgreSQL settings and types](docs/reference/postgres.md)
+- [HTTP settings](docs/reference/httpstream.md)
+- [QUIC settings](docs/reference/quic.md)
+- [Web settings](docs/reference/web.md)
+- [Troubleshooting](docs/reference/troubleshooting.md): every exported error.
+
+## Optional
+
+- [Architecture](docs/design/architecture.md): the reasoning behind the two types.
+- [Decision records](docs/design/adr/README.md)
+- [Measurements](docs/benchmarks.md)
+- [Migrating between versions](docs/migration.md)
+- [Contributing](CONTRIBUTING.md)
