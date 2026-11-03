@@ -67,6 +67,43 @@ func TestPackageDocNamesEveryDirectDependency(t *testing.T) {
 	}
 }
 
+// The graph is written down beyond the package doc, in every place a reader
+// weighs it — the README, the contributing and security policies, the
+// limits, the integration template, ADR 0002, the architecture. Each names
+// every module go.mod requires directly, and none names a golang.org/x
+// module go.mod does not require: a dependency added by decision, or one
+// dropped, leaves no page behind.
+func TestDocumentsStateTheDependencyGraph(t *testing.T) {
+	reqs := goModRequires(t)
+	required := map[string]bool{}
+	for _, r := range reqs {
+		required[r.mod] = true
+	}
+	xmod := regexp.MustCompile(`golang\.org/x/[a-z]+`)
+	for _, f := range []string{
+		"README.md", "CONTRIBUTING.md", "SECURITY.md", "docs/guide/limits.md",
+		".github/ISSUE_TEMPLATE/integration.yml",
+		"docs/design/adr/0002-dependency-graph.md", "docs/design/architecture.md",
+	} {
+		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range reqs {
+			if !r.indirect && !strings.Contains(string(b), r.mod) {
+				t.Errorf("go.mod:%d requires %s, which %s does not name", r.line, r.mod, f)
+			}
+		}
+		// A tool's documentation link (apidiff's) is not a dependency.
+		for _, loc := range xmod.FindAllIndex(b, -1) {
+			m := string(b[loc[0]:loc[1]])
+			if !required[m] && !strings.HasSuffix(string(b[:loc[0]]), "pkg.go.dev/") {
+				t.Errorf("%s names %s, which go.mod does not require", f, m)
+			}
+		}
+	}
+}
+
 // requirement is a module go.mod requires.
 type requirement struct {
 	line     int
