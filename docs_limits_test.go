@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -347,4 +348,122 @@ func countWord(s string) (n int, ok bool) {
 		return i, true
 	}
 	return 0, false
+}
+
+// declared reports the exported top-level names of the package in dir, its
+// test files left out: functions, methods, types, variables and constants
+// declared one to a line.
+func declared(t *testing.T, dir string) []string {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	decl := regexp.MustCompile(`(?m)^(?:func(?: \([^)]*\))?|type|var|const) ([A-Z]\w*)`)
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range decl.FindAllStringSubmatch(string(b), -1) {
+			names = append(names, m[1])
+		}
+	}
+	return names
+}
+
+// mentioned reports the files of the package in dir, its tests and its
+// static header tables left out, that hold one of words as a string
+// literal, case aside. The HPACK and QPACK tables name every common field;
+// naming is not reading.
+func mentioned(t *testing.T, dir string, words ...string) []string {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found []string
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") || strings.HasSuffix(f, "_static.go") {
+			continue
+		}
+		src, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		lower := strings.ToLower(string(src))
+		for _, w := range words {
+			if strings.Contains(lower, `"`+w+`"`) {
+				found = append(found, f+": "+w)
+			}
+		}
+	}
+	return found
+}
+
+// The limits page says what is absent, and a limit of that kind is true only
+// as long as nobody adds the thing: each absence below is tied to the
+// sentence that states it and to the code that would make it false. A
+// sentence that leaves the page takes its check with it; a symbol that
+// arrives turns the check red, and the page changes with it.
+func TestLimitsAbsencesHold(t *testing.T) {
+	b, err := os.ReadFile("docs/guide/limits.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := strings.Join(strings.Fields(string(b)), " ")
+	named := func(dir string, keep func(string) bool) []string {
+		return slices.DeleteFunc(declared(t, dir), func(n string) bool { return !keep(n) })
+	}
+	for _, a := range []struct {
+		says    string
+		present func() []string
+	}{
+		{"No `Sort`, `GroupBy` or `Materialize`", func() []string {
+			return named(".", func(n string) bool { return n == "Sort" || n == "GroupBy" || n == "Materialize" })
+		}},
+		{"No `Buffer`", func() []string {
+			isBuffer := func(n string) bool { return n == "Buffer" }
+			return append(named(".", isBuffer), named("parallel", isBuffer)...)
+		}},
+		{"No connection pool", func() []string {
+			return named("database/postgres", func(n string) bool { return strings.Contains(n, "Pool") })
+		}},
+		{"No COPY TO STDOUT", func() []string {
+			return named("database/postgres", func(n string) bool {
+				return strings.HasPrefix(n, "CopyTo") || strings.HasPrefix(n, "CopyOut")
+			})
+		}},
+		{"No HTTP compression", func() []string {
+			var found []string
+			for _, dir := range []string{"web", "web/stream", "net/httpstream"} {
+				out, err := exec.Command("go", "list", "-f", `{{join .Imports " "}}`, "./"+dir).Output() //nolint:gosec // G204: a repository path, not input
+				if err != nil {
+					t.Fatalf("go list ./%s: %v", dir, err)
+				}
+				for _, imp := range strings.Fields(string(out)) {
+					if strings.HasPrefix(imp, "compress/") {
+						found = append(found, dir+": "+imp)
+					}
+				}
+			}
+			return found
+		}},
+		{"Neither the transport nor `web/stream` reads the `If-*` fields", func() []string {
+			ifs := []string{"if-match", "if-none-match", "if-modified-since", "if-unmodified-since", "if-range"}
+			return append(mentioned(t, "net/httpstream", ifs...), mentioned(t, "web/stream", ifs...)...)
+		}},
+	} {
+		if !strings.Contains(page, a.says) {
+			t.Errorf("docs/guide/limits.md no longer says %q: drop its check here, or put the sentence back", a.says)
+			continue
+		}
+		if found := a.present(); len(found) > 0 {
+			t.Errorf("docs/guide/limits.md says %q, and the tree has %v: the page or the code is wrong", a.says, found)
+		}
+	}
 }
