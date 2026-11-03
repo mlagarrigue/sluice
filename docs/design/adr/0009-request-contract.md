@@ -1,7 +1,7 @@
 # ADR 0009 — One request contract for three protocols
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-11-03 (subheadings in the Decision); 4 earlier, from 2026-10-15, in its `git log`
+- **Revised:** 2026-11-03 (subheadings in the Decision; `Config.QUICConfig`); 4 earlier, from 2026-10-15, in its `git log`
 - **Theme:** httpstream
 
 ## Problem

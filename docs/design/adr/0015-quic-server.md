@@ -1,7 +1,7 @@
 # ADR 0015 — The QUIC server: transport machinery, a real listener, a moving client
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-11-03 (a /64 bounds a host, not a site; what moving the deadline costs, in the present tense; subheadings); 18 earlier, from 2026-10-03, in its `git log`
+- **Revised:** 2026-11-03 (`quic.Config` holds the controller; a /64 bounds a host, not a site; what moving the deadline costs, in the present tense; subheadings); 18 earlier, from 2026-10-03, in its `git log`
 - **Theme:** quic
 
 ## Problem

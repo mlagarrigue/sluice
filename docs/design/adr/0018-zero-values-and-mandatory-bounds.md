@@ -1,7 +1,7 @@
 # ADR 0018 — Zero is the safe default, the bound is mandatory
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-11-03 (subheadings in the Decision; the statement cache's negative named); 5 earlier, from 2026-10-21, in its `git log`
+- **Revised:** 2026-11-03 (subheadings in the Decision; the statement cache's negative named; `quic.Config`); 5 earlier, from 2026-10-21, in its `git log`
 - **Theme:** httpstream
 
 ## Problem

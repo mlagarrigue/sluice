@@ -1,7 +1,7 @@
 # ADR 0021 — `net/quic` stays in the module
 
 - **Created:** 2026-10-23
-- **Revised:** —
+- **Revised:** 2026-11-03 (`Config.QUICConfig` returns a `quic.Config`)
 - **Theme:** quic
 
 ## Problem
