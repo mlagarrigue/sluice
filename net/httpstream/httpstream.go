@@ -537,9 +537,9 @@ type Config struct {
 	// is therefore cut at the second timeout rather than kept (data dribble,
 	// CVE-2019-9511). Zero means 10s. Every protocol.
 	//
-	// Over HTTP/1.1 on TLS the first timeout ends the connection whatever
-	// the progress: crypto/tls makes a write that timed out fatal to the
-	// connection, so there is no second wait to grant.
+	// Over TLS, HTTP/1.1 and HTTP/2 alike, the first timeout ends the
+	// connection whatever the progress: crypto/tls makes a write that timed
+	// out fatal to the connection, so there is no second wait to grant.
 	WriteTimeout time.Duration
 
 	// WriteProgressBytes is the progress that moves [Config.WriteTimeout]:

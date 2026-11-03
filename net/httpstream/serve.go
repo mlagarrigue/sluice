@@ -703,8 +703,8 @@ func writeAll(c net.Conn, cfg Config, buf []byte) error {
 // writeBound is [Config.WriteTimeout] read as a time without progress: a
 // write that times out having put progress bytes or more on the wire is
 // given the timeout again, from where it stopped, and one that times out
-// short of them fails. HTTP/1.1 and HTTP/3 write through it; the HTTP/2
-// writer applies the same rule to a stream's credit itself.
+// short of them fails. Every protocol writes to its socket or stream through
+// it; the HTTP/2 writer applies the same rule to a stream's credit too.
 type writeBound struct {
 	timeout  time.Duration
 	progress int

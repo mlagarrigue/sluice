@@ -1196,13 +1196,12 @@ func (w *h2Writer) setErr(err error) {
 	w.jobs, w.inflight = nil, nil
 }
 
+// writeAll puts one round on the socket under the rule every protocol
+// writes by (writeBound): WriteTimeout is a time without
+// WriteProgressBytes of progress, not a bound on the round.
 func (w *h2Writer) writeAll(buf []byte) error {
 	if len(buf) == 0 {
 		return nil
 	}
-	if err := w.conn.SetWriteDeadline(time.Now().Add(w.cfg.WriteTimeout)); err != nil {
-		return err
-	}
-	_, err := w.conn.Write(buf)
-	return err
+	return writeBoundOf(w.cfg).write(w.conn.SetWriteDeadline, w.conn.Write, buf)
 }
