@@ -17,18 +17,18 @@
 # comparison, not code of the repository: nothing enters a go.mod.
 FROM alpine:3.22@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f AS h2load
 RUN apk add --no-cache build-base pkgconf xz openssl-dev libev-dev c-ares-dev zlib-dev
-ADD --checksum=sha256:aad782c23d3f01bd4bb52c8bac7a553b631ef8115fd1612703df6183449fef19 \
-  https://github.com/ngtcp2/nghttp3/releases/download/v1.18.0/nghttp3-1.18.0.tar.xz /src/
-ADD --checksum=sha256:2a34d2484ba17847a5d11965704e9dd0fac4c6d8efc75ffe1ec7de66d8c6b6fb \
-  https://github.com/ngtcp2/ngtcp2/releases/download/v1.25.0/ngtcp2-1.25.0.tar.xz /src/
-ADD --checksum=sha256:1fb324b6ec2c56f6bde0658f4139ffd8209fa9e77ce98fd7a5f63af8d0e508ad \
-  https://github.com/nghttp2/nghttp2/releases/download/v1.69.0/nghttp2-1.69.0.tar.xz /src/
+ADD --checksum=sha256:228e17f5cc3d4de7bfced9912bd09de30e7f45741cc47503cf88d3fa9209e155 \
+  https://github.com/ngtcp2/nghttp3/releases/download/v1.19.0/nghttp3-1.19.0.tar.xz /src/
+ADD --checksum=sha256:7804aa0fa1c39942ba322a90805824c37231f7675b08d0c3cc4332858a7b085e \
+  https://github.com/ngtcp2/ngtcp2/releases/download/v1.26.0/ngtcp2-1.26.0.tar.xz /src/
+ADD --checksum=sha256:c0f55121d88650e4b9227aec28cebaf664d2417ca60fe70be0f8d38829f52116 \
+  https://github.com/nghttp2/nghttp2/releases/download/v1.71.0/nghttp2-1.71.0.tar.xz /src/
 ENV PKG_CONFIG_PATH=/opt/h3/lib/pkgconfig
-RUN cd /src && tar xf nghttp3-1.18.0.tar.xz && cd nghttp3-1.18.0 \
+RUN cd /src && tar xf nghttp3-1.19.0.tar.xz && cd nghttp3-1.19.0 \
   && ./configure --prefix=/opt/h3 --enable-lib-only && make -j"$(nproc)" install
-RUN cd /src && tar xf ngtcp2-1.25.0.tar.xz && cd ngtcp2-1.25.0 \
+RUN cd /src && tar xf ngtcp2-1.26.0.tar.xz && cd ngtcp2-1.26.0 \
   && ./configure --prefix=/opt/h3 --enable-lib-only --with-openssl && make -j"$(nproc)" install
-RUN cd /src && tar xf nghttp2-1.69.0.tar.xz && cd nghttp2-1.69.0 \
+RUN cd /src && tar xf nghttp2-1.71.0.tar.xz && cd nghttp2-1.71.0 \
   && ./configure --prefix=/opt/h3 --enable-app --enable-http3 --disable-python-bindings \
   && make -j"$(nproc)" install && ldd /opt/h3/bin/h2load | grep -q ngtcp2_crypto_ossl
 
