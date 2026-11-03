@@ -45,9 +45,11 @@ type sendOpts struct {
 	// may open. A PATH_RESPONSE is not ungated at all: it fits in the
 	// window or is dropped (answerPathChallengesLocked).
 	waitCwnd bool
-	// deadline bounds that wait (Stream.SetWriteDeadline); zero waits
-	// without bound.
-	deadline time.Time
+	// deadline bounds that wait (Stream.SetWriteDeadline); nil, or a zero
+	// time, waits without bound. It points at the stream's deadline rather
+	// than copying it, and is read under mu at every wake: SetWriteDeadline
+	// moves it while the writer waits, and wakes the writer to see it.
+	deadline *time.Time
 	// recheck is asked, after every wake from that wait — and from the
 	// wait for keys (awaitSealLocked), which releases mu too — whether the
 	// payload is still owed; a non-nil answer abandons the send and is
@@ -194,7 +196,7 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 				c.armPaceLocked(now.Add(d))
 			}
 			check = false
-			if err := c.waitForCreditLocked(opts.deadline); err != nil {
+			if err := c.waitForCreditLocked(opts.deadlineLocked()); err != nil {
 				return err
 			}
 			if c.draining || c.closeSent {
@@ -1691,6 +1693,15 @@ func (c *Conn) resendEarlyLocked() {
 	}
 	c.earlyResends++
 	c.sendProbeLocked(spaceInitial)
+}
+
+// deadlineLocked is the deadline the window's wait is bounded by now: the
+// stream's current one, not the one it had when the frame was built.
+func (o sendOpts) deadlineLocked() time.Time {
+	if o.deadline == nil {
+		return time.Time{}
+	}
+	return *o.deadline
 }
 
 // waitForCreditLocked parks the caller until credit arrives, the connection

@@ -344,7 +344,7 @@ func (s *Stream) SetWriteDeadline(t time.Time) error {
 	c.mu.Lock()
 	s.writeDeadline = t
 	c.armStreamDeadlineLocked(t)
-	c.cond.Broadcast() // a writer parked on credit re-reads its deadline
+	c.cond.Broadcast() // a writer parked on credit or on the window re-reads its deadline
 	c.mu.Unlock()
 	return nil
 }
@@ -516,7 +516,7 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 		// releases mu, and a STOP_SENDING read meanwhile would have ended
 		// this direction and declared this very offset final
 		// (sendOpts.recheck).
-		opts := sendOpts{waitCwnd: true, own: true, deadline: s.writeDeadline, recheck: s.sendableLocked}
+		opts := sendOpts{waitCwnd: true, own: true, deadline: &s.writeDeadline, recheck: s.sendableLocked}
 		// A packet the socket refused after it was recorded is sent as far
 		// as the stream goes (errSentUnwritten): recovery resends the frame
 		// at this offset.
