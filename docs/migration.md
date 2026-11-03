@@ -32,6 +32,10 @@ signatures — a value now refused — come last.
   `Copier.Abort` keeps its signature and is now bounded by
   `Config.CancelTimeout`, as `Tx.Rollback` is: `defer cp.Abort(reason)`
   beside the `Close` is the copy's `defer tx.Rollback()`.
+- **`IndexOutOfRange` is `IndexError`**
+  ("feat(postgres)!: IndexOutOfRange becomes IndexError"): the value
+  `Rows.Value` panics with, named as Go names an error type; its fields and
+  its message are unchanged. Rename it where a recovered value is asserted.
 
 ### Web: `web` and `web/stream`
 

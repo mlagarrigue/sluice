@@ -446,9 +446,9 @@ func TestRowsValueOutOfRangePanics(t *testing.T) {
 				if got == nil {
 					t.Fatalf("Value(%d,%d) did not panic", tc.row, tc.col)
 				}
-				e, ok := got.(IndexOutOfRange)
+				e, ok := got.(IndexError)
 				if !ok {
-					t.Fatalf("panicked with %T (%v), want IndexOutOfRange", got, got)
+					t.Fatalf("panicked with %T (%v), want IndexError", got, got)
 				}
 				if e.Row != tc.row || e.Col != tc.col {
 					t.Errorf("panic carries (%d,%d), want (%d,%d)", e.Row, e.Col, tc.row, tc.col)

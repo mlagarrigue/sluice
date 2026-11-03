@@ -493,11 +493,18 @@ func (r *Rows) truncate(n int) {
 // programming errors, and returning a zero value for them would let a typo in
 // a generated hydration function read as legitimate NULLs.
 //
-// It panics with [IndexOutOfRange], which carries the indices rather than a
+// It panics with [IndexError], which carries the indices rather than a
 // formatted sentence.
 func (r *Rows) Value(row, col int) (b []byte, isNull bool) {
+	// The bounds check is what costs here, −4.2% on BenchmarkPGReadDecode
+	// when removed entirely, and it stays: a typo in a generated hydration
+	// function must not read as a legitimate NULL. A value rather than a
+	// formatted string keeps Value at cost 66 against the inliner's budget
+	// of 80, where fmt.Sprintf costs 137 — and that does not matter: paired,
+	// the two measure as noise, 5 wins out of 14. Written down so nobody
+	// measures it twice.
 	if row < 0 || row >= r.rows || col < 0 || col >= r.fields {
-		panic(IndexOutOfRange{Row: row, Col: col, Rows: r.rows, Fields: r.fields})
+		panic(IndexError{Row: row, Col: col, Rows: r.rows, Fields: r.fields})
 	}
 	i := row*r.fields + col
 	end := r.ends[i]
@@ -517,33 +524,23 @@ func (r *Rows) Value(row, col int) (b []byte, isNull bool) {
 	return r.buf[start:end], false
 }
 
-// IndexOutOfRange is what [Rows.Value] panics with when asked for a field that
-// does not exist.
+// IndexError is what [Rows.Value] panics with when asked for a field that
+// does not exist: a programming error, like a slice index out of range.
 //
 // A value rather than a formatted string, for the same reason the rest of this
 // package panics with sentinels: whoever recovers one can read the indices
 // instead of parsing a sentence.
-//
-// It also keeps `fmt.Sprintf` out of the body of a function that runs once per
-// field per row, which puts it at cost 66 against the inliner's budget of 80,
-// where a formatted string costs 137 — and **that does not matter**: paired
-// against the formatted string it measures as noise, 5 wins out of 14. The
-// bounds check itself is what costs, at −4.2% on BenchmarkPGReadDecode when
-// removed entirely, and it stays: returning a zero value for an index a caller
-// had no business asking for would let a typo in a generated hydration
-// function read as a legitimate NULL, which this project ranks below a crash.
-// The number is written down so nobody measures it twice.
-type IndexOutOfRange struct {
+type IndexError struct {
 	Row, Col     int // what was asked for
 	Rows, Fields int // what the batch holds
 }
 
 // Error renders the index asked for against the batch's actual shape.
-func (e IndexOutOfRange) Error() string {
+func (e IndexError) Error() string {
 	return fmt.Sprintf("postgres: value (%d,%d) out of range for %d rows of %d fields",
 		e.Row, e.Col, e.Rows, e.Fields)
 }
 
 // String makes the panic readable when it is printed rather than recovered,
 // which is how it will usually be met.
-func (e IndexOutOfRange) String() string { return e.Error() }
+func (e IndexError) String() string { return e.Error() }
