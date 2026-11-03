@@ -9,6 +9,7 @@ import (
 	"github.com/mlagarrigue/sluice/join"
 	"github.com/mlagarrigue/sluice/parallel"
 	"github.com/mlagarrigue/sluice/probe"
+	"github.com/mlagarrigue/sluice/pushdown"
 	"github.com/mlagarrigue/sluice/window"
 )
 
@@ -43,6 +44,9 @@ func TestOperatorsPropagateEarlyStop(t *testing.T) {
 			return sluice.Convert(s, func(v int) int { return v })
 		}},
 		{"probe.Probe", func(s sluice.Stream[int]) sluice.Stream[int] { return probe.Probe(s, &probe.Counter{}) }},
+		{"pushdown.AdvanceBy", func(s sluice.Stream[int]) sluice.Stream[int] {
+			return pushdown.AdvanceBy(s, &pushdown.Demand{}, func(v int) []byte { return []byte{byte(v >> 8), byte(v)} })
+		}},
 		{"sluice.Scan", func(s sluice.Stream[int]) sluice.Stream[int] {
 			return sluice.Scan(s, 0, func(a, v int) int { return a + v })
 		}},
