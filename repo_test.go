@@ -504,6 +504,14 @@ func TestPgtypeNamesAreDocumentedOrUsed(t *testing.T) {
 // record had to name it; the history before it is read as it was written.
 const adrRuleSince = "2026-10-28"
 
+// adrNamedLater holds the published commits that changed a record without
+// naming it, each with the record it changed. History is not rewritten, so
+// the commit that adds a line here names the record in its own message,
+// and `git log --grep "ADR 0015"` still finds the revision through it.
+var adrNamedLater = map[string]string{
+	"cec438de46da81cb7061c4c65d5808c3d96b6547": "0015", // a /64 bounds a host, not a site
+}
+
 // unnamedADRChanges lists, for the git repository at dir, every commit after
 // adrRuleSince that changes a line of a decision record's Decision or
 // Rationale without naming that record — "ADR 0007" or "adr/0007" — in its
@@ -549,6 +557,9 @@ func unnamedADRChanges(dir string) ([]string, error) {
 			}
 		}
 		for n := range changed {
+			if namedLater(hash) == n {
+				continue
+			}
 			if !strings.Contains(msg, "ADR "+n) && !strings.Contains(msg, "adr/"+n) {
 				faults = append(faults, fmt.Sprintf("%s changes ADR %s's Decision or Rationale and does not name it", hash, n))
 			}
@@ -556,6 +567,16 @@ func unnamedADRChanges(dir string) ([]string, error) {
 	}
 	slices.Sort(faults)
 	return faults, nil
+}
+
+// namedLater is the record adrNamedLater names for an abbreviated hash.
+func namedLater(hash string) string {
+	for full, n := range adrNamedLater {
+		if strings.HasPrefix(full, hash) {
+			return n
+		}
+	}
+	return ""
 }
 
 // A commit that changes what a decision record decides, or why, names the
