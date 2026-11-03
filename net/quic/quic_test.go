@@ -456,6 +456,7 @@ func TestCloseWakesTheOwnedSocketReadLoop(t *testing.T) {
 	defer func() { _ = peer.Close() }()
 
 	c := newConn(pc, peer.LocalAddr(), []byte("dcid"), []byte("scid"), true, DefaultParameters())
+	c.closing.loop = true // as the handshake leaves it to the loop it starts
 	done := make(chan struct{})
 	go func() {
 		c.readLoop()

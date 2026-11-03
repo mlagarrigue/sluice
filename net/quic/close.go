@@ -526,10 +526,11 @@ type closingState struct {
 	// its socket; end is when its read loop stops answering — zeroed by a
 	// [Conn.Wait] whose context ended — and left records that the state is
 	// over and gone closed or about to be. loop says a socket-owning read
-	// loop runs: then the loop's exit, not the close, is what frees the
-	// socket, so it is the loop that closes gone (releaseSocket). returned
-	// says a socket this connection owned was handed back (returnSocketLocked):
-	// its read deadline cleared, and nothing here touches it again.
+	// loop, or the handshake before it, reads the socket: then its exit,
+	// not the close, is what frees the socket, so it is the reader that
+	// closes gone (releaseSocket). returned says a socket this connection
+	// owned was handed back (returnSocketLocked): its read deadline
+	// cleared, and nothing here touches it again.
 	hold     bool
 	end      time.Time
 	left     bool
@@ -614,9 +615,10 @@ func (c *Conn) enterClosingLocked() {
 	if len(c.closing.datagrams) == 0 && (!c.draining || !c.holdsClosingLocked()) {
 		c.closing.left = true
 		if !c.closing.loop {
-			// Not handed back here: a close during the handshake runs while
-			// Dial still reads the socket, and only the jolt that follows
-			// (wakeOwnedReadLoop) gets that read out.
+			// Nothing reads the socket — the handshake, while it runs, is
+			// a loop like the read loop (handshake) — so it is handed back
+			// now, and the jolt that follows leaves it alone.
+			c.returnSocketLocked()
 			close(c.gone)
 		}
 		return
@@ -693,7 +695,7 @@ func (c *Conn) holdClosing(buf []byte) {
 }
 
 // releaseSocket is the exit of a socket-owning read loop that held no
-// closing state: the close already ran (enterClosingLocked) and left gone
+// closing state, or of a handshake that failed: the close already ran (enterClosingLocked) and left gone
 // for the loop to close, now that it has stopped touching the socket.
 func (c *Conn) releaseSocket() {
 	c.mu.Lock()

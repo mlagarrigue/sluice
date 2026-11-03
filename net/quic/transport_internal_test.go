@@ -228,6 +228,7 @@ func TestReadLoopSurvivesATransientReadError(t *testing.T) {
 	)
 	c := newConn(pc, peer, []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
 	c.tls = tls.QUICClient(&tls.QUICConfig{TLSConfig: ClientTLSForTest()})
+	c.closing.loop = true // as the handshake leaves it to the loop it starts
 	loopDone := make(chan struct{})
 	go func() { c.readLoop(); close(loopDone) }()
 
