@@ -754,9 +754,21 @@ func h3KnownCode(code uint64) bool {
 		(code >= qpackDecompressionFailed && code <= qpackDecoderStreamError)
 }
 
-// h3ReleaseStreamBytes is the manual-credit release, a variable so a test
-// can count what this layer gives back to the transport.
-var h3ReleaseStreamBytes = (*quic.Conn).ReleaseStreamBytes
+// h3ReleaseStreamBytes is the manual-credit release. A test replaces it
+// through h3ReleaseHook to count what this layer gives back to the
+// transport; the hook is atomic because a connection of an earlier test may
+// still be releasing, on its read loop, while a later test swaps it.
+func h3ReleaseStreamBytes(c *quic.Conn, id, n uint64) {
+	if f := h3ReleaseHook.Load(); f != nil {
+		(*f)(c, id, n)
+		return
+	}
+	c.ReleaseStreamBytes(id, n)
+}
+
+// h3ReleaseHook is h3ReleaseStreamBytes's replacement in a test; nil
+// outside one.
+var h3ReleaseHook atomic.Pointer[func(*quic.Conn, uint64, uint64)]
 
 // h3Batch is what the read goroutine hands a handler call: the requests one
 // datagram completed, and the stream each arrived on. HTTP/3 correlates by

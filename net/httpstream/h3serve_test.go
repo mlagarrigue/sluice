@@ -41,9 +41,9 @@ func startH3With(t *testing.T, cfg Config, params, clientParams quic.Config, han
 	serverUp := make(chan error, 1)
 	served := make(chan error, 1)
 	serverDone := make(chan struct{})
-	// The server goroutine is reaped before the next test starts: one
-	// outliving its test would read the h3ReleaseStreamBytes hook while
-	// TestH3CreditsRequestBytesOnce swaps it (a data race under -race).
+	// The server goroutine is reaped before the next test starts. The
+	// connection's read loop may still run a moment longer, which is why
+	// h3ReleaseHook, which a later test may swap, is atomic.
 	t.Cleanup(func() { <-serverDone })
 	go func() {
 		defer close(serverDone)
@@ -379,12 +379,12 @@ func TestServeH3ReturnsWhileAProducerIsBlocked(t *testing.T) {
 // what this layer releases is exactly what the request streams delivered.
 func TestH3CreditsRequestBytesOnce(t *testing.T) {
 	var released atomic.Uint64
-	orig := h3ReleaseStreamBytes
-	h3ReleaseStreamBytes = func(c *quic.Conn, id, n uint64) {
+	count := func(c *quic.Conn, id, n uint64) {
 		released.Add(n)
-		orig(c, id, n)
+		c.ReleaseStreamBytes(id, n)
 	}
-	t.Cleanup(func() { h3ReleaseStreamBytes = orig })
+	h3ReleaseHook.Store(&count)
+	t.Cleanup(func() { h3ReleaseHook.Store(nil) })
 
 	for _, mode := range []struct {
 		name   string
@@ -429,9 +429,9 @@ func TestH3CreditsRequestBytesOnce(t *testing.T) {
 // past the connection window the server announced stall; were the
 // transport still crediting on delivery, all of them would go through.
 func TestH3ServeCreditsOnRelease(t *testing.T) {
-	orig := h3ReleaseStreamBytes
-	h3ReleaseStreamBytes = func(*quic.Conn, uint64, uint64) {}
-	t.Cleanup(func() { h3ReleaseStreamBytes = orig })
+	swallow := func(*quic.Conn, uint64, uint64) {}
+	h3ReleaseHook.Store(&swallow)
+	t.Cleanup(func() { h3ReleaseHook.Store(nil) })
 
 	got := make(chan int, 8)
 	conn, _, _ := startH3(t, mustQUICConfig(Config{BodyDelivery: BodyWhole}), func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
