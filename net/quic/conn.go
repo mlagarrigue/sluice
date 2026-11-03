@@ -22,6 +22,7 @@
 //	retry.go         a server's Retry; refusal_*.go the peer's ICMP refusals
 //	migration.go     connection identifiers and passive migration (RFC 9000 §9)
 //	earlyclient.go   0-RTT for a client; earlydata.go 0-RTT for a server
+//	ticketchain.go   how long a chain of resumptions lives (RFC 9846 §4.7.1)
 //	close.go         how a connection ends; timer.go the goroutine of its deadlines
 //	gso*.go          segmentation offload, per platform
 

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -441,5 +442,45 @@ func TestDeploymentsDecisionsPointAtTheCode(t *testing.T) {
 	}
 	if checked < 8 {
 		t.Fatalf("checked %d names; the guide's shape changed", checked)
+	}
+}
+
+// The three largest packages open their conn.go on a map, "Where to find
+// what", that names each source file and what it holds. A file added and not
+// mapped, or one renamed under the map, sends a contributor to the wrong
+// place: every source file is named (a pattern such as hpack*.go covers its
+// matches), and every name points at a file.
+func TestFileMapsNameEveryFile(t *testing.T) {
+	goFile := regexp.MustCompile(`[\w*]+\.go\b`)
+	for _, dir := range []string{"net/quic", "net/httpstream", "database/postgres"} {
+		b, err := os.ReadFile(filepath.Join(dir, "conn.go")) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		head, _, _ := strings.Cut(string(b), "\npackage ")
+		if !strings.Contains(head, "Where to find what") {
+			t.Errorf("%s/conn.go does not open on its file map", dir)
+			continue
+		}
+		// The opening sentence names the file of the package documentation.
+		patterns := goFile.FindAllString(head, -1)
+		for _, p := range patterns {
+			if m, _ := filepath.Glob(filepath.Join(dir, p)); len(m) == 0 {
+				t.Errorf("%s/conn.go maps %s, and no such file exists", dir, p)
+			}
+		}
+		files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range files {
+			name := filepath.Base(f)
+			if strings.HasSuffix(name, "_test.go") {
+				continue
+			}
+			if !slices.ContainsFunc(patterns, func(p string) bool { ok, _ := filepath.Match(p, name); return ok }) {
+				t.Errorf("%s/conn.go's map does not name %s", dir, name)
+			}
+		}
 	}
 }

@@ -1,3 +1,21 @@
+// Where to find what in this package's source. The package documentation
+// (doc.go) says what it does; this says which file does it.
+//
+//	connect.go       Connect and its dialers: TCP, TLS, direct TLS
+//	auth.go          Config, the startup and authentication
+//	scram.go         SCRAM-SHA-256; saslprep*.go the password's SASLprep
+//	conn.go          Conn: queries, Rows, batches asked for ahead
+//	messages.go      backend messages parsed, the server's Error
+//	scan.go          Scan*: a batch's column into Go values
+//	prepare.go       the statement cache
+//	tx.go            transactions and Exec
+//	pipeline.go      Pipeline: several statements in one round trip
+//	copy.go          COPY FROM: CopyFrom and the binary tuple encoders
+//	cancel.go        cancellation: CancelKey, the second connection
+//	listen.go        LISTEN and NOTIFY
+//	replicate.go     logical replication; pgoutput.go its messages, LSN
+//	types.go         LookupType: a type's OID by name
+
 package postgres
 
 import (

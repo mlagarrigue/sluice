@@ -1,3 +1,26 @@
+// Where to find what in this package's source. The package documentation
+// (httpstream.go) says what it does; this says which file does it.
+//
+//	httpstream.go    Config, its defaults and their checks (resolve)
+//	serve.go         Serve: the listener, its connections, the shutdown
+//	server.go        Server: the three protocols behind one value
+//	conn.go          HTTP/1.1: requests read off a connection, keep-alive
+//	request.go       Request: the head as the handler sees it, its checks
+//	body.go          a streamed request body; body_queue.go its HTTP/2 queue
+//	response.go      Response: fields, trailers, checks; date.go the Date field
+//	failure.go       a handler's panic or error reported, a connection's end
+//	h2conn.go        HTTP/2: a connection, its windows, its errors
+//	h2read.go        HTTP/2 in: frames read, streams assembled, resets counted
+//	h2frame.go       HTTP/2 frames and their parsing
+//	h2respond.go     HTTP/2 responder: the handler called, its answers encoded
+//	h2write.go       HTTP/2 out: frames under flow control and deadlines
+//	hpack*.go        HPACK (RFC 7541): decoder, encoder, tables; huffman.go
+//	h3serve.go       HTTP/3: ServeH3Conn, a connection over a quic.Conn
+//	h3conn.go        HTTP/3 requests assembled, and their errors
+//	h3.go            HTTP/3 frames; h3uni.go the control and QPACK streams
+//	h3response.go    HTTP/3 responses encoded; qpack_static.go QPACK's table
+//	connreset_*.go   a connection reset by the peer told apart, per platform
+
 package httpstream
 
 import (
