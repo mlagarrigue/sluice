@@ -145,7 +145,8 @@ type ListenerConfig struct {
 	// rather carry the connection directly, for instance. The listener
 	// reads it alongside its main socket and announces its local address
 	// — which must therefore be a concrete IPv4 or IPv6 address, not the
-	// unspecified one, or [NewListener] fails — in every handshake, with a
+	// unspecified one, unless PreferredIPv4 or PreferredIPv6 name the
+	// addresses to announce, or [NewListener] fails — in every handshake, with a
 	// connection identifier minted per connection. A client that validates
 	// the path moves there on its own (counted in [Conn.Migrations] on both
 	// sides), and its connection then sends from this socket (§8.2.2: the

@@ -121,9 +121,10 @@
 //     a reset whose token derives from a per-listener key, which is what
 //     lets it be honoured with no connection state left.
 //   - The failure model of §5.2 and §12.2: nothing an unauthenticated
-//     sender can put in a datagram ends a connection. Garbage, forgeries
-//     and strays are counted ([Conn.Stats], and the listener's
-//     own [Listener.DiscardedPackets] in front) and dropped.
+//     sender can put in a datagram ends a connection, except forgeries
+//     past the AEAD's integrity limit (AEAD_LIMIT_REACHED, RFC 9001 §6.6).
+//     Garbage, forgeries and strays are counted ([Conn.Stats], and the
+//     listener's own [Listener.DiscardedPackets] in front) and dropped.
 //   - Key update (RFC 9001 §6): a peer's rotation is followed, old read
 //     keys are kept three probe timeouts for stragglers, and this end
 //     rotates its own keys before the AEAD's confidentiality limit (§6.6)

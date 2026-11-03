@@ -186,7 +186,8 @@ func PacketDestination(oob []byte) (dst netip.Addr, ifindex int, ok bool) {
 // zero leaves the choice to routing. src should be what
 // [PacketDestination] reported on the same socket: an IPv4 address for IPv4
 // traffic, on an AF_INET socket or a dual-stack one, and an IPv6 address
-// otherwise; an IPv4-mapped one is taken too. Where
+// otherwise. Pass it as PacketDestination reported it, unmapped: Windows
+// unmaps an IPv4-mapped src, Linux sends it under the IPv6 option. Where
 // [EnablePacketInfo] is unsupported, oob is returned unchanged.
 func AppendPacketSource(oob []byte, src netip.Addr, ifindex int) []byte {
 	return appendPacketSource(oob, src, ifindex)

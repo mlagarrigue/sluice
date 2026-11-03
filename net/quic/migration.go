@@ -259,9 +259,9 @@ func (c *Conn) preferredAddress() net.Addr {
 // Migrations reports how many times this connection changed path: a server
 // following its peer to a new address, or a client moving itself with
 // [Conn.Rebind]. Whether the newest one has validated shows up as traffic
-// flowing again; a server-side one that never validates ends by idle
-// timeout, like any dead peer, a Rebind that never validates ends the
-// connection with an error.
+// flowing again; a server-side one that never validates falls back to the
+// last validated path, and only a peer gone from both ends by idle timeout;
+// a Rebind that never validates ends the connection with an error.
 func (c *Conn) Migrations() uint64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1336,10 +1336,9 @@ func (c *Conn) startPathChallengeLocked(now time.Time) {
 // bytes, or to what the §8.1 budget of a still-unvalidated path allows
 // (§8.2.1). A migration announced by a 40-byte datagram funds a 120-byte
 // probe, not a 1200-byte one; padding past the budget would withhold the
-// probe outright and leave the path unvalidated for good. When the budget
-// grows enough for a full-size probe, the challenge data is renewed, so
-// that only an answer to a full-size datagram counts as one. Callers hold
-// mu.
+// probe outright and leave the path unvalidated for good. Every resend
+// carries fresh challenge data, so only an answer to the latest probe —
+// full-size once the budget allows — counts. Callers hold mu.
 func (c *Conn) sendPathChallengeLocked() {
 	full := c.pathProbe.target != nil || !c.amplActive || 3*c.amplRecv-c.amplSent >= 1200
 	if c.pathProbe.sent {

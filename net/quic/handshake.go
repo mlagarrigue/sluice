@@ -463,8 +463,9 @@ func (c *Conn) releaseEarly() error {
 // A connection from [Dial] has completed it already, and so has one from
 // [Listener.Accept] unless the listener has [ListenerConfig.EarlyData]:
 // that one may not have, and what it received until then may be a replay of
-// another client's first flight. A connection whose handshake fails never closes the channel:
-// select on [Conn.Done] beside it.
+// another client's first flight. A connection whose handshake fails before
+// completing never closes the channel, and one whose TLS fails on an event
+// after completion has closed it already: select on [Conn.Done] beside it.
 func (c *Conn) HandshakeComplete() <-chan struct{} { return c.hsComplete }
 
 // handshakeCompleteLocked is the transition TLS reports: the server confirms at

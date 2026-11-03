@@ -56,9 +56,13 @@ import (
 //
 // # Failure model
 //
-// Unauthenticated input never ends a connection: a datagram that does not
+// Unauthenticated input does not end a connection: a datagram that does not
 // parse, does not authenticate, or arrives from the wrong address is counted
 // and dropped, because anyone can send those bytes (RFC 9000 §5.2, §12.2).
+// The one exception is the count itself: past the AEAD's integrity limit
+// of packets that failed to authenticate, the connection closes with
+// AEAD_LIMIT_REACHED (RFC 9001 §6.6), since more forgeries would wear
+// down the integrity bound.
 // Protocol violations inside an authenticated packet — flow-control breach,
 // a final size that moves, a malformed frame — end the connection with a
 // CONNECTION_CLOSE, because the peer provably sent them. One stream's
@@ -795,9 +799,11 @@ func (c *Conn) LocalParameters() TransportParameters { return c.params }
 // negotiated application protocol (NegotiatedProtocol, what a server
 // checks before it speaks h3), the server name the client asked for, the
 // peer's certificates, the TLS version. It is what
-// [crypto/tls.QUICConn.ConnectionState] returns; [Dial] and
-// [Listener.Accept] return only once the handshake is complete, so every field is settled by
-// the time a caller can ask.
+// [crypto/tls.QUICConn.ConnectionState] returns. A connection from [Dial],
+// or from [Listener.Accept] without [ListenerConfig.EarlyData], has
+// completed its handshake, so every field is settled by the time a caller
+// can ask; one from [DialEarly] or an early-data listener may not have:
+// wait on [Conn.HandshakeComplete] first.
 func (c *Conn) ConnectionState() tls.ConnectionState { return c.tls.ConnectionState() }
 
 // LocalAddr reports the address of the socket this connection sends on:

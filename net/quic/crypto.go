@@ -377,7 +377,8 @@ func (o *packetOpener) rotated(pn uint64) (*packetOpener, error) {
 // that does and succeeds — this one does not try, and the packet fails
 // under the next keys instead). Callers hold the connection's mu: the
 // receive goroutine is the only reader of lowest, outside the lock, but
-// withoutPrevious copies the phase under it from the timer loop.
+// withoutPrevious, called from openPacket on the same receive path, copies
+// the phase under it.
 func (o *packetOpener) noteCurrentPN(pn uint64) {
 	if p := o.phase; p != nil && p.hasLowest && pn < p.lowest {
 		p.lowest = pn
