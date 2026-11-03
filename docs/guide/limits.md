@@ -620,8 +620,10 @@ have grown. ICMP "packet too big" messages are ignored (§14.2.1 does not
 require them, and `net.PacketConn` does not deliver them). The kernel
 still reads them: on Linux, `udp.Configure` keeps the path MTU it caches
 from one from refusing the 1200-byte datagram (`IP_PMTUDISC_PROBE`,
-tested); on macOS and Windows no such option is set, and whether a cached
-MTU below 1200 refuses the datagram there is not verified.
+tested); on macOS a cached path MTU below 1200 does not refuse it either,
+which CI tests through a host route of MTU 600; on Windows the socket is
+set to `IP_PMTUDISC_PROBE`, which Winsock documents as ignoring the cached
+path MTU — the mode is read back, its effect not measured.
 
 A path that cannot carry 1200 bytes is therefore never detected: sending on it goes
 on at probe-timeout pace, doubling each time, until the idle timeout
@@ -653,7 +655,8 @@ The ClientHello's X25519 key share repeats the key inside the hybrid
 X25519MLKEM768 share, the group RFC 10024 defines. RFC 9846 §4.3.8 asks
 for key shares generated independently, and RFC 9954 §3.2, which RFC 10024
 builds on, relaxes that for the same algorithm reused within one
-ClientHello: the repetition is the shape both texts allow, not a departure.
+ClientHello. RFC 9954 is Informational and updates nothing: the repetition
+departs from the letter of RFC 9846 in the way RFC 9954 describes.
 
 Eleven of its positions depart from RFC 9846 and are inherited as they
 are; none is visible to a conformant peer, which never sends what they
