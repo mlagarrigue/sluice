@@ -9,6 +9,14 @@ Three reasons come up, and the difference matters:
 - **Experimental**: code that exists but leaves that status only under
   precise conditions, stated here.
 
+**In short.** Nothing has run in production yet, and the API changes before
+version 1 ([the project](#the-project-as-a-whole)). One process, and no
+sort or buffer stage ([the core](#the-core)). PostgreSQL alone, without a
+pool, read in binary ([PostgreSQL](#postgresql)). No router, no
+compression, no CONNECT tunnel ([web and gateway](#web-and-gateway)). QUIC
+is experimental, under [written conditions](#experimental-the-exit-conditions).
+The figures are a laptop's ([measurements](#measurements-what-is-missing)).
+
 ## The project as a whole
 
 - **Nothing has run in production.** Everything is tested and measured;
@@ -65,6 +73,8 @@ Three reasons come up, and the difference matters:
 
 ## PostgreSQL
 
+### What it connects to
+
 - **PostgreSQL only.** No other system has a connector. An inventory of the
   most useful connectors (MySQL, SQLite, Redis, Kafka, S3, CSV and Parquet
   files…) is the first item on the roadmap; it will pick the first three
@@ -73,6 +83,9 @@ Three reasons come up, and the difference matters:
 - **No connection pool** — on purpose. How many connections to open is
   your application's decision; batching does with one connection what a
   pool does with many.
+
+### Authentication, types and certificates
+
 - **Authentication**: SCRAM-SHA-256 (with channel binding over TLS, required
   or disabled by `Config.ChannelBinding`), cleartext password on explicit
   request, and `trust`. **`md5` is refused** — on purpose: the hash stored
@@ -109,6 +122,9 @@ Three reasons come up, and the difference matters:
   if an authority signed the server's certificate or an intermediate that
   way, the TLS handshake fails before any authentication: re-sign with
   `-sigopt rsa_pss_saltlen:digest`.
+
+### What it reads and writes
+
 - **Notifications on a connection of their own, no notices.** `Listen`
   opens a connection that only listens and streams its notifications
   ([ADR 0024](../design/adr/0024-listen-notify.md)); a `LISTEN` run through
@@ -135,6 +151,9 @@ Three reasons come up, and the difference matters:
 - **No automatic resumption of an interrupted COPY.** Delivery is
   at-least-once and idempotence is yours; a resumption watermark should
   live in your schema, not in the library.
+
+### Bounds, and what is pushed down
+
 - **A message from the server is bounded at 64 MiB** — a row with all its
   values, a COPY chunk. Over it, the message is refused unread and the
   connection is broken (`ErrMessageTooLarge`, then `ErrConnBroken`).
@@ -158,6 +177,8 @@ Three reasons come up, and the difference matters:
   decoding a column on its own.
 
 ## Web and gateway
+
+### Serving and authenticating
 
 - **On the `net/http` path, no router and no adapter** — on purpose.
   `http.ServeMux` routes since Go 1.22; the handler stays short enough to read
@@ -190,6 +211,9 @@ Three reasons come up, and the difference matters:
   what the token says about itself; that is correct only if the issuer is
   your service. For an external identity provider, implement `Authorizer`
   against whatever knows the policy.
+
+### The gateway
+
 - **The gateway only amortises round trips.** Without a database or a
   remote service behind it, it costs more than it saves
   ([measured](../benchmarks.md#the-gateway-against-a-bounded-backend): one
@@ -199,6 +223,9 @@ Three reasons come up, and the difference matters:
   by key) works and is tested, and its own cost is measured
   (`BenchmarkPartition*`, [benchmarks](../benchmarks.md)), but no measurement
   yet says when the round trips it saves pay for it.
+
+### What the HTTP layer leaves out
+
 - **No HTTP compression** (`Content-Encoding: gzip`…) — not yet, on either
   path. gzip and deflate will come from the standard library, zstd and
   brotli from a maintained module, once the measurement says what each
