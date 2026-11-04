@@ -696,20 +696,21 @@ func TestFullOnBytesDefersToTheRowLimit(t *testing.T) {
 	}
 }
 
-// largestRow measures rows of several fields, an empty first row included.
+// largestRow measures rows of several fields, from a first row that ends at
+// offset zero.
 func TestRowsLargestRow(t *testing.T) {
 	r := newRows(2, 10, 0)
 	for _, row := range [][][]byte{
-		{[]byte{}, nil},
-		{[]byte("a"), []byte("bbb")},
-		{[]byte("cccccc"), []byte{}},
+		{nil, []byte{}},
+		{[]byte("a"), []byte("bbbbbb")},
+		{[]byte("cc"), []byte{}},
 	} {
 		if err := r.appendRow(dataRow(row...)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if got := r.largestRow(); got != 6 {
-		t.Errorf("largestRow = %d, want 6", got)
+	if got := r.largestRow(); got != 7 {
+		t.Errorf("largestRow = %d, want 7", got)
 	}
 }
 

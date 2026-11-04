@@ -1487,59 +1487,73 @@ func TestTheOwedReadyForQueryIsReadUnderWatch(t *testing.T) {
 
 // Copier.Close cancelled after the backend read its COMMIT and before it ran
 // it: the block stays open, aborted, and Close ends it with a ROLLBACK as
-// Tx.Commit does, rather than leaving the connection in a transaction.
+// Tx.Commit does, rather than leaving the connection in a transaction. A
+// ROLLBACK that leaves the server in a block breaks the connection, and
+// Close says so.
 func TestACopyCommitCancelledBeforeItRanLeavesNoBlockOpen(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		srv, conn := newPipeServer(t)
-		conn.cancelKey = CancelKey{PID: 1, Secret: testSecret}
-		packets := make(chan []byte, 1)
-		dials := 0
-		conn.cancelDial = cancelPipe(&dials, packets)
+	for _, tc := range []struct {
+		name   string
+		reply  string // the transaction status after the ROLLBACK
+		broken bool
+	}{
+		{"the ROLLBACK ends the block", "I", false},
+		{"still in a block", "T", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				srv, conn := newPipeServer(t)
+				conn.cancelKey = CancelKey{PID: 1, Secret: testSecret}
+				packets := make(chan []byte, 1)
+				dials := 0
+				conn.cancelDial = cancelPipe(&dials, packets)
 
-		go func() {
-			<-srv.read // BEGIN
-			srv.write(t, beCommandComplete("BEGIN"), frame(pgwire.BackendReadyForQuery, "T"))
-			<-srv.read // COPY
-			srv.write(t, beCopyInResponse())
-		}()
-		cp, err := conn.CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)", CopyConfig{RowsPerTx: 10})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := cp.WriteTuples(tuple(new(int64(1)), nil), 1); err != nil {
-			t.Fatal(err)
-		}
+				go func() {
+					<-srv.read // BEGIN
+					srv.write(t, beCommandComplete("BEGIN"), frame(pgwire.BackendReadyForQuery, "T"))
+					<-srv.read // COPY
+					srv.write(t, beCopyInResponse())
+				}()
+				cp, err := conn.CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)", CopyConfig{RowsPerTx: 10})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := cp.WriteTuples(tuple(new(int64(1)), nil), 1); err != nil {
+					t.Fatal(err)
+				}
 
-		sawRollback := make(chan bool, 1)
-		go func() {
-			<-srv.read // the rows and the trailer
-			<-srv.read // CopyDone
-			srv.write(t, beCommandComplete("COPY 1"), frame(pgwire.BackendReadyForQuery, "T"))
-			<-srv.read // the COMMIT
-			<-packets  // the cancellation, which wins the race to the backend
-			srv.write(t, beErrorResponse("57014", "canceling statement due to user request"),
-				frame(pgwire.BackendReadyForQuery, "E"))
-			select {
-			case <-srv.read:
-				sawRollback <- true
-				srv.write(t, beCommandComplete("ROLLBACK"), beReadyForQuery())
-			case <-time.After(time.Minute):
-				sawRollback <- false
-			}
-		}()
+				sawRollback := make(chan bool, 1)
+				go func() {
+					<-srv.read // the rows and the trailer
+					<-srv.read // CopyDone
+					srv.write(t, beCommandComplete("COPY 1"), frame(pgwire.BackendReadyForQuery, "T"))
+					<-srv.read // the COMMIT
+					<-packets  // the cancellation, which wins the race to the backend
+					srv.write(t, beErrorResponse("57014", "canceling statement due to user request"),
+						frame(pgwire.BackendReadyForQuery, "E"))
+					select {
+					case <-srv.read:
+						sawRollback <- true
+						srv.write(t, beCommandComplete("ROLLBACK"), frame(pgwire.BackendReadyForQuery, tc.reply))
+					case <-time.After(time.Minute):
+						sawRollback <- false
+					}
+				}()
 
-		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
-		defer cancel()
-		if err := cp.Close(ctx); !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("Close = %v, want ctx's error: the COMMIT did not run", err)
-		}
-		if !<-sawRollback {
-			t.Error("no ROLLBACK was sent to end the aborted block")
-		}
-		if conn.inTx {
-			t.Error("the connection still believes a transaction is open")
-		}
-	})
+				ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+				defer cancel()
+				err = cp.Close(ctx)
+				if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrConnBroken) != tc.broken {
+					t.Fatalf("Close = %v, want ctx's error, and ErrConnBroken %v", err, tc.broken)
+				}
+				if !<-sawRollback {
+					t.Error("no ROLLBACK was sent to end the aborted block")
+				}
+				if !tc.broken && conn.inTx {
+					t.Error("the connection still believes a transaction is open")
+				}
+			})
+		})
+	}
 }
 
 // The longest secret the protocol carries, 256 bytes, is sent.
