@@ -1831,14 +1831,14 @@ func TestResyncAtItsEdges(t *testing.T) {
 	first = append(first, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	first = append(first, beDataRow(int8Val(1))...)
 	first = append(first, beSimple(pgwire.BackendPortalSuspended)...)
-	stopEarly := func(conn *Conn) {
+	stopEarly := func(conn *Conn) error {
 		src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 1})
 		src.Stream()(func(sluice.Batch[Row]) bool { return false })
-		_ = src.Err()
+		return src.Err()
 	}
 
 	conn := NewConn(&fakeServer{responses: [][]byte{first}}, Config{})
-	stopEarly(conn)
+	_ = stopEarly(conn)
 	if !errors.Is(conn.Err(), ErrConnBroken) {
 		t.Errorf("a connection that ended during the resync: Err = %v, want ErrConnBroken", conn.Err())
 	}
@@ -1847,12 +1847,24 @@ func TestResyncAtItsEdges(t *testing.T) {
 		[][]byte{first, append(frame(pgwire.BackendParameterStatus, "no terminator"), beReadyForQuery()...)},
 		oneRowWhole())}
 	conn = NewConn(srv, Config{})
-	stopEarly(conn)
+	if err := stopEarly(conn); !errors.Is(err, ErrProtocol) {
+		t.Errorf("a resync past an unreadable ParameterStatus = %v, want its ErrProtocol", err)
+	}
 	if err := conn.Err(); err != nil {
 		t.Fatalf("an unreadable ParameterStatus broke the connection: %v", err)
 	}
-	if err := drain(t, conn.Query(t.Context(), "SELECT id", nil, QueryConfig{Fetch: FetchAll})); err != nil {
-		t.Errorf("the query after the resync: %v", err)
+	var got []int64
+	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{Fetch: FetchAll})
+	src.Stream()(func(b sluice.Batch[Row]) bool {
+		for _, r := range b.Items {
+			v, _ := r.Value(0)
+			n, _ := pgtype.DecodeInt8(v)
+			got = append(got, n)
+		}
+		return true
+	})
+	if err := src.Err(); err != nil || !slices.Equal(got, []int64{1}) {
+		t.Errorf("the query after the resync = %v, %v; want its own row", got, err)
 	}
 
 	conn = NewConn(&fakeServer{}, Config{})
@@ -1861,5 +1873,24 @@ func TestResyncAtItsEdges(t *testing.T) {
 	}
 	if err := conn.closedAfter(&Error{Severity: "PANIC"}, io.EOF); err == nil {
 		t.Error("closedAfter a PANIC = nil, want the server's close")
+	}
+}
+
+// A ParameterStatus the reader cannot read fails the statement it arrived
+// in, and the connection stays good.
+func TestAnUnreadableParameterStatusFailsTheQuery(t *testing.T) {
+	var chunk []byte
+	chunk = append(chunk, beSimple(pgwire.BackendParseComplete)...)
+	chunk = append(chunk, beSimple(pgwire.BackendBindComplete)...)
+	chunk = append(chunk, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
+	chunk = append(chunk, frame(pgwire.BackendParameterStatus, "no terminator")...)
+	chunk = append(chunk, beDataRow(int8Val(1))...)
+	chunk = append(chunk, beCommandComplete("SELECT 1")...)
+	conn := NewConn(&fakeServer{responses: [][]byte{chunk, beReadyForQuery()}}, Config{})
+	if err := drain(t, conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 8})); !errors.Is(err, ErrProtocol) {
+		t.Errorf("Query = %v, want ErrProtocol", err)
+	}
+	if err := conn.Err(); err != nil {
+		t.Errorf("the connection is broken: %v", err)
 	}
 }
