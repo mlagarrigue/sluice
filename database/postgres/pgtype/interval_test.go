@@ -2,6 +2,7 @@ package pgtype
 
 import (
 	"bytes"
+	"math"
 	"testing"
 	"time"
 )
@@ -231,5 +232,22 @@ func TestIntervalString(t *testing.T) {
 	c := Interval{Micros: 1}
 	if a.String() == b.String() || b.String() == c.String() || a.String() == c.String() {
 		t.Errorf("three different intervals render alike: %q %q %q", a, b, c)
+	}
+}
+
+// The largest day count and microsecond count a Duration holds convert,
+// on both sides of zero: the refusal starts one past them.
+func TestIntervalDurationAtItsBounds(t *testing.T) {
+	const nsPerDay = 24 * int64(time.Hour)
+	for _, iv := range []Interval{
+		{Days: int32(math.MaxInt64 / nsPerDay)},
+		{Days: int32(math.MinInt64 / nsPerDay)},
+		{Micros: math.MaxInt64 / 1000},
+		{Micros: math.MinInt64 / 1000},
+	} {
+		d, ok := iv.Duration()
+		if want := time.Duration(int64(iv.Days)*nsPerDay + iv.Micros*1000); !ok || d != want {
+			t.Errorf("%v.Duration() = %v, %v; want %v, true", iv, d, ok, want)
+		}
 	}
 }
