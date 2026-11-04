@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -129,4 +130,22 @@ func FuzzRoundTripPath(f *testing.F) {
 			t.Fatalf("decode(%x) -> %v -> encode = %x: the value did not survive", b, p, got)
 		}
 	})
+}
+
+// The geometry errors say what was found and what was wanted, and a path or
+// a polygon of exactly a flag or a count is judged on its points.
+func TestGeometryErrorsSayWhatTheyFound(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"point short", func() error { _, err := DecodePoint(make([]byte, 15)); return err }(), "point is 15 bytes, want 16"},
+		{"path of a flag alone", func() error { _, err := DecodePath(nil, AppendPath(nil, Path{})[:1]); return err }(), "path is 0 bytes, want at least 4"},
+		{"polygon of a count alone", func() error { _, err := DecodePolygon(nil, AppendPolygon(nil, nil)[:4]); return err }(), "polygon declares 0 points in 0 bytes"},
+	} {
+		if !errors.Is(tc.err, ErrCodec) || !strings.Contains(tc.err.Error(), tc.want) {
+			t.Errorf("%s: %v, want ErrCodec saying %q", tc.name, tc.err, tc.want)
+		}
+	}
 }

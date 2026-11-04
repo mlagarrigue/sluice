@@ -295,3 +295,10 @@ func TestTimeOfDayStringAtTheExtremes(t *testing.T) {
 		}
 	}
 }
+
+// Midnight is a time of day.
+func TestTimeOfDayInRangeIncludesMidnight(t *testing.T) {
+	if !(TimeOfDay{}).InRange() {
+		t.Error("TimeOfDay{}.InRange() = false, want midnight in range")
+	}
+}

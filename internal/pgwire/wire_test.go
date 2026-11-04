@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/iotest"
+	"time"
 )
 
 // frame builds the wire form of a typed message by hand, so the tests do not
@@ -534,5 +536,125 @@ func TestReaderBuffered(t *testing.T) {
 	// A reader without a window holds nothing between messages.
 	if NewReader(bytes.NewReader(two)).Buffered() {
 		t.Fatal("Buffered = true on a reader without a window")
+	}
+}
+
+// Buffered at its edges: a body-less message of exactly a header is whole,
+// a partial message behind one already read is not, and a drained window
+// whose last message ended at its very end reports nothing.
+func TestReaderBufferedAtTheEdges(t *testing.T) {
+	three := slices.Concat(frame('n', ""), frame('n', ""), frame('n', ""))
+	rd := NewReaderSize(bytes.NewReader(three), len(three))
+	for i := range 3 {
+		if _, err := rd.Next(); err != nil {
+			t.Fatal(err)
+		}
+		if got, want := rd.Buffered(), i < 2; got != want {
+			t.Fatalf("after message %d: Buffered = %v, want %v", i+1, got, want)
+		}
+	}
+
+	cut := append(frame('d', "one"), frame('d', "twelve chars")[:9]...)
+	rd = NewReaderSize(bytes.NewReader(cut), 64)
+	if _, err := rd.Next(); err != nil {
+		t.Fatal(err)
+	}
+	if rd.Buffered() {
+		t.Fatal("Buffered = true for a message of which 9 of 17 bytes are in the window")
+	}
+}
+
+// A message exactly the size of the window is served from it: nothing is
+// allocated for its body.
+func TestWindowedReaderServesAMessageOfTheWindowsSize(t *testing.T) {
+	msg := frame('d', "eleven char")
+	rd := NewReaderSize(bytes.NewReader(msg), len(msg))
+	if m, err := rd.Next(); err != nil || string(m.Body) != "eleven char" {
+		t.Fatalf("Next = %q, %v", m.Body, err)
+	}
+	if cap(rd.buf) != 0 {
+		t.Errorf("%d bytes allocated for a message that fits the window", cap(rd.buf))
+	}
+}
+
+// An error that came with the first part of a message larger than the
+// window ends the message: the reader does not ask the transport again past
+// an error it already holds.
+func TestWindowedReaderStopsALargeMessageAtAHeldError(t *testing.T) {
+	boom := errors.New("connection reset")
+	in := frame('D', strings.Repeat("x", 40))
+	first := true
+	rd := NewReaderSize(readerFunc(func(p []byte) (int, error) {
+		if first {
+			first = false
+			n := copy(p, in[:16])
+			in = in[n:]
+			return n, boom
+		}
+		n := copy(p, in)
+		in = in[n:]
+		return n, nil
+	}), 16)
+	if _, err := rd.Next(); !errors.Is(err, boom) {
+		t.Fatalf("Next = %v, want the error that came with the first bytes", err)
+	}
+}
+
+// A read that delivers exactly the bytes asked for is enough: the reader
+// neither asks again, which would wait on a quiet connection, nor drops the
+// message because an error came with its last byte.
+func TestWindowedReaderStopsAtExactlyWhatItNeeds(t *testing.T) {
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { _ = pw.Close() })
+	go func() { _, _ = pw.Write(frame('n', "")) }()
+	done := make(chan error, 1)
+	go func() {
+		_, err := NewReaderSize(pr, 64).Next()
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Next waited for more than the message it had whole")
+	}
+
+	rd := NewReaderSize(iotest.DataErrReader(bytes.NewReader(frame('n', ""))), 64)
+	if m, err := rd.Next(); err != nil || m.Type != 'n' {
+		t.Fatalf("Next = %q, %v, want the message that came with io.EOF", m.Type, err)
+	}
+	if _, err := rd.Next(); !errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("after the message: %v, want io.EOF", err)
+	}
+}
+
+// The body buffer: a message of exactly the retained size counts as one
+// that fits, the released buffer is not released again, and growth never
+// passes the limit.
+func TestReaderBodyBufferBounds(t *testing.T) {
+	rd := &Reader{max: DefaultMaxMessage}
+	rd.bodyBuffer(4 * readerRetainBytes)
+	for range readerShrinkAfter {
+		rd.bodyBuffer(readerRetainBytes)
+	}
+	if c := cap(rd.buf); c != readerRetainBytes {
+		t.Fatalf("cap = %d after %d messages of exactly %d bytes, want the buffer released to that size",
+			c, readerShrinkAfter, readerRetainBytes)
+	}
+	kept := &rd.buf[:1][0]
+	for range 2 * readerShrinkAfter {
+		rd.bodyBuffer(16)
+	}
+	if &rd.buf[:1][0] != kept {
+		t.Error("a buffer of the retained size was allocated again")
+	}
+
+	rd = &Reader{max: 1000}
+	rd.bodyBuffer(596)
+	rd.bodyBuffer(996)
+	if c := cap(rd.buf); c != rd.max-LengthSize {
+		t.Errorf("cap = %d, want the %d bytes the limit allows a body", c, rd.max-LengthSize)
 	}
 }

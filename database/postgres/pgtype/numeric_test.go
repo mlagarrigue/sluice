@@ -436,3 +436,41 @@ func TestParseNumericBoundsTheScale(t *testing.T) {
 		t.Fatalf("%d decimal places: %v, want ErrCodec", numericMaxDscale+1, err)
 	}
 }
+
+// Numeric at its edges: the largest display scale and a digit of 9999 are
+// the server's, one more is not; the largest weight parses; a parsed value
+// keeps no more digit storage than its groups.
+func TestNumericAtItsEdges(t *testing.T) {
+	header := func(ndigits, weight int16, sign NumericSign, dscale int16, digits ...int16) []byte {
+		return AppendNumeric(nil, Numeric{Weight: weight, Sign: sign, Dscale: dscale, Digits: append(make([]int16, 0, ndigits), digits...)})
+	}
+	if n, err := DecodeNumeric(header(0, 0, NumericPositive, numericMaxDscale)); err != nil || n.Dscale != numericMaxDscale {
+		t.Errorf("zero at the largest display scale = %+v, %v", n, err)
+	}
+	if n, err := DecodeNumeric(header(1, 0, NumericPositive, 0, 9999)); err != nil || n.String() != "9999" {
+		t.Errorf("a digit of 9999 = %+v, %v", n, err)
+	}
+	if _, err := DecodeNumeric(header(1, 0, NumericPositive, 0, numericBase)); !errors.Is(err, ErrCodec) {
+		t.Errorf("a digit of 10000: %v, want ErrCodec", err)
+	}
+
+	n, err := ParseNumeric("1" + strings.Repeat("0", 4*math.MaxInt16+3))
+	if err != nil || n.Weight != math.MaxInt16 {
+		t.Errorf("the largest weight = %d, %v", n.Weight, err)
+	}
+
+	n, err = ParseNumeric("123456789012")
+	if err != nil || !slices.Equal(n.Digits, []int16{1234, 5678, 9012}) || cap(n.Digits) != 3 {
+		t.Errorf("ParseNumeric(123456789012) = %v (cap %d), %v", n.Digits, cap(n.Digits), err)
+	}
+}
+
+// Digits outside the base convert term by term, each at its own power.
+func TestNumericFloat64OfDigitsPastTheBase(t *testing.T) {
+	if got := (Numeric{Weight: 0, Digits: []int16{numericBase}}).Float64(); got != numericBase {
+		t.Errorf("Float64 of one digit of 10000 = %v, want 10000", got)
+	}
+	if got := (Numeric{Weight: 1, Digits: []int16{1, numericBase}}).Float64(); got != 2*numericBase {
+		t.Errorf("Float64 of 1, 10000 at weight 1 = %v, want 20000", got)
+	}
+}

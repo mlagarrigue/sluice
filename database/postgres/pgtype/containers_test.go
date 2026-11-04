@@ -150,6 +150,11 @@ func TestDecodeArrayRefusesWhatArraySendNeverWrites(t *testing.T) {
 			"more elements than bytes", slices.Concat(header(2, 0, OIDInt4, 65536, 1, 32768, 1), words(4, 1)),
 			"more elements than its 8 bytes",
 		},
+		{"more elements than bytes in one dimension", slices.Concat(header(1, 0, OIDInt4, 5, 1), words(-1, -1, -1, -1)), "more elements than its 16 bytes"},
+		{
+			"more elements than bytes in the second dimension", slices.Concat(header(2, 0, OIDInt4, 2, 1, 3, 1), words(-1, -1, -1, -1)),
+			"more elements than its 16 bytes",
+		},
 		{"element cut short", slices.Concat(header(1, 0, OIDInt4, 1, 1), words(4)), "declares 4 bytes, 0 remain"},
 		{"element of the wrong width", slices.Concat(header(1, 0, OIDInt4, 1, 1), words(2), []byte{0, 1}), "int4 is 2 bytes"},
 		{"bytes after the last element", slices.Concat(header(1, 0, OIDInt4, 1, 1), words(4, 1), []byte{0}), "after the last"},
@@ -245,12 +250,13 @@ func TestDecodeRangeRefusesWhatRangeSendNeverWrites(t *testing.T) {
 		{"empty with a bound", []byte{rangeEmpty | rangeLBInc}, "empty range with flags 0x3"},
 		{"absent lower bound inclusive", []byte{rangeLBInf | rangeLBInc | rangeUBInf}, "absent bound inclusive"},
 		{"absent upper bound inclusive", []byte{rangeLBInf | rangeUBInf | rangeUBInc}, "absent bound inclusive"},
-		{"bytes after empty", []byte{rangeEmpty, 0}, "after an empty range"},
+		{"bytes after empty", []byte{rangeEmpty, 0, 0}, "2 bytes after an empty range"},
 		{"lower bound missing", []byte{0}, "lower bound has no length"},
 		{"upper bound missing", slices.Concat([]byte{rangeUBInc}, words(4, 1)), "upper bound has no length"},
 		{"a NULL bound", slices.Concat([]byte{rangeLBInf}, words(-1)), "declares -1 bytes"},
 		{"bound cut short", slices.Concat([]byte{rangeLBInf}, words(8, 1)), "declares 8 bytes, 4 remain"},
 		{"bound of the wrong width", slices.Concat([]byte{rangeLBInf}, words(2), []byte{0, 1}), "int4 is 2 bytes"},
+		{"bound of no bytes", slices.Concat([]byte{rangeLBInf}, words(0)), "int4 is 0 bytes"},
 		{"bytes after the bounds", slices.Concat([]byte{rangeLBInf}, words(4, 1), []byte{0}), "after the range's bounds"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -294,7 +300,12 @@ func TestDecodeMultirangeRefusesMalformedInput(t *testing.T) {
 		{"short", []byte{0, 0}, "want at least 4"},
 		{"negative count", words(-1), "declares -1 ranges"},
 		{"more ranges than bytes", slices.Concat(words(1<<30), []byte{1, 2, 3, 4, 5}), "declares 1073741824 ranges in 5 bytes"},
+		{"fewer bytes than five a range", slices.Concat(words(2, 1), []byte{rangeEmpty}, words(0)), "declares 2 ranges in 9 bytes"},
 		{"range cut short", slices.Concat(words(1, 9), []byte{0}), "range 0 declares 9 bytes, 1 remain"},
+		{
+			"second range of no bytes", slices.Concat(words(2, 17), []byte{rangeLBInc}, words(4, 1, 4, 2), words(0)),
+			"multirange range 1: pgtype: value does not match its declared type: range is empty",
+		},
 		{
 			"second range with no length", slices.Concat(words(2, 9), []byte{rangeLBInc | rangeUBInf}, words(4, 1), []byte{0, 0, 0}),
 			"range 1 has no length",
@@ -554,5 +565,20 @@ func TestCodecDecodersDoNotBorrow(t *testing.T) {
 	}
 	if _, err := JSONBCodec().Decode([]byte{2, '1'}); !errors.Is(err, ErrCodec) {
 		t.Errorf("jsonb of version 2: err = %v", err)
+	}
+}
+
+// What array_recv and record_recv accept at their edges is accepted here: a
+// dimension whose last index is exactly the int32 maximum, and a record of
+// no fields.
+func TestContainersAcceptTheirEdges(t *testing.T) {
+	b := slices.Concat(words(1, 0, int64(OIDInt4), 1, math.MaxInt32), words(4, 7))
+	got, err := DecodeArray(Array[int32]{}, b, Int4Codec())
+	if err != nil || !slices.Equal(got.Elems, valid[int32](7)) || got.Dims[0] != (ArrayDim{Len: 1, Lower: math.MaxInt32}) {
+		t.Errorf("array numbered from the int32 maximum = %+v, %v", got, err)
+	}
+	rec, err := DecodeRecord(nil, words(0))
+	if err != nil || len(rec) != 0 {
+		t.Errorf("record of no fields = %v, %v", rec, err)
 	}
 }

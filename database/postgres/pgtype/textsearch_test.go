@@ -2,9 +2,11 @@ package pgtype
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -96,3 +98,58 @@ func FuzzRoundTripTSVector(f *testing.F) {
 		}
 	})
 }
+
+// The text-search decoders at their edges: a value of no node, a node of
+// exactly the bytes it needs, an empty word, and the errors that name what
+// was found.
+func TestTextSearchAtItsEdges(t *testing.T) {
+	count := func(n uint32, rest ...byte) []byte { return append(binary.BigEndian.AppendUint32(nil, n), rest...) }
+
+	if got, err := DecodeTSVector(nil, count(0)); err != nil || len(got) != 0 {
+		t.Errorf("empty tsvector = %v, %v", got, err)
+	}
+	if got, err := DecodeTSVector(nil, count(1, 0, 0, 0)); err != nil || !slices.EqualFunc(got, []Lexeme{{}}, lexemeEqual) {
+		t.Errorf("tsvector of an empty word = %v, %v", got, err)
+	}
+	for _, tc := range []struct {
+		name string
+		b    []byte
+		want string
+	}{
+		{"more lexemes than bytes", count(2, 'a', 0, 0, 0, 'b'), "declares 2 lexemes in 5 bytes"},
+		{"lexeme with half a count", count(1, 'a', 0, 0), "lexeme 0 is cut short"},
+	} {
+		if _, err := DecodeTSVector(nil, tc.b); !errors.Is(err, ErrCodec) || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: %v, want ErrCodec saying %q", tc.name, err, tc.want)
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		b    []byte
+		want []TSQueryItem
+	}{
+		{"no node", count(0), nil},
+		{"an operator of two bytes", count(1, tsqOpr, TSNot), []TSQueryItem{{Operator: TSNot}}},
+		{"a phrase of four bytes", count(1, tsqOpr, TSPhrase, 0, 2), []TSQueryItem{{Operator: TSPhrase, Distance: 2}}},
+		{"an operand of an empty word", count(1, tsqVal, 0, 0, 0), []TSQueryItem{{}}},
+	} {
+		if got, err := DecodeTSQuery(nil, tc.b); err != nil || !slices.Equal(got, tc.want) {
+			t.Errorf("%s: %v, %v, want %v", tc.name, got, err, tc.want)
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		b    []byte
+		want string
+	}{
+		{"more nodes than bytes", count(3, tsqOpr, TSNot, tsqOpr, TSNot), "declares 3 nodes in 4 bytes"},
+		{"an operand of four bytes and no NUL", count(1, tsqVal, 0, 0, 'a'), "operand 0 has no end"},
+	} {
+		if _, err := DecodeTSQuery(nil, tc.b); !errors.Is(err, ErrCodec) || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: %v, want ErrCodec saying %q", tc.name, err, tc.want)
+		}
+	}
+}
+
+func lexemeEqual(a, b Lexeme) bool { return a.Word == b.Word && slices.Equal(a.Positions, b.Positions) }

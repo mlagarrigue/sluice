@@ -149,3 +149,14 @@ func FuzzRoundTripInt2Vector(f *testing.F) {
 		}
 	})
 }
+
+// A vector of no element is the header alone, and it decodes, appending
+// nothing.
+func TestEmptyVectorsRoundTrip(t *testing.T) {
+	if got, err := DecodeInt2Vector([]int16{9}, AppendInt2Vector(nil, nil)); err != nil || !slices.Equal(got, []int16{9}) {
+		t.Errorf("empty int2vector = %v, %v", got, err)
+	}
+	if got, err := DecodeOIDVector([]uint32{9}, AppendOIDVector(nil, nil)); err != nil || !slices.Equal(got, []uint32{9}) {
+		t.Errorf("empty oidvector = %v, %v", got, err)
+	}
+}

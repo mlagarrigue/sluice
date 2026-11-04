@@ -515,3 +515,39 @@ func nullableRoundTrip[T any](t *testing.T, name string, elem uint32, in []Null[
 		t.Errorf("%s: empty = %v, %v", name, got, err)
 	}
 }
+
+// An array decoder's errors say what it found, from the header on: the
+// empty array's trailing bytes, the NULL, the width, the length cut short.
+// A one-dimensional header of no elements is the empty array.
+func TestArrayErrorsSayWhatTheyFound(t *testing.T) {
+	header := func(count int64) []byte {
+		b := binary.BigEndian.AppendUint32(nil, 1)
+		b = binary.BigEndian.AppendUint32(b, 0)
+		b = binary.BigEndian.AppendUint32(b, OIDInt8)
+		b = binary.BigEndian.AppendUint32(b, uint32(count)) //nolint:gosec // G115: test vectors
+		return binary.BigEndian.AppendUint32(b, 1)
+	}
+	word := func(w int32) []byte { return binary.BigEndian.AppendUint32(nil, uint32(w)) } //nolint:gosec // G115: -1 on purpose
+	empty := append(AppendInt8Array(nil, nil), 0)
+	for _, tc := range []struct {
+		name string
+		b    []byte
+		want string
+	}{
+		{"a byte after an empty array", empty, "1 bytes after an empty array's header"},
+		{"a NULL element", append(header(1), word(-1)...), "array element 0 is NULL"},
+		{"an element of the wrong width", append(append(header(1), word(4)...), 0, 0, 0, 1), "array element 0 is 4 bytes, want 8"},
+		{"a length and no value", append(header(1), word(8)...), "array element 0 declares 8 bytes, 0 remain"},
+		{"a value cut short", append(append(header(1), word(8)...), 0, 0, 0), "array element 0 declares 8 bytes, 3 remain"},
+		{"no length", append(header(1), 0, 0), "array element 0 has no length"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := DecodeInt8Array(nil, tc.b); !errors.Is(err, ErrCodec) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want ErrCodec saying %q", err, tc.want)
+			}
+		})
+	}
+	if got, err := DecodeInt8Array([]int64{9}, header(0)); err != nil || len(got) != 0 {
+		t.Errorf("one dimension of no elements = %v, %v, want the empty array", got, err)
+	}
+}
