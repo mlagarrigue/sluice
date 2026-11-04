@@ -53,6 +53,8 @@ func TestBearerAgreesWithWebBearerOnTheSameRule(t *testing.T) {
 		{name: "no space before the token", header: "Bearergood"},
 		{name: "a space inside the token", header: "Bearer go od"},
 		{name: "a tab inside the token", header: "Bearer go\tod"},
+		{name: "two spaces before the token", header: "Bearer  good"},
+		{name: "a tab before the token", header: "Bearer \tgood"},
 		{name: "scheme with nothing after it", header: "Bearer"},
 		{name: "scheme and one trailing space, no token", header: "Bearer "},
 	}
@@ -118,6 +120,18 @@ func TestAuthenticate(t *testing.T) {
 
 // The refusal says it was refused, never why: which half of a forgery was
 // right is not information to hand back.
+// Field names are case-insensitive (RFC 9110 §5.1), all of them: an
+// HTTP/1.1 client may send the name in capitals, Z included.
+func TestAuthenticateFindsAnUpperCaseFieldName(t *testing.T) {
+	e := exchangeFor("GET", "/health")
+	e.Request.Headers = []httpstream.Header{{Name: []byte("AUTHORIZATION"), Value: []byte("Bearer good")}}
+	ex := []Exchange{e}
+	Authenticate(ex, acceptToken{}, "orders")
+	if ex[0].Refused() || ex[0].Principal.Subject != "u1" {
+		t.Errorf("AUTHORIZATION: status %d, subject %q; want u1", ex[0].Status, ex[0].Principal.Subject)
+	}
+}
+
 func TestAuthenticateDoesNotSayWhichHalfFailed(t *testing.T) {
 	forged := []Exchange{withAuthz("Bearer forged")}
 	missing := []Exchange{withAuthz("")}

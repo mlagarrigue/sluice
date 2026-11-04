@@ -26,6 +26,25 @@ func acceptPatchOf(e Exchange) string {
 	return ""
 }
 
+// The limit is inclusive: a body of exactly limit bytes is read.
+func TestDecodeJSONAcceptsABodyOfExactlyTheLimit(t *testing.T) {
+	body := `{"saleQty": 4}`
+	e := withBody(body)
+	var p struct {
+		SaleQty int `json:"saleQty"`
+	}
+	if !DecodeJSON(&e, int64(len(body)), &p) || p.SaleQty != 4 {
+		t.Errorf("a %d-byte body under a %d-byte limit: status %d, saleQty %d", len(body), len(body), e.Status, p.SaleQty)
+	}
+}
+
+// bound passes a limit the platform's int holds through unchanged.
+func TestBoundKeepsALimitAnIntHolds(t *testing.T) {
+	if got := bound(1 << 10); got != 1<<10 {
+		t.Errorf("bound(1024) = %d", got)
+	}
+}
+
 func TestDecodeJSON(t *testing.T) {
 	type patch struct {
 		SaleQty int64 `json:"saleQty"`

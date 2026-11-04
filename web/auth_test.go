@@ -200,10 +200,15 @@ func TestVerifyRefusesForgeries(t *testing.T) {
 			{"no dots", "not-a-token"},
 			{"trailing dot", good + "."},
 			{"leading dot", "." + good},
+			{"empty header", "." + parts[1] + "." + parts[2]},
+			{"empty signature", parts[0] + "." + parts[1] + "."},
+			{"dot-led payload", parts[0] + ".." + parts[1] + "." + parts[2]},
 		} {
+			// Refused on the count itself, before any segment is decoded.
 			t.Run(tc.name, func(t *testing.T) {
-				if _, err := v.Verify(tc.token); err == nil {
-					t.Fatal("accepted")
+				_, err := v.Verify(tc.token)
+				if !errors.Is(err, web.ErrTokenMalformed) || !strings.Contains(err.Error(), "expected three segments") {
+					t.Fatalf("err = %v, want ErrTokenMalformed for the segment count", err)
 				}
 			})
 		}
@@ -213,6 +218,11 @@ func TestVerifyRefusesForgeries(t *testing.T) {
 		v := verifier(t, web.HMACConfig{MaxTokenBytes: 64})
 		if _, err := v.Verify(hs256(t, valid)); !errors.Is(err, web.ErrTokenMalformed) {
 			t.Fatalf("err = %v, want ErrTokenMalformed", err)
+		}
+		// The bound is inclusive.
+		token := hs256(t, valid)
+		if _, err := verifier(t, web.HMACConfig{MaxTokenBytes: len(token)}).Verify(token); err != nil {
+			t.Errorf("a token of exactly MaxTokenBytes was refused: %v", err)
 		}
 	})
 }
@@ -245,6 +255,19 @@ func TestVerifyRefusesUnusableDateClaims(t *testing.T) {
 		if _, err := v.Verify(hs256(t, claims)); !errors.Is(err, web.ErrTokenClaims) {
 			t.Errorf("%s: err = %v, want ErrTokenClaims", name, err)
 		}
+	}
+}
+
+// The date bounds are inclusive, ±2^53 seconds, and a fractional date keeps
+// its fraction: an exp half a second past a clock at .4 has not passed.
+func TestVerifyReadsDatesAtTheirBoundsAndFractions(t *testing.T) {
+	v := verifier(t, web.HMACConfig{})
+	if _, err := v.Verify(hs256(t, map[string]any{"sub": "u", "exp": float64(1 << 53), "nbf": -float64(1 << 53)})); err != nil {
+		t.Errorf("exp 2^53 and nbf -2^53 were refused: %v", err)
+	}
+	v = verifier(t, web.HMACConfig{Now: func() time.Time { return time.Unix(1_700_000_000, 400_000_000) }})
+	if _, err := v.Verify(hs256(t, map[string]any{"sub": "u", "exp": 1_700_000_000.5})); err != nil {
+		t.Errorf("exp at .5 refused by a clock at .4: %v", err)
 	}
 }
 
@@ -674,6 +697,9 @@ func TestNewHMACVerifierRefusesAShortPreviousSecret(t *testing.T) {
 	_, err := web.NewHMACVerifier(web.HMACConfig{Secret: testSecret, Previous: [][]byte{testSecret, make([]byte, 31)}})
 	if err == nil {
 		t.Fatal("a 31-byte previous secret was accepted")
+	}
+	if _, err := web.NewHMACVerifier(web.HMACConfig{Secret: testSecret, Previous: [][]byte{make([]byte, 32)}}); err != nil {
+		t.Errorf("a 32-byte previous secret was refused: %v", err)
 	}
 }
 

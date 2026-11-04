@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -207,6 +208,9 @@ func TestShutdownClosesAServerItCouldNotDrain(t *testing.T) {
 	err = web.Shutdown(ctx, srv, gw)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Shutdown = %v, want the deadline", err)
+	}
+	if strings.Contains(err.Error(), "closing the server") {
+		t.Errorf("Shutdown = %v: a Close that succeeded is reported", err)
 	}
 	if closed, _ := gw.state(); !closed {
 		t.Fatal("the gateway was not closed")

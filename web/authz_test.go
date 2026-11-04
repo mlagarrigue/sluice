@@ -117,6 +117,10 @@ func TestClaimAuthorizer(t *testing.T) {
 		if g.Dimension("businessUnit") != nil {
 			t.Error("an array of non-strings produced dimension values")
 		}
+		// Absent from the map, as Grant.Dimensions says, not present and empty.
+		if _, ok := g.Dimensions["region"]; ok {
+			t.Error("an unreadable claim left its dimension in the map")
+		}
 	})
 
 	t.Run("empty strings are not values", func(t *testing.T) {

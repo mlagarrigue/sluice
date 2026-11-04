@@ -201,11 +201,11 @@ func TestRenderSendsTheDefensiveHeaders(t *testing.T) {
 	refused.Refuse(401, diagnostics.NewDiagnostic(diagnostics.Error, "X.Unauthenticated", diagnostics.Path{}))
 	cached := exchangeFor("GET", "/b")
 	cached.Headers = append(cached.Headers, httpstream.Header{Name: []byte("Cache-Control"), Value: []byte("max-age=60")})
-	ex := []Exchange{refused, exchangeFor("GET", "/c"), cached, exchangeFor("GET", "/d")}
-	status := []int{0, 200, 404, 500}
+	ex := []Exchange{refused, exchangeFor("GET", "/c"), cached, exchangeFor("GET", "/d"), exchangeFor("GET", "/e")}
+	status := []int{0, 200, 404, 500, 400} // 400: the first error status
 	out := Render(ex, func(i int) (int, any) { return status[i], map[string]any{} })
 
-	want := []string{"no-store", "", "max-age=60", "no-store"}
+	want := []string{"no-store", "", "max-age=60", "no-store", "no-store"}
 	for i, r := range out.Items {
 		nosniff, cache := 0, []string(nil)
 		for _, h := range r.Headers {
@@ -218,6 +218,10 @@ func TestRenderSendsTheDefensiveHeaders(t *testing.T) {
 		}
 		if nosniff != 1 {
 			t.Errorf("response %d (status %d): %d nosniff fields, want 1", i, r.Status, nosniff)
+		}
+		// One slice sized for them all, so no append regrew it.
+		if cap(r.Headers) != len(r.Headers) {
+			t.Errorf("response %d (status %d): %d fields in a slice of %d", i, r.Status, len(r.Headers), cap(r.Headers))
 		}
 		if (want[i] == "" && cache != nil) || (want[i] != "" && (len(cache) != 1 || cache[0] != want[i])) {
 			t.Errorf("response %d (status %d): Cache-Control %q, want %q", i, r.Status, cache, want[i])

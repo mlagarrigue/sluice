@@ -575,6 +575,7 @@ func TestWriteJSONSendsTheDefensiveHeaders(t *testing.T) {
 		want   string // the Cache-Control the client sees
 	}{
 		{"error", http.StatusUnauthorized, "", "no-store"},
+		{"the first error status", http.StatusBadRequest, "", "no-store"},
 		{"success", http.StatusOK, "", ""},
 		{"error with the handler's directive", http.StatusNotFound, "max-age=60", "max-age=60"},
 	}

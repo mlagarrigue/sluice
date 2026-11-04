@@ -162,6 +162,16 @@ func TestRouteHeadFollowsGet(t *testing.T) {
 	if e := &ex[0]; e.Refused() || e.RouteIndex != 1 || len(e.Params) != 1 || string(e.Params[0]) != "12" {
 		t.Errorf("HEAD on a GET route: status %d, route %d, params %q; want route 1 with param 12", e.Status, e.RouteIndex, e.Params)
 	}
+	// The first GET route that matches, even at index 0, and not a later one.
+	first := NewRouter(
+		Route{Method: "GET", Pattern: "/orders/latest"},
+		Route{Method: "GET", Pattern: "/orders/{order}"},
+	)
+	head := []Exchange{exchangeFor("HEAD", "/orders/latest")}
+	first.Route(head)
+	if e := &head[0]; e.Refused() || e.RouteIndex != 0 {
+		t.Errorf("HEAD with GET at index 0: status %d, route %d; want route 0", e.Status, e.RouteIndex)
+	}
 	// HEAD stands in for GET only: a PATCH-only path still answers 405.
 	if e := &ex[1]; e.Status != 405 {
 		t.Errorf("HEAD on a PATCH-only route: status %d, want 405", e.Status)
@@ -328,10 +338,12 @@ func TestParamInt64(t *testing.T) {
 		}
 	})
 
+	// The panic is PathInt64's own, naming the index, not the runtime's
+	// index out of range one slot later.
 	t.Run("an index the route has no wildcard for panics", func(t *testing.T) {
 		defer func() {
-			if recover() == nil {
-				t.Error("no panic for a parameter index outside the pattern")
+			if msg, _ := recover().(string); !strings.Contains(msg, "param 0 of a route that matched 0 wildcards") {
+				t.Errorf("panic %q, want PathInt64's own naming the index", msg)
 			}
 		}()
 		ex := []Exchange{exchangeFor("GET", "/health")}
