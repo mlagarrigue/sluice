@@ -1142,3 +1142,81 @@ func TestStartupKeepsALongSearchPath(t *testing.T) {
 		t.Errorf("the same long parameter reported repeatedly: %v, want it counted once", err)
 	}
 }
+
+// A negotiation that lands exactly on MinProtocol is accepted, and so is one
+// that keeps the version asked for and declines an option.
+func TestNegotiationAtItsBounds(t *testing.T) {
+	srv := &fakeServer{responses: [][]byte{
+		append(beNegotiate(0), append(beAuth(0, ""), beReady()...)...),
+	}}
+	conn, err := startup(srv, Config{User: "u", MinProtocol: Protocol30, MaxProtocol: Protocol32})
+	if err != nil || conn.Protocol() != Protocol30 {
+		t.Fatalf("a negotiation to MinProtocol: %v", err)
+	}
+
+	body := binary.BigEndian.AppendUint32(nil, uint32(Protocol32))
+	body = binary.BigEndian.AppendUint32(body, 1)
+	body = append(body, "_pq_.x\x00"...)
+	if v, err := negotiateProtocol(body, Protocol32, map[string]string{"_pq_.x": "1"}); err != nil || v != Protocol32 {
+		t.Errorf("a negotiation to the version asked = %v, %v", v, err)
+	}
+}
+
+// The option list of a NegotiateProtocolVersion: a count its bytes cannot
+// hold is named as such, and an empty name is a declined option like any
+// other.
+func TestNegotiationOptionErrorsSayWhatTheyFound(t *testing.T) {
+	head := func(count uint32) []byte {
+		b := binary.BigEndian.AppendUint32(nil, uint32(Protocol32))
+		return binary.BigEndian.AppendUint32(b, count)
+	}
+	for _, tc := range []struct {
+		name string
+		body []byte
+		want string
+	}{
+		{"a count past the bytes", append(head(1), "abcd\x00"...), "lists 1 options in 5 bytes"},
+		{"an empty name", append(head(1), "\x00_pq_."...), `declines the option ""`},
+	} {
+		if _, err := negotiateProtocol(tc.body, Protocol32, nil); !errors.Is(err, ErrProtocol) || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: %v, want ErrProtocol saying %q", tc.name, err, tc.want)
+		}
+	}
+}
+
+// A NUL is refused wherever it stands, the first byte included.
+func TestNULIsRefusedAtTheFirstByte(t *testing.T) {
+	if err := checkNoNUL("user", "\x00app"); err == nil {
+		t.Error("checkNoNUL accepted a leading NUL")
+	}
+	if err := checkSQLText("\x00SELECT 1"); err == nil {
+		t.Error("checkSQLText accepted a leading NUL")
+	}
+}
+
+// quoteShort cuts past 32 bytes, not at 32.
+func TestQuoteShortKeeps32Bytes(t *testing.T) {
+	s := strings.Repeat("a", 32)
+	if got := quoteShort(s); got != strconv.Quote(s) {
+		t.Errorf("quoteShort of 32 bytes = %s, want it whole", got)
+	}
+	if got := quoteShort(s + "b"); got != strconv.Quote(s)+"…" {
+		t.Errorf("quoteShort of 33 bytes = %s, want it cut", got)
+	}
+}
+
+// The budget of remembered parameters: a ParameterStatus that brings the
+// total to the budget exactly is kept, one byte more is refused with its own
+// size, and the budget counts every parameter already held.
+func TestParameterBudgetAtItsBound(t *testing.T) {
+	status := func(name, val string) []byte { return []byte(name + "\x00" + val + "\x00") }
+	c := &Conn{params: map[string]string{}, paramBytes: maxServerParameterBytes - 11}
+	if err := c.recordParameter(status("abcdefgh", "xyz")); err != nil {
+		t.Fatalf("a parameter that reaches the budget exactly: %v", err)
+	}
+	c = &Conn{params: map[string]string{}, paramBytes: maxServerParameterBytes - 10}
+	err := c.recordParameter(status("abcdefgh", "xyz"))
+	if !errors.Is(err, ErrProtocol) || !strings.Contains(err.Error(), "a ParameterStatus of 11 bytes") {
+		t.Fatalf("a parameter one byte past the budget: %v, want ErrProtocol naming its 11 bytes", err)
+	}
+}

@@ -222,3 +222,17 @@ func TestNamesPastTheServersTruncationAreRefused(t *testing.T) {
 		}
 	}
 }
+
+// What arrives before the LISTEN's ReadyForQuery may reach the bound
+// exactly.
+func TestListenKeepsNotificationsUpToTheBound(t *testing.T) {
+	payload := strings.Repeat("x", maxPendingNotificationBytes-len("orders")-notificationOverhead)
+	var script []byte
+	script = append(script, frame(pgwire.BackendCommandComplete, "LISTEN\x00")...)
+	script = append(script, beNotification("orders", payload)...)
+	script = append(script, beReadyForQuery()...)
+	l := &Listener{c: NewConn(&scriptedRW{Reader: bytes.NewReader(script)}, Config{}), batch: 64}
+	if err := l.subscribe("LISTEN orders;"); err != nil || len(l.pending) != 1 {
+		t.Fatalf("subscribe = %v with %d notifications kept, want the one that reaches the bound", err, len(l.pending))
+	}
+}

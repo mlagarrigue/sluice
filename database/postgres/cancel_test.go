@@ -1484,3 +1484,69 @@ func TestTheOwedReadyForQueryIsReadUnderWatch(t *testing.T) {
 		})
 	}
 }
+
+// Copier.Close cancelled after the backend read its COMMIT and before it ran
+// it: the block stays open, aborted, and Close ends it with a ROLLBACK as
+// Tx.Commit does, rather than leaving the connection in a transaction.
+func TestACopyCommitCancelledBeforeItRanLeavesNoBlockOpen(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, conn := newPipeServer(t)
+		conn.cancelKey = CancelKey{PID: 1, Secret: testSecret}
+		packets := make(chan []byte, 1)
+		dials := 0
+		conn.cancelDial = cancelPipe(&dials, packets)
+
+		go func() {
+			<-srv.read // BEGIN
+			srv.write(t, beCommandComplete("BEGIN"), frame(pgwire.BackendReadyForQuery, "T"))
+			<-srv.read // COPY
+			srv.write(t, beCopyInResponse())
+		}()
+		cp, err := conn.CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)", CopyConfig{RowsPerTx: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cp.WriteTuples(tuple(new(int64(1)), nil), 1); err != nil {
+			t.Fatal(err)
+		}
+
+		sawRollback := make(chan bool, 1)
+		go func() {
+			<-srv.read // the rows and the trailer
+			<-srv.read // CopyDone
+			srv.write(t, beCommandComplete("COPY 1"), frame(pgwire.BackendReadyForQuery, "T"))
+			<-srv.read // the COMMIT
+			<-packets  // the cancellation, which wins the race to the backend
+			srv.write(t, beErrorResponse("57014", "canceling statement due to user request"),
+				frame(pgwire.BackendReadyForQuery, "E"))
+			select {
+			case <-srv.read:
+				sawRollback <- true
+				srv.write(t, beCommandComplete("ROLLBACK"), beReadyForQuery())
+			case <-time.After(time.Minute):
+				sawRollback <- false
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		defer cancel()
+		if err := cp.Close(ctx); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Close = %v, want ctx's error: the COMMIT did not run", err)
+		}
+		if !<-sawRollback {
+			t.Error("no ROLLBACK was sent to end the aborted block")
+		}
+		if conn.inTx {
+			t.Error("the connection still believes a transaction is open")
+		}
+	})
+}
+
+// The longest secret the protocol carries, 256 bytes, is sent.
+func TestCancelSendsTheLongestSecret(t *testing.T) {
+	var sent bytes.Buffer
+	key := CancelKey{PID: 1, Secret: strings.Repeat("s", maxCancelSecret)}
+	if err := writeCancel(&sent, key); err != nil || sent.Len() == 0 {
+		t.Fatalf("writeCancel with a %d-byte secret = %v, %d bytes sent", maxCancelSecret, err, sent.Len())
+	}
+}

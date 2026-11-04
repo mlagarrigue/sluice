@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"math/rand/v2"
 	"slices"
 	"strings"
 	"testing"
@@ -682,4 +683,57 @@ func bindValues(t *testing.T, body []byte) [][]byte {
 		values[i], rest = rest[:size:size], rest[size:]
 	}
 	return values
+}
+
+// The LRU list against a model: a long run of adds, hits and removes, with
+// the list walked both ways after every step. Index 0 is a slot like any
+// other — the head, the tail, a neighbour — and a reused slot starts with
+// its row count unknown.
+func TestStmtCacheMatchesAModelList(t *testing.T) {
+	const capacity = 4
+	c := newStmtCache(capacity)
+	var model []stmtKey                // most recent first
+	rng := rand.New(rand.NewPCG(1, 2)) //nolint:gosec // G404: a seeded sequence, replayed identically
+	key := func() stmtKey { return stmtKey{sql: string(rune('a' + rng.IntN(8)))} }
+	for step := range 2000 {
+		k := key()
+		_, held := c.byKey[k]
+		switch {
+		case held && rng.IntN(3) == 0:
+			c.remove(k)
+			model = slices.DeleteFunc(model, func(m stmtKey) bool { return m == k })
+		case held:
+			if _, ok := c.lookup(k); !ok {
+				t.Fatalf("step %d: %q held but not found", step, k.sql)
+			}
+			model = slices.DeleteFunc(model, func(m stmtKey) bool { return m == k })
+			model = slices.Insert(model, 0, k)
+		default:
+			if old, _, full := c.evictee(); full {
+				if want := model[len(model)-1]; old != want {
+					t.Fatalf("step %d: evictee %q, want the least recent %q", step, old.sql, want.sql)
+				}
+				c.remove(old)
+				model = model[:len(model)-1]
+			}
+			i := c.add(k)
+			if c.entries[i].lastRows != -1 {
+				t.Fatalf("step %d: a new entry in slot %d starts with %d rows known", step, i, c.entries[i].lastRows)
+			}
+			c.entries[i].lastRows = step // what a completed execution records
+			model = slices.Insert(model, 0, k)
+		}
+
+		var forward, backward []stmtKey
+		for i := c.head; i >= 0 && len(forward) <= capacity; i = c.entries[i].next {
+			forward = append(forward, c.entries[i].key)
+		}
+		for i := c.tail; i >= 0 && len(backward) <= capacity; i = c.entries[i].prev {
+			backward = append(backward, c.entries[i].key)
+		}
+		slices.Reverse(backward)
+		if !slices.Equal(forward, model) || !slices.Equal(backward, model) {
+			t.Fatalf("step %d: forward %v, backward %v, want %v", step, forward, backward, model)
+		}
+	}
 }

@@ -627,3 +627,170 @@ func BenchmarkRowsAppend(b *testing.B) {
 		}
 	}
 }
+
+// An error renders its detail in brackets when it has one, and nothing for
+// it when it has none.
+func TestErrorRendersItsDetailOnlyWhenThere(t *testing.T) {
+	e := &Error{Severity: "ERROR", Code: "42P01", Message: "relation does not exist"}
+	if got, want := e.Error(), "postgres: ERROR 42P01: relation does not exist"; got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+	e.Detail = "no such table"
+	if got, want := e.Error(), "postgres: ERROR 42P01: relation does not exist (no such table)"; got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+// The protocol's edges, each accepted: a position of 1 (the first
+// character), a RowDescription of no column, a DataRow of no field, and a
+// byte bound at the ceiling the offsets allow.
+func TestMessagesAcceptTheirEdges(t *testing.T) {
+	e, err := parseError(errBody("S", "ERROR", "C", "42601", "M", "syntax error", "P", "1"))
+	if err != nil || e.Position != 1 {
+		t.Errorf("position 1 = %+v, %v", e, err)
+	}
+	if fields, err := parseRowDescription(nil, []byte{0, 0}); err != nil || len(fields) != 0 {
+		t.Errorf("RowDescription of no column = %v, %v", fields, err)
+	}
+	r := newRows(0, 4, 0)
+	if err := r.appendRow(dataRow()); err != nil || r.Len() != 1 {
+		t.Errorf("DataRow of no field: %d rows, %v", r.Len(), err)
+	}
+	if got := rowBytes(maxRowBytes); got != maxRowBytes {
+		t.Errorf("rowBytes(maxRowBytes) = %d", got)
+	}
+}
+
+// The offset ceiling admits a batch that reaches it exactly, whatever the
+// row's field count and NULLs, and refuses one byte past it.
+func TestRowsReachTheOffsetCeilingExactly(t *testing.T) {
+	saved := maxRowBytes
+	maxRowBytes = 32
+	defer func() { maxRowBytes = saved }()
+
+	r := newRows(3, 100, 0)
+	if err := r.appendRow(dataRow(make([]byte, 20), nil, []byte{})); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.appendRow(dataRow(make([]byte, 12), nil, []byte{})); err != nil {
+		t.Fatalf("a row that brings the values to the ceiling exactly: %v", err)
+	}
+	r = newRows(3, 100, 0)
+	if err := r.appendRow(dataRow(make([]byte, 20), nil, []byte{})); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.appendRow(dataRow(make([]byte, 13), nil, []byte{})); !errors.Is(err, ErrTooManyRows) {
+		t.Fatalf("a row one byte past the ceiling: %v, want ErrTooManyRows", err)
+	}
+}
+
+// fullOnBytes names the byte bound only when the row limit did not fill the
+// batch as well.
+func TestFullOnBytesDefersToTheRowLimit(t *testing.T) {
+	r := newRows(1, 1, 1)
+	if err := r.appendRow(dataRow([]byte("ab"))); err != nil {
+		t.Fatal(err)
+	}
+	if !r.full() || r.fullOnBytes() {
+		t.Errorf("full = %v, fullOnBytes = %v with both bounds reached; want true, false", r.full(), r.fullOnBytes())
+	}
+}
+
+// largestRow measures rows of several fields, an empty first row included.
+func TestRowsLargestRow(t *testing.T) {
+	r := newRows(2, 10, 0)
+	for _, row := range [][][]byte{
+		{[]byte{}, nil},
+		{[]byte("a"), []byte("bbb")},
+		{[]byte("cccccc"), []byte{}},
+	} {
+		if err := r.appendRow(dataRow(row...)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := r.largestRow(); got != 6 {
+		t.Errorf("largestRow = %d, want 6", got)
+	}
+}
+
+// truncate keeps whole rows of several fields, from none to all but one,
+// and a first row of empty values cuts at offset zero.
+func TestRowsTruncate(t *testing.T) {
+	fill := func() *Rows {
+		r := newRows(2, 10, 0)
+		for _, row := range [][][]byte{
+			{[]byte{}, []byte{}},
+			{[]byte("a"), []byte("bc")},
+			{[]byte("def"), nil},
+		} {
+			if err := r.appendRow(dataRow(row...)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return r
+	}
+	for _, n := range []int{0, 1, 2} {
+		r := fill()
+		r.truncate(n)
+		if r.Len() != n || len(r.ends) != 2*n {
+			t.Fatalf("truncate(%d): %d rows, %d offsets", n, r.Len(), len(r.ends))
+		}
+		if n == 2 {
+			if v, null := r.Value(1, 1); null || string(v) != "bc" {
+				t.Errorf("truncate(2): row 1 field 1 = %q, null %v", v, null)
+			}
+		}
+		if err := r.appendRow(dataRow([]byte("x"), []byte("yz"))); err != nil {
+			t.Fatal(err)
+		}
+		if v, _ := r.Value(n, 1); string(v) != "yz" {
+			t.Errorf("truncate(%d) then a row: its field 1 = %q, want \"yz\"", n, v)
+		}
+	}
+}
+
+// The retention rule of a batch's storage: a batch that fits the retained
+// size exactly counts towards giving a larger store back, an empty batch
+// does not count, and a store of exactly the retained size is never given
+// back.
+func TestRowsRetentionAtItsEdges(t *testing.T) {
+	r := newRows(1, 10, 0)
+	r.buf = make([]byte, 0, 4*rowsRetainBytes)
+	for range rowsShrinkAfter {
+		r.buf, r.rows = r.buf[:rowsRetainBytes], 1
+		r.reset()
+	}
+	if cap(r.buf) > rowsRetainBytes {
+		t.Errorf("values: cap %d after %d batches of exactly the retained size, want it given back", cap(r.buf), rowsShrinkAfter)
+	}
+
+	r = newRows(1, 10, 0)
+	r.ends = make([]int32, 0, 4*rowsRetainEnds)
+	for range rowsShrinkAfter {
+		r.ends, r.rows = r.ends[:rowsRetainEnds], 1
+		r.reset()
+	}
+	if cap(r.ends) > rowsRetainEnds {
+		t.Errorf("offsets: cap %d after %d batches of exactly the retained count, want it given back", cap(r.ends), rowsShrinkAfter)
+	}
+
+	r = newRows(1, 10, 0)
+	r.buf = make([]byte, 0, 4*rowsRetainBytes)
+	for range 2 * rowsShrinkAfter {
+		r.reset()
+	}
+	if cap(r.buf) != 4*rowsRetainBytes {
+		t.Errorf("cap %d after empty batches only, want the store kept", cap(r.buf))
+	}
+
+	r = newRows(1, 10, 0)
+	r.buf, r.ends = make([]byte, 0, rowsRetainBytes), make([]int32, 0, rowsRetainEnds)
+	buf, ends := &r.buf[:1][0], &r.ends[:1][0]
+	for range 2 * rowsShrinkAfter {
+		r.buf, r.ends, r.rows = r.buf[:8], r.ends[:1], 1
+		r.reset()
+	}
+	if &r.buf[:1][0] != buf || &r.ends[:1][0] != ends {
+		t.Error("a store of exactly the retained size was given back")
+	}
+}

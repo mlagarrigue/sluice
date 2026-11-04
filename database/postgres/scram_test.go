@@ -385,3 +385,18 @@ func TestSCRAMRefusesASecondChallenge(t *testing.T) {
 		t.Errorf("second respond = %v, want ErrProtocol", err)
 	}
 }
+
+// A mechanism list of exactly 256 bytes, as printed, is still named; the
+// count replaces it only past that. An attribute of a name and "=" alone
+// carries an empty value.
+func TestSCRAMEdgesOfTheServersText(t *testing.T) {
+	name := strings.Repeat("X", 254) // "[" + name + "]" is 256 bytes
+	var s scram
+	_, _, err := s.begin([]byte(name+"\x00\x00"), rfcPassword, nil, false)
+	if !errors.Is(err, ErrAuthUnsupported) || !strings.Contains(err.Error(), name) {
+		t.Errorf("begin = %.120v…, want ErrAuthUnsupported naming the mechanism", err)
+	}
+	if n, v, ok := splitAttr("r="); !ok || n != 'r' || v != "" {
+		t.Errorf("splitAttr(\"r=\") = %q, %q, %v", n, v, ok)
+	}
+}

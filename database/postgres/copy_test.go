@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 
@@ -861,5 +862,183 @@ func TestCopyRefusesANegativeChunkBytes(t *testing.T) {
 	}
 	if srv.sent.Len() != 0 {
 		t.Errorf("a refused copy sent %d bytes", srv.sent.Len())
+	}
+}
+
+// count reports how many messages of one type the client sent.
+func count(t *testing.T, srv *fakeServer, typ byte) int {
+	t.Helper()
+	return bytes.Count(srv.clientMessages(t), []byte{typ})
+}
+
+// ChunkBytes is reached, not passed: a buffer that holds exactly ChunkBytes
+// leaves as a message, the batch that ends a transaction commits whichever
+// path its bytes took, and rows after a flush wait in the buffer again
+// rather than leaving one message each.
+func TestCopyChunksAtExactlyChunkBytes(t *testing.T) {
+	const header = 19 // signature, flags and header extension
+	row := tuple(new(int64(1)), nil)
+	open := func(t *testing.T, rowsPerTx int) (*fakeServer, *Copier) {
+		t.Helper()
+		srv := &fakeServer{responses: txCycle()}
+		cp, err := NewConn(srv, Config{}).CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)",
+			CopyConfig{RowsPerTx: rowsPerTx, ChunkBytes: header + len(row)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return srv, cp
+	}
+
+	t.Run("a buffer of exactly ChunkBytes, then the commit", func(t *testing.T) {
+		srv, cp := open(t, 1)
+		if err := cp.WriteTuples(row, 1); err != nil {
+			t.Fatal(err)
+		}
+		if got := count(t, srv, pgwire.FrontendCopyData); got != 2 {
+			t.Errorf("%d CopyData, want 2: the full buffer, then the trailer", got)
+		}
+		if got := count(t, srv, pgwire.FrontendCopyDone); got != 1 {
+			t.Errorf("%d CopyDone, want the transaction committed on its row count", got)
+		}
+	})
+	t.Run("a batch past ChunkBytes on an empty buffer, then the commit", func(t *testing.T) {
+		srv, cp := open(t, 3)
+		if err := cp.WriteTuples(row, 1); err != nil {
+			t.Fatal(err)
+		}
+		if err := cp.WriteTuples(slices.Concat(row, row, row), 2); err != nil {
+			t.Fatal(err)
+		}
+		if got := count(t, srv, pgwire.FrontendCopyDone); got != 1 {
+			t.Errorf("%d CopyDone, want the transaction committed on its row count", got)
+		}
+	})
+	t.Run("small rows after a flush", func(t *testing.T) {
+		srv, cp := open(t, 10)
+		for range 3 {
+			if err := cp.WriteTuples(row, 1); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := count(t, srv, pgwire.FrontendCopyData); got != 1 {
+			t.Errorf("%d CopyData before Close, want 1: the two rows after the flush wait in the buffer", got)
+		}
+	})
+}
+
+// A batch of no rows sends nothing, not even the BEGIN a first batch opens.
+func TestCopyWriteOfNoRowsSendsNothing(t *testing.T) {
+	srv := &fakeServer{}
+	cp, err := NewConn(srv, Config{}).CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)", CopyConfig{RowsPerTx: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cp.WriteTuples(tuple(new(int64(1)), nil), 0); err != nil || srv.sent.Len() != 0 {
+		t.Fatalf("WriteTuples of 0 rows = %v, %d bytes sent", err, srv.sent.Len())
+	}
+}
+
+// A CopyInResponse of its format byte alone is enough: the column formats
+// after it are not read.
+func TestCopyAcceptsACopyInResponseOfItsFormatByte(t *testing.T) {
+	script := txCycle()
+	script[1] = frame(pgwire.BackendCopyInResponse, "\x01")
+	cp, err := NewConn(&fakeServer{responses: script}, Config{}).CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)", CopyConfig{RowsPerTx: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cp.WriteTuples(tuple(new(int64(1)), nil), 1); err != nil {
+		t.Fatalf("WriteTuples = %v", err)
+	}
+}
+
+// A refusal whose drain loses the connection reports the broken connection,
+// not the refusal: the position is lost, and nothing is rolled back over it.
+func TestCopyRefusalThatLosesTheConnectionSaysSo(t *testing.T) {
+	begun := append(beCommandComplete("BEGIN"), beReadyForQuery()...)
+	for _, tc := range []struct {
+		name   string
+		answer []byte
+	}{
+		{"text format", frame(pgwire.BackendCopyInResponse, string([]byte{0, 0, 0}))},
+		{"server error", beErrorResponse("42P01", `relation "nope" does not exist`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := &fakeServer{responses: [][]byte{begun, tc.answer}}
+			conn := NewConn(srv, Config{})
+			cp, err := conn.CopyFrom(t.Context(), "COPY t FROM STDIN", CopyConfig{RowsPerTx: 10})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = cp.WriteTuples(tuple(new(int64(1)), nil), 1)
+			if !errors.Is(err, ErrConnBroken) || errors.Is(err, ErrCopyRefused) {
+				t.Fatalf("WriteTuples = %v, want ErrConnBroken and not ErrCopyRefused", err)
+			}
+		})
+	}
+}
+
+// Abort on a connection the copy lost sends nothing after its CopyFail: no
+// ROLLBACK goes down a connection whose position is unknown.
+func TestCopyAbortOnALostConnectionSendsNoRollback(t *testing.T) {
+	srv := &fakeServer{responses: txCycle()[:2]}
+	conn := NewConn(srv, Config{})
+	cp, err := conn.CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)", CopyConfig{RowsPerTx: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = cp.WriteTuples(tuple(new(int64(1)), nil), 1)
+	if err := cp.Abort("stop"); !errors.Is(err, ErrConnBroken) {
+		t.Fatalf("Abort = %v, want ErrConnBroken", err)
+	}
+	if sent := srv.clientMessages(t); sent[len(sent)-1] != pgwire.FrontendCopyFail {
+		t.Errorf("client sent %q, want nothing after the CopyFail", sent)
+	}
+}
+
+// endCopy reports what the copy's reader met: a lost connection, and a
+// ParameterStatus the connection's budget refuses.
+func TestEndCopyReportsWhatTheReaderMet(t *testing.T) {
+	done := make(chan struct{})
+	close(done)
+
+	conn := NewConn(&fakeServer{}, Config{})
+	cp := &Copier{conn: conn, rd: &copyReader{done: done, broken: io.ErrUnexpectedEOF}}
+	if err := cp.endCopy(); !errors.Is(err, ErrConnBroken) {
+		t.Errorf("endCopy after a lost connection = %v, want ErrConnBroken", err)
+	}
+
+	conn = NewConn(&fakeServer{}, Config{})
+	conn.paramBytes = maxServerParameterBytes - 1
+	cp = &Copier{conn: conn, rd: &copyReader{
+		done:   done,
+		status: []byte{'I'},
+		params: map[string][]byte{"abc": []byte("abc\x00xyz\x00")},
+	}}
+	if err := cp.endCopy(); !errors.Is(err, ErrProtocol) {
+		t.Errorf("endCopy with a parameter past the budget = %v, want ErrProtocol", err)
+	}
+}
+
+// The budget of parameters queued during a copy-in: reached exactly, it
+// holds; one byte past it, the ParameterStatus is refused with its own size;
+// and a replaced value counts its name and value, not its NULs.
+func TestCopyParameterQueueAtItsBound(t *testing.T) {
+	status := func(name, val string) []byte { return []byte(name + "\x00" + val + "\x00") }
+	rd := &copyReader{paramBytes: maxServerParameterBytes - 11}
+	if err := rd.queueParameter(status("abcdefgh", "xyz")); err != nil {
+		t.Fatalf("a parameter that reaches the budget exactly: %v", err)
+	}
+	rd = &copyReader{paramBytes: maxServerParameterBytes - 10}
+	err := rd.queueParameter(status("abcdefgh", "xyz"))
+	if !errors.Is(err, ErrProtocol) || !strings.Contains(err.Error(), "a ParameterStatus of 11 bytes") {
+		t.Fatalf("a parameter one byte past the budget: %v, want ErrProtocol naming its 11 bytes", err)
+	}
+	rd = &copyReader{
+		params:     map[string][]byte{"abcdefgh": status("abcdefgh", "x")},
+		paramBytes: maxServerParameterBytes - 1, // "abcdefgh" and "x" among them
+	}
+	if err := rd.queueParameter(status("abcdefgh", "xyz")); !errors.Is(err, ErrProtocol) {
+		t.Fatalf("a replacement two bytes longer at one byte under the budget: %v, want ErrProtocol", err)
 	}
 }

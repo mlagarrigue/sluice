@@ -413,3 +413,17 @@ func TestNewConnHonoursStatementCacheSize(t *testing.T) {
 	}()
 	NewConn(&fakeServer{}, Config{MaxMessage: 1})
 }
+
+// ctxOr leaves an error alone while the context is live, and names the
+// context once it has ended.
+func TestCtxOrNamesOnlyAnEndedContext(t *testing.T) {
+	cause := errors.New("use of closed network connection")
+	if got := ctxOr(context.Background(), cause); got.Error() != cause.Error() {
+		t.Errorf("ctxOr on a live context = %v, want the error unchanged", got)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := ctxOr(ctx, cause); !errors.Is(got, context.Canceled) || !errors.Is(got, cause) {
+		t.Errorf("ctxOr on an ended context = %v, want both causes", got)
+	}
+}
