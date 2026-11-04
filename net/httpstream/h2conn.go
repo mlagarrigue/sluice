@@ -299,6 +299,13 @@ type h2Conn struct {
 	// bounds the answers the writer holds once deliver no longer waits for
 	// them. Decremented by answered, on the responder or the writer.
 	inFlight atomic.Int32
+	// phaseMu orders the two writers of the connection's phase: the reader,
+	// which marks it busy before a handler starts, and the responder, which
+	// marks it idle once the last answer is out. Without it the responder
+	// could read both counts at zero, the reader count a new request and
+	// mark it busy, and the responder then mark idle a connection whose
+	// handler runs.
+	phaseMu sync.Mutex
 	// settled wakes the responder when the writer has finished an answer, so
 	// that a drained connection whose last answer the writer, not the
 	// responder, finished is still closed.
@@ -602,6 +609,13 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 				s.answers = nil
 				s.w.shed()
 			}
+			// Nothing open and nothing owed: idle, or a forced stop would
+			// count the connection as cut until its next frame arrived.
+			s.phaseMu.Lock()
+			if s.open.Load() == 0 && s.inFlight.Load() == 0 {
+				st.set(connIdle)
+			}
+			s.phaseMu.Unlock()
 			// The last answer of a drained connection closes it, whether the
 			// responder or the writer finished it. open is read before
 			// inFlight because finish moves a stream the other way round,
@@ -646,12 +660,14 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 		// The phase is set before the handler starts: marked after, a
 		// handler could be running while a forced stop read the connection
 		// as idle and reported no cut.
+		s.phaseMu.Lock()
 		live := s.open.Load() > 0 || s.inFlight.Load() > 0
 		if live {
 			st.set(connBusy)
 		} else {
 			st.set(connIdle)
 		}
+		s.phaseMu.Unlock()
 		if len(ready) > 0 {
 			b := h2Batch{reqs: ready, ids: ids, ctx: s.calls.register(s.ctx, ids)}
 			calls.Go(func() { s.call(b, in) })
