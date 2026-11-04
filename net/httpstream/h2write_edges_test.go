@@ -61,6 +61,17 @@ func TestH2WriterRoundAtItsBudget(t *testing.T) {
 		t.Errorf("the next round starts at job %d, want 1", w.turn)
 	}
 
+	// A budget spent mid-pass stops the pass there.
+	w = testWriter(1, 3)
+	w.maxFrame, w.cfg.MaxWriteBufferBytes = 4, 4
+	a = &h2Job{id: 1, headSent: true, data: make([]byte, 12)}
+	b = &h2Job{id: 3, headSent: true, data: make([]byte, 12)}
+	w.jobs = []*h2Job{a, b}
+	w.fill()
+	if a.off != 4 || b.off != 0 {
+		t.Errorf("one round of 4 bytes wrote %d and %d bytes, want 4 and 0", a.off, b.off)
+	}
+
 	w = testWriter(1, 3)
 	w.maxFrame = 4
 	w.jobs = []*h2Job{{id: 1, headSent: true, data: make([]byte, 12)}, {id: 3, headSent: true, data: make([]byte, 12)}}
@@ -182,32 +193,49 @@ func TestH2WriterTableUpdateOfOneSize(t *testing.T) {
 	}
 }
 
-// A refusal carries its line of body when the window holds it exactly, and
-// wakes the write goroutine.
-func TestH2WriterRefusalAtTheWindowsEdge(t *testing.T) {
-	w := testWriter(1)
-	n := int32(len(transportError(400).Body)) //nolint:gosec // G115: one line of text
-	w.connWind, w.initial = n, n
-	woke := make(chan struct{})
+// wakes reports whether f, which queues control frames, wakes a goroutine
+// already waiting for them, as the write goroutine waits.
+func wakes(t *testing.T, w *h2Writer, f func() error) bool {
+	t.Helper()
+	waiting, woke := make(chan struct{}), make(chan struct{})
 	go func() {
 		w.mu.Lock()
+		close(waiting) // f needs the lock, which only Wait gives up
 		for len(w.ctrl) == 0 {
 			w.cond.Wait()
 		}
 		w.mu.Unlock()
 		close(woke)
 	}()
-	if err := w.refuse(1, 400, false, errNoError); err != nil {
+	<-waiting
+	if err := f(); err != nil {
 		t.Fatal(err)
 	}
 	select {
 	case <-woke:
-	case <-time.After(5 * time.Second):
+		return true
+	case <-time.After(time.Second):
 		w.cond.Broadcast()
+		<-woke
+		return false
+	}
+}
+
+// A refusal carries its line of body when the window holds it exactly; it
+// and an interim head wake the write goroutine.
+func TestH2WriterRefusalAtTheWindowsEdge(t *testing.T) {
+	w := testWriter(1)
+	n := int32(len(transportError(400).Body)) //nolint:gosec // G115: one line of text
+	w.connWind, w.initial = n, n
+	if !wakes(t, w, func() error { return w.refuse(1, 400, false, errNoError) }) {
 		t.Error("the refusal did not wake the write goroutine")
 	}
 	if streams, _ := dataFrames(w.ctrl); len(streams) != 1 {
 		t.Errorf("%d DATA frames with a window of exactly the body, want 1", len(streams))
+	}
+	w = testWriter(1)
+	if !wakes(t, w, func() error { return w.interim(1, 100) }) {
+		t.Error("the interim head did not wake the write goroutine")
 	}
 }
 

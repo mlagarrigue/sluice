@@ -44,9 +44,13 @@ func TestHPACKLastStaticIndexPastTheBound(t *testing.T) {
 }
 
 func TestHPACKIndexPastTheTablesSaysHowManyItHolds(t *testing.T) {
-	_, err := newHPACKDecoder(0, 0).Decode(nil, []byte{0xbe})
-	if !errors.Is(err, ErrHPACK) || !strings.Contains(err.Error(), "the table holds 61 entries") {
-		t.Fatalf("Decode = %v, want the 61 entries named", err)
+	d := newHPACKDecoder(0, 0)
+	if _, err := d.Decode(nil, hpackLiteral(0x40, "ab", "cdef")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := d.Decode(nil, []byte{0xbf}) // 63: one past the entry just added
+	if !errors.Is(err, ErrHPACK) || !strings.Contains(err.Error(), "the table holds 62 entries") {
+		t.Fatalf("Decode = %v, want the 62 entries named", err)
 	}
 }
 
@@ -71,6 +75,9 @@ func TestCloneHeadersCopiesEveryByte(t *testing.T) {
 	in[0].Value[0] = 'x'
 	if string(out[0].Value) != "bcd" {
 		t.Error("the clone shares the original's bytes")
+	}
+	if out := cloneHeaders(in[:1]); string(out[0].Value) != "xcd" {
+		t.Errorf("one field whose value outgrows its name: %q", out)
 	}
 }
 
@@ -133,6 +140,12 @@ func TestFrameReaderAtItsBounds(t *testing.T) {
 	if _, err := readFrames(t, append(prefaced(), big...), cfg); err != nil {
 		t.Errorf("a frame of MaxFrameSize: %v", err)
 	}
+	// The first SETTINGS shares the buffer with the preface: as large as a
+	// frame may be, unknown identifiers, which are ignored (§6.5.2).
+	settings := frame(frameSettings, 0, 0, make([]byte, cfg.mustResolve().MaxFrameSize/6*6))
+	if _, err := readFrames(t, append([]byte(Preface), settings...), cfg); err != nil {
+		t.Errorf("a first SETTINGS near MaxFrameSize behind the preface: %v", err)
+	}
 
 	cfg = Config{MaxContinuationFrames: 2, MaxHeaderBytes: 32}
 	open := frame(frameHeaders, 0, 1, make([]byte, 16))
@@ -162,15 +175,19 @@ func TestFrameReaderAtItsBounds(t *testing.T) {
 func TestFramesRefusesAPrefaceWrongInItsLastByte(t *testing.T) {
 	bad := []byte(Preface)
 	bad[len(bad)-1] = 'X'
-	if _, err := readFrames(t, bad, Config{}); !errors.Is(err, ErrH2Protocol) {
-		t.Errorf("readFrames = %v, want ErrH2Protocol", err)
+	if _, err := readFrames(t, bad, Config{}); err == nil || !strings.Contains(err.Error(), "the connection preface is not HTTP/2's") {
+		t.Errorf("readFrames = %v, want the preface refused", err)
 	}
 }
 
-func TestRSTStreamOnStreamZero(t *testing.T) {
-	for _, f := range [][]byte{frame(frameRSTStream, 0, 0, make([]byte, 4)), frame(frameRSTStream, 0, 1, make([]byte, 3))} {
+func TestStreamFramesOnStreamZero(t *testing.T) {
+	for _, f := range [][]byte{
+		frame(frameRSTStream, 0, 0, make([]byte, 4)),
+		frame(frameRSTStream, 0, 1, make([]byte, 3)),
+		frame(framePriority, 0, 0, make([]byte, 5)),
+	} {
 		if _, err := readFrames(t, append(prefaced(), f...), Config{}); !errors.Is(err, ErrH2Protocol) {
-			t.Errorf("RST_STREAM %x: %v, want ErrH2Protocol", f[:9], err)
+			t.Errorf("frame %x: %v, want ErrH2Protocol", f[:9], err)
 		}
 	}
 }
