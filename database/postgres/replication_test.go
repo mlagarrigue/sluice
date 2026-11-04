@@ -2,9 +2,12 @@ package postgres
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"slices"
 	"strings"
 	"testing"
@@ -763,5 +766,243 @@ func TestReplicationDeliversTypeAndOrigin(t *testing.T) {
 	// A truncated message is refused, not delivered half-read.
 	if _, err := decodeAll(t, typ[:7]); !errors.Is(err, ErrProtocol) {
 		t.Errorf("a Type message cut after its OID: err = %v, want ErrProtocol", err)
+	}
+}
+
+// The decoder's refusals say which rule the message broke, so that a test
+// of one is not passed by another tripping later in the same message.
+func TestReplDecoderErrorsSayWhatTheyFound(t *testing.T) {
+	rel := relMsg(1, "s", "t", "a")
+	oneColumn := []byte{1, 'a', 0, 0, 0, 0, 20, 0xFF, 0xFF, 0xFF, 0xFF}
+	for _, tc := range []struct {
+		name string
+		msgs [][]byte
+		want string
+	}{
+		{"a Delete without its old row", [][]byte{rel, rowMsg('D', 1, byte('N'), tupleData(i8(1)))}, "pgoutput Delete with part 'N'"},
+		{"an Insert without N", [][]byte{rel, rowMsg('I', 1, byte('K'), tupleData(i8(1)))}, "where the new tuple belongs"},
+		{
+			"more columns than the body",
+			[][]byte{append([]byte{'R', 0, 0, 0, 1, 's', 0, 't', 0, 'd', 0, 2}, oneColumn...)},
+			"declares 2 columns in 11 bytes",
+		},
+	} {
+		if _, err := decodeAll(t, tc.msgs...); !errors.Is(err, ErrProtocol) || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: %v, want ErrProtocol saying %q", tc.name, err, tc.want)
+		}
+	}
+	trunc := binary.BigEndian.AppendUint32([]byte{'T'}, 2)
+	trunc = binary.BigEndian.AppendUint32(append(trunc, 0), 7)
+	if _, err := decodeAll(t, trunc); !errors.Is(err, ErrProtocol) || !strings.Contains(err.Error(), "names 2 relations in 4 bytes") {
+		t.Errorf("a Truncate count past its bytes: %v", err)
+	}
+}
+
+// The relation table's budget may be reached exactly, and a relation costs
+// its names and relationColumnCost per column.
+func TestReplDecoderRelationBudgetAtItsBound(t *testing.T) {
+	cost := (&Relation{Namespace: "s", Name: "t", Columns: []RelationColumn{{Name: "a"}}}).cost()
+	if cost != 1+1+1+relationColumnCost {
+		t.Fatalf("cost = %d, want %d", cost, 3+relationColumnCost)
+	}
+	d := replDecoder{relationBytes: maxReplicationRelationBytes - cost}
+	if _, _, _, err := d.decode(relMsg(1, "s", "t", "a"), 0, nil, nil, nil); err != nil {
+		t.Fatalf("a relation that reaches the budget exactly: %v", err)
+	}
+}
+
+// The reader takes a field that is exactly what is left, and a byte string
+// of no bytes.
+func TestReplReaderAtTheEndOfTheBody(t *testing.T) {
+	r := replReader{b: []byte{0, 5}}
+	if v := r.u16("x"); v != 5 || r.err != nil {
+		t.Errorf("u16 of the last two bytes = %d, %v", v, r.err)
+	}
+	if v := r.bytes(0, "x"); len(v) != 0 || r.err != nil {
+		t.Errorf("bytes(0) = %v, %v", v, r.err)
+	}
+}
+
+func TestChangeKindString(t *testing.T) {
+	for k, want := range map[ChangeKind]string{0: "ChangeKind(0)", ChangeBegin: "Begin", ChangeOrigin: "Origin", ChangeOrigin + 1: "ChangeKind(9)"} {
+		if got := k.String(); got != want {
+			t.Errorf("ChangeKind(%d).String() = %q, want %q", int(k), got, want)
+		}
+	}
+}
+
+// Replicate keeps what the caller configured and fills in only what was
+// left at zero; BatchBytes may be the ceiling itself.
+func TestReplicateKeepsTheConfiguredBounds(t *testing.T) {
+	open := func(rc ReplicationConfig) *Replication {
+		t.Helper()
+		script := slices.Concat(beAuth(0, ""), beReady(), frame(pgwire.BackendCopyBothResponse, "\x00\x00\x00"))
+		dial := func(context.Context) (io.ReadWriteCloser, error) {
+			return &scriptedRW{Reader: bytes.NewReader(script)}, nil
+		}
+		rc.Slot, rc.Publications = "s", []string{"p"}
+		r, err := Replicate(t.Context(), dial, Config{User: "u"}, rc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	if r := open(ReplicationConfig{StatusInterval: time.Second, BatchChanges: 7, BatchBytes: maxBatchBytes}); r.interval != time.Second || r.batch != 7 || r.batchBytes != maxBatchBytes {
+		t.Errorf("configured: interval %v, batch %d, bytes %d", r.interval, r.batch, r.batchBytes)
+	}
+	if r := open(ReplicationConfig{}); r.interval != defaultStatusInterval || r.batchBytes != defaultBatchBytes {
+		t.Errorf("defaults: interval %v, bytes %d", r.interval, r.batchBytes)
+	}
+}
+
+// A stream stopped by its ctx says so, wrapping the cause rather than
+// replacing the message.
+func TestReplicationStoppedByItsContextSaysSo(t *testing.T) {
+	client, server := net.Pipe()
+	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
+	r := &Replication{c: NewConn(client, Config{}), batch: 10, batchBytes: defaultBatchBytes, interval: time.Hour}
+	ctx, cancel := context.WithCancel(t.Context())
+	time.AfterFunc(10*time.Millisecond, cancel)
+	src := r.Changes(ctx)
+	src.Stream()(func(sluice.Batch[Change]) bool { return true })
+	if err := src.Err(); !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "replication stopped") {
+		t.Fatalf("Err = %v, want context.Canceled under \"replication stopped\"", err)
+	}
+}
+
+// A stream that ends without a change yields no batch, and a batch is cut
+// at BatchChanges and at BatchBytes exactly; a change past the cut, row
+// included, opens the next batch whole.
+func TestReplicationCutsBatchesExactly(t *testing.T) {
+	end := slices.Concat(frame(pgwire.BackendCopyDone, ""), frame(pgwire.BackendCommandComplete, "START_REPLICATION\x00"), beReadyForQuery())
+	run := func(t *testing.T, batch, batchBytes int, msgs ...[]byte) [][]Change {
+		t.Helper()
+		var script []byte
+		for _, m := range msgs {
+			script = append(script, xlog(0x10, m)...)
+		}
+		script = append(script, end...)
+		r := &Replication{c: NewConn(&scriptedRW{Reader: bytes.NewReader(script)}, Config{}), batch: batch, batchBytes: batchBytes, interval: time.Hour}
+		var batches [][]Change
+		src := r.Changes(t.Context())
+		src.Stream()(func(b sluice.Batch[Change]) bool {
+			batches = append(batches, slices.Clone(b.Items))
+			return true
+		})
+		if err := src.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return batches
+	}
+
+	if got := run(t, 10, defaultBatchBytes); len(got) != 0 {
+		t.Errorf("a stream of no change yielded %d batches", len(got))
+	}
+
+	rel := relMsg(1, "s", "t", "a")
+	ins := func(v int64) []byte { return rowMsg('I', 1, byte('N'), tupleData(i8(v))) }
+	got := run(t, 2, defaultBatchBytes, rel, ins(1), ins(2), ins(3))
+	if len(got) != 2 || len(got[0]) != 2 || len(got[1]) != 1 {
+		t.Fatalf("batches of %v, want 2 then 1", got)
+	}
+	if v := got[1][0].New; len(v) != 1 || binary.BigEndian.Uint64(v[0].Data) != 3 {
+		t.Errorf("the change that opened the second batch carries %v, want its row", v)
+	}
+
+	got = run(t, 10, len(rel)+len(ins(1)), rel, ins(1), ins(2))
+	if len(got) != 2 || len(got[0]) != 1 {
+		t.Errorf("batches of %v under a byte bound the first row reaches exactly, want it alone first", got)
+	}
+}
+
+// The arena takes a payload into a chunk it fits exactly, opens a new chunk
+// for one it does not, and its retention follows the rows' rule: a store of
+// exactly the retained size is never given back, a batch of exactly the
+// retained size counts towards giving a larger one back.
+func TestReplicationArenaAtItsEdges(t *testing.T) {
+	r := &Replication{arena: [][]byte{make([]byte, 0, 10)}}
+	r.keep(make([]byte, 6))
+	r.keep(make([]byte, 4))
+	if len(r.arena) != 1 || r.chunk != 0 {
+		t.Errorf("a payload that fits the chunk exactly opened chunk %d of %d", r.chunk, len(r.arena))
+	}
+	r.keep(make([]byte, 1))
+	if len(r.arena) != 2 || cap(r.arena[0]) != 10 {
+		t.Errorf("a payload past the chunk: %d chunks, the first of cap %d", len(r.arena), cap(r.arena[0]))
+	}
+
+	r = &Replication{arena: [][]byte{make([]byte, 0, rowsRetainBytes)}}
+	kept := &r.arena[0][:1][0]
+	for range 2 * rowsShrinkAfter {
+		r.kept = 8
+		r.resetArena()
+	}
+	if len(r.arena) == 0 || &r.arena[0][:1][0] != kept {
+		t.Error("an arena of exactly the retained size was given back")
+	}
+
+	r = &Replication{arena: [][]byte{make([]byte, 0, 4*rowsRetainBytes)}}
+	for range rowsShrinkAfter {
+		r.kept = rowsRetainBytes
+		r.resetArena()
+	}
+	if len(r.arena) != 0 {
+		t.Error("an oversized arena outlived batches of exactly the retained size")
+	}
+}
+
+// An XLogData of its header alone reaches the decoder, which refuses the
+// empty message.
+func TestReplicationXLogDataOfItsHeaderAlone(t *testing.T) {
+	r := &Replication{}
+	p := append([]byte{'w'}, make([]byte, 24)...)
+	if err := r.copyData(p); !errors.Is(err, ErrProtocol) || strings.Contains(err.Error(), "XLogData of") {
+		t.Errorf("copyData of a bare header = %v, want the decoder's refusal", err)
+	}
+}
+
+// A status report goes when the acknowledged position moved and the
+// interval passed, not before; it carries the clock from 2000; and a stream
+// the consumer stops reports and leaves copy mode.
+func TestReplicationReportsWhenDue(t *testing.T) {
+	report := func(acked, sent LSN, sentAt time.Time) []byte {
+		rw := &scriptedRW{Reader: bytes.NewReader(nil)}
+		r := &Replication{c: NewConn(rw, Config{}), interval: time.Hour, sent: sent, sentAt: sentAt}
+		r.acked.Store(uint64(acked))
+		if err := r.report(false); err != nil {
+			t.Fatal(err)
+		}
+		return rw.sent.Bytes()
+	}
+	if sent := report(8, 0, time.Now().Add(-2*time.Hour)); len(sent) == 0 {
+		t.Error("no report for a moved position past the interval")
+	} else {
+		at := int64(binary.BigEndian.Uint64(sent[5+1+24:]))
+		if want := time.Now().UnixMicro() - pgEpochMicros; at > want || want-at > int64(time.Minute/time.Microsecond) {
+			t.Errorf("report clock = %d, want about %d microseconds since 2000", at, want)
+		}
+	}
+	if sent := report(8, 0, time.Now()); len(sent) != 0 {
+		t.Error("a report sent before the interval passed")
+	}
+	if sent := report(8, 8, time.Now().Add(-2*time.Hour)); len(sent) != 0 {
+		t.Error("a report sent for a position that did not move")
+	}
+
+	var script []byte
+	script = append(script, xlog(0x10, beginMsg(0x30, 1))...)
+	script = append(script, xlog(0x20, commitMsg(0x30, 0x38))...)
+	script = append(script, frame(pgwire.BackendCopyDone, "")...)
+	script = append(script, frame(pgwire.BackendCommandComplete, "START_REPLICATION\x00")...)
+	script = append(script, beReadyForQuery()...)
+	rw := &scriptedRW{Reader: bytes.NewReader(script)}
+	r := &Replication{c: NewConn(rw, Config{}), batch: 1, batchBytes: defaultBatchBytes, interval: time.Hour}
+	src := r.Changes(t.Context())
+	src.Stream()(func(sluice.Batch[Change]) bool { return false })
+	if err := src.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(rw.sent.Bytes(), frame(pgwire.FrontendCopyDone, "")) {
+		t.Error("a stream the consumer stopped did not leave copy mode")
 	}
 }

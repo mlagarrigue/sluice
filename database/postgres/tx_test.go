@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1094,5 +1095,85 @@ func TestSetLocalTimeoutDoesNotOverflow(t *testing.T) {
 	want := strconv.FormatInt(math.MaxInt64/int64(time.Millisecond)+1, 10)
 	if got := string(binds[0][1]); got != want {
 		t.Errorf("MaxInt64 travelled as statement_timeout = %q, want %q", got, want)
+	}
+}
+
+// A COMMIT that commits is not reported as rolled back, and one refused in
+// an aborted block reports both the rollback and the server's error, on
+// both execution paths.
+func TestCommitRollbackKeepsTheServersError(t *testing.T) {
+	conn := NewConn(&fakeServer{responses: [][]byte{extendedCycle("COMMIT", "I")}}, Config{})
+	conn.inTx = true
+	if tag, err := conn.ExecParams(t.Context(), "COMMIT", nil); err != nil || tag != "COMMIT" {
+		t.Errorf("ExecParams(COMMIT) that committed = %q, %v", tag, err)
+	}
+
+	refused := append(beErrorResponse("25P02", "current transaction is aborted"), frame(pgwire.BackendReadyForQuery, "E")...)
+	for name, run := range map[string]func(*Conn) error{
+		"ExecParams": func(c *Conn) error { _, err := c.ExecParams(t.Context(), "COMMIT", nil); return err },
+		"Exec":       func(c *Conn) error { return c.Exec(t.Context(), "COMMIT") },
+	} {
+		conn := NewConn(&fakeServer{responses: [][]byte{refused}}, Config{})
+		conn.inTx, conn.txFailed = true, true
+		err := run(conn)
+		var pgErr *Error
+		if !errors.Is(err, ErrTxCommitRollback) || !errors.As(err, &pgErr) || pgErr.Code != "25P02" {
+			t.Errorf("%s(COMMIT) refused in an aborted block = %v, want ErrTxCommitRollback and the server's 25P02", name, err)
+		}
+	}
+}
+
+// Savepoints reports a savepoint the server refused, and a send that failed
+// under an answer read whole as a broken connection.
+func TestSavepointsReportWhatWentWrong(t *testing.T) {
+	refused := append(beErrorResponse("42601", "syntax error"), frame(pgwire.BackendReadyForQuery, "E")...)
+	srv := &fakeServer{responses: [][]byte{cmdCycle("BEGIN"), cmdCycle("SAVEPOINT"), refused}}
+	conn := NewConn(srv, Config{})
+	tx, err := conn.Begin(t.Context(), TxConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pgErr *Error
+	if err := tx.Savepoints(t.Context(), "a", "b"); !errors.As(err, &pgErr) || pgErr.Code != "42601" {
+		t.Errorf("Savepoints with the second refused = %v, want the server's 42601", err)
+	}
+
+	answers := slices.Concat(cmdCycle("SAVEPOINT"), cmdCycle("SAVEPOINT"))
+	conn = NewConn(&failingWrites{Reader: bytes.NewReader(answers)}, Config{})
+	conn.inTx = true
+	tx = &Tx{conn: conn, gen: conn.txGen}
+	if err := tx.Savepoints(t.Context(), "a", "b"); !errors.Is(err, ErrConnBroken) {
+		t.Errorf("Savepoints whose send failed = %v, want ErrConnBroken", err)
+	}
+}
+
+// A Tx refuses a ctx already done on a healthy connection, a zero timeout,
+// and accepts an identifier of exactly the server's 63 bytes.
+func TestTxEdges(t *testing.T) {
+	srv := &fakeServer{responses: [][]byte{cmdCycle("BEGIN")}}
+	conn := NewConn(srv, Config{})
+	tx, err := conn.Begin(t.Context(), TxConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent := srv.sent.Len()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := tx.Exec(ctx, "SELECT 1"); !errors.Is(err, context.Canceled) {
+		t.Errorf("Exec under a done ctx = %v, want context.Canceled", err)
+	}
+	if err := tx.SetLocalTimeout(t.Context(), 0); err == nil {
+		t.Error("SetLocalTimeout(0) was accepted: zero is no limit")
+	}
+	if srv.sent.Len() != sent {
+		t.Errorf("%d bytes sent for refused statements", srv.sent.Len()-sent)
+	}
+	if err := validIdentifier(strings.Repeat("a", maxIdentifierBytes)); err != nil {
+		t.Errorf("an identifier of %d bytes: %v", maxIdentifierBytes, err)
+	}
+	for sql, want := range map[string]string{"selectz 1": "selectz", "SELECTZ 1": "SELECTZ"} {
+		if word, _ := leadingKeyword(sql); word != want {
+			t.Errorf("leadingKeyword(%q) = %q, want %q", sql, word, want)
+		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -560,5 +561,46 @@ func TestSavepointsReadWhileTheyStillWrite(t *testing.T) {
 	}
 	if err := <-served; err != nil {
 		t.Fatalf("the server: %v", err)
+	}
+}
+
+// A pipeline whose answer reads whole but whose send failed is still a
+// broken connection: what the server holds of the batch is unknown.
+func TestPipelineSendFailureAfterAWholeAnswer(t *testing.T) {
+	var script []byte
+	script = append(script, beSimple(pgwire.BackendParseComplete)...)
+	script = append(script, beSimple(pgwire.BackendBindComplete)...)
+	script = append(script, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
+	script = append(script, beCommandComplete("SELECT 0")...)
+	script = append(script, beReadyForQuery()...)
+	conn := NewConn(&failingWrites{Reader: bytes.NewReader(script)}, Config{})
+	tx := &Tx{conn: conn}
+	err := tx.Pipeline(t.Context(), []Part{{SQL: "SELECT id"}}, QueryConfig{}, func(int, sluice.Batch[Row]) bool { return true })
+	if !errors.Is(err, ErrConnBroken) {
+		t.Fatalf("Pipeline = %v, want ErrConnBroken", err)
+	}
+}
+
+// failingWrites answers from its script and fails every write.
+type failingWrites struct{ *bytes.Reader }
+
+func (failingWrites) Write([]byte) (int, error) { return 0, errors.New("connection reset") }
+func (failingWrites) Close() error              { return nil }
+
+// A part that fails names how many later parts the server skipped.
+func TestPipelineCountsThePartsAFailureSkipped(t *testing.T) {
+	var script []byte
+	script = append(script, beSimple(pgwire.BackendParseComplete)...)
+	script = append(script, beSimple(pgwire.BackendBindComplete)...)
+	script = append(script, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
+	script = append(script, beCommandComplete("SELECT 0")...)
+	script = append(script, beErrorResponse("22012", "division by zero")...)
+	script = append(script, beReadyForQuery()...)
+	conn := NewConn(&fakeServer{responses: [][]byte{script}}, Config{})
+	tx := &Tx{conn: conn}
+	ps := []Part{{SQL: "SELECT id"}, {SQL: "SELECT 1/0"}, {SQL: "SELECT 2"}, {SQL: "SELECT 3"}}
+	err := tx.Pipeline(t.Context(), ps, QueryConfig{}, func(int, sluice.Batch[Row]) bool { return true })
+	if !errors.Is(err, ErrPipelineAborted) || !strings.Contains(err.Error(), "pipeline part 1:") || !strings.Contains(err.Error(), "2 later parts never ran") {
+		t.Fatalf("Pipeline = %v, want part 1 failing and 2 later parts skipped", err)
 	}
 }
