@@ -73,6 +73,18 @@ func TestFlatMapRefusesAnFThatDropsDst(t *testing.T) {
 	Collect(FlatMap(Of([]int{1, 2, 3}, 3), func(_ []int, v int) []int { return []int{v} }))
 }
 
+// The check's boundary: a slice of f's own exactly as long as the reservation
+// is refused too. Four ints fill their size class, so the reservation's
+// capacity is four.
+func TestFlatMapRefusesAnOwnSliceOfTheReservedLength(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("FlatMap adopted a slice of f's own as long as the reservation")
+		}
+	}()
+	Collect(FlatMap(Of([]int{1, 2, 3, 4}, 4), func(_ []int, v int) []int { return make([]int, 4) }))
+}
+
 func TestPeek(t *testing.T) {
 	var seen []int
 	src := []int{1, 2, 3, 4}

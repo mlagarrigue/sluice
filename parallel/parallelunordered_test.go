@@ -36,7 +36,8 @@ func TestParallelUnordered(t *testing.T) {
 }
 
 // One worker means no reordering to avoid: the inline no-op preserves order
-// and agrees with Ordered.
+// and agrees with Ordered. Zero workers is the same no-op, not a negative
+// count.
 func TestParallelUnorderedOneIsInlineAndOrdered(t *testing.T) {
 	src := []int{5, 3, 8, 1}
 	caller := goid()
@@ -52,9 +53,11 @@ func TestParallelUnorderedOneIsInlineAndOrdered(t *testing.T) {
 		}
 		return sluice.Batch[int]{Items: out}
 	}
-	got := sluice.Collect(Unordered(sluice.Of(src, 2), 1, double))
-	if want := []int{10, 6, 16, 2}; !slices.Equal(got, want) {
-		t.Errorf("got %v, want %v in order", got, want)
+	for _, workers := range []int{0, 1} {
+		got := sluice.Collect(Unordered(sluice.Of(src, 2), workers, double))
+		if want := []int{10, 6, 16, 2}; !slices.Equal(got, want) {
+			t.Errorf("workers %d: got %v, want %v in order", workers, got, want)
+		}
 	}
 }
 

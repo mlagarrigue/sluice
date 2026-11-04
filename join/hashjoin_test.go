@@ -353,6 +353,10 @@ func TestJoinRejectsBadArguments(t *testing.T) {
 		{"zero limit", func() {
 			StreamTable(probe, build, orderCustomer, customerID, joinLabel, BuildLimit{})
 		}},
+		{"zero MaxEntries under a policy", func() {
+			StreamTable(probe, build, orderCustomer, customerID, joinLabel,
+				BuildLimit{MaxEntries: 0, OnOverflow: sluice.Fail})
+		}},
 		{"negative MaxEntries", func() {
 			StreamTable(probe, build, orderCustomer, customerID, joinLabel,
 				BuildLimit{MaxEntries: -1, OnOverflow: sluice.Fail})
@@ -421,6 +425,14 @@ func TestJoinRejectsLimitPastTheChainRange(t *testing.T) {
 	StreamTable(sluice.Of([]order{{10, 1}}, 1), sluice.Of([]customer{{1, "a"}}, 1),
 		orderCustomer, customerID, joinLabel,
 		BuildLimit{MaxEntries: maxBuildEntries + 1, OnOverflow: sluice.Fail})
+}
+
+// The ceiling itself is accepted: the int32 range holds 2^31-1 entries, and
+// construction allocates nothing for them.
+func TestJoinAcceptsLimitAtTheChainRange(t *testing.T) {
+	StreamTable(sluice.Of([]order{{10, 1}}, 1), sluice.Of([]customer{{1, "a"}}, 1),
+		orderCustomer, customerID, joinLabel,
+		BuildLimit{MaxEntries: maxBuildEntries, OnOverflow: sluice.Fail})
 }
 
 // The refusal names the ceiling it applied, so a caller who hits it knows

@@ -209,11 +209,13 @@ func TestDoBatchContextExpires(t *testing.T) {
 			_ = gw.Close()
 		}()
 
+		// Eight inputs against a held batch of 2 and a queue of 2: the
+		// deadline finds some never submitted, and those fail with it too.
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 		defer cancel()
-		out := gw.DoBatch(ctx, []int{1, 2, 3})
-		if len(out) != 3 {
-			t.Fatalf("got %d outcomes for 3 inputs", len(out))
+		out := gw.DoBatch(ctx, []int{1, 2, 3, 4, 5, 6, 7, 8})
+		if len(out) != 8 {
+			t.Fatalf("got %d outcomes for 8 inputs", len(out))
 		}
 		for i, o := range out {
 			if !errors.Is(o.Err, context.DeadlineExceeded) {

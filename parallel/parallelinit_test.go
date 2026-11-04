@@ -55,7 +55,8 @@ func TestParallelInit(t *testing.T) {
 }
 
 // OrderedWithState(s, 1, mk, f) and Ordered(s, 1, wrap(f)) must agree: the inline
-// no-op is the same path with a state threaded through.
+// no-op is the same path with a state threaded through. Zero workers takes it
+// too.
 func TestParallelInitOneMatchesParallel(t *testing.T) {
 	src := []int{3, 1, 4, 1, 5}
 	var closed atomic.Int64
@@ -70,12 +71,14 @@ func TestParallelInitOneMatchesParallel(t *testing.T) {
 		return sluice.Batch[int]{Items: out}
 	}
 
-	init := sluice.Collect(OrderedWithState(sluice.Of(src, 2), 1, mk, f))
 	plain := sluice.Collect(Ordered(sluice.Of(src, 2), 1, func(b sluice.Batch[int]) sluice.Batch[int] {
 		return f(&closableState{closed: &closed}, b)
 	}))
-	if !slices.Equal(init, plain) {
-		t.Errorf("inline OrderedWithState %v differs from Ordered %v", init, plain)
+	for _, workers := range []int{0, 1} {
+		init := sluice.Collect(OrderedWithState(sluice.Of(src, 2), workers, mk, f))
+		if !slices.Equal(init, plain) {
+			t.Errorf("workers %d: inline OrderedWithState %v differs from Ordered %v", workers, init, plain)
+		}
 	}
 	if closed.Load() == 0 {
 		t.Error("the inline path never closed its state")

@@ -45,6 +45,12 @@ func TestCheckResolvesAndRefuses(t *testing.T) {
 	if err := ipkey.Check("C.", &v4, &v6); err != nil || v4 != 32 || v6 != 64 {
 		t.Fatalf("zero lengths resolved to /%d and /%d, err %v; want /32 and /64", v4, v6, err)
 	}
+	// The whole address is a valid length on both sides: the ranges are
+	// closed at their top.
+	v4, v6 = 32, 128
+	if err := ipkey.Check("C.", &v4, &v6); err != nil {
+		t.Errorf("Check refused /32 and /128: %v", err)
+	}
 	for _, c := range []struct {
 		v4, v6 int
 		want   []string

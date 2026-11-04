@@ -275,6 +275,42 @@ func TestIntervalJoinOverflowDropNewest(t *testing.T) {
 	}
 }
 
+// The limit counts the rows both sides retain together. l1 and r1 hold one
+// each; l2 would be the third, so it is dropped and reported with 2 held, and
+// r2 finds only l1.
+func TestIntervalJoinLimitCountsBothSides(t *testing.T) {
+	var reports, held int
+	limit := BuildLimit{MaxEntries: 2, OnOverflow: sluice.DropNewest, Report: func(_, h int) {
+		reports++
+		held = h
+	}}
+	left := tRows(tRow{"k", 10, "l1"}, tRow{"k", 11, "l2"})
+	right := tRows(tRow{"k", 10, "r1"}, tRow{"k", 12, "r2"})
+	got := intervalRows(left, right, -5*time.Second, 5*time.Second, limit, 1)
+
+	if want := []string{"l1+r1", "l2+r1", "l1+r2"}; !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+	if reports != 1 || held != 2 {
+		t.Errorf("%d reports, last with %d held; want 1 report with 2 held", reports, held)
+	}
+}
+
+// An evicted row stops counting before compaction reclaims its slot. r1@25
+// evicts l1 while l2 and l3 stay, so 2 of 3 slots are live and l4 fits under
+// a limit of 3.
+func TestIntervalJoinEvictedRowsLeaveTheLimit(t *testing.T) {
+	left := tRows(tRow{"k", 0, "l1"}, tRow{"k", 20, "l2"}, tRow{"k", 21, "l3"}, tRow{"k", 26, "l4"})
+	right := tRows(tRow{"k", 5, "r0"}, tRow{"k", 25, "r1"}, tRow{"k", 30, "r2"})
+	got := intervalRows(left, right, 0, 10*time.Second, failLimit(3), 1)
+
+	slices.Sort(got)
+	want := []string{"l1+r0", "l2+r1", "l2+r2", "l3+r1", "l3+r2", "l4+r2"}
+	if !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
 // An early stop must reach both sources promptly and run their deferred
 // cleanup (the architecture's S9 through the cursors, S10 through the refusal).
 func TestIntervalJoinEarlyStopReleasesBoth(t *testing.T) {

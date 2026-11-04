@@ -195,6 +195,20 @@ func TestAdvanceByRefusalPublishesNothing(t *testing.T) {
 	}
 }
 
+// An empty batch has no last element: it passes and publishes nothing.
+func TestAdvanceByEmptyBatchPublishesNothing(t *testing.T) {
+	d := new(Demand)
+	empty := sluice.Stream[int64](func(yield func(sluice.Batch[int64]) bool) {
+		yield(sluice.Batch[int64]{})
+	})
+	if got := sluice.Collect(AdvanceBy(empty, d, key)); len(got) != 0 {
+		t.Errorf("got %v from an empty batch", got)
+	}
+	if lb := d.Snapshot().LowerBound; lb != nil {
+		t.Errorf("LowerBound = % x after an empty batch, want none", lb)
+	}
+}
+
 // The zero Demand is documented as usable and meaning everything, so it must
 // not read as a consumer that wants nothing.
 //
