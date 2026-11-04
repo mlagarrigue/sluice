@@ -311,6 +311,19 @@ func TestIntervalJoinEvictedRowsLeaveTheLimit(t *testing.T) {
 	}
 }
 
+// Eviction keeps the arrays O(live): compact reclaims the dead prefix once it
+// reaches the live suffix, so the arrays never hold twice the live rows.
+func TestIntervalBufferStaysUnderTwiceLive(t *testing.T) {
+	b := newIntervalBuffer[string, int]()
+	for i := range int64(200) {
+		b.put("k", at(i), int(i))
+		b.evictBefore(at(i - 9)) // ten rows live
+		if len(b.vals) >= 2*b.live() {
+			t.Fatalf("row %d: %d slots for %d live rows, want fewer than twice", i, len(b.vals), b.live())
+		}
+	}
+}
+
 // An early stop must reach both sources promptly and run their deferred
 // cleanup (the architecture's S9 through the cursors, S10 through the refusal).
 func TestIntervalJoinEarlyStopReleasesBoth(t *testing.T) {

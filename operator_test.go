@@ -73,6 +73,21 @@ func TestFlatMapRefusesAnFThatDropsDst(t *testing.T) {
 	Collect(FlatMap(Of([]int{1, 2, 3}, 3), func(_ []int, v int) []int { return []int{v} }))
 }
 
+// The buffer an expanding f grew is kept for the next batch, so the batch
+// count does not change what a run allocates: once, not once per batch.
+func TestFlatMapKeepsTheGrownBuffer(t *testing.T) {
+	expand := func(dst []int, v int) []int { return append(dst, v, v) }
+	run := func(batches int) float64 {
+		src := Of(make([]int, 8*batches), 8)
+		return testing.AllocsPerRun(10, func() {
+			FlatMap(src, expand)(func(Batch[int]) bool { return true })
+		})
+	}
+	if few, many := run(2), run(32); many != few {
+		t.Errorf("2 batches allocate %v, 32 allocate %v: the grown buffer is not reused", few, many)
+	}
+}
+
 // The check's boundary: a slice of f's own exactly as long as the reservation
 // is refused too. Four ints fill their size class, so the reservation's
 // capacity is four.
