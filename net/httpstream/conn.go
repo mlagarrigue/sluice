@@ -78,8 +78,13 @@ func newRequestReader(c net.Conn, st *connState, cfg Config) sluice.Source[Reque
 // well and one of megabyte uploads does not batch at all, which is the honest
 // behaviour rather than a configurable that would let a client choose how
 // much memory to occupy.
+//
+// The ceiling counts the four bytes the bounds leave out: the request line's
+// CRLF, which MaxRequestLineBytes does not count, and the empty line RFC
+// 9112 §2.2 lets come before it. Without them a request at every bound was
+// refused as filling the buffer.
 func (c Config) maxBuffer() int {
-	return c.MaxRequestLineBytes + c.MaxHeaderBytes + c.MaxBodyBytes
+	return 2 + c.MaxRequestLineBytes + 2 + c.MaxHeaderBytes + c.MaxBodyBytes
 }
 
 // h1Conn is one HTTP/1.1 connection's state: the socket, the buffer its

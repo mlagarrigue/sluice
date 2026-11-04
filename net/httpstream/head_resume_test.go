@@ -48,8 +48,8 @@ func TestAHeadDrippedByteByByteIsParsedOnce(t *testing.T) {
 	}
 	// The first short reads parse what they have, until the request line
 	// is whole; every later one is a scan.
-	if r.shortParses > 2 {
-		t.Errorf("reader.next parsed the head %d times before its blank line arrived, want two at most", r.shortParses)
+	if r.shortParses == 0 || r.shortParses > 2 {
+		t.Errorf("reader.next parsed the head %d times before its blank line arrived, want one or two", r.shortParses)
 	}
 	got := batch[0]
 	if string(got.Method) != string(want.Method) || string(got.Target) != string(want.Target) || len(got.Headers) != len(want.Headers) {

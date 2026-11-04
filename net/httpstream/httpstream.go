@@ -188,10 +188,10 @@ type Config struct {
 	// protocol. A body is delivered whole when BodyDelivery asks for it
 	// (docs/design/adr/0009, article 4), and this is then what one connection
 	// may hold in its read buffer: the buffer grows from 4 KiB toward
-	// MaxRequestLineBytes + MaxHeaderBytes + MaxBodyBytes as a request
-	// arrives, and a request that has not arrived in full after ReadTimeout
-	// is refused and the buffer freed. The most the request buffers of a
-	// server hold at once is therefore that sum times MaxConns, and a server
+	// MaxRequestLineBytes + MaxHeaderBytes + MaxBodyBytes, plus four bytes
+	// of line endings, as a request arrives, and a request that has not
+	// arrived in full after ReadTimeout is refused and the buffer freed. The
+	// most the request buffers of a server hold at once is therefore that sum times MaxConns, and a server
 	// without MaxConns has no such bound. Over HTTP/2 and HTTP/3, where
 	// several bodies assemble at once, four times this value bounds what one
 	// connection holds across the bodies still assembling. The per-stream
@@ -398,8 +398,8 @@ type Config struct {
 	// is not bound by it; QUIC bounds its connections in the transport.
 	//
 	// It is also the memory bound: each connection may hold one request at
-	// its ceiling, MaxRequestLineBytes + MaxHeaderBytes + MaxBodyBytes (about
-	// 1 MiB at the defaults), for ReadTimeout at most, so MaxConns times
+	// its ceiling, MaxRequestLineBytes + MaxHeaderBytes + MaxBodyBytes plus
+	// four bytes of line endings (about 1 MiB at the defaults), for ReadTimeout at most, so MaxConns times
 	// that sum is the most the request buffers occupy. A public socket sets
 	// it; a server without it is bounded by the peers' goodwill.
 	MaxConns int
