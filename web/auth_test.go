@@ -698,8 +698,9 @@ func TestNewHMACVerifierRefusesAShortPreviousSecret(t *testing.T) {
 	if err == nil {
 		t.Fatal("a 31-byte previous secret was accepted")
 	}
-	if _, err := web.NewHMACVerifier(web.HMACConfig{Secret: testSecret, Previous: [][]byte{make([]byte, 32)}}); err != nil {
-		t.Errorf("a 32-byte previous secret was refused: %v", err)
+	// Two retired keys at once, each at the 32-byte floor.
+	if _, err := web.NewHMACVerifier(web.HMACConfig{Secret: testSecret, Previous: [][]byte{make([]byte, 32), make([]byte, 32)}}); err != nil {
+		t.Errorf("two 32-byte previous secrets were refused: %v", err)
 	}
 }
 
@@ -768,6 +769,7 @@ func TestBearerChallengeQuotesTheRealm(t *testing.T) {
 	quoted := []struct{ realm, want string }{
 		{`orders`, `Bearer realm="orders"`},
 		{`say "hi"`, `Bearer realm="say \"hi\""`},
+		{`"`, `Bearer realm="\""`},
 		{`a\b`, `Bearer realm="a\\b"`},
 		{"tab\there", "Bearer realm=\"tab\there\""},
 		{"caf\xc3\xa9", "Bearer realm=\"caf\xc3\xa9\""},
