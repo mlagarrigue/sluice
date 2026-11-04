@@ -18,6 +18,7 @@ import (
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
+	"github.com/mlagarrigue/sluice/pushdown"
 )
 
 // fakeServer scripts a backend: it hands out prepared responses and records
@@ -1705,4 +1706,160 @@ func TestConnUnknownMessageTypeBreaksTheConnectionWhileRecovering(t *testing.T) 
 			t.Error("the connection was left usable after an unknown message type")
 		}
 	})
+}
+
+// The bounds of a connection and a query at their edges: claim holds the
+// connection, MaxMessage reaches the reader, BatchBytes may be its ceiling,
+// a Bind of exactly the outbound bound goes, and a demand may name no key.
+func TestConnBoundsAtTheirEdges(t *testing.T) {
+	conn := NewConn(&fakeServer{}, Config{MaxMessage: maxStartupMessage})
+	if got := conn.r.MaxMessage(); got != maxStartupMessage {
+		t.Errorf("the reader's limit = %d, want Config.MaxMessage's %d", got, maxStartupMessage)
+	}
+	if err := conn.claim(nil); err != nil || !conn.busy {
+		t.Errorf("claim = %v, busy %v; want the connection held", err, conn.busy)
+	}
+
+	if _, size, err := batchBounds(QueryConfig{BatchBytes: maxBatchBytes}); err != nil || size != maxBatchBytes {
+		t.Errorf("BatchBytes at its ceiling = %d, %v", size, err)
+	}
+
+	saved := maxOutgoing
+	maxOutgoing = pgwire.BindLen("", maxStmtName, nil) + 4 + 10
+	defer func() { maxOutgoing = saved }()
+	if err := checkBindLen([]Param{{Value: make([]byte, 10)}}); err != nil {
+		t.Errorf("a Bind of exactly the bound: %v", err)
+	}
+	if err := checkBindLen([]Param{{Value: make([]byte, 11)}}); !errors.Is(err, pgwire.ErrOutgoingTooLarge) {
+		t.Errorf("a Bind one byte over: %v", err)
+	}
+
+	var d pushdown.Demand
+	err := drain(t, NewConn(&fakeServer{}, Config{}).Query(t.Context(), "SELECT 1", nil, QueryConfig{Demand: &d, KeyParam: 0}))
+	if err != nil && strings.Contains(err.Error(), "KeyParam") {
+		t.Errorf("a demand with no key parameter was refused: %v", err)
+	}
+}
+
+// FetchAuto asks for a statement whole when its last result fit in one
+// batch exactly, and when it was empty.
+func TestFetchAutoWholeAtItsEdges(t *testing.T) {
+	empty := func(parse bool) [][]byte {
+		var b []byte
+		if parse {
+			b = append(b, beSimple(pgwire.BackendParseComplete)...)
+		}
+		b = append(b, beSimple(pgwire.BackendBindComplete)...)
+		b = append(b, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
+		b = append(b, beCommandComplete("SELECT 0")...)
+		if parse {
+			return [][]byte{b, beReadyForQuery()}
+		}
+		return [][]byte{append(b, beReadyForQuery()...)}
+	}
+	for name, script := range map[string][][]byte{
+		"exactly one batch": slices.Concat(oneRow(), oneRowWhole()),
+		"no row":            slices.Concat(empty(true), empty(false)),
+	} {
+		srv := &fakeServer{responses: script}
+		conn := NewConn(srv, Config{})
+		cfg := QueryConfig{BatchRows: 1}
+		if err := drain(t, conn.Query(t.Context(), "SELECT id", nil, cfg)); err != nil {
+			t.Fatal(err)
+		}
+		n := len(srv.clientMessages(t))
+		if err := drain(t, conn.Query(t.Context(), "SELECT id", nil, cfg)); err != nil {
+			t.Fatal(err)
+		}
+		if got := sentSince(t, srv, n); !slices.Equal(got, wholeRead) {
+			t.Errorf("%s: the second execution sent %q, want %q", name, got, wholeRead)
+		}
+	}
+}
+
+// A moved bound is written into the query's own copy of the parameters,
+// never into the caller's slice.
+func TestReplanLeavesTheCallersParameters(t *testing.T) {
+	var d pushdown.Demand
+	d.AdvanceTo(int8Val(10))
+	caller := []Param{{OID: pgtype.OIDInt8, Value: int8Val(0)}}
+	q := &query{demand: pushdown.NewReader(&d), keyParam: 1, params: caller, allowed: -1, batchRows: 2}
+	if !q.replan() {
+		t.Fatal("replan did not see the bound move")
+	}
+	if !bytes.Equal(caller[0].Value, int8Val(0)) {
+		t.Errorf("the caller's parameter became % x", caller[0].Value)
+	}
+	if !bytes.Equal(q.params[0].Value, int8Val(10)) {
+		t.Errorf("the query's parameter = % x, want the bound", q.params[0].Value)
+	}
+}
+
+// emit honours a limit down to zero, and sizes the next batch to what the
+// limit still allows.
+func TestEmitHonoursTheLimit(t *testing.T) {
+	rowsOf := func(n int) *Rows {
+		r := newRows(1, 10, 0)
+		for i := range n {
+			if err := r.appendRow(dataRow(int8Val(int64(i)))); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return r
+	}
+	conn := NewConn(&fakeServer{}, Config{})
+	q := &query{conn: conn, ctx: t.Context(), batchRows: 10, allowed: 5, rows: rowsOf(3)}
+	q.emit(func(sluice.Batch[Row]) bool { return true })
+	if q.allowed != 2 || q.rowsWanted != 2 {
+		t.Errorf("after 3 of 5 rows: allowed %d, next batch %d; want 2 and 2", q.allowed, q.rowsWanted)
+	}
+	q = &query{conn: conn, ctx: t.Context(), batchRows: 10, allowed: 0, rows: rowsOf(1)}
+	q.emit(func(sluice.Batch[Row]) bool { return true })
+	if q.rowsRead != 0 {
+		t.Errorf("a limit of zero let %d rows through", q.rowsRead)
+	}
+}
+
+// A connection that ends during a resync, without the FATAL that explains
+// it, is broken; one that sends a ParameterStatus it cannot read is read on
+// to its ReadyForQuery and stays good. A PANIC closes like a FATAL; an
+// ERROR does not.
+func TestResyncAtItsEdges(t *testing.T) {
+	var first []byte
+	first = append(first, beSimple(pgwire.BackendParseComplete)...)
+	first = append(first, beSimple(pgwire.BackendBindComplete)...)
+	first = append(first, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
+	first = append(first, beDataRow(int8Val(1))...)
+	first = append(first, beSimple(pgwire.BackendPortalSuspended)...)
+	stopEarly := func(conn *Conn) {
+		src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 1})
+		src.Stream()(func(sluice.Batch[Row]) bool { return false })
+		_ = src.Err()
+	}
+
+	conn := NewConn(&fakeServer{responses: [][]byte{first}}, Config{})
+	stopEarly(conn)
+	if !errors.Is(conn.Err(), ErrConnBroken) {
+		t.Errorf("a connection that ended during the resync: Err = %v, want ErrConnBroken", conn.Err())
+	}
+
+	srv := &fakeServer{responses: slices.Concat(
+		[][]byte{first, append(frame(pgwire.BackendParameterStatus, "no terminator"), beReadyForQuery()...)},
+		oneRowWhole())}
+	conn = NewConn(srv, Config{})
+	stopEarly(conn)
+	if err := conn.Err(); err != nil {
+		t.Fatalf("an unreadable ParameterStatus broke the connection: %v", err)
+	}
+	if err := drain(t, conn.Query(t.Context(), "SELECT id", nil, QueryConfig{Fetch: FetchAll})); err != nil {
+		t.Errorf("the query after the resync: %v", err)
+	}
+
+	conn = NewConn(&fakeServer{}, Config{})
+	if err := conn.closedAfter(&Error{Severity: "ERROR"}, io.EOF); err != nil {
+		t.Errorf("closedAfter an ERROR = %v, want nil", err)
+	}
+	if err := conn.closedAfter(&Error{Severity: "PANIC"}, io.EOF); err == nil {
+		t.Error("closedAfter a PANIC = nil, want the server's close")
+	}
 }

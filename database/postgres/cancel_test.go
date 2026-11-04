@@ -1564,3 +1564,36 @@ func TestCancelSendsTheLongestSecret(t *testing.T) {
 		t.Fatalf("writeCancel with a %d-byte secret = %v, %d bytes sent", maxCancelSecret, err, sent.Len())
 	}
 }
+
+// The rest of a result asked for whole is cancelled once more than two
+// batches' worth of bytes were read past the stop, not once exactly that
+// much was: the byte budget is reached, then passed.
+func TestAnEarlyStopCancelsPastTheByteBudget(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, conn := newPipeServer(t)
+		conn.cancelKey = CancelKey{PID: 1, Secret: testSecret}
+		packets := make(chan []byte, 1)
+		dials := 0
+		conn.cancelDial = cancelPipe(&dials, packets)
+
+		sent := make(chan int, 1)
+		go func() {
+			n, _ := streamRows(t, srv, packets, 1000)
+			sent <- n
+			answerOne(t, srv)
+		}()
+		// Eight bytes of value a row close a batch of 70 on its ninth row;
+		// a DataRow body is 14 bytes, so the budget of two batches, 140
+		// bytes, is ten rows read past the stop.
+		src := conn.Query(t.Context(), "SELECT n FROM t", nil, QueryConfig{Fetch: FetchAll, BatchRows: 1000, BatchBytes: 70})
+		delivered := 0
+		src.Stream()(func(b sluice.Batch[Row]) bool { delivered = b.Len(); return false })
+		if err := src.Err(); err != nil {
+			t.Fatalf("Err = %v", err)
+		}
+		if n := <-sent; n != delivered+11 {
+			t.Errorf("%d rows sent for %d delivered, want the cancellation on the eleventh row past the stop", n, delivered)
+		}
+		checkNextQuery(t, conn)
+	})
+}
