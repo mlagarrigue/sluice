@@ -4,9 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mlagarrigue/sluice/net/quic/udp"
 )
 
 // The spin bit is drawn, both values seen.
@@ -485,5 +488,66 @@ func TestMigrationAdoptsTheFirstUnusedIdentifier(t *testing.T) {
 	c.migrateLocked(&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 9}, c.pc, time.Now())
 	if c.currentPeerSeq != 1 {
 		t.Errorf("currentPeerSeq = %d after the move", c.currentPeerSeq)
+	}
+}
+
+// The table of sourced vias stops at its bound.
+func TestSourcedViasStopAtTheirBound(t *testing.T) {
+	uc, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer uc.Close()
+	if packetInfoSocket(uc) == nil {
+		t.Skip("no packet information on this socket")
+	}
+	s := &sourcedVias{uc: uc, oob: make([]byte, udp.PacketInfoLen), byLocal: make(map[localKey]*sourcedConn)}
+	for i := range maxSourcedVias {
+		s.byLocal[localKey{addr: netip.AddrFrom4([4]byte{10, 0, byte(i >> 8), byte(i)})}] = &sourcedConn{}
+	}
+	sender, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sender.Close()
+	port := uc.LocalAddr().(*net.UDPAddr).Port
+	if _, err := sender.WriteTo([]byte("x"), &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port}); err != nil {
+		t.Fatal(err)
+	}
+	_ = uc.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, _, _, _, err := s.read(make([]byte, 64)); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.byLocal) != maxSourcedVias {
+		t.Errorf("%d sourced vias, past the bound of %d", len(s.byLocal), maxSourcedVias)
+	}
+}
+
+// A valid Retry token is verified, and spent, when the listener would not
+// have asked for one itself.
+func TestRetryTokenVerifiedWithoutForcedRetry(t *testing.T) {
+	srv, cli := newLoopbackPair(t)
+	l, err := NewListener(srv, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	newSCID := []byte("newscid1")
+	token := appendRetryToken(nil, l.lcfg.TokenKey, cli.LocalAddr(), []byte("odcid000"), newSCID)
+	if _, err := cli.WriteTo(sealedClientInitialWithToken(t, newSCID, []byte("clientsc"), token), srv.LocalAddr()); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		l.mu.Lock()
+		_, spent := l.spent.byID[string(newSCID)]
+		l.mu.Unlock()
+		if spent {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the token was never spent: it reached the direct path unexamined")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
