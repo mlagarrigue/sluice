@@ -248,3 +248,28 @@ func TestUnorderedReadsAheadAtMostItsSlots(t *testing.T) {
 		<-done
 	})
 }
+
+// Unordered holds 2×workers+1 input slots and no more: the bytes one run
+// allocates grow with the workers by a few slots each, not by thousands.
+// Measured as bytes per run of a one-batch stream, between one worker and
+// eight, so the rest of the run cancels out.
+func TestParallelUnorderedPreallocatesOnlyItsSlots(t *testing.T) {
+	src := sluice.Stream[int](func(yield func(sluice.Batch[int]) bool) {
+		yield(sluice.Batch[int]{Items: []int{1}})
+	})
+	id := func(b sluice.Batch[int]) sluice.Batch[int] { return b }
+	bytesFor := func(workers int) int64 {
+		return testing.Benchmark(func(b *testing.B) {
+			b.Helper()
+			b.ReportAllocs()
+			for b.Loop() {
+				for range Unordered(src, workers, id) {
+				}
+			}
+		}).AllocedBytesPerOp()
+	}
+	one, eight := bytesFor(1), bytesFor(8)
+	if eight-one > 16<<10 {
+		t.Errorf("a run allocates %d bytes with eight workers, %d with one: past the 14 slots seven workers add", eight, one)
+	}
+}
