@@ -1808,14 +1808,30 @@ func (c *Conn) blockedResendInterval() time.Duration {
 func (c *Conn) resendBlockedFramesLocked(now time.Time) {
 	blocked := false
 	inFlight := c.elicitingInFlightLocked()
-	queue := func(frame []byte) {
+	// The frames already waiting are read once per tick: asking
+	// controlHoldsLocked for each blocked stream walked the whole queue
+	// every time, B²/2 parses for B streams parked at their limit, which
+	// BenchmarkResendBlocked measures at 16, 256 and 4096 streams.
+	var held map[blockedKey]bool
+	queue := func(typ byte, id, limit uint64) {
 		blocked = true
-		if !inFlight && !c.controlHoldsLocked(frame) {
-			c.control = append(c.control, frame...)
+		if inFlight {
+			return
+		}
+		if held == nil {
+			held = c.heldBlockedLocked()
+		}
+		if k := (blockedKey{typ, id, limit}); !held[k] {
+			held[k] = true
+			if typ == frameDataBlocked {
+				c.control = appendFrame(c.control, frameDataBlocked, limit)
+			} else {
+				c.control = appendFrame(c.control, frameStreamDataBlocked, id, limit)
+			}
 		}
 	}
 	if c.connSend.avail() == 0 && c.connSend.blockedSent {
-		queue(appendFrame(nil, frameDataBlocked, c.connSend.max))
+		queue(frameDataBlocked, 0, c.connSend.max)
 	}
 	for _, s := range c.streams {
 		// Not for a stream whose sending part is closed — reset since, or
@@ -1823,7 +1839,7 @@ func (c *Conn) resendBlockedFramesLocked(now time.Time) {
 		// the frame after RESET_STREAM and from "Data Recvd", and "Data
 		// Sent" has no need of it.
 		if s.sendQ.avail() == 0 && s.sendQ.blockedSent && !s.sendClosed {
-			queue(appendFrame(nil, frameStreamDataBlocked, s.id, s.sendQ.max))
+			queue(frameStreamDataBlocked, s.id, s.sendQ.max)
 		}
 	}
 	if !blocked {
@@ -1845,6 +1861,32 @@ func (c *Conn) elicitingInFlightLocked() bool {
 		}
 	}
 	return false
+}
+
+// blockedKey names one *_BLOCKED frame: its type, its stream (zero for
+// DATA_BLOCKED) and the limit it announces. The queue holds this end's own
+// encoding, so equal keys are equal bytes.
+type blockedKey struct {
+	typ       byte
+	id, limit uint64
+}
+
+// heldBlockedLocked is the set of *_BLOCKED frames waiting in the control
+// queue, read in one walk. Callers hold mu.
+func (c *Conn) heldBlockedLocked() map[blockedKey]bool {
+	// A frame takes three bytes at least: the size hint spares the growth.
+	held := make(map[blockedKey]bool, len(c.control)/3)
+	for q := c.control; len(q) > 0; {
+		f, rest, err := parseFrame(q)
+		if err != nil {
+			break
+		}
+		if f.Type == frameDataBlocked || f.Type == frameStreamDataBlocked {
+			held[blockedKey{f.Type, f.StreamID, f.value}] = true
+		}
+		q = rest
+	}
+	return held
 }
 
 // controlHoldsLocked reports whether frame, one encoded frame, waits in the
