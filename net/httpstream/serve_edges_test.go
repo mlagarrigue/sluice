@@ -63,7 +63,11 @@ func TestConnSetForgetsAnAddressWithNoConnections(t *testing.T) {
 func TestPeerWatchStopsAtItsLimit(t *testing.T) {
 	client, server := net.Pipe()
 	defer func() { _ = client.Close(); _ = server.Close() }()
-	go func() { _, _ = client.Write(make([]byte, 116)) }()
+	go func() { // in two writes, so the second read starts with bytes held
+		if _, err := client.Write(make([]byte, 10)); err == nil {
+			_, _ = client.Write(make([]byte, 106))
+		}
+	}()
 	w := watchPeer(&prefixConn{Conn: server}, 16)
 	select {
 	case <-w.done:
@@ -182,5 +186,36 @@ func TestAStreamedBatchAtItsEdges(t *testing.T) {
 	out = exchange(t, addr, get("/short")+get("/next"))
 	if strings.Count(out, "HTTP/1.1 ") != 1 || strings.Contains(out, "next") {
 		t.Errorf("a streamed body short of its length did not end the connection:\n%s", out)
+	}
+}
+
+// failingOn fails every write that carries mark.
+type failingOn struct {
+	net.Conn
+	mark  string
+	wrote int
+}
+
+func (c *failingOn) Write(p []byte) (int, error) {
+	if strings.Contains(string(p), c.mark) {
+		return 0, errDripStop
+	}
+	c.wrote += len(p)
+	return len(p), nil
+}
+
+func (c *failingOn) SetWriteDeadline(time.Time) error { return nil }
+
+// The buffered answers behind a batch's last streamed one go out in one
+// write, and its failure is the batch's.
+func TestAStreamedBatchReportsItsLastWrite(t *testing.T) {
+	client, server := net.Pipe() // the watch reads the server end
+	defer func() { _ = client.Close(); _ = server.Close() }()
+	c := &prefixConn{Conn: &failingOn{Conn: server, mark: "MARK"}}
+	requests := []Request{{Method: []byte("GET"), KeepAlive: true}, {Method: []byte("GET"), KeepAlive: true}}
+	res := []Response{{Status: 200, Stream: streamOf("zz")}, {Status: 200, Body: []byte("MARK")}}
+	_, _, err := writeStreamedBatch(c, nil, Config{}.mustResolve(), requests, res, nil)
+	if !errors.Is(err, errDripStop) {
+		t.Errorf("writeStreamedBatch = %v, want the failed write", err)
 	}
 }
