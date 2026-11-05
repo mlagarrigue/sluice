@@ -201,6 +201,17 @@ func TestTakePNSkipsAtItsEdges(t *testing.T) {
 			t.Errorf("next %d: took %d, want %d", tc.next, got, tc.want)
 		}
 	}
+
+	// A window of ten datagrams skips a number every five to fifteen.
+	c := &Conn{maxDatagram: 1200, cc: newNewReno(1200)}
+	sp := &c.spaces[spaceApplication]
+	var last uint64
+	for range 200 {
+		last = c.takePNLocked(sp, spaceApplication)
+	}
+	if last < 210 {
+		t.Errorf("200 packets took numbers up to %d: fewer than ten skipped", last)
+	}
 }
 
 // A long-header packet's size on the wire, across the Length field's
