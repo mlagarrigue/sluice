@@ -4,6 +4,159 @@ Each breaking change below is listed by its commit subject; what it changes
 in your code, and what to write instead, is in the
 [migration guide](docs/migration.md), from 0.3.0 on.
 
+## [0.5.0](https://github.com/mlagarrigue/sluice/compare/v0.4.0...v0.5.0) (2026-11-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* **postgres:** IndexOutOfRange becomes IndexError
+* **quic:** Config holds what never goes on the wire
+* **join:** Merge becomes MergeJoin
+* **quic:** bound ActiveConnIDLimit; bind a token's address
+* **web:** answer a body's wrong label with 415
+* **postgres:** bound the end of a COPY like a Tx
+
+### Features
+
+* **join:** Merge becomes MergeJoin ([c54b341](https://github.com/mlagarrigue/sluice/commit/c54b3411f6e4d90d9d03bca4914c3612a5fe5302))
+* **postgres:** extension types by looked-up OID ([354add8](https://github.com/mlagarrigue/sluice/commit/354add854d4c54dd6ac0b1bec17a66b0b452cc18))
+* **postgres:** generic array, range and record codecs ([7b5be26](https://github.com/mlagarrigue/sluice/commit/7b5be26ecb67de3c5f0382e849f4f93fc64a13af))
+* **postgres:** geometry and money codecs ([078e046](https://github.com/mlagarrigue/sluice/commit/078e046e1a4a00f2cb6f6ce00f43cecf8d31f470))
+* **postgres:** identifier and position codecs ([6436f80](https://github.com/mlagarrigue/sluice/commit/6436f80f75d08a8997d91ff017ac849ab2d19d86))
+* **postgres:** IndexOutOfRange becomes IndexError ([ca713ec](https://github.com/mlagarrigue/sluice/commit/ca713ec7a6b1f5ee9b51c7286b7d2d9a4ff3da3f))
+* **postgres:** range and multirange codecs ([3874942](https://github.com/mlagarrigue/sluice/commit/3874942b8972f7be155e40d5f7d22341e7e05d2d))
+* **postgres:** tsvector and tsquery codecs ([5e0492d](https://github.com/mlagarrigue/sluice/commit/5e0492da6c8d746d88fbe83bd5b4c251571d1b1f))
+* **postgres:** xml, jsonpath, refcursor and enum columns ([e35fc98](https://github.com/mlagarrigue/sluice/commit/e35fc98479648861898e6a98cd76fd9ef8ef2009))
+* **quic:** Config holds what never goes on the wire ([fbea267](https://github.com/mlagarrigue/sluice/commit/fbea267299984c15d3926a17f1b527fd8b70bf52))
+
+
+### Bug fixes
+
+* **audit:** netdev_max_backlog links the page that defines it ([6e78c1d](https://github.com/mlagarrigue/sluice/commit/6e78c1dbabfe83c0cdec9904857199a1d01951b5))
+* **httpstream:** a CRLF after a body is not a request ([9d1b860](https://github.com/mlagarrigue/sluice/commit/9d1b86064a2ccaacc16f5239646ad1a507c0d71c))
+* **httpstream:** a request at every bound fits ([754d58d](https://github.com/mlagarrigue/sluice/commit/754d58df8afdfe2643e05c2df3e75f9aa0530d3a))
+* **httpstream:** an idle HTTP/2 conn is not cut ([2e39fc9](https://github.com/mlagarrigue/sluice/commit/2e39fc918a0bdfbcea2cca03ada742ee161f3ae0))
+* **httpstream:** drop an h3 request stopped while assembling ([df76f97](https://github.com/mlagarrigue/sluice/commit/df76f97297c5bd80182c363925844059c1fb7129))
+* **httpstream:** h2 and h3 refuse Trailer without Trailers ([107de43](https://github.com/mlagarrigue/sluice/commit/107de4353140e5a3a3fca8b56725cc0607f7de3d))
+* **httpstream:** h2 sends and counts nothing on a closed stream ([73d0cd7](https://github.com/mlagarrigue/sluice/commit/73d0cd754ae748328dbee904762de406c4982ba7))
+* **httpstream:** h3 judges a misplaced frame by its type ([d160a0f](https://github.com/mlagarrigue/sluice/commit/d160a0f0335639ababec1e620bcb9f8da2970349))
+* **httpstream:** hold h2 socket writes to the progress rule ([c169546](https://github.com/mlagarrigue/sluice/commit/c169546de0f436444d18c0780c8073c8914e518a))
+* **httpstream:** hold MaxConcurrentStreams to the h3 cap ([debd09a](https://github.com/mlagarrigue/sluice/commit/debd09a08ad38c5cc26c441200447bfbf787745a))
+* **httpstream:** log an HTTP/1.1 connection that broke the protocol ([b6fa35a](https://github.com/mlagarrigue/sluice/commit/b6fa35a446826198bf6c2efc6e9bca45b68c9c31))
+* **httpstream:** walk a dripped chunked body without its head ([c113872](https://github.com/mlagarrigue/sluice/commit/c1138726d410d68905ab4b551d2da01e32715291))
+* **postgres:** bound the end of a COPY like a Tx ([a534fe5](https://github.com/mlagarrigue/sluice/commit/a534fe577b466fa46ffe077f05b817eab5ea23be))
+* **postgres:** end the block a cancelled COMMIT leaves ([6bf4d94](https://github.com/mlagarrigue/sluice/commit/6bf4d94b1a50646e7705e7269ce05c7bdcfcc8fe))
+* **postgres:** quote an unauthenticated server short ([991843d](https://github.com/mlagarrigue/sluice/commit/991843dab227b3033d8d8ca540046e067af50829))
+* **postgres:** read an owed ReadyForQuery under watch ([a7ff447](https://github.com/mlagarrigue/sluice/commit/a7ff4472476956a90d4a84794115cbb4e8cb8ea7))
+* **quic:** a gathered 0-RTT packet leaves before its keys ([2f016e3](https://github.com/mlagarrigue/sluice/commit/2f016e3184b98fbe24e5f68dbcd844c28621ab15))
+* **quic:** a peer that never acks bounds its own answers ([b3d2860](https://github.com/mlagarrigue/sluice/commit/b3d2860f80c9741a3d5d4780e336264025ef3674))
+* **quic:** a Retry token up to 1034 bytes is honoured ([d5819b1](https://github.com/mlagarrigue/sluice/commit/d5819b181f00e6f44d72ac0a7c519e552cdac115))
+* **quic:** a withheld packet owes only the ACK that was due ([5ffe44b](https://github.com/mlagarrigue/sluice/commit/5ffe44ba9604818d1e3cd894d2d05664287b843c))
+* **quic:** answer a STOP_SENDING at best effort ([5f714ea](https://github.com/mlagarrigue/sluice/commit/5f714ea5641821b7123d8c26259adb2b6a61607b))
+* **quic:** bound ActiveConnIDLimit; bind a token's address ([2f3fe1b](https://github.com/mlagarrigue/sluice/commit/2f3fe1b420a86a03e6b87af8f5f488e9c83bdb0b))
+* **quic:** clear the read deadline of a socket handed back ([b54b995](https://github.com/mlagarrigue/sluice/commit/b54b99550193e97d3ffd25ab858cf9b3a8432ed6))
+* **quic:** dense packets reuse the frame scratch ([ccd75a9](https://github.com/mlagarrigue/sluice/commit/ccd75a95ef394027cbfcdf9e9f4c8a86538caacf))
+* **quic:** DialEarly offers the group the server chose ([2e34092](https://github.com/mlagarrigue/sluice/commit/2e340925b63e930c7d552ab04c4cd836edb92907))
+* **quic:** find a stateless reset's connection by its token ([b863881](https://github.com/mlagarrigue/sluice/commit/b8638819e8716a7a7b5dffa68fc5f31700b5693e))
+* **quic:** free a reset stream's out-of-order bytes ([1d8f71d](https://github.com/mlagarrigue/sluice/commit/1d8f71db388e2c590d7c48aae50d90ad0a98f3ce))
+* **quic:** hand back the socket of a failed Dial ([94306a3](https://github.com/mlagarrigue/sluice/commit/94306a358b6110c46211caae6646c536262f7b10))
+* **quic:** keep no receive scratch at one packet's size ([10e7aaf](https://github.com/mlagarrigue/sluice/commit/10e7aafef3f0d8e308eedf89b67dbbab6c865783))
+* **quic:** one taker per ticket, TLS 1.3 per-client configs ([e1198f4](https://github.com/mlagarrigue/sluice/commit/e1198f4d348b162c850039e4e62aaf4ddee1eeb7))
+* **quic:** packet limits per RFC 9000 §4.1 and §7.5 ([476be1a](https://github.com/mlagarrigue/sluice/commit/476be1a7f112593f44c83dfd8d00b06d8a87d228))
+* **quic:** refuse a negative MaxIdleTimeout ([06e4a70](https://github.com/mlagarrigue/sluice/commit/06e4a703728790d6bde79c5bfb887fac46c4aa27))
+* **quic:** reserve a 0-RTT ticket under the connection lock ([e6f9e15](https://github.com/mlagarrigue/sluice/commit/e6f9e15962307e95ac9d5b1e915989b57477c1ea))
+* **quic:** resets report once, refused writes keep their offset ([4d6e17d](https://github.com/mlagarrigue/sluice/commit/4d6e17ddd26e99d4462bea7c12b6f7e1ea8c5d1b))
+* **quic:** return a parked writer's flush error to it ([af6fb3b](https://github.com/mlagarrigue/sluice/commit/af6fb3b88da5f77721f6a1927ae9114def27b3ff))
+* **quic:** see a write deadline moved during a window wait ([e5c3593](https://github.com/mlagarrigue/sluice/commit/e5c35932ddeaa4f20fd83f8a864023f335d05c65))
+* **quic:** the idle floor of three PTOs has no cap ([9b2d867](https://github.com/mlagarrigue/sluice/commit/9b2d86782d57c48c02e0555f6947787a1bf2f4ef))
+* **quic:** the preferred address is heard after a Rebind ([b37db55](https://github.com/mlagarrigue/sluice/commit/b37db5507e32aebf36f4e4777d7bbb056e39cd77))
+* **quic:** wake stream openers only when MAX_STREAMS rises ([3ef3d60](https://github.com/mlagarrigue/sluice/commit/3ef3d60e23eab10d00b3959f7282f2761f19deeb))
+* **web:** answer a body's wrong label with 415 ([62d3712](https://github.com/mlagarrigue/sluice/commit/62d371243da3317e05f52a8d1f1cfbb3318ef44b))
+
+
+### Performance
+
+* **httpstream:** move the read window, not the buffer ([39f7642](https://github.com/mlagarrigue/sluice/commit/39f7642220c4c2c1153aaa93a13589525d83282b))
+* **quic:** one read buffer per handshake ([8c6bc2f](https://github.com/mlagarrigue/sluice/commit/8c6bc2f5857e283531e9355d7070803d1d6cad1a))
+* **quic:** re-announce blocked frames in one pass ([af01d35](https://github.com/mlagarrigue/sluice/commit/af01d354260ea1374d30de52f0936044023ba010))
+
+
+### Documentation
+
+* a stage is an operator or a function over a batch ([2fb7ecc](https://github.com/mlagarrigue/sluice/commit/2fb7ecca4b2a85aed2226af2fdd03f0daf571ab4))
+* ADR 0002 names what CI runs without a count ([f960311](https://github.com/mlagarrigue/sluice/commit/f960311fe46a0c82c200d93f952db577e6e404e1))
+* ADR 0002, ADR 0008 and ADR 0009 get subheadings ([222db2c](https://github.com/mlagarrigue/sluice/commit/222db2cfeb407df95e671a2959300467d7d365a9))
+* ADR 0008, ADR 0015 and ADR 0017 in the present ([c39e5a6](https://github.com/mlagarrigue/sluice/commit/c39e5a6940d4f1897c91d1f2bbafebd168ef6bbf))
+* ADR 0009, ADR 0015, ADR 0018, ADR 0021 dated ([c7c01ee](https://github.com/mlagarrigue/sluice/commit/c7c01ee15fbe32adbabd4a7d4c8c13e7b6c2f405))
+* ADR 0011 and ADR 0020 drop web/stream's label ([4f067f1](https://github.com/mlagarrigue/sluice/commit/4f067f19fdd1570a312c85868f400b6cb184acb7))
+* ADR 0015, ADR 0017, ADR 0018, ADR 0019 subheadings ([6c51e8d](https://github.com/mlagarrigue/sluice/commit/6c51e8dab474422fe8c4496370ea756d45ea60c6))
+* ADR 0017 numbers its points without § ([13ef249](https://github.com/mlagarrigue/sluice/commit/13ef249ded133625cbe1b09ad50d2644c3ce15d9))
+* ADR 0018 and the architecture match the code ([336b3b3](https://github.com/mlagarrigue/sluice/commit/336b3b3203d8267e820b6f2a8f274cdda679f2db))
+* ADR 0019 and ADR 0022 tell no revision ([352a2ce](https://github.com/mlagarrigue/sluice/commit/352a2ce75774dae4339c566a0bf8329c8c501372))
+* architecture glosses every system it cites ([8c88f7b](https://github.com/mlagarrigue/sluice/commit/8c88f7b0fd6cb73984c18fe93f16d8f867274f00))
+* architecture's figures have their benchmark rows ([5b27006](https://github.com/mlagarrigue/sluice/commit/5b27006379c46b0d3d1e10a7e93bb0748874314c))
+* **audit:** name the audit module where readers look ([a928def](https://github.com/mlagarrigue/sluice/commit/a928def88482f1a4d1bb21bb3b0b8831e734b05c))
+* **bench:** the statement cache measured at the page's pace ([9262dcf](https://github.com/mlagarrigue/sluice/commit/9262dcfed07af471302dfa4cc0e935f1b685f0e1))
+* **bench:** the statement cache re-measured on its own ([6696722](https://github.com/mlagarrigue/sluice/commit/6696722554a590206738f08d7b25e183d19b127a))
+* **bench:** what each operator costs comes first ([8cf01ab](https://github.com/mlagarrigue/sluice/commit/8cf01ab458a8f04f967a894622536176308d3ad4))
+* c54b341 revised ADR 0001 and ADR 0004 ([cd49322](https://github.com/mlagarrigue/sluice/commit/cd4932274ece56060f87ab50c9a2708f09867e31))
+* comments in the present, names in their case ([9c8701f](https://github.com/mlagarrigue/sluice/commit/9c8701f16493207d0e092b4d8574ec53e5a55524))
+* CONTRIBUTING opens with a first change ([c011d12](https://github.com/mlagarrigue/sluice/commit/c011d12ae446d36cc32f8186d136402020638c94))
+* decisions point at code; no Affords sketch ([5ce044a](https://github.com/mlagarrigue/sluice/commit/5ce044a4dec2426be107a06debee738f007f8d02))
+* durations quoted in code have a source, ADR 0003 ([7b31102](https://github.com/mlagarrigue/sluice/commit/7b311026bddbe333d1a412aac920a9ed4b4fcc00))
+* each link once, each step said, each term met ([909d8a2](https://github.com/mlagarrigue/sluice/commit/909d8a2d224d6b6739a830319c456e8a249cdb78))
+* every package's godoc names its guide ([184f57f](https://github.com/mlagarrigue/sluice/commit/184f57fddd804fcd8509e38c90d0428ba71d650b))
+* fifteen terms the guides use join the glossary ([e4daeff](https://github.com/mlagarrigue/sluice/commit/e4daeff4cecd68cc540996f8347f60664f9d4e47))
+* file maps for httpstream and postgres, held ([1d7b67a](https://github.com/mlagarrigue/sluice/commit/1d7b67ae10e83fd8bdb30db44b2d8819b308e5e4))
+* five long functions carry a reading plan ([40a57c7](https://github.com/mlagarrigue/sluice/commit/40a57c7f720f4fa18063fb4b9c3a0a358ea040d6))
+* four architecture precepts the code can check ([e3b202a](https://github.com/mlagarrigue/sluice/commit/e3b202af196ec3d2ecab0217f83eb174010ee036))
+* getting-started meets Split before its panic ([a4d9563](https://github.com/mlagarrigue/sluice/commit/a4d956326cb068a939dbd3b3f795b5f2f698edb6))
+* guides say the present, not how it came ([a063449](https://github.com/mlagarrigue/sluice/commit/a0634495c71eecc5f03ee38ffc0ccf46985f5aa8))
+* **httpstream:** cite RFC 7838 for Alt-Svc ([c72889c](https://github.com/mlagarrigue/sluice/commit/c72889ccebeb82dcbccec857f86807120feb94ff))
+* **httpstream:** HTTP/3 entry points are outside the promise ([5b58e61](https://github.com/mlagarrigue/sluice/commit/5b58e61f2c819045f8e80d5d7909887c2c2cd5c4))
+* **httpstream:** name the HTTP/3 idle exception ([d6a73ae](https://github.com/mlagarrigue/sluice/commit/d6a73ae532bbceb6906f2495302dc453aca85588))
+* **httpstream:** name what bounds a finished h2 body ([47e5255](https://github.com/mlagarrigue/sluice/commit/47e5255813ac6a9b9008a444fbb464fa923ebd2c))
+* limits.md keeps what is missing ([b26e077](https://github.com/mlagarrigue/sluice/commit/b26e0772c0b7a05e359ebbd12ec49c25069486ab))
+* limits.md opens with its short answer ([3f24b49](https://github.com/mlagarrigue/sluice/commit/3f24b497b33592903816edb83f4bb3de793ae776))
+* llms.txt, an index for code assistants ([f80b2d8](https://github.com/mlagarrigue/sluice/commit/f80b2d80c8429546723b9db36a92099dc5f9b6ba))
+* migration names only what a tag had ([665fea8](https://github.com/mlagarrigue/sluice/commit/665fea84d1dfe5d9e15e0a25807ff04e087cca9a))
+* **postgres:** each term said before it is used ([6e880e4](https://github.com/mlagarrigue/sluice/commit/6e880e49954a0363c58395bf414f173bd474af34))
+* **postgres:** name every type the codecs leave out ([3a87749](https://github.com/mlagarrigue/sluice/commit/3a8774996b3ba0e23222be5757b9deec46a28b26))
+* **postgres:** Rollback's bound needs Connect's recipe ([32080b8](https://github.com/mlagarrigue/sluice/commit/32080b8a0a4474042d178fdc03c2fd7cc29a84d5))
+* **postgres:** savepoints get a guide and an example ([f0b6f09](https://github.com/mlagarrigue/sluice/commit/f0b6f09b4a70ac74762f9c3ba3c8554e90614356))
+* **postgres:** the SLUICE_PG variables, said once ([6611873](https://github.com/mlagarrigue/sluice/commit/6611873f77093445c3e559bda6d57b299fb2aca2))
+* public godoc names no unexported identifier ([9685d70](https://github.com/mlagarrigue/sluice/commit/9685d70ae2e43247ea93cd31c2e392f8ceb67686))
+* QUIC meets other implementations on a bench ([7ad6eb1](https://github.com/mlagarrigue/sluice/commit/7ad6eb1c1625c5c09c3281224e3f05b279a75875))
+* quic.Config in ADR 0009, ADR 0015, ADR 0018, ADR 0021 ([2a84bfe](https://github.com/mlagarrigue/sluice/commit/2a84bfea875e79d2333e899066b45bd09fc5e318))
+* **quic:** a /64 bounds an IPv6 host, not a site ([cec438d](https://github.com/mlagarrigue/sluice/commit/cec438de46da81cb7061c4c65d5808c3d96b6547))
+* **quic:** comments undated; the closing bound by arithmetic ([d9d4a58](https://github.com/mlagarrigue/sluice/commit/d9d4a586e10d2811f1e12829e205bc0a95f089d9))
+* **quic:** Dial says the client chain is checked ([c05cf5c](https://github.com/mlagarrigue/sluice/commit/c05cf5c9a45a8ef6105beecc412c7e685975831b))
+* **quic:** eight comments say what the code does ([ee5629e](https://github.com/mlagarrigue/sluice/commit/ee5629e93011f9a9441b7bb9385d1bdaa1adebb4))
+* **quic:** goroutines per slot; off-path bytes count ([48945cd](https://github.com/mlagarrigue/sluice/commit/48945cdb2e547195912cd7e517930fccd0a15b24))
+* **quic:** name the NEW_TOKEN and stream priority limits ([d527b05](https://github.com/mlagarrigue/sluice/commit/d527b05484682b51f6a5cf78ac124c6576d2768c))
+* **quic:** only the weekly interop pass counts ([87d3ffe](https://github.com/mlagarrigue/sluice/commit/87d3ffeccece39c21ecec13545813469ed555064))
+* **quic:** packet info on three systems; a supported parser ([15bd1e1](https://github.com/mlagarrigue/sluice/commit/15bd1e14023814b15f43ea9a0e5e2149f5c0d189))
+* **quic:** publish ten transport positions ([ce1360f](https://github.com/mlagarrigue/sluice/commit/ce1360f2eb7eae79357096ce6d2f0883dc2014f7))
+* **quic:** the migration entry names 2f3fe1b ([8d38add](https://github.com/mlagarrigue/sluice/commit/8d38addb3798721d0b4c38befd568d6bcb642519))
+* **quic:** the MTU cache per platform; X25519 reuse ([78462f4](https://github.com/mlagarrigue/sluice/commit/78462f4447e7ce3f88b739df3f82ee43ea2c9282))
+* **quic:** the Sunday interop pass crosses main ([e2f100b](https://github.com/mlagarrigue/sluice/commit/e2f100b2fae9fa1e0d77f6edea33c4e2420b55e6))
+* README badges read live sources, links list ([c32d6ce](https://github.com/mlagarrigue/sluice/commit/c32d6ce05002d490a7486bcbe5b5af66e2c8d4bd))
+* settings tables move to docs/reference ([54ebcdd](https://github.com/mlagarrigue/sluice/commit/54ebcdde18ba44ae233272a31c5ec7868bf492cb))
+* the BBR draft cited by its revision ([22fc380](https://github.com/mlagarrigue/sluice/commit/22fc38060976c103a43b559edb457110860262ec))
+* the glossary in six groups, each term once ([8b4e5bb](https://github.com/mlagarrigue/sluice/commit/8b4e5bbd4124499570164b0fc320d80de6221495))
+* the guides install v0.4.0, not main ([20fcd7c](https://github.com/mlagarrigue/sluice/commit/20fcd7c8ce9833102ce1784335cb53d1f7f7cb1c))
+* the README says what leaving costs ([6dce2ee](https://github.com/mlagarrigue/sluice/commit/6dce2eee20da6b4589604c8fa8ab0cc196ec1f5a))
+* three package comments fit on one page ([5d06f27](https://github.com/mlagarrigue/sluice/commit/5d06f27f8927d3ba9c2a63692556aca8315fffb7))
+* three pictures where the text drew one ([00a1ea2](https://github.com/mlagarrigue/sluice/commit/00a1ea2277c98f7368d0b5b10d00a8f1ed25fdf1))
+* troubleshooting names every exported error ([08171be](https://github.com/mlagarrigue/sluice/commit/08171be8683ae963cf859d61fa9e3ef11d7284b6))
+* troubleshooting starts from what you see ([0005562](https://github.com/mlagarrigue/sluice/commit/000556246a7111a79271a5064a102f04f6d44bc8))
+* **web:** a key-bound token verifies as bearer ([a4fa20f](https://github.com/mlagarrigue/sluice/commit/a4fa20fd42a018c9f62b95efec40acbc9c8fc354))
+* **web:** cite RFC 7518 for the HMAC key floor ([7d25966](https://github.com/mlagarrigue/sluice/commit/7d25966bcb9943ccc2f801607fa70fe9bffb3649))
+* **web:** define before use, name each section ([267989e](https://github.com/mlagarrigue/sluice/commit/267989e01a342fc95943ef96c906d8a0b113e22d))
+* what to watch in production ([2db2ec0](https://github.com/mlagarrigue/sluice/commit/2db2ec05c1915a2de4edd8574b802924adf1b98e))
+* where migration starts; what the root retains ([2814ebd](https://github.com/mlagarrigue/sluice/commit/2814ebdcfa2b011d0d7aa6f348c9080b163daaf2))
+* write down where a reading of the RFCs is chosen ([94e68d0](https://github.com/mlagarrigue/sluice/commit/94e68d07ec9512817b1f9baedee3f9ef464621a3))
+
 ## [0.4.0](https://github.com/mlagarrigue/sluice/compare/v0.3.0...v0.4.0) (2026-10-29)
 
 
