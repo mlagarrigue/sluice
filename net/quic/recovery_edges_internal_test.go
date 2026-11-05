@@ -208,24 +208,31 @@ func TestDeliveryEstimateMovesOnlyOnThisPathsAcks(t *testing.T) {
 	t0 := time.Now()
 	t1 := t0.Add(10 * time.Millisecond)
 
-	var s sentTracker
-	est := &deliveryEstimator{}
-	for pn := range uint64(3) {
-		s.record(sentPacket{pn: pn, sentAt: t0, size: 100, ackEliciting: true})
+	sampled := func(t *testing.T) (*sentTracker, *deliveryEstimator) {
+		t.Helper()
+		s := &sentTracker{}
+		est := &deliveryEstimator{}
+		for pn := range uint64(3) {
+			s.record(sentPacket{pn: pn, sentAt: t0, size: 100, ackEliciting: true})
+		}
+		ack(t, s, t1, 1, est)
+		if !est.deliveredTime.Equal(t1) {
+			t.Fatalf("deliveredTime = %v after the first ACK, want %v", est.deliveredTime, t1)
+		}
+		return s, est
 	}
-	ack(t, &s, t1, 1, est)
-	if !est.deliveredTime.Equal(t1) {
-		t.Fatalf("deliveredTime = %v after the first ACK, want %v", est.deliveredTime, t1)
-	}
-	if out := ack(t, &s, t1.Add(time.Second), 1, est); out.declared != 1 || out.newlyAckedCount != 0 {
+
+	s, est := sampled(t)
+	if out := ack(t, s, t1.Add(time.Second), 1, est); out.declared != 1 || out.newlyAckedCount != 0 {
 		t.Fatalf("the repeat declared %d and acknowledged %d, want 1 and 0", out.declared, out.newlyAckedCount)
 	}
 	if !est.deliveredTime.Equal(t1) {
 		t.Errorf("a loss-only frame moved deliveredTime to %v", est.deliveredTime)
 	}
 
+	s, est = sampled(t)
 	s.pathStart = t1.Add(time.Millisecond) // the packets left on a previous path
-	if out := ack(t, &s, t1.Add(2*time.Second), 2, est); out.newlyAckedCount != 1 {
+	if out := ack(t, s, t1.Add(2*time.Second), 2, est); out.newlyAckedCount != 1 {
 		t.Fatalf("the old path's packet: %d acknowledged", out.newlyAckedCount)
 	}
 	if !est.deliveredTime.Equal(t1) {
