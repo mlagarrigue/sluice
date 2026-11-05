@@ -75,3 +75,46 @@ func TestPingWaitsForTheAcknowledgement(t *testing.T) {
 		t.Fatal("Ping on a closed connection returned nil")
 	}
 }
+
+// Ping returns on the acknowledgement of its own PING: with every client
+// datagram after it dropped, the probes that follow never reach the server,
+// and the PING's acknowledgement is still enough.
+func TestPingReturnsOnItsOwnAcknowledgement(t *testing.T) {
+	serverPC, clientPC := dgram.Pair()
+	defer serverPC.Close()
+	defer clientPC.Close()
+	hooked := &hookedConn{PacketConn: clientPC}
+
+	connCh, errCh := startEchoServer(t, serverPC)
+	conn, err := quic.Dial(context.Background(), hooked, serverPC.LocalAddr(), clientTLS(), quic.DefaultConfig())
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer conn.Close()
+	select {
+	case serverConn := <-connCh:
+		defer serverConn.Close()
+	case err := <-errCh:
+		t.Fatalf("the server: %v", err)
+	}
+	if err := conn.Ping(t.Context()); err != nil {
+		t.Fatalf("Ping on a live path: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond) // the handshake's last acknowledgements leave
+
+	passed := false
+	hooked.mu.Lock()
+	hooked.filterWrite = func(b []byte) [][]byte {
+		if passed {
+			return nil
+		}
+		passed = true
+		return [][]byte{b}
+	}
+	hooked.mu.Unlock()
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	if err := conn.Ping(ctx); err != nil {
+		t.Errorf("Ping with only its own datagram delivered: %v", err)
+	}
+}
