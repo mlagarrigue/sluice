@@ -522,11 +522,73 @@ func TestTwoAcceptorsBothServed(t *testing.T) {
 		}()
 	}
 	time.Sleep(50 * time.Millisecond)
-	in(t, c, streamFrame(streamFrame(nil, 0, 0, "a", false), 4, 0, "b", false))
+	// Two streams queued behind one wake: the acceptor it wakes passes the
+	// next one on.
+	c.mu.Lock()
+	for _, id := range []uint64{0, 4} {
+		s := newStream(c, id)
+		s.queued = true
+		c.acceptQ = append(c.acceptQ, s)
+	}
+	c.signalAccept()
+	c.mu.Unlock()
 	for range 2 {
 		if err := <-errs; err != nil {
 			t.Errorf("an acceptor: %v", err)
 		}
+	}
+}
+
+// Accepting a stream sends the grants queued for the peer.
+func TestAcceptSendsQueuedGrants(t *testing.T) {
+	client, server, _ := pmtuPair(t, 1500)
+	s, err := client.OpenStream(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		server.mu.Lock()
+		queued := len(server.acceptQ)
+		server.mu.Unlock()
+		if queued > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the stream never queued for Accept")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond) // the exchange's acknowledgements settle
+	server.mu.Lock()
+	server.grants = appendFrame(server.grants, frameMaxData, server.connRecv.max)
+	server.mu.Unlock()
+	if _, err := server.AcceptStream(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if len(server.grants) != 0 {
+		t.Errorf("% x still queued after Accept", server.grants)
+	}
+}
+
+// A RESET_STREAM that releases unread bytes without raising the flight
+// gives the connection's window back.
+func TestResetReleasesConnectionCredit(t *testing.T) {
+	c := boundsConn(t, false)
+	c.mu.Lock()
+	c.connRecv = newRecvQuota(100)
+	c.mu.Unlock()
+	in(t, c, streamFrame(nil, 0, 20, string(make([]byte, 40)), false)) // parked behind a gap
+	in(t, c, appendFrame(nil, FrameResetStream, 0, 0, 60))
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.grants) == 0 || c.grants[0] != frameMaxData {
+		t.Errorf("grants after the reset released 60 of 100: % x", c.grants)
 	}
 }
 
