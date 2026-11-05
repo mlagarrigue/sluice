@@ -187,6 +187,23 @@ func TestCryptoChunksAtTheirEdges(t *testing.T) {
 	}
 
 	c = newIdleServerConn(t)
+	cc = newNewReno(1200)
+	c.mu.Lock()
+	cc.inFlight = cc.cwnd
+	c.cc = cc
+	chunk = c.maxStreamChunk()
+	c.mu.Unlock()
+	if err := c.sendCrypto(tls.QUICEncryptionLevelInitial, make([]byte, 3000)); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	f, _, err = parseFrame(c.spaces[spaceInitial].retrans[0])
+	c.mu.Unlock()
+	if err != nil || len(f.Data) != chunk {
+		t.Errorf("first chunk without a token: %d bytes, %v; want %d", len(f.Data), err, chunk)
+	}
+
+	c = newIdleServerConn(t)
 	c.mu.Lock()
 	c.retryToken = make([]byte, c.maxStreamChunk()-2)
 	c.mu.Unlock()
