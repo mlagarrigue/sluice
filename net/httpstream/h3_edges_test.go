@@ -128,6 +128,14 @@ func TestQUICConfigStreamedRoomsAHead(t *testing.T) {
 // in-memory pair, with the transport parameters given.
 func serverConnWith(t *testing.T, params quic.Config) *quic.Conn {
 	t.Helper()
+	server, _ := connPair(t, params)
+	return server
+}
+
+// connPair is both ends of a fresh connection over an in-memory pair, the
+// server's with the transport parameters given.
+func connPair(t *testing.T, params quic.Config) (server, client *quic.Conn) {
+	t.Helper()
 	serverPC, clientPC := dgram.Pair()
 	t.Cleanup(func() { _ = serverPC.Close(); _ = clientPC.Close() })
 	accepted := make(chan *quic.Conn, 1)
@@ -148,7 +156,81 @@ func serverConnWith(t *testing.T, params quic.Config) *quic.Conn {
 		t.FailNow()
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	return conn
+	return conn, client
+}
+
+// openedStream opens a client stream, puts a byte on it, and waits until
+// the server knows it.
+func openedStream(t *testing.T, server, client *quic.Conn) *quic.Stream {
+	t.Helper()
+	s, err := client.OpenStream(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Write([]byte{0}); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		if _, err := server.Stream(s.ID()); err == nil {
+			return s
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the server never saw stream %d", s.ID())
+		}
+	}
+}
+
+// A streamed response without trailers, written to its end, is a whole
+// answer: it earns the rapid-reset allowance like any other.
+func TestH3StreamedResponseIsWhole(t *testing.T) {
+	server, client := connPair(t, quic.DefaultConfig())
+	s := openedStream(t, server, client)
+	cfg := Config{}.mustResolve()
+	r := Response{Status: 200, Stream: streamOf("a")}
+	if !writeH3Response(server, s.ID(), r, []byte("GET"), h3NoFieldSectionLimit, writeBoundOf(cfg), dateFor(time.Now()), func() {}) {
+		t.Error("a streamed response written whole was not reported whole")
+	}
+}
+
+// A delivery that refuses one request still hands over the one beside it,
+// and the refused stream is told to stop sending as well as reset.
+func TestH3DeliveryRefusesOneAndServesTheOther(t *testing.T) {
+	server, client := connPair(t, quic.DefaultConfig())
+	bad, good := openedStream(t, server, client), openedStream(t, server, client)
+	cfg := Config{}.mustResolve()
+	handled := make(chan string, 1)
+	s := &h3Serving{
+		c: server, cfg: cfg, forced: t.Context(), a: newH3Assembler(cfg),
+		handle: func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+			handled <- string(b.Items[0].Target)
+			return echoTarget(ctx, b)
+		},
+	}
+	err := s.onFrames([]quic.Frame{
+		streamFrame(bad.ID(), h3Request("GET", ""), true),
+		streamFrame(good.ID(), h3Request("GET", "/ok"), true),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case target := <-handled:
+		if target != "/ok" {
+			t.Errorf("the handler got %q", target)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("the request beside the refused one was never handed over")
+	}
+	s.calls.Wait()
+	s.writers.Wait()
+	stopped := false
+	for deadline := time.Now().Add(5 * time.Second); !stopped && time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		_, err := bad.Write([]byte{0})
+		stopped = err != nil
+	}
+	if !stopped {
+		t.Error("the refused stream was never told to stop sending")
+	}
 }
 
 // Manual credit needs windows that hold a request whole — or, when bodies
