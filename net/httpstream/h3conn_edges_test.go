@@ -80,6 +80,9 @@ func TestH3AssemblerHeadFirstConnectionBoundIsExact(t *testing.T) {
 		if err != nil || ok != (len(failed) == 0) {
 			t.Errorf("%d over: %v, %v", extra, failed, err)
 		}
+		if !ok && (len(failed) != 1 || !strings.Contains(failed[0].Err.Error(), "over 512 bytes")) {
+			t.Errorf("the refusal: %v", failed)
+		}
 	}
 }
 
@@ -88,13 +91,13 @@ func TestH3AssemblerHeadFirstConnectionBoundIsExact(t *testing.T) {
 func TestH3AssemblerFinInsideAFrameSaysHowShort(t *testing.T) {
 	skipped := append(h3Request("GET", "/x"), append(varint.Append(varint.Append(nil, 0x21), 100), make([]byte, 10)...)...)
 	_, _, _, err := testAssembler(Config{BodyDelivery: BodyWhole}).Frames([]quic.Frame{streamFrame(0, skipped, true)})
-	if err == nil || !strings.Contains(err.Error(), "90 bytes short") {
+	if err == nil || !strings.Contains(err.Error(), ", 90 bytes short") {
 		t.Errorf("inside a skipped frame: %v", err)
 	}
 	streamed := append(h3Request("POST", "/x"), append(varint.Append(varint.Append(nil, h3Data), 100), make([]byte, 10)...)...)
 	a := streamingAssembler(Config{MaxBodyBytes: 128, MaxStreamedBodyBytes: 1 << 12})
 	_, _, _, err = a.Frames([]quic.Frame{streamFrame(0, streamed, true)})
-	if err == nil || !strings.Contains(err.Error(), "90 bytes short") {
+	if err == nil || !strings.Contains(err.Error(), ", 90 bytes short") {
 		t.Errorf("inside a streamed DATA frame: %v", err)
 	}
 }
