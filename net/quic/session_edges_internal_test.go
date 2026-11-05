@@ -217,16 +217,21 @@ func TestTicketChainEndsAtItsBound(t *testing.T) {
 	}
 }
 
-// An entry forgotten frees its slot, even when it was the oldest.
+// An entry forgotten frees its slot, the oldest or one behind a live entry
+// the sweep stops at.
 func TestSpentTokenForgottenFreesItsSlot(t *testing.T) {
-	s := spentTokens{ttl: time.Minute, max: 1, failClosed: true}
 	now := time.Now()
-	if !s.consumeUntil([]byte("a"), now, now.Add(time.Minute)) {
-		t.Fatal("first entry refused")
-	}
-	s.forget([]byte("a"))
-	if !s.consumeUntil([]byte("b"), now, now.Add(time.Minute)) {
-		t.Error("the slot of a forgotten entry stayed taken")
+	for _, held := range [][]string{{"a"}, {"x", "a"}} {
+		s := spentTokens{ttl: time.Minute, max: len(held), failClosed: true}
+		for _, id := range held {
+			if !s.consumeUntil([]byte(id), now, now.Add(time.Minute)) {
+				t.Fatalf("%v: %s refused", held, id)
+			}
+		}
+		s.forget([]byte("a"))
+		if !s.consumeUntil([]byte("b"), now, now.Add(time.Minute)) {
+			t.Errorf("%v: the slot of a forgotten entry stayed taken", held)
+		}
 	}
 }
 
