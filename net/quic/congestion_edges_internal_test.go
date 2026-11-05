@@ -221,11 +221,11 @@ func TestBBRMinRTTAtItsEdges(t *testing.T) {
 		t.Errorf("a zero sample set probe_rtt_min_delay to %v", b.probeRTTMinDelay)
 	}
 
-	t0 := now.Add(-time.Second)
+	t0, t1 := now.Add(-2*time.Second), now.Add(-time.Second)
 	b = newBBR3(1200, nil)
-	b.probeRTTMinDelay, b.probeRTTMinStamp, b.minRTT, b.minRTTStamp = 50*ms, t0, 50*ms, t0
+	b.probeRTTMinDelay, b.probeRTTMinStamp, b.minRTT, b.minRTTStamp = 50*ms, t1, 50*ms, t0
 	b.updateMinRTT(now, 50*ms)
-	if !b.probeRTTMinStamp.Equal(t0) || !b.minRTTStamp.Equal(t0) {
+	if !b.probeRTTMinStamp.Equal(t1) || !b.minRTTStamp.Equal(t0) {
 		t.Errorf("an equal sample moved the stamps: %v, %v", b.probeRTTMinStamp, b.minRTTStamp)
 	}
 	b.updateMinRTT(now, 40*ms)
@@ -401,6 +401,13 @@ func TestECNValidationAtItsEdges(t *testing.T) {
 	c.validateECNLocked(spaceApplication, f, ackOutcome{})
 	if c.ecn.phase == ecnFailed {
 		t.Error("a frame without counts failed validation with nothing marked")
+	}
+
+	c = &Conn{}
+	c.spaces[spaceApplication].ecnSent = 10
+	c.validateECNLocked(spaceApplication, ackWithECN(t, 5, 0, 0, 0), ackOutcome{})
+	if c.ecn.phase != ecnTesting {
+		t.Errorf("valid counts with no marked packet acknowledged: phase %v, want still testing", c.ecn.phase)
 	}
 }
 
