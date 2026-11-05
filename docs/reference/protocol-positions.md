@@ -2,7 +2,7 @@
 
 How the longest limits were measured or argued, and where the library
 departs from a specification: the platforms, authentication, the interop
-runner, the datagram size and TLS. [Limits](../guide/limits.md) says each
+runner, the datagram size, the QUIC transport and TLS. [Limits](../guide/limits.md) says each
 limit in a line and links here.
 
 ## Platforms, in detail
@@ -170,6 +170,82 @@ is ignored as a malformed Retry would be — a later, well-formed Retry is
 still honoured — and counted in `Stats.DiscardedPackets`. RFC 9000 sets no
 bound; a server's token is a few dozen to a few hundred bytes, this
 package's own 130 at most.
+
+## The QUIC transport, in detail
+
+Ten requirements of RFC 9000 and RFC 9001 are met otherwise than the text
+writes them. Each was chosen, and a conformant peer sees no difference:
+the departure only touches a peer that already breaks the protocol. For
+each: what the text says, what the package does, why, and where to read
+the code in `net/quic`.
+
+**The flow-control limit enforced is the grant computed** (RFC 9000 §4.1,
+§19.9, §19.10; §4.6 and §19.11 for streams). The text closes the
+connection (FLOW_CONTROL_ERROR, STREAM_LIMIT_ERROR) when the peer goes past
+the value "it has sent" — the last MAX_DATA, MAX_STREAM_DATA or
+MAX_STREAMS that left. Here the limit enforced rises when the new grant is
+computed, a few microseconds before the frame carrying it leaves. A peer
+past what it was told, but not past what it is about to be told, is
+therefore not refused. Why: keeping two bounds (sent and computed) would
+double the hot path's accounting to refuse a peer the next grant covers
+anyway. Code: `recvQuota.nextMax` (`flow.go`),
+`Conn.returnStreamSlotLocked` (`stream.go`).
+
+**The ACK is owed from the parse** (RFC 9000 §13.1). The text has a packet
+acknowledged only once all its frames have been processed. Here the
+acknowledgement is owed as soon as the packet is decrypted and parsed,
+before its frames act: a reader woken by a frame that answers at once — the
+response to a request — carries the ACK out with it. The cost: if a later
+frame of the same packet closes the connection, the peer sees an ACK for
+the packet that closed it, of no consequence since the close follows. The
+gain: one ACK-only datagram fewer per request. Code: `Conn.framesIn`
+(`receive.go`).
+
+**The reserved bits of a first Initial close nothing** (RFC 9000 §17.2).
+The text treats non-zero reserved bits as a PROTOCOL_VIOLATION. On the
+first Initial of a connection not yet created, the `Listener` has no
+connection to close: the packet is dropped silently and counted. Why:
+Initial keys are public, so the packet can come from anyone; a
+CONNECTION_CLOSE to an unvalidated address would be an unsolicited send
+toward a possibly forged source (§8.1), and a connection created only to
+be closed is the state the drop saves. A real client that sets the bits is
+not conformant, and its handshake timeout tells it so. Code:
+`initialPacketDecrypts` (`listener.go`).
+
+**A stateless reset with a long header is not recognised** (RFC 9000
+§10.3). The text asks that "any packet" ending in a valid reset token be
+recognised. Only short headers are compared: a reset has the short-header
+shape by construction, no conformant peer sends a long-header one, and
+comparing the long headers that route nowhere would make every Initial of
+a new client pay a lookup. Code: `Listener.resetFor` (`listener.go`),
+`Conn.readShortHeader` and `Conn.openPacket` (`receive.go`).
+
+**A NEW_CONNECTION_ID retired more than 32 retirements ago is new**
+(RFC 9000 §19.15). The text forbids treating a frame received several
+times as an error. The identifiers this end retired on its own are kept in
+a ring of 32: a retransmission arriving after 32 other retirements is no
+longer in it, enters the pool as a new identifier, and if the pool is full
+the connection closes (CONNECTION_ID_LIMIT_ERROR). A retransmission follows
+the original by a probe timeout or two (§13.3), and a peer retires an
+identifier per path change: 33 retirements while a duplicate is in flight
+do not happen with a conformant peer, and the ring does not grow with the
+connection's age. Code: `maxRetiredSelf` and `Conn.handleNewConnectionID`
+(`migration.go`).
+
+**At a key's limit, the connection closes with AEAD_LIMIT_REACHED**
+(RFC 9001 §6.6). The text has an endpoint that reaches a key-usage limit
+"stop using the connection and only send stateless resets", and in the
+next sentence recommends closing before that with AEAD_LIMIT_REACHED. The
+second path is taken: one CONNECTION_CLOSE under the key in use, then the
+closing state, which answers the peer with that same CONNECTION_CLOSE,
+bounded. The peer gains a readable error code; the cost is a few bytes
+still sent under the spent key. Code: `Conn.atConfidentialityLimitLocked`
+(`send.go`), and the integrity limit in `Conn.openPacket` (`receive.go`).
+
+In plain words: these ten departures are choices, not oversights. Each
+avoids a cost — a send toward a doubtful address, one more datagram, a
+double count — and changes nothing for a peer that follows the protocol. A
+peer found to fail on one of them is the reason to revisit it.
 
 ## TLS, in detail
 
