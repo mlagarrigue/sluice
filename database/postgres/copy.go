@@ -62,7 +62,7 @@ type CopyConfig struct {
 	// sent. Message boundaries need not fall on row boundaries — the server
 	// concatenates them — so this is purely a buffering choice. Zero means
 	// 64 KiB; a negative value is refused. It bounds what is written; what is
-	// read from the server is bounded by [Config.MaxMessage], a separate number.
+	// read from the server is bounded by [Config.MaxMessageBytes], a separate number.
 	ChunkBytes int
 }
 
@@ -582,7 +582,7 @@ type copyReader struct {
 	// numbers recordParameter enforces, because recordParameter runs only
 	// in endCopy, once the COPY is over, and a load runs for hours: a
 	// server announcing parameters while the client writes its rows is
-	// otherwise one body per message, up to MaxMessage each, with nothing
+	// otherwise one body per message, up to MaxMessageBytes each, with nothing
 	// reading the queue before the end.
 	params     map[string][]byte
 	paramBytes int

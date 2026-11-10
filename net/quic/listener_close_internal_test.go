@@ -374,8 +374,8 @@ func TestListenerAnswersFromTheAddressDialled(t *testing.T) {
 			t.Fatalf("datagram %d came from %v, want %v", i, a, want)
 		}
 	}
-	if server.Migrations() != 0 {
-		t.Errorf("the server saw %d path changes for a client that never moved", server.Migrations())
+	if server.Stats().Migrations != 0 {
+		t.Errorf("the server saw %d path changes for a client that never moved", server.Stats().Migrations)
 	}
 }
 

@@ -14,7 +14,7 @@ import (
 // layer refused it at Flush with the read side's sentinel, after the
 // statement cache and the query's state had moved for a batch that never
 // left; the connector then broke a connection whose stream was intact, and
-// advised Config.MaxMessage, which does not move this bound.
+// advised Config.MaxMessageBytes, which does not move this bound.
 func TestAnOversizedBindLeavesTheConnectionUsable(t *testing.T) {
 	saved := maxOutgoing
 	maxOutgoing = 256 // stand-in for 1 GiB, so the test allocates nothing
@@ -42,8 +42,8 @@ func TestAnOversizedBindLeavesTheConnectionUsable(t *testing.T) {
 		if !errors.Is(err, ErrOutgoingTooLarge) || errors.Is(err, ErrConnBroken) {
 			t.Fatalf("the oversized query ended with %v, want ErrOutgoingTooLarge and not ErrConnBroken", err)
 		}
-		if strings.Contains(err.Error(), "MaxMessage") {
-			t.Errorf("the error advises Config.MaxMessage, which does not move this bound: %v", err)
+		if strings.Contains(err.Error(), "MaxMessageBytes") {
+			t.Errorf("the error advises Config.MaxMessageBytes, which does not move this bound: %v", err)
 		}
 		if err := conn.Err(); err != nil {
 			t.Fatalf("the connection is broken after a refusal that sent nothing: %v", err)

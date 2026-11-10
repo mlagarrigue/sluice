@@ -62,7 +62,7 @@ func TestZeroConfigResolvesToTheDefaultsItsCommentsName(t *testing.T) {
 		{"MinSCRAMIterations", `Zero means the default: ([\d,]+) below`, 1, int64(bounds.minIter)},
 		{"MinSCRAMIterations", `and ([\d,]+) above`, 1, int64(bounds.maxIter)},
 		{"MinSCRAMSaltLen", `Zero means (\d+):`, 1, int64(bounds.minSalt)},
-		{"MaxMessage", `Zero, the default, is (\d+) MiB`, 1 << 20, pgwire.DefaultMaxMessage},
+		{"MaxMessageBytes", `Zero, the default, is (\d+) MiB`, 1 << 20, pgwire.DefaultMaxMessage},
 		{"StatementCacheSize", `Zero, the default, is (\d+) statements`, 1, int64(c.stmts.max)},
 		{"CancelTimeout", `Zero, the default, is (\d+) seconds`, int64(time.Second), int64(c.cancelBound())},
 	} {

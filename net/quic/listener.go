@@ -148,7 +148,7 @@ type ListenerConfig struct {
 	// unspecified one, unless PreferredIPv4 or PreferredIPv6 name the
 	// addresses to announce, or [NewListener] fails — in every handshake, with a
 	// connection identifier minted per connection. A client that validates
-	// the path moves there on its own (counted in [Conn.Migrations] on both
+	// the path moves there on its own (counted in [Stats.Migrations] on both
 	// sides), and its connection then sends from this socket (§8.2.2: the
 	// answer to a probe must leave by the path it arrived on, which is what
 	// this socket is for). A client that never validates it simply stays

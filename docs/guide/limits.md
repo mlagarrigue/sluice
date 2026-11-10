@@ -157,7 +157,7 @@ The figures are a laptop's ([measurements](#measurements-what-is-missing)).
 - **A message from the server is bounded at 64 MiB** — a row with all its
   values, a COPY chunk. Over it, the message is refused unread and the
   connection is broken (`ErrMessageTooLarge`, then `ErrConnBroken`).
-  `Config.MaxMessage` raises the bound, up to the 1 GiB PostgreSQL
+  `Config.MaxMessageBytes` raises the bound, up to the 1 GiB PostgreSQL
   itself allows per field; the handshake keeps its own 64 KiB bound.
 - **An outgoing message is bounded at 1 GiB less one byte** — PostgreSQL's
   allocation limit, which nothing moves: in practice, a query parameter

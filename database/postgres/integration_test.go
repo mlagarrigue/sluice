@@ -108,14 +108,14 @@ func TestIntegrationMaxMessageLiftsTheDefaultBound(t *testing.T) {
 	if !errors.Is(err, postgres.ErrMessageTooLarge) {
 		t.Fatalf("a %d-byte value under the default bound: %v, want ErrMessageTooLarge", size, err)
 	}
-	if !strings.Contains(err.Error(), "Config.MaxMessage") {
+	if !strings.Contains(err.Error(), "Config.MaxMessageBytes") {
 		t.Errorf("the error does not name the field that raises the bound: %v", err)
 	}
 	if err := without.Err(); !errors.Is(err, postgres.ErrConnBroken) {
 		t.Errorf("the connection after the refusal: %v, want ErrConnBroken", err)
 	}
 
-	cfg.MaxMessage = 128 << 20
+	cfg.MaxMessageBytes = 128 << 20
 	with := dialWith(t, addr, cfg)
 	got := -1
 	src = with.Query(t.Context(), query, nil, postgres.QueryConfig{})
@@ -127,7 +127,7 @@ func TestIntegrationMaxMessageLiftsTheDefaultBound(t *testing.T) {
 		return true
 	})
 	if err := src.Err(); err != nil {
-		t.Fatalf("the same value with MaxMessage raised: %v", err)
+		t.Fatalf("the same value with MaxMessageBytes raised: %v", err)
 	}
 	if got != size {
 		t.Errorf("read a value of %d bytes, want %d", got, size)

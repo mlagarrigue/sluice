@@ -24,8 +24,8 @@ $$;
 
 -- The extension types the codecs of pgtype cover. Their OIDs are chosen here,
 -- per database, which is what the suite resolves by name. hstore, citext and
--- ltree ship with every PostgreSQL image; vector only with pgvector's, which
--- one CI entry runs on.
+-- ltree ship with every PostgreSQL image; vector only where its package is
+-- installed, as one CI entry does.
 CREATE EXTENSION IF NOT EXISTS hstore;
 CREATE EXTENSION IF NOT EXISTS citext;
 CREATE EXTENSION IF NOT EXISTS ltree;

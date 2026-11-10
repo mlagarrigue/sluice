@@ -246,26 +246,14 @@ type pathProbe struct {
 // to (RFC 9000 §9.6), for this connection's address family, or nil: none
 // was offered, or this is a server. The move itself is automatic once the
 // handshake confirms — a validated preferred path becomes the connection's
-// path, counted in [Conn.Migrations]; one that never validates leaves the
+// path, counted in [Stats.Migrations]; one that never validates leaves the
 // connection on the handshake's path. Internal: a caller sees the move
-// through [Conn.Migrations], and only this package's tests need the
+// through [Stats.Migrations], and only this package's tests need the
 // address itself.
 func (c *Conn) preferredAddress() net.Addr {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.preferred
-}
-
-// Migrations reports how many times this connection changed path: a server
-// following its peer to a new address, or a client moving itself with
-// [Conn.Rebind]. Whether the newest one has validated shows up as traffic
-// flowing again; a server-side one that never validates falls back to the
-// last validated path, and only a peer gone from both ends by idle timeout;
-// a Rebind that never validates ends the connection with an error.
-func (c *Conn) Migrations() uint64 {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.migrations
 }
 
 // localCIDSeqFor says whether an incoming short-header packet's destination

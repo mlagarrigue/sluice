@@ -121,7 +121,7 @@ func listenSQL(lc ListenConfig) (string, error) {
 // caller that takes one notification at a time is not saying a server that
 // sends two is hostile. A server that holds its ReadyForQuery back while
 // pouring NotificationResponse is: without a bound the list grew by two
-// strings, up to MaxMessage each, per message. A NOTIFY payload is under
+// strings, up to MaxMessageBytes each, per message. A NOTIFY payload is under
 // 8,000 bytes in a standard installation, so 4 MiB keeps five hundred of
 // the largest, far more than the window between a commit and its answer
 // lets through.

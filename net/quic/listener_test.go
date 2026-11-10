@@ -427,7 +427,7 @@ func TestListenerAnnouncesItsPreferredAddress(t *testing.T) {
 	})
 
 	deadline := time.Now().Add(10 * time.Second)
-	for client.Migrations() == 0 {
+	for client.Stats().Migrations == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("the client never moved to the preferred address")
 		}
@@ -448,7 +448,7 @@ func TestListenerAnnouncesItsPreferredAddress(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("data sent to the preferred address never arrived")
 	}
-	for server.Migrations() == 0 {
+	for server.Stats().Migrations == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("the server never followed onto its preferred socket")
 		}
@@ -469,10 +469,10 @@ func TestListenerAnnouncesItsPreferredAddress(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("data sent from the preferred address never arrived")
 	}
-	if n := client.Migrations(); n != 1 {
+	if n := client.Stats().Migrations; n != 1 {
 		t.Errorf("client migrations = %d, want 1", n)
 	}
-	if n := server.Migrations(); n != 1 {
+	if n := server.Stats().Migrations; n != 1 {
 		t.Errorf("server migrations = %d, want 1", n)
 	}
 }

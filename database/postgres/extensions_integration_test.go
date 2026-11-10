@@ -90,7 +90,7 @@ func TestIntegrationExtensionTypesMatchTheServer(t *testing.T) {
 		pgtype.Array[string]{Elems: []pgtype.Null[string]{{Value: "a.b", Valid: true}, {}}})
 }
 
-// pgvector is not in the official images; one CI entry runs on pgvector's and
+// pgvector is not in the official images; one CI entry installs its package and
 // sets SLUICE_PG_VECTOR, which turns its absence into a failure there.
 func TestIntegrationVectorMatchesTheServer(t *testing.T) {
 	conn := dial(t)
