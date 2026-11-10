@@ -431,6 +431,17 @@ type Conn struct {
 		addr       net.Addr
 		recv, sent int64
 	}
+	// offPathAnswers counts the PATH_RESPONSE packets sent toward a path
+	// other than the one in use — another peer address, or this end's other
+	// socket — while the path in use was pc and peer; a count kept under
+	// another path in use starts again from zero. The congestion window of
+	// the path in use does not gate those packets
+	// (answerPathChallengesLocked); this count does, at maxOffPathAnswers.
+	offPathAnswers struct {
+		pc   net.PacketConn
+		peer net.Addr
+		n    int
+	}
 
 	// registrar issues this connection's additional identifiers: the
 	// [Listener]'s demux table for a connection it manages, an

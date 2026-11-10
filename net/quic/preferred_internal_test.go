@@ -1336,3 +1336,65 @@ func TestThePreferredAddressIsHeardAfterARebind(t *testing.T) {
 		t.Fatalf("a datagram from a third address: moved %v, discarded %d; want dropped unread", moved, discarded)
 	}
 }
+
+// RFC 9000 §8.2.2 lets an endpoint delay a PATH_RESPONSE when congestion
+// control constrains it; it never lets it drop one. A client probing the
+// server's preferred address does so the moment the handshake is
+// confirmed, when the server is in the middle of a transfer with its
+// window full — and the answer was gated by that window, the window of a
+// path the answer does not take, and dropped. The interop runner's
+// connectionmigration case went red against ngtcp2, aioquic and lsquic
+// (run 42468068837): aioquic challenged once, heard nothing, and never
+// moved. The answer toward another path now leaves whatever the window of
+// the path in use, within maxOffPathAnswers.
+func TestPreferredPathIsAnsweredWithTheWindowFull(t *testing.T) {
+	c, main := newMigratableServer(t, "full")
+	pref := &recordingPC{addr: fakeFuzzAddr("full:preferred")}
+	tok := make([]byte, 16)
+	if err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("cli-cid1"), tok), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	peer := fakeFuzzAddr("full:peerA")
+	c.mu.Lock()
+	for c.cc.canSend(1200) {
+		c.cc.onSent(time.Now(), 1200)
+	}
+	c.rxFrom, c.rxVia, c.rxDatagramLen, c.rxHighest = peer, pref, 1200, true
+	c.mu.Unlock()
+
+	challenge := append(varint.Append(nil, framePathChallenge), 1, 2, 3, 4, 5, 6, 7, 8)
+	if err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(main.recorded()); n != 0 {
+		t.Fatalf("%d datagrams left by the main socket, want none", n)
+	}
+	writes := pref.recorded()
+	if len(writes) != 1 {
+		t.Fatalf("%d datagrams left by the preferred socket with the main path's window full, want the answer", len(writes))
+	}
+	var response bool
+	for _, f := range openShort(t, writes[0].data, len("cli-cid1")) {
+		if f.Type == framePathResponse {
+			response = bytes.Equal(f.Data, []byte{1, 2, 3, 4, 5, 6, 7, 8})
+		}
+	}
+	if !response {
+		t.Fatal("the datagram from the preferred socket carries no PATH_RESPONSE to the challenge")
+	}
+
+	// A client that keeps challenging there without acknowledging gets
+	// maxOffPathAnswers packets, not one per challenge.
+	for i := range 100 {
+		c.mu.Lock()
+		c.rxFrom, c.rxVia, c.rxDatagramLen, c.rxHighest = peer, pref, 1200, true
+		c.mu.Unlock()
+		again := append(varint.Append(nil, framePathChallenge), byte(i), 9, 9, 9, 9, 9, 9, 9)
+		if err := c.frames(spaceApplication, again, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := len(pref.recorded()); n != maxOffPathAnswers {
+		t.Errorf("%d datagrams left by the preferred socket after 101 unacknowledged challenges, want %d", n, maxOffPathAnswers)
+	}
+}

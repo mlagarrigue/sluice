@@ -1391,22 +1391,37 @@ func (c *Conn) sendPathChallengeLocked() {
 // full of challenges; a larger packet's responses take as many packets as
 // needed, the first one expanded. Callers hold mu.
 //
-// The answer waits for nothing, but it fits in the congestion window or
-// does not leave: §8.2.2 has an endpoint not delay it "unless constrained
-// by congestion control", and the peer's challenges come at the peer's
-// pace — no application action or timer counts them, as sendOpts.waitCwnd
-// requires of an ungated send. Every answer is ack-eliciting and tracked
-// until acknowledged, so a peer that challenged without ever acknowledging
-// grew the flight and the sent record by 1200 bytes and one packet per
-// challenge. A refused answer is dropped rather than queued — a stale
-// response proves nothing, and the peer retries with fresh data.
+// The answer waits for nothing. On the path in use it fits in the
+// congestion window or does not leave: §8.2.2 has an endpoint not delay it
+// "unless constrained by congestion control", and the peer's challenges
+// come at the peer's pace — no application action or timer counts them, as
+// sendOpts.waitCwnd requires of an ungated send. Every answer is
+// ack-eliciting and tracked until acknowledged, so a peer that challenged
+// without ever acknowledging grew the flight and the sent record by 1200
+// bytes and one packet per challenge. A refused answer is dropped rather
+// than queued — a stale response proves nothing, and the peer retries with
+// fresh data. Toward any other path the window of the path in use is not
+// the constraint, and a full one dropped the one answer a client probing
+// the server's preferred address waits for: those answers leave ungated,
+// maxOffPathAnswers of them while the path in use stays the same.
 func (c *Conn) answerPathChallengesLocked(responses []byte, now time.Time) {
 	c.flushControlLocked()
 	padTo := 1200
-	if !c.cc.canSend(padTo) {
+	onPath := c.rxFrom == nil || sameAddr(c.rxFrom, c.peer)
+	offSocket := c.rxVia != nil && c.rxVia != c.pc
+	// Only an answer on the path in use is that path's traffic. One toward
+	// another path — a client probing the server's preferred address, or
+	// arriving from a new address mid-transfer — is not constrained by the
+	// window of a path it does not take, and gating it there dropped it
+	// exactly when that window was full: during a transfer, the moment a
+	// client probes (the interop runner's connectionmigration case, whose
+	// clients challenge once and stay put when unanswered). Its bound is
+	// a count instead (offPathAnswers), with the §8 books of the off-path
+	// address on top.
+	gated := onPath && !offSocket
+	if gated && !c.cc.canSend(padTo) {
 		return
 	}
-	onPath := c.rxFrom == nil || sameAddr(c.rxFrom, c.peer)
 	// A challenge that reached a server's preferred-address socket is
 	// answered with this end's own probe of that path in the same packet
 	// (§9.6.2), under the identifier that path gets.
@@ -1427,7 +1442,6 @@ func (c *Conn) answerPathChallengesLocked(responses []byte, now time.Time) {
 	// for any client whose access network gives a distinct binding toward
 	// that address, which is the case §9.6.3 names. ADR 0015 records the
 	// refusal for having *no* spare identifier; this is not that.
-	offSocket := c.rxVia != nil && c.rxVia != c.pc
 	if dcid == nil && len(c.dcid) > 0 && (!onPath || offSocket) {
 		var ok bool
 		if dcid, ok = c.newPathCIDLocked(); !ok {
@@ -1456,13 +1470,38 @@ func (c *Conn) answerPathChallengesLocked(responses []byte, now time.Time) {
 			payload = append(payload, probe...)
 			probe = nil
 		}
-		if padTo == 0 && !c.cc.canSend(len(payload)+64) {
+		if gated && padTo == 0 && !c.cc.canSend(len(payload)+64) {
+			return
+		}
+		if !gated && !c.countOffPathAnswerLocked() {
 			return
 		}
 		_ = c.sendPacketLocked(spaceApplication, payload, sendOpts{noRetrans: true, to: c.rxFrom, via: c.rxVia, dcid: dcid, padTo: padTo})
 		responses = responses[n:]
 		padTo = 0
 	}
+}
+
+// maxOffPathAnswers is how many PATH_RESPONSE packets leave toward paths
+// other than the one in use while that path stays the same. A validation
+// takes one challenge and a few repeats when answers are lost; a peer that
+// keeps challenging from elsewhere without ever acknowledging gets this
+// many packets on the sent record, not one per challenge.
+const maxOffPathAnswers = 8
+
+// countOffPathAnswerLocked counts one PATH_RESPONSE packet toward a path
+// other than the one in use and reports whether it may leave: at most
+// maxOffPathAnswers while the path in use stays the same. Callers hold mu.
+func (c *Conn) countOffPathAnswerLocked() bool {
+	a := &c.offPathAnswers
+	if a.pc != c.pc || !sameAddr(a.peer, c.peer) {
+		a.pc, a.peer, a.n = c.pc, c.peer, 0
+	}
+	if a.n >= maxOffPathAnswers {
+		return false
+	}
+	a.n++
+	return true
 }
 
 // preferredPathChallengeLocked is the server half of §9.6.2, taken when a

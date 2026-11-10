@@ -42,8 +42,10 @@ type sendOpts struct {
 	// carry their own bound. The RESET_STREAM that answers a STOP_SENDING
 	// holds its stream's slot while its record stands (maybeRemoveLocked):
 	// a peer that never acknowledges has as many in flight as streams it
-	// may open. A PATH_RESPONSE is not ungated at all: it fits in the
-	// window or is dropped (answerPathChallengesLocked).
+	// may open. A PATH_RESPONSE on the path in use fits in the window or
+	// is dropped; one toward another path leaves ungated, at most
+	// maxOffPathAnswers while the path in use stays the same
+	// (answerPathChallengesLocked).
 	waitCwnd bool
 	// deadline bounds that wait (Stream.SetWriteDeadline); nil, or a zero
 	// time, waits without bound. It points at the stream's deadline rather
