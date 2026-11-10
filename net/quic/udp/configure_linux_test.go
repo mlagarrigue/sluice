@@ -2,6 +2,9 @@ package udp_test
 
 import (
 	"net"
+	"os"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -133,5 +136,29 @@ func TestDontFragmentRefusesOversize(t *testing.T) {
 	}
 	if _, err := df.WriteTo(big[:1200], dst); err != nil {
 		t.Fatalf("1200-byte datagram refused: %v", err)
+	}
+}
+
+// Listen asks for ReceiveBuffer, which the kernel doubles for its own
+// bookkeeping and caps at net.core.rmem_max (socket(7)); the default buffer
+// lost datagrams in a burst where this one lost none
+// (BenchmarkUDPReceiveBurst).
+func TestListenAsksForTheReceiveBuffer(t *testing.T) {
+	raw, err := os.ReadFile("/proc/sys/net/core/rmem_max")
+	if err != nil {
+		t.Skipf("rmem_max unreadable: %v", err)
+	}
+	limit, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := udp.Listen("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	want := 2 * min(udp.ReceiveBuffer, limit)
+	if got := getsockopt(t, c, syscall.SOL_SOCKET, syscall.SO_RCVBUF); got != want {
+		t.Errorf("SO_RCVBUF %d after Listen, want %d: ReceiveBuffer %d under rmem_max %d, doubled", got, want, udp.ReceiveBuffer, limit)
 	}
 }

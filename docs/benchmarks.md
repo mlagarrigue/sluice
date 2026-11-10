@@ -40,6 +40,7 @@ figure that differs, to the character, from the median of its row.
   - [Paired verdicts](#paired-verdicts)
 - **QUIC**
   - [QUIC, on an emulated path](#quic-on-an-emulated-path)
+  - [A QUIC socket in a burst](#a-quic-socket-in-a-burst)
 - **The PostgreSQL connector**
   - [Connector, against pgx / lib/pq / database/sql](#connector-against-pgx--libpq--databasesql)
   - [Remote reads](#remote-reads)
@@ -1256,6 +1257,41 @@ hand against the tree before a change:
 
 ```
 internal/bench/scripts/gate-path.sh main
+```
+
+## A QUIC socket in a burst
+
+What a UDP socket drops when a burst lands faster than its reader takes it
+(`BenchmarkUDPReceiveBurst`, `internal/bench`, Linux only). A sender writes
+datagrams of 1,200 bytes as fast as the loopback takes them; a reader drains
+the socket at the same time, one read per datagram followed by nothing
+(`work=0s`) or by 2µs of busy work — about what one datagram costs through
+`net/quic`'s receive path: 1.8µs for `BenchmarkConnReceivePacket` (header,
+Open, frames, delivery), four runs on the same machine. The unit is
+datagrams lost per burst — sent minus received — and the kernel agrees to
+the datagram: `RcvbufErrors` of `/proc/net/snmp` moved by exactly as much in
+every round. Counts, not times, so no pairing is needed; six rounds of
+twenty bursts each, measured 2026-11-10 in the devcontainer
+(`net.core.rmem_default` 212,992 bytes, `rmem_max` 4 MiB, so 7 MiB asked is
+8 MiB granted, the kernel doubling the request within the cap).
+
+| reader | burst | default buffer (208 KiB): lost per burst, six rounds | 7 MiB asked (8 MiB granted) |
+|---|---|---|---|
+| reads only | 1,024 | 0, 0, 2.5, 0, 24.0, 0 | 0 in every round |
+| reads only | 8,192 | 0, 1.9, 0, 3.9, 9.8, 5.2 | 0 in every round |
+| 2µs per datagram | 1,024 | 3.9, 1.1, 0.3, 4.8, 2.2, 0 | 0 in every round |
+| 2µs per datagram | 8,192 | 10.4, 25.0, 23.2, 26.4, 12.2, 29.0 | 0 in every round |
+
+The default buffer lost datagrams in 17 rounds of 24, the 7 MiB one in none.
+A lost datagram is a lost packet to the connection, which its congestion
+controller answers by sending less; `udp.Listen` therefore asks for
+`udp.ReceiveBuffer`, 7 MiB. On a host whose `net.core.rmem_max` is lower —
+208 KiB is the common kernel default — the request is capped there without
+an error; the `udp-rmem` check of `audit` says so and names the sysctl. To
+measure again:
+
+```
+go test -run '^$' -bench BenchmarkUDPReceiveBurst -benchtime=20x -count=6 ./internal/bench/
 ```
 
 ## Joins and hydration, in isolation

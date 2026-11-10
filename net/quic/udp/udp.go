@@ -68,11 +68,29 @@ import (
 	"net/netip"
 )
 
+// ReceiveBuffer is the receive buffer [Listen] asks for, 7 MiB. A burst a
+// QUIC peer sends at line rate — a congestion window's worth — lands in
+// the socket faster than the connection decrypts and parses it, and what
+// the buffer cannot hold the kernel drops, which the connection reads as
+// loss and answers by sending less. Measured on loopback, six rounds of
+// twenty bursts each (BenchmarkUDPReceiveBurst, docs/benchmarks.md): at the
+// kernel's default buffer (net.core.rmem_default, 208 KiB on most
+// distributions), a reader that spends 2µs per datagram — net/quic's
+// receive path costs 1.8µs — lost 10 to 29 datagrams per burst of 8,192 in
+// every round, and one that does nothing but read still lost some in six
+// rounds of twelve; at 7 MiB no datagram was lost in any of the 24 rounds.
+// The kernel grants at most net.core.rmem_max, itself 208 KiB on many
+// distributions: below 7 MiB, the buffer is capped there without an error,
+// and the udp-rmem check of package audit names the sysctl to raise.
+const ReceiveBuffer = 7 << 20
+
 // Listen opens a UDP socket on network ("udp", "udp4" or "udp6") and
-// address, as [net.ListenPacket] would, and applies [Configure] to it. A
-// socket that cannot be configured is closed and the error returned: a
-// caller asking for a QUIC socket gets one or nothing, never a silently
-// fragmentable one.
+// address, as [net.ListenPacket] would, applies [Configure] to it and asks
+// for a receive buffer of [ReceiveBuffer]. A socket that cannot be
+// configured is closed and the error returned: a caller asking for a QUIC
+// socket gets one or nothing, never a silently fragmentable one. [Configure]
+// leaves the buffers alone — a socket the caller opened keeps the ones it
+// was given — so a caller that opens its own calls SetReadBuffer itself.
 func Listen(network, address string) (*net.UDPConn, error) {
 	pc, err := net.ListenPacket(network, address)
 	if err != nil {
@@ -86,6 +104,10 @@ func Listen(network, address string) (*net.UDPConn, error) {
 	if err := Configure(c); err != nil {
 		_ = c.Close() // the configuration error is the one worth reporting
 		return nil, err
+	}
+	if err := c.SetReadBuffer(ReceiveBuffer); err != nil {
+		_ = c.Close() // the buffer's error is the one worth reporting
+		return nil, fmt.Errorf("udp: %w", err)
 	}
 	return c, nil
 }
