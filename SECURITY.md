@@ -2,9 +2,26 @@
 
 ## Supported versions
 
-Sluice.go is in v0: the latest tagged minor is supported, and a fix ships
-as a patch of it. Once a v1 is tagged, this section will state a support
-window.
+**Today, in v0:** the latest tagged minor is supported, and a fix ships as a
+patch of it. A v0 minor may break the API; the
+[migration guide](docs/migration.md) says what to write instead.
+
+**From v1.0.0:**
+
+- the latest minor receives every fix, as a patch;
+- the previous minor receives security fixes for three months after its
+  successor ships, as patches too; after that, the answer to a security
+  problem is to move to the latest minor, which broke nothing
+  ([ADR 0020](docs/design/adr/0020-compatibility.md));
+- the Go versions covered are the ones CI builds: the floor in `go.mod` and
+  the latest stable release. A fix does not raise the floor; raising it is
+  a commit of its own, announced in the CHANGELOG;
+- the experimental packages (`net/quic` and `net/quic/udp` today) are fixed
+  in the latest minor only, and a fix there may change their API, announced
+  with a `!` like any break of those packages.
+
+A version published by mistake, or made dangerous by a defect, is withdrawn
+with the `retract` directive in `go.mod`.
 
 ## Reporting a vulnerability
 
