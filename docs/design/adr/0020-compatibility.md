@@ -1,7 +1,7 @@
 # ADR 0020 — What v1 freezes
 
 - **Created:** 2026-10-23
-- **Revised:** 2026-10-28 (`gateway.Partitions` listed experimental; written in the present tense; `audit` among the nested modules), 2026-11-03 (`web/stream` off the experimental list, as its documentation has been since 2026-10-29)
+- **Revised:** 2026-11-10 (the promised strings apidiff does not see have a test); 2 earlier, from 2026-10-28, in its `git log`
 - **Theme:** docs
 
 ## Problem
@@ -61,7 +61,11 @@ not: it would need a `/v2` module path, which is a decision, not a commit. A
 break of an experimental package keeps v0's rule. The list of experimental
 packages is read from their documentation, the source `repo_test.go` holds
 the README and the guides to; `CHECK_API_MAJOR=1` forces the v1 era so the
-rule can be exercised before the tag.
+rule can be exercised before the tag. apidiff sees a `Code*` constant whose
+value changes, not a struct tag nor a literal inside a function: the JSON
+field names of `Report` and the message identifiers of `web` have a reader
+of their own, `TestPromisedStringsAreStable` (`web/promised_strings_test.go`),
+an append-only list a promised string cannot leave.
 
 ## Rationale
 
