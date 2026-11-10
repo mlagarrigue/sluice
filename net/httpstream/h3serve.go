@@ -181,6 +181,7 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 		defer s.arm()
 		return s.onFrames(frames)
 	})
+	s.startIdle()
 
 	<-c.Done()
 	return s.end()
@@ -338,6 +339,12 @@ func armH3Drain(drain, forced context.Context, c *quic.Conn, control *quic.Strea
 	var finishOnce sync.Once
 	a.Finish = func() { finishOnce.Do(func() { close(drained) }) }
 	return context.AfterFunc(drain, func() {
+		if !a.claimGoAway(goAwayDrain) {
+			// The idle close has sent its GOAWAY and is closing the
+			// connection, which owed nothing: there is nothing to drain,
+			// and a second GOAWAY here would raise the identifier.
+			return
+		}
 		if err := wb.write(control.SetWriteDeadline, control.Write, appendH3Frame(nil, h3GoAway, varint.Append(nil, h3MaxServerGoAway))); err != nil {
 			_ = c.CloseWithError(h3GracefulCode())
 			return
@@ -434,6 +441,69 @@ type h3Serving struct {
 	sweepT    *time.Timer
 	sweepAt   time.Time
 	sweepDone bool
+
+	// The idle clock: a tick every IdleTimeout (idleTick), one timer per
+	// connection, under idleMu. idleSeen is what the previous tick saw
+	// (h3Assembler.closeIdle).
+	idleMu   sync.Mutex
+	idleT    *time.Timer
+	idleSeen int64
+	idleDone bool
+}
+
+// startIdle arms the idle clock. QUIC's own idle timer restarts on every
+// packet from the peer, PING included (RFC 9000 §10.1), and RFC 9114 §5.1
+// leaves idleness to it: a client that pings once a period would hold the
+// connection — and its place under the listener's MaxConns and
+// MaxConnsPerIP — with no request open. This clock counts requests, as
+// HTTP/2's does (Config.IdleTimeout): it does not run while a request is in
+// flight, and nothing but a request stream restarts it.
+func (s *h3Serving) startIdle() {
+	s.idleMu.Lock()
+	defer s.idleMu.Unlock()
+	if !s.idleDone {
+		s.idleSeen = -1 // a fresh connection gets one to two IdleTimeouts too
+		s.idleT = time.AfterFunc(s.cfg.IdleTimeout, s.idleTick)
+	}
+}
+
+// idleTick is the idle clock: re-armed while the connection is in use,
+// otherwise the connection's graceful end — GOAWAY naming the stream after
+// the last request (RFC 9114 §5.2), then the close with H3_NO_ERROR or its
+// grease, as the drain ends a connection that owes nothing.
+func (s *h3Serving) idleTick() {
+	s.idleMu.Lock()
+	if s.idleDone {
+		s.idleMu.Unlock()
+		return
+	}
+	from, idle := s.a.closeIdle(&s.idleSeen)
+	if !idle {
+		s.idleT.Reset(s.cfg.IdleTimeout)
+	}
+	s.idleMu.Unlock()
+	if !idle || !s.a.claimGoAway(goAwayIdle) {
+		// Not idle, or the drain owns the GOAWAY frames: closeIdle has
+		// finished the connection, so the drain's own decision finds
+		// nothing in flight and closes it.
+		return
+	}
+	wb := writeBoundOf(s.cfg)
+	if err := wb.write(s.control.SetWriteDeadline, s.control.Write, appendH3Frame(nil, h3GoAway, varint.Append(nil, from))); err != nil {
+		_ = s.c.CloseWithError(h3GracefulCode())
+		return
+	}
+	_ = s.c.ShutdownWithError(s.forced, h3GracefulCode())
+}
+
+// stopIdle stops the idle clock at the connection's end.
+func (s *h3Serving) stopIdle() {
+	s.idleMu.Lock()
+	defer s.idleMu.Unlock()
+	s.idleDone = true
+	if s.idleT != nil {
+		s.idleT.Stop()
+	}
 }
 
 // launch runs f counted in wg unless the connection has ended, and reports
@@ -653,6 +723,7 @@ func (s *h3Serving) end() error {
 	// Nobody is left to answer: the handlers still running learn it before
 	// they are waited for, and so does one waiting for a body's bytes.
 	s.cancels.leaveAll()
+	s.stopIdle()
 	s.amu.Lock()
 	s.a.failBodies(errBodyConnClosed)
 	s.amu.Unlock()
@@ -815,15 +886,17 @@ type h3Batch struct {
 // [Config.MaxStreamedBodyBytes]) — a connection window that fits the
 // 4×MaxBodyBytes aggregate assembly cap, the stream count ServeH3Conn
 // admits, and [Config.IdleTimeout]
-// as the connection's max_idle_timeout — HTTP/3 has no idle clock of its
-// own above the transport's, so this is the one place the field reaches an
-// HTTP/3 connection, and a zero field is the two minutes every protocol
-// defaults to. Serving a connection built with these lets ServeH3Conn run the transport
+// as the connection's max_idle_timeout, so that a client which goes silent
+// is reclaimed by the transport at the same bound the HTTP/3 idle clock
+// applies to one which only pings; a zero field is the two minutes every
+// protocol defaults to. Serving a connection built with these lets ServeH3Conn run the transport
 // under manual flow-control credit, where a peer's window only reopens for
 // bytes this server has actually stopped retaining — the strongest memory
 // bound the layer offers. Any other parameters work too; below these
 // windows ServeH3Conn falls back to delivery-time crediting, bounded by the
-// assembler's caps, and the idle timeout is whatever those parameters say.
+// assembler's caps, and the transport's idle timeout is whatever those
+// parameters say; ServeH3Conn's own idle clock still runs on
+// [Config.IdleTimeout].
 //
 // It returns an error for a configuration [Config] refuses, and for a
 // MaxConcurrentStreams over the 4096 streams ServeH3Conn serves on one

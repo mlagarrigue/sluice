@@ -1,7 +1,7 @@
 # ADR 0018 — Zero is the safe default, the bound is mandatory
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-11-03 (subheadings in the Decision; the statement cache's negative named; `quic.Config`); 5 earlier, from 2026-10-21, in its `git log`
+- **Revised:** 2026-11-10 (`IdleTimeout` read by HTTP/3's own idle clock); 6 earlier, from 2026-10-21, in its `git log`
 - **Theme:** httpstream
 
 ## Problem
@@ -95,9 +95,10 @@ never removed.**
    `MaxFrameSize`, `MaxFramesPerBatch`, `MaxContinuationFrames`,
    `InitialWindowSize`, `MaxPendingControlBytes`, `MaxWriteBufferBytes`;
    "HTTP/3 only": `QPACKStatic`). A field that reaches a protocol through another object
-   says so and is derived there: `IdleTimeout` becomes the
-   `max_idle_timeout` that `Config.QUICConfig` produces, and a
-   connection served on other parameters has those parameters' timeout.
+   says so and is derived there: `IdleTimeout` also becomes the
+   `max_idle_timeout` that `Config.QUICConfig` produces, beside the
+   HTTP/3 idle clock that reads the field itself, and a connection served
+   on other parameters has those parameters' transport timeout.
 
 5. **The boundary is the package, not the name on the wire.** `Config`
    carries everything an `httpstream` server bounds, whether or not the

@@ -23,7 +23,7 @@ anything is read. The "Protocols" column says where the field acts.
 | `MaxRequestsPerBatch` | 64 | requests | 1.1 | the pipelined requests of one batch |
 | `MaxConcurrentStreams` | 100 | streams; at most 4096 on 3 | 2, 3 | the requests open at once on one connection |
 | `MaxRequestsPerConn` | 1024 | requests | 1.1 | the requests of one connection before it closes |
-| `IdleTimeout` | 2 min | duration | all | the silence between two requests; on 3, the transport's max_idle_timeout |
+| `IdleTimeout` | 2 min | duration | all | the time between two requests, pings not counted; on 3, also the transport's max_idle_timeout |
 | `ReadTimeout` | 10 s | duration | all | the arrival of a whole request, and of the first byte; each `ReadProgressBytes` of a streamed body |
 | `WriteTimeout` | 10 s | duration | all | a response write without progress |
 | `WriteProgressBytes` | 4 KiB | bytes | all | the progress that restarts `WriteTimeout` |

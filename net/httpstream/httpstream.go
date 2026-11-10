@@ -315,22 +315,18 @@ type Config struct {
 	// every HTTP/1.1 response that does not close, as Keep-Alive:
 	// timeout=<seconds>, for a proxy in front that reads it; nginx and Envoy
 	// do not. HTTP/2 and HTTP/3 have no such field; their peers learn the
-	// end from GOAWAY. Every protocol, each in its own way: over HTTP/2 the
-	// clock does not run while this end owes the peer answers — a streamed
+	// end from GOAWAY. Every protocol, HTTP/2 and HTTP/3 alike: the clock
+	// does not run while this end owes the peer answers — a streamed
 	// response may take minutes during which a well-behaved client has
 	// nothing to send — and once the last answer is out the connection ends
-	// with GOAWAY(NO_ERROR) after between one and two IdleTimeouts of
-	// silence, where silence means no stream activity: a PING, SETTINGS or
-	// WINDOW_UPDATE does not restart the clock, so a peer cannot hold a
-	// connection it never uses; over HTTP/3 the transport keeps it, as the
-	// max_idle_timeout that [Config.QUICConfig] derives from this
-	// field, so a connection ServeH3Conn serves on other parameters has the
-	// idle timeout those parameters say, not this one. That clock is QUIC's,
-	// and any packet from the peer restarts it, PING included (RFC 9000
-	// §10.1; RFC 9114 §5.1 leaves idleness to the transport): an HTTP/3
-	// client that pings is held with no request open, and what bounds such
-	// connections is the listener's, quic.ListenerConfig.MaxConns and
-	// MaxConnsPerIP.
+	// with GOAWAY then NO_ERROR (H3_NO_ERROR, or its grease, over HTTP/3)
+	// after between one and two IdleTimeouts without a request. A PING,
+	// SETTINGS or WINDOW_UPDATE does not restart the clock, nor does any
+	// other packet over HTTP/3, so a peer cannot hold a connection it never
+	// uses. QUIC keeps an idle timer of its own besides, which every packet
+	// from the peer restarts (RFC 9000 §10.1): [Config.QUICConfig] sets it
+	// to this field too, so a client that goes silent altogether is
+	// reclaimed at the same bound.
 	IdleTimeout time.Duration
 
 	// ReadTimeout is how long one request has to arrive in full once its
@@ -454,13 +450,10 @@ type Config struct {
 	// and a TCP connection keeps what its listener set — one from
 	// [net.Listen] probes every 15s. Every protocol.
 	//
-	// Over HTTP/1.1 and HTTP/2 it does not hold a connection open against
-	// IdleTimeout, which counts requests, not packets. Over HTTP/3 it does:
-	// IdleTimeout is there the transport's, which every PING restarts, so a
-	// connection stays open until the client closes it or the server
-	// stops. That is the price: a client that opened a connection and went
-	// silent holds its state for as long as it stays, where the idle
-	// timeout would otherwise have reclaimed it.
+	// It does not hold a connection open against IdleTimeout, which counts
+	// requests, not packets, over every protocol: over HTTP/3 it keeps the
+	// transport's idle timer from firing, and the connection still ends
+	// after IdleTimeout without a request.
 	KeepAlive time.Duration
 
 	// Logger receives what the server reports besides the errors it

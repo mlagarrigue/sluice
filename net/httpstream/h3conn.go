@@ -54,6 +54,17 @@ type h3Assembler struct {
 	// Without it a stream below the identifier arriving after the decision
 	// was admitted into a connection already closing: served, then cut.
 	finished bool
+	// admissions counts the request streams ever admitted, under mu: the
+	// idle clock's notion of activity (closeIdle). A packet is not
+	// activity, and neither is a frame on the control stream; a request is.
+	admissions int64
+	// goAwayBy is the one path that writes this connection's GOAWAY frames,
+	// claimed once: the drain (goAwayDrain) or the idle close (goAwayIdle).
+	// Both computing the identifier is safe — under mu, it only goes down —
+	// but both writing is not: the drain's first GOAWAY is 2^62−4, and after
+	// the idle close's smaller one it would raise the identifier, which
+	// RFC 9114 §5.2 forbids ("MUST NOT increase").
+	goAwayBy atomic.Uint32
 	// inFlight counts the request streams admitted and not yet retired:
 	// still assembling, queued for the handler, being handled or being
 	// answered. The assembler retires a stream that leaves without a
@@ -1106,7 +1117,52 @@ func (a *h3Assembler) admit(id uint64) admission {
 		return admitOverLimit
 	}
 	a.inFlight.Add(1)
+	a.admissions++
 	return admitted
+}
+
+// The paths that may write a connection's GOAWAY frames (goAwayBy).
+const (
+	goAwayNone uint32 = iota
+	goAwayDrain
+	goAwayIdle
+)
+
+// claimGoAway reports whether by is the path that writes this connection's
+// GOAWAY frames: the first to ask is. Each path asks once.
+func (a *h3Assembler) claimGoAway(by uint32) bool {
+	return a.goAwayBy.CompareAndSwap(goAwayNone, by)
+}
+
+// closeIdle is the idle clock's tick, decided under mu with the admission:
+// a connection with nothing in flight now, nothing in flight at the
+// previous tick and no stream admitted since — *seen holds the admission
+// count the previous tick saw, or −1 when something was in flight then —
+// is finished as a drain with nothing in flight is, and closeIdle returns
+// the identifier its GOAWAY carries. Otherwise it records what it saw for
+// the next tick and reports false. A tick every IdleTimeout thus closes a
+// connection between one and two IdleTimeouts after its last answer; a
+// stream admitted after the decision is rejected, as past a GOAWAY, never
+// served into a connection that is closing.
+func (a *h3Assembler) closeIdle(seen *int64) (from uint64, ok bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.draining {
+		return 0, false
+	}
+	if a.inFlight.Load() != 0 {
+		*seen = -1
+		return 0, false
+	}
+	if a.admissions != *seen {
+		*seen = a.admissions
+		return 0, false
+	}
+	a.draining, a.finished = true, true
+	if a.accepted {
+		a.rejectFrom = min(a.last+4, h3MaxServerGoAway) // as in beginDrain
+	}
+	return a.rejectFrom, true
 }
 
 // beginDrain decides the GOAWAY, under mu, and returns the identifier it
