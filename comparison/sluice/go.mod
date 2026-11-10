@@ -18,7 +18,7 @@ replace github.com/mlagarrigue/sluice => ../..
 require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/mlagarrigue/sluice v0.0.0
-	github.com/quic-go/quic-go v0.64.1
+	github.com/quic-go/quic-go v0.65.0
 )
 
 require (
