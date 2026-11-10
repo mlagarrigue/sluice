@@ -46,7 +46,7 @@ so what is tested is the code being changed.
 
 | | Version |
 |---|---|
-| `github.com/quic-go/quic-go` | v0.64.1 |
+| `github.com/quic-go/quic-go` | v0.65.0 |
 
 Dependabot bumps it like the root's dependencies; a bump that breaks the
 handshake is a finding about one side or the other, not noise.
