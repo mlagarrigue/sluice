@@ -176,7 +176,7 @@ const protocolMajor = 3 << 16
 // server is ready, so it costs a real workload nothing.
 const maxStartupMessage = 64 << 10
 
-// maxMaxMessage is the largest [Config.MaxMessage] accepted. PostgreSQL
+// maxMaxMessage is the largest [Config.MaxMessageBytes] accepted. PostgreSQL
 // cannot build a message over 1 GiB — its allocation ceiling — so a bound
 // above that admits nothing a server can send and only widens what a
 // corrupted length prefix may ask for.
@@ -291,7 +291,7 @@ type Config struct {
 	// produces one packet.
 	Params map[string]string
 
-	// MaxMessage is the largest message accepted from the server once the
+	// MaxMessageBytes is the largest message accepted from the server once the
 	// connection is up, in bytes: a DataRow with all its values, a CopyData
 	// chunk. Zero, the default, is 64 MiB — enough for the rows a real
 	// workload sends, small enough that a hostile or corrupted length
@@ -305,7 +305,7 @@ type Config struct {
 	// which this does not change — or above 1 GiB, before anything is
 	// sent. This bounds what is read; [CopyConfig.ChunkBytes] is how much
 	// is written in one CopyData chunk.
-	MaxMessage int
+	MaxMessageBytes int
 
 	// MaxProtocol is the protocol version the startup packet asks for. Zero,
 	// the default, asks for [Protocol32]. A server that speaks only an older
@@ -478,8 +478,8 @@ func startup(rw io.ReadWriteCloser, cfg Config) (*Conn, error) {
 	// The handshake is over and the server has proved itself, so the ordinary
 	// bound applies from here — the caller's when it named one.
 	limit := pgwire.DefaultMaxMessage
-	if cfg.MaxMessage != 0 {
-		limit = cfg.MaxMessage
+	if cfg.MaxMessageBytes != 0 {
+		limit = cfg.MaxMessageBytes
 	}
 	c.r.SetMaxMessage(limit)
 	return c, nil
@@ -513,8 +513,8 @@ func startupBody(cfg Config) ([]byte, error) {
 	if m := cfg.ChannelBinding; m < ChannelBindingPrefer || m > ChannelBindingDisable {
 		return nil, fmt.Errorf("postgres: Config.ChannelBinding %v is not one of ChannelBindingPrefer, ChannelBindingRequire, ChannelBindingDisable", m)
 	}
-	if m := cfg.MaxMessage; m != 0 && (m < maxStartupMessage || m > maxMaxMessage) {
-		return nil, fmt.Errorf("postgres: Config.MaxMessage %d is outside %d..%d bytes", m, maxStartupMessage, maxMaxMessage)
+	if m := cfg.MaxMessageBytes; m != 0 && (m < maxStartupMessage || m > maxMaxMessage) {
+		return nil, fmt.Errorf("postgres: Config.MaxMessageBytes %d is outside %d..%d bytes", m, maxStartupMessage, maxMaxMessage)
 	}
 	if v := cfg.MaxProtocol; v != 0 && !v.spoken() {
 		return nil, fmt.Errorf("postgres: Config.MaxProtocol asks for protocol %v — this package speaks %v and %v", v, Protocol30, Protocol32)

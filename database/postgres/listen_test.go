@@ -75,7 +75,7 @@ func TestListenRefuses(t *testing.T) {
 
 // A server that holds back the ReadyForQuery of the LISTEN query and pours
 // NotificationResponse used to grow the listener's kept list by one
-// Notification — two strings copied, up to MaxMessage each — per message,
+// Notification — two strings copied, up to MaxMessageBytes each — per message,
 // for the life of the subscription. What is kept before ReadyForQuery is
 // bounded in bytes, by the package and not by the caller's batch size.
 func TestListenBoundsWhatArrivesBeforeReadyForQuery(t *testing.T) {

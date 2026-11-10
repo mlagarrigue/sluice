@@ -45,6 +45,13 @@ signatures — a value now refused — come last.
   and `tx.SetLocalTimeout(ctx, d)` is renamed `tx.SetLocalStatementTimeout(ctx, d)`.
   The whole transaction is bounded,
   on this side, by the context its calls are given.
+- **`Config.MaxMessage` is `MaxMessageBytes`**
+  ("feat(postgres)!: MaxMessage becomes MaxMessageBytes (ADR 0018)"): the
+  field is a size in bytes, read beside counts (`BatchRows`,
+  `StatementCacheSize`), and now says so as `QueryConfig.BatchBytes` and
+  `CopyConfig.ChunkBytes` do. Default, range and refusals are unchanged;
+  rename it where a `Config` is written, and where an error message is
+  matched on the field's name.
 
 ### Web: `web` and `web/stream`
 

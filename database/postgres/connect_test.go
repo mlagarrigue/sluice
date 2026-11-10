@@ -360,7 +360,7 @@ func TestConfigValidateIsConnectsCheck(t *testing.T) {
 		{},
 		{User: "u", Params: map[string]string{"user": "x"}},
 		{User: "u", Params: map[string]string{"replication": "database"}},
-		{User: "u", MaxMessage: 1},
+		{User: "u", MaxMessageBytes: 1},
 		{User: "u", CancelTimeout: -1},
 		{User: "u", MinProtocol: Protocol32, MaxProtocol: Protocol30},
 		{User: "u", Database: "d"},
@@ -408,10 +408,10 @@ func TestNewConnHonoursStatementCacheSize(t *testing.T) {
 	}
 	defer func() {
 		if recover() == nil {
-			t.Error("NewConn accepted a MaxMessage Validate refuses")
+			t.Error("NewConn accepted a MaxMessageBytes Validate refuses")
 		}
 	}()
-	NewConn(&fakeServer{}, Config{MaxMessage: 1})
+	NewConn(&fakeServer{}, Config{MaxMessageBytes: 1})
 }
 
 // ctxOr leaves an error alone while the context is live, and names the

@@ -62,7 +62,7 @@ func TestSavepointsDoesNotWaitOnASenderTheServerLeft(t *testing.T) {
 	})
 }
 
-// The same with a header no Config.MaxMessage admits, under a context that
+// The same with a header no Config.MaxMessageBytes admits, under a context that
 // can never end: no cancellation watch is armed, and only the close releases
 // the sender.
 func TestSavepointsReturnsOnceTheReadBreaksUnderAnyContext(t *testing.T) {
@@ -80,7 +80,7 @@ func TestSavepointsReturnsOnceTheReadBreaksUnderAnyContext(t *testing.T) {
 		if _, err := server.Write(frame('Z', "T")); err != nil {
 			return
 		}
-		// A header whose length no Config.MaxMessage admits; nothing is read
+		// A header whose length no Config.MaxMessageBytes admits; nothing is read
 		// from the client again.
 		_, _ = server.Write([]byte{'Z', 0x7f, 0xff, 0xff, 0xff})
 	}()

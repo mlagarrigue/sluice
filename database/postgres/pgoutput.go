@@ -189,7 +189,7 @@ const maxReplicationRelations = 1 << 14
 // relationColumnCost per column for the [RelationColumn] itself.
 //
 // Capping the count alone is not enough. A Relation message is bounded only
-// by [Config.MaxMessage], 64 MiB by default and up to 1 GiB, so the count
+// by [Config.MaxMessageBytes], 64 MiB by default and up to 1 GiB, so the count
 // alone bounds the table at 16,384 times that — a figure, not a bound — and
 // a server can describe relations with names as long as a message for free,
 // kept for the life of the stream (measured: 64 relations with 4 MiB names

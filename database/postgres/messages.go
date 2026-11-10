@@ -21,7 +21,7 @@ var ErrProtocol = errors.New("postgres: malformed backend message")
 // The wire layer's errors, which surface through a connection's error.
 var (
 	// ErrMessageTooLarge reports a backend message longer than
-	// [Config.MaxMessage]. The connection is finished; raise MaxMessage if
+	// [Config.MaxMessageBytes]. The connection is finished; raise MaxMessageBytes if
 	// the value is legitimate — a large bytea, a long text.
 	ErrMessageTooLarge = pgwire.ErrMessageTooLarge
 

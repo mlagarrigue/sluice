@@ -548,7 +548,7 @@ func TestReplicationGivesBackAnOversizedArena(t *testing.T) {
 }
 
 // The relation table is bounded in bytes as well as in count: a Relation
-// message is bounded only by Config.MaxMessage, so the count alone let a
+// message is bounded only by Config.MaxMessageBytes, so the count alone let a
 // server keep gigabytes of names in the table for the life of the stream
 // (64 relations with 4 MiB names kept: 256 MiB, measured). A relation past
 // the budget is ErrProtocol; a redescription of a known OID is charged the
