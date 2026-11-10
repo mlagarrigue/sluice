@@ -518,7 +518,7 @@
       "amplificationlimit": "succeeded",
       "handshakeloss": "succeeded",
       "transferloss": "succeeded",
-      "handshakecorruption": "succeeded",
+      "handshakecorruption": "random: a corrupted packet is a lost one to the AEAD; one of the fifty connections, its handshake done, sometimes hears nothing until the 30 s idle timeout closes it (quic: idle timeout). Red twice in the scheduled pass of 2026-11-08, green three times alone on 2026-11-10",
       "transfercorruption": "succeeded",
       "ipv6": "succeeded",
       "v2": "unsupported: QUIC version 2 is not implemented",
