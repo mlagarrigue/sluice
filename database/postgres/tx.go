@@ -90,13 +90,16 @@ type TxConfig struct {
 	// exactly when a bug makes them differ.
 	ReadOnly bool
 
-	// Timeout, when positive, sets statement_timeout for the transaction's
-	// lifetime. This is the only bound that stops the *server* working: a
-	// context stops this client waiting, and CancelRequest is advisory. In a
-	// batched pipeline one unbounded statement stalls every caller in the
-	// batch, so a transaction with no timeout is a decision, not a default.
+	// StatementTimeout, when positive, sets statement_timeout for the
+	// transaction's lifetime: each statement is bounded, not the transaction
+	// — ten statements of 4s each run to the end under 5s. The context given
+	// to the transaction's calls is what bounds the whole, on this side.
+	// This is the only bound that stops the *server* working: a context
+	// stops this client waiting, and CancelRequest is advisory. In a batched
+	// pipeline one unbounded statement stalls every caller in the batch, so
+	// a transaction with no statement timeout is a decision, not a default.
 	// Zero sets none: the server's own statement_timeout applies.
-	Timeout time.Duration
+	StatementTimeout time.Duration
 }
 
 // Tx is one transaction on one connection.
@@ -107,7 +110,7 @@ type TxConfig struct {
 // row-level security usable from a pooled or reused connection at all. See
 // [Tx.SetLocal].
 //
-//	tx, err := conn.Begin(ctx, postgres.TxConfig{Timeout: 5 * time.Second})
+//	tx, err := conn.Begin(ctx, postgres.TxConfig{StatementTimeout: 5 * time.Second})
 //	if err != nil {
 //	    return err
 //	}
@@ -169,8 +172,8 @@ func (c *Conn) Begin(ctx context.Context, cfg TxConfig) (*Tx, error) {
 	c.inTx = true
 	tx := &Tx{conn: c, gen: c.txGen}
 
-	if cfg.Timeout > 0 {
-		if err := tx.SetLocalTimeout(ctx, cfg.Timeout); err != nil {
+	if cfg.StatementTimeout > 0 {
+		if err := tx.SetLocalStatementTimeout(ctx, cfg.StatementTimeout); err != nil {
 			// The transaction opened but is not in the state that was asked
 			// for. Running it anyway would mean running it unbounded, which is
 			// the opposite of what the caller requested.
@@ -669,8 +672,8 @@ func (tx *Tx) SetLocal(ctx context.Context, name, value string) error {
 	})
 }
 
-// SetLocalTimeout bounds how long any single statement in this transaction may
-// run on the server.
+// SetLocalStatementTimeout bounds how long any single statement in this
+// transaction may run on the server — each one, not their sum.
 //
 // This is the bound a context cannot be: ctx stops this client pulling, and it
 // cannot reach a backend that is inside a statement. In a batched pipeline
@@ -681,9 +684,9 @@ func (tx *Tx) SetLocal(ctx context.Context, name, value string) error {
 // expressed in milliseconds, and zero means *no limit* — silently turning
 // "500 µs" into "unbounded" is the sort of rounding that is discovered during
 // an incident.
-func (tx *Tx) SetLocalTimeout(ctx context.Context, d time.Duration) error {
+func (tx *Tx) SetLocalStatementTimeout(ctx context.Context, d time.Duration) error {
 	if d <= 0 {
-		return fmt.Errorf("postgres: SetLocalTimeout needs a positive duration; %v would mean no limit at all", d)
+		return fmt.Errorf("postgres: SetLocalStatementTimeout needs a positive duration; %v would mean no limit at all", d)
 	}
 	// Divided first and rounded up after: adding a millisecond-minus-one
 	// before dividing overflows for a d near the top of its range, and the

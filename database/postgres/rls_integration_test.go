@@ -125,7 +125,7 @@ func TestIntegrationRLSIsEnforcedByTheServer(t *testing.T) {
 		{"nobody", nil},
 	} {
 		t.Run(tc.tenant, func(t *testing.T) {
-			tx, err := conn.Begin(ctx, postgres.TxConfig{Timeout: 10 * time.Second})
+			tx, err := conn.Begin(ctx, postgres.TxConfig{StatementTimeout: 10 * time.Second})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -262,7 +262,7 @@ func TestIntegrationStatementTimeoutStopsTheServer(t *testing.T) {
 	conn := dial(t)
 	ctx := t.Context()
 
-	tx, err := conn.Begin(ctx, postgres.TxConfig{Timeout: 100 * time.Millisecond})
+	tx, err := conn.Begin(ctx, postgres.TxConfig{StatementTimeout: 100 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}

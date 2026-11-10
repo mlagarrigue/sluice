@@ -186,7 +186,7 @@ func (s *Service) serve(parts *gateway.Partitions[*gateway.Call[request, Result]
 	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
 	defer cancel()
 
-	tx, err := s.conn.Begin(ctx, postgres.TxConfig{Timeout: 5 * time.Second})
+	tx, err := s.conn.Begin(ctx, postgres.TxConfig{StatementTimeout: 5 * time.Second})
 	if err != nil {
 		// No group was offered yet, so nobody has been answered: the whole
 		// batch fails together, and nobody is left waiting on a context.

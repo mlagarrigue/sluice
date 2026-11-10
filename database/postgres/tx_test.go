@@ -328,7 +328,7 @@ func bindParams(t *testing.T, srv *fakeServer) [][][]byte {
 	}
 }
 
-func TestSetLocalTimeoutRoundsUpAndRefusesZero(t *testing.T) {
+func TestSetLocalStatementTimeoutRoundsUpAndRefusesZero(t *testing.T) {
 	srv := &fakeServer{responses: append([][]byte{cmdCycle("BEGIN")}, setConfigCycle()...)}
 	conn := NewConn(srv, Config{})
 	tx, err := conn.Begin(t.Context(), TxConfig{})
@@ -338,8 +338,8 @@ func TestSetLocalTimeoutRoundsUpAndRefusesZero(t *testing.T) {
 
 	// Sub-millisecond must not become zero: zero means *no limit*, which is
 	// the opposite of what asking for 500 µs means.
-	if err := tx.SetLocalTimeout(t.Context(), 500*time.Microsecond); err != nil {
-		t.Fatalf("SetLocalTimeout returned %v", err)
+	if err := tx.SetLocalStatementTimeout(t.Context(), 500*time.Microsecond); err != nil {
+		t.Fatalf("SetLocalStatementTimeout returned %v", err)
 	}
 	// The earlier form of this assertion searched the sent bytes for "1" and
 	// for a text pattern the client can never produce, both of which the
@@ -359,8 +359,8 @@ func TestSetLocalTimeoutRoundsUpAndRefusesZero(t *testing.T) {
 	}
 
 	for _, d := range []time.Duration{0, -time.Second} {
-		if err := tx.SetLocalTimeout(t.Context(), d); err == nil {
-			t.Errorf("SetLocalTimeout(%v) was accepted", d)
+		if err := tx.SetLocalStatementTimeout(t.Context(), d); err == nil {
+			t.Errorf("SetLocalStatementTimeout(%v) was accepted", d)
 		}
 	}
 }
@@ -493,18 +493,18 @@ func TestCommitRefusesARollbackTagWithoutAFailedStatus(t *testing.T) {
 	}
 }
 
-// TxConfig.Timeout must actually reach the server, and a transaction that
+// TxConfig.StatementTimeout must actually reach the server, and a transaction that
 // could not be bounded must not be handed back as if it had been.
-func TestBeginTimeoutIsAppliedAndFailsClosed(t *testing.T) {
+func TestBeginStatementTimeoutIsAppliedAndFailsClosed(t *testing.T) {
 	srv := &fakeServer{responses: append([][]byte{cmdCycle("BEGIN")}, setConfigCycle()...)}
 	conn := NewConn(srv, Config{})
-	tx, err := conn.Begin(t.Context(), TxConfig{Timeout: 5 * time.Second})
+	tx, err := conn.Begin(t.Context(), TxConfig{StatementTimeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("Begin returned %v", err)
 	}
 	defer tx.Rollback() //nolint:errcheck // asserting on the wire, not the teardown
 	if !bytes.Contains(srv.sent.Bytes(), []byte("statement_timeout")) {
-		t.Error("TxConfig.Timeout never reached the server")
+		t.Error("TxConfig.StatementTimeout never reached the server")
 	}
 	if !bytes.Contains(srv.sent.Bytes(), []byte("5000")) {
 		t.Error("the timeout was not sent in milliseconds")
@@ -526,7 +526,7 @@ func TestBeginRollsBackWhenTheTimeoutCannotBeSet(t *testing.T) {
 	}}
 	conn := NewConn(srv, Config{})
 
-	if _, err := conn.Begin(t.Context(), TxConfig{Timeout: time.Second}); err == nil {
+	if _, err := conn.Begin(t.Context(), TxConfig{StatementTimeout: time.Second}); err == nil {
 		t.Fatal("Begin returned a transaction that is not bounded the way it was asked to be")
 	}
 	if conn.inTx {
@@ -1078,15 +1078,15 @@ func TestSavepointsStopsReadingOnceBroken(t *testing.T) {
 // The round-up must not overflow at the top of Duration's range: adding a
 // millisecond before dividing wrapped math.MaxInt64 to a negative count, and
 // a negative statement_timeout is a server error the caller did not ask for.
-func TestSetLocalTimeoutDoesNotOverflow(t *testing.T) {
+func TestSetLocalStatementTimeoutDoesNotOverflow(t *testing.T) {
 	srv := &fakeServer{responses: append([][]byte{cmdCycle("BEGIN")}, setConfigCycle()...)}
 	conn := NewConn(srv, Config{})
 	tx, err := conn.Begin(t.Context(), TxConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tx.SetLocalTimeout(t.Context(), time.Duration(math.MaxInt64)); err != nil {
-		t.Fatalf("SetLocalTimeout returned %v", err)
+	if err := tx.SetLocalStatementTimeout(t.Context(), time.Duration(math.MaxInt64)); err != nil {
+		t.Fatalf("SetLocalStatementTimeout returned %v", err)
 	}
 	binds := bindParams(t, srv)
 	if len(binds) != 1 || len(binds[0]) != 2 {
@@ -1162,8 +1162,8 @@ func TestTxEdges(t *testing.T) {
 	if err := tx.Exec(ctx, "SELECT 1"); !errors.Is(err, context.Canceled) {
 		t.Errorf("Exec under a done ctx = %v, want context.Canceled", err)
 	}
-	if err := tx.SetLocalTimeout(t.Context(), 0); err == nil {
-		t.Error("SetLocalTimeout(0) was accepted: zero is no limit")
+	if err := tx.SetLocalStatementTimeout(t.Context(), 0); err == nil {
+		t.Error("SetLocalStatementTimeout(0) was accepted: zero is no limit")
 	}
 	if srv.sent.Len() != sent {
 		t.Errorf("%d bytes sent for refused statements", srv.sent.Len()-sent)

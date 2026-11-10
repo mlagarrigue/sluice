@@ -36,6 +36,15 @@ signatures — a value now refused — come last.
   ("feat(postgres)!: IndexOutOfRange becomes IndexError"): the value
   `Rows.Value` panics with, named as Go names an error type; its fields and
   its message are unchanged. Rename it where a recovered value is asserted.
+- **`TxConfig.Timeout` is `StatementTimeout`, `Tx.SetLocalTimeout` is `SetLocalStatementTimeout`**
+  ("feat(postgres)!: TxConfig.Timeout becomes StatementTimeout"): the old
+  names promised a bound on the transaction, and the code sets
+  statement_timeout, which bounds each statement — ten statements of 4s
+  each ran to the end under a five-second timeout. Behaviour and values
+  are unchanged: `TxConfig{Timeout: d}` is renamed `TxConfig{StatementTimeout: d}`,
+  and `tx.SetLocalTimeout(ctx, d)` is renamed `tx.SetLocalStatementTimeout(ctx, d)`.
+  The whole transaction is bounded,
+  on this side, by the context its calls are given.
 
 ### Web: `web` and `web/stream`
 

@@ -490,7 +490,7 @@ A **savepoint** is a mark inside a transaction to return to: a step that
 may fail — an optional insert, a retry — goes after `tx.Savepoint(ctx,
 name)`; `tx.RollbackTo(ctx, name)` undoes it and the transaction carries
 on, `tx.Release(ctx, name)` keeps it and drops the mark. `tx.Savepoints`
-sets several in one round trip. `tx.SetLocalTimeout(ctx, d)` bounds the
+sets several in one round trip. `tx.SetLocalStatementTimeout(ctx, d)` bounds the
 statements that follow, until the transaction ends. `ExampleTx_Savepoint`
 in `database/postgres` puts the four together.
 
@@ -500,7 +500,7 @@ in `database/postgres` puts the four together.
 |---|---|---|---|
 | `Isolation` | the server's default (`IsolationDefault`) | `IsolationReadCommitted`, `IsolationRepeatableRead`, `IsolationSerializable` | the isolation level |
 | `ReadOnly` | read-write | | opens the transaction READ ONLY |
-| `Timeout` | no bound | > 0 to bound | statement_timeout for the transaction's lifetime |
+| `StatementTimeout` | no bound | > 0 to bound | statement_timeout for the transaction's lifetime |
 
 ## Securing and controlling the connection
 

@@ -170,7 +170,7 @@ func ExampleConn_Begin() {
 	conn := mustConnect()
 	defer func() { _ = conn.Close() }()
 
-	tx, err := conn.Begin(ctx, postgres.TxConfig{Timeout: 5 * time.Second})
+	tx, err := conn.Begin(ctx, postgres.TxConfig{StatementTimeout: 5 * time.Second})
 	if err != nil {
 		fmt.Println("begin:", err)
 		return
@@ -193,7 +193,7 @@ func ExampleConn_Begin() {
 
 // A step that may fail without taking the transaction with it: a savepoint
 // before it, RollbackTo when it fails — the transaction goes on from the
-// savepoint — and Release when it succeeds. SetLocalTimeout bounds the
+// savepoint — and Release when it succeeds. SetLocalStatementTimeout bounds the
 // statements that follow, until the transaction ends. Compiled but not run:
 // it needs a server.
 func ExampleTx_Savepoint() {
@@ -208,7 +208,7 @@ func ExampleTx_Savepoint() {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if err := tx.SetLocalTimeout(ctx, 2*time.Second); err != nil {
+	if err := tx.SetLocalStatementTimeout(ctx, 2*time.Second); err != nil {
 		fmt.Println("timeout:", err)
 		return
 	}
