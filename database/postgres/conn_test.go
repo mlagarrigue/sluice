@@ -1709,12 +1709,12 @@ func TestConnUnknownMessageTypeBreaksTheConnectionWhileRecovering(t *testing.T) 
 }
 
 // The bounds of a connection and a query at their edges: claim holds the
-// connection, MaxMessage reaches the reader, BatchBytes may be its ceiling,
+// connection, MaxMessageBytes reaches the reader, BatchBytes may be its ceiling,
 // a Bind of exactly the outbound bound goes, and a demand may name no key.
 func TestConnBoundsAtTheirEdges(t *testing.T) {
-	conn := NewConn(&fakeServer{}, Config{MaxMessage: maxStartupMessage})
+	conn := NewConn(&fakeServer{}, Config{MaxMessageBytes: maxStartupMessage})
 	if got := conn.r.MaxMessage(); got != maxStartupMessage {
-		t.Errorf("the reader's limit = %d, want Config.MaxMessage's %d", got, maxStartupMessage)
+		t.Errorf("the reader's limit = %d, want Config.MaxMessageBytes's %d", got, maxStartupMessage)
 	}
 	if err := conn.claim(nil); err != nil || !conn.busy {
 		t.Errorf("claim = %v, busy %v; want the connection held", err, conn.busy)

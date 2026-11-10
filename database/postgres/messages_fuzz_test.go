@@ -77,7 +77,7 @@ func FuzzRowsAppend(f *testing.F) {
 		// Every value of an accepted row must be readable, which is what
 		// proves the offsets describe the buffer they index.
 		for row := range r.Len() {
-			for col := range r.Fields() {
+			for col := range r.NumFields() {
 				b, isNull := r.Value(row, col)
 				if isNull && b != nil {
 					t.Fatalf("(%d,%d) is NULL but carries %q", row, col, b)

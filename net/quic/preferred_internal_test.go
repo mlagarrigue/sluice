@@ -357,7 +357,7 @@ func TestPreferredAddressEndToEnd(t *testing.T) {
 		defer client.mu.Unlock()
 		return sameAddr(client.peer, pref.LocalAddr()) && !client.pathProbe.pending
 	})
-	if n := client.Migrations(); n != 1 {
+	if n := client.Stats().Migrations; n != 1 {
 		t.Errorf("client migrations = %d, want 1", n)
 	}
 
@@ -390,7 +390,7 @@ func TestPreferredAddressEndToEnd(t *testing.T) {
 		defer server.mu.Unlock()
 		return server.pc == net.PacketConn(pref)
 	})
-	if n := server.Migrations(); n != 1 {
+	if n := server.Stats().Migrations; n != 1 {
 		t.Errorf("server migrations = %d, want 1", n)
 	}
 

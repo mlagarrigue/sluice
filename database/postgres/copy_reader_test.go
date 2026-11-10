@@ -265,7 +265,7 @@ func TestAbandonedCopyLeavesNoGoroutineAfterClose(t *testing.T) {
 // distinct names, maxServerParameterBytes of names and values, the last
 // value of a name winning — because a load runs for hours and nothing else
 // reads the socket meanwhile: until 2026-10-27 every body was queued as it
-// came, up to MaxMessage each, for the whole COPY.
+// came, up to MaxMessageBytes each, for the whole COPY.
 func TestCopyReaderBoundsTheParametersItQueues(t *testing.T) {
 	big := strings.Repeat("x", 1<<20)
 	readAll := func(t *testing.T, send func(w net.Conn) error) *copyReader {

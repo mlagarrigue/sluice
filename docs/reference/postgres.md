@@ -29,7 +29,7 @@ Each field left at zero takes the value of the "Zero" column; what
 | `MaxSCRAMIterations` | 1,048,576 | ≥ Min | above which it is refused |
 | `MinSCRAMSaltLen` | 16 bytes | ≥ 0 | a shorter salt is refused |
 | `Params` | none | not `user`, `database`, `replication` | runtime parameters sent at startup |
-| `MaxMessage` | 64 MiB | 64 KiB to 1 GiB | the largest message accepted from the server |
+| `MaxMessageBytes` | 64 MiB | 64 KiB to 1 GiB | the largest message accepted from the server |
 | `MaxProtocol` | `Protocol32` | versions this package speaks | the version asked for |
 | `MinProtocol` | any known version | ≤ `MaxProtocol` | the version below which the connection is refused |
 | `StatementCacheSize` | 512 | negative: no cache | statements kept prepared on the server |

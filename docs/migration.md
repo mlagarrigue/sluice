@@ -45,6 +45,18 @@ signatures — a value now refused — come last.
   and `tx.SetLocalTimeout(ctx, d)` is renamed `tx.SetLocalStatementTimeout(ctx, d)`.
   The whole transaction is bounded,
   on this side, by the context its calls are given.
+- **`Config.MaxMessage` is `MaxMessageBytes`**
+  ("feat(postgres)!: MaxMessage becomes MaxMessageBytes (ADR 0018)"): the
+  field is a size in bytes, read beside counts (`BatchRows`,
+  `StatementCacheSize`), and now says so as `QueryConfig.BatchBytes` and
+  `CopyConfig.ChunkBytes` do. Default, range and refusals are unchanged;
+  rename it where a `Config` is written, and where an error message is
+  matched on the field's name.
+- **`Rows.Fields` is `NumFields`**
+  ("feat(postgres)!: Rows.Fields becomes NumFields"): it returns the
+  number of columns, while `Row.Fields` returns the columns themselves, and
+  `for i := range rows.Fields()` compiled with either. `rows.Fields()` is
+  renamed `rows.NumFields()`; the value is unchanged.
 
 ### Web: `web` and `web/stream`
 
@@ -76,6 +88,11 @@ signatures — a value now refused — come last.
   `quic.Config{TransportParameters: …}`, and `Validate` moves to `Config`.
   In `net/httpstream`, `Config.TransportParameters()` becomes
   `Config.QUICConfig()` and returns a `quic.Config`.
+- **`Conn.Migrations` is `Stats.Migrations`**
+  ("feat(quic)!: the migration count moves into Stats"): the number of
+  path changes is read beside the connection's other counters, in the
+  same consistent snapshot. `conn.Migrations()` becomes
+  `conn.Stats().Migrations`; the count is unchanged.
 - **`ActiveConnIDLimit` past 1024 is refused** (`2f3fe1b`):
   `TransportParameters.Validate`, and so `Dial` and `NewListener`, refuse
   it, where the value was taken as given. A configuration that asked for

@@ -129,7 +129,7 @@ func hydrateReflectBoxed(dst []order, rows *Rows) ([]order, error) {
 	for i := range rows.Len() {
 		var o order
 		v := reflect.ValueOf(&o).Elem()
-		for col := range rows.Fields() {
+		for col := range rows.NumFields() {
 			b, isNull := rows.Value(i, col)
 			if isNull {
 				return nil, ErrNullValue

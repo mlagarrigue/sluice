@@ -408,19 +408,19 @@ func (c *Conn) emitRows(ctx context.Context, rows *Rows, items []Row, deliver fu
 // than UTF8 breaks it.
 //
 // cfg is read for what still applies once the startup is past:
-// [Config.StatementCacheSize], [Config.MaxMessage] and [Config.Logger], with
+// [Config.StatementCacheSize], [Config.MaxMessageBytes] and [Config.Logger], with
 // the defaults their zero values name, so a connection built here differs
 // from one [Connect] builds by its defaults, never by what it can be set
 // to. The other fields are the startup's, already done, and are not read.
-// NewConn panics on a MaxMessage [Config.Validate] refuses: a value written
+// NewConn panics on a MaxMessageBytes [Config.Validate] refuses: a value written
 // in the code is a programmer's mistake.
 //
 // rw is read on one goroutine while it is written on another during a
 // [Copier]'s COPY, as a [net.Conn] allows: the server's notices and errors
 // are read while the rows go out.
 func NewConn(rw io.ReadWriteCloser, cfg Config) *Conn {
-	if m := cfg.MaxMessage; m != 0 && (m < maxStartupMessage || m > maxMaxMessage) {
-		panic(fmt.Sprintf("postgres: NewConn: Config.MaxMessage %d is outside %d..%d bytes", m, maxStartupMessage, maxMaxMessage))
+	if m := cfg.MaxMessageBytes; m != 0 && (m < maxStartupMessage || m > maxMaxMessage) {
+		panic(fmt.Sprintf("postgres: NewConn: Config.MaxMessageBytes %d is outside %d..%d bytes", m, maxStartupMessage, maxMaxMessage))
 	}
 	c := &Conn{
 		rw: rw, r: pgwire.NewReaderSize(rw, readBufferSize), w: pgwire.NewWriter(rw),
@@ -432,8 +432,8 @@ func NewConn(rw io.ReadWriteCloser, cfg Config) *Conn {
 	case n > 0:
 		c.stmts = newStmtCache(n)
 	}
-	if cfg.MaxMessage != 0 {
-		c.r.SetMaxMessage(cfg.MaxMessage)
+	if cfg.MaxMessageBytes != 0 {
+		c.r.SetMaxMessage(cfg.MaxMessageBytes)
 	}
 	return c
 }
@@ -772,7 +772,7 @@ type QueryConfig struct {
 	// crossed the bound in it, and the next row opens the next batch; nothing
 	// fails, the consumer sees more and smaller batches, and [Config.Logger]
 	// receives one warning per result. A single row wider than the bound
-	// travels in a batch of its own — it is bounded by [Config.MaxMessage] —
+	// travels in a batch of its own — it is bounded by [Config.MaxMessageBytes] —
 	// so memory per batch is at most BatchBytes plus one row.
 	//
 	// Zero means 64 MiB, the same default as a message from the server; a
@@ -1939,7 +1939,7 @@ func (c *Conn) breakConn(cause error) error {
 			// The one break the caller can configure away, so the error
 			// names the field rather than leaving a number to look up. Only
 			// the read side: ErrOutgoingTooLarge is a bound no setting moves.
-			cause = fmt.Errorf("%w; Config.MaxMessage raises the limit", cause)
+			cause = fmt.Errorf("%w; Config.MaxMessageBytes raises the limit", cause)
 		}
 		c.broken = fmt.Errorf("%w: %w", ErrConnBroken, cause)
 	}

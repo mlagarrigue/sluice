@@ -1,7 +1,7 @@
 # ADR 0018 — Zero is the safe default, the bound is mandatory
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-11-10 (`IdleTimeout` read by HTTP/3's own idle clock); 6 earlier, from 2026-10-21, in its `git log`
+- **Revised:** 2026-11-10 (`postgres.Config.MaxMessage` named `MaxMessageBytes`); 7 earlier, from 2026-10-21, in its `git log`
 - **Theme:** httpstream
 
 ## Problem
@@ -113,7 +113,7 @@ never removed.**
    `httpstream` alone.** `postgres.Config` follows it, with one exception
    its comment names — a negative `StatementCacheSize` turns the cache off
    (ADR 0022): zero
-   means the default named in the field's comment (`MaxMessage` 64 MiB,
+   means the default named in the field's comment (`MaxMessageBytes` 64 MiB,
    `CancelTimeout` 5 s, `MinSCRAMIterations` 4096, `MaxSCRAMIterations`
    1,048,576, `MinSCRAMSaltLen` 16), a negative value or one outside what
    the protocol allows is refused by `Connect` before anything is sent,
