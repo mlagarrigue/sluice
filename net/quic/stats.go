@@ -172,6 +172,15 @@ type Stats struct {
 	// while the search ran again. A route change or a tunnel set up under
 	// the connection; an outage of three probe timeouts counts too.
 	MTUBlackHoles uint64
+
+	// Migrations is how many times this connection changed path: a server
+	// following its peer to a new address, or a client moving itself with
+	// [Conn.Rebind]. Whether the newest one has validated shows up as
+	// traffic flowing again; a server-side one that never validates falls
+	// back to the last validated path, and only a peer gone from both ends
+	// by idle timeout; a Rebind that never validates ends the connection
+	// with an error.
+	Migrations uint64
 }
 
 // Stats reports the connection's counters, consistently with each other.
@@ -201,5 +210,6 @@ func (c *Conn) Stats() Stats {
 		DeliveryRate:          c.delivery.rate,
 		DatagramSize:          c.maxDatagram,
 		MTUBlackHoles:         c.pmtuBlackHoles,
+		Migrations:            c.migrations,
 	}
 }

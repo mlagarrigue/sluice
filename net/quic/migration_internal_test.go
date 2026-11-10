@@ -1136,8 +1136,8 @@ func TestServerFollowsClientRebind(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitReceived(mark+300, "after validation")
-	if got := server.Migrations(); got != 1 {
-		t.Errorf("Migrations() = %d, want 1", got)
+	if got := server.Stats().Migrations; got != 1 {
+		t.Errorf("Stats().Migrations = %d, want 1", got)
 	}
 }
 
@@ -1253,8 +1253,8 @@ func TestClientIssuesIdentifiersForTheServerToFollow(t *testing.T) {
 			t.Fatalf("rebind %d: the server sends under %x, which the client never issued", i+1, dcid)
 		}
 	}
-	if got := server.Migrations(); got != 2 {
-		t.Errorf("Migrations() = %d, want 2", got)
+	if got := server.Stats().Migrations; got != 2 {
+		t.Errorf("Stats().Migrations = %d, want 2", got)
 	}
 }
 
@@ -1355,10 +1355,10 @@ func TestClientRebindMovesThePath(t *testing.T) {
 		defer server.mu.Unlock()
 		return sameAddr(server.peer, second.LocalAddr())
 	})
-	if n := server.Migrations(); n != 1 {
+	if n := server.Stats().Migrations; n != 1 {
 		t.Errorf("server migrations = %d, want 1", n)
 	}
-	if n := client.Migrations(); n != 1 {
+	if n := client.Stats().Migrations; n != 1 {
 		t.Errorf("client migrations = %d, want 1", n)
 	}
 	waitFor(t, "the client's path validation", func() bool {

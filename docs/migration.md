@@ -88,6 +88,11 @@ signatures — a value now refused — come last.
   `quic.Config{TransportParameters: …}`, and `Validate` moves to `Config`.
   In `net/httpstream`, `Config.TransportParameters()` becomes
   `Config.QUICConfig()` and returns a `quic.Config`.
+- **`Conn.Migrations` is `Stats.Migrations`**
+  ("feat(quic)!: the migration count moves into Stats"): the number of
+  path changes is read beside the connection's other counters, in the
+  same consistent snapshot. `conn.Migrations()` becomes
+  `conn.Stats().Migrations`; the count is unchanged.
 - **`ActiveConnIDLimit` past 1024 is refused** (`2f3fe1b`):
   `TransportParameters.Validate`, and so `Dial` and `NewListener`, refuse
   it, where the value was taken as given. A configuration that asked for
