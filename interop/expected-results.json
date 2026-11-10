@@ -518,7 +518,7 @@
       "amplificationlimit": "succeeded",
       "handshakeloss": "succeeded",
       "transferloss": "succeeded",
-      "handshakecorruption": "random: a corrupted packet is a lost one to the AEAD; one of the fifty connections, its handshake done, sometimes hears nothing until the 30 s idle timeout closes it (quic: idle timeout). Red twice in the scheduled pass of 2026-11-08, green three times alone on 2026-11-10",
+      "handshakecorruption": "random: the simulator drops about 30% of the datagrams each way, and one of the fifty connections sometimes loses its handshake to that alone. Read in the traces of the scheduled pass of 2026-11-08, red twice. First attempt (quic: idle timeout): the client's 1-RTT request reached aioquic before its Finished, and aioquic drops what it cannot yet decrypt. Then all five of aioquic's 1-RTT packets carrying HANDSHAKE_DONE were lost, sent at +0, +1, +3, +7 and +15 s. Without confirmation the client may not arm its Application Data PTO (RFC 9002 §6.2.1), so it probes in Handshake, which aioquic has discarded, and both ends idle out at 30 s. Second attempt (dial: i/o timeout): two of the client's first three Initial flights and half of aioquic's flight were lost, outliving the 10 s Dial deadline. Green three times alone on 2026-11-10",
       "transfercorruption": "succeeded",
       "ipv6": "succeeded",
       "v2": "unsupported: QUIC version 2 is not implemented",
