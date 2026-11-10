@@ -376,8 +376,9 @@ func (r *Rows) reset() {
 // Len reports how many rows are held.
 func (r *Rows) Len() int { return r.rows }
 
-// Fields reports the number of columns per row.
-func (r *Rows) Fields() int { return r.fields }
+// NumFields reports the number of columns per row; [Row.Fields] describes
+// them.
+func (r *Rows) NumFields() int { return r.fields }
 
 // full reports whether the accumulator has reached its row limit or its byte
 // bound, which is what a caller polls after each Rows.appendRow to decide when
