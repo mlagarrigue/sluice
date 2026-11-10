@@ -322,18 +322,16 @@ jobs:
         include:
           - postgres: "19"
             tag: "19rc1"
-          # pgvector's image is the official one with the extension built in.
-          # The 17 entry runs on it, so the vector codec meets a real server
-          # and SLUICE_PG_VECTOR turns the extension's absence into a failure.
+          # The 17 entry also installs pgvector, so the vector codec meets a
+          # real server and SLUICE_PG_VECTOR turns the extension's absence
+          # into a failure.
           - postgres: "17"
-            image: pgvector/pgvector
-            tag: "0.8.2-pg17"
             vector: "1"
     services:
       postgres:
         # Pinned majors: a new major changes catalogs and error texts, and
         # that should arrive as a reviewed bump, not overnight.
-        image: ${{ matrix.image || 'postgres' }}:${{ matrix.tag || matrix.postgres }}
+        image: postgres:${{ matrix.tag || matrix.postgres }}
         env:
           POSTGRES_PASSWORD: postgres
         ports:
@@ -357,6 +355,18 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_LATEST }}
+
+      # pgvector is not in the official image. The PostgreSQL project's apt
+      # repository, which the image already takes the server from, carries
+      # it; the extension needs its files before init.sql, not a restart.
+      # Its version follows that repository, as the server's minor follows
+      # the tag, so the step prints the one it tested.
+      - name: Install pgvector
+        if: matrix.vector == '1'
+        run: |
+          docker exec ${{ job.services.postgres.id }} apt-get update -qq
+          docker exec ${{ job.services.postgres.id }} apt-get install -y -qq --no-install-recommends postgresql-${{ matrix.postgres }}-pgvector
+          docker exec ${{ job.services.postgres.id }} dpkg-query -W postgresql-${{ matrix.postgres }} postgresql-${{ matrix.postgres }}-pgvector
 
       # A non-superuser role, as pgdev.sh creates: row-level security does
       # not apply to a superuser, and the RLS suites skip rather than pass
