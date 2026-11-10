@@ -519,6 +519,7 @@ var adrNamedLater = map[string][]string{
 	"cec438de46da81cb7061c4c65d5808c3d96b6547": {"0015"},         // a /64 bounds a host, not a site
 	"c54b3411f6e4d90d9d03bca4914c3612a5fe5302": {"0001", "0004"}, // join.Merge becomes join.MergeJoin
 	"22fc38060976c103a43b559edb457110860262ec": {"0015"},         // the BBR draft cited by its revision
+	"cd0041d5ac43f5da13366b6bec8a779e99459ca8": {"0018"},         // IdleTimeout read by HTTP/3's own idle clock
 }
 
 // unnamedADRChanges lists, for the git repository at dir, every commit after
