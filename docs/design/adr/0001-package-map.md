@@ -1,7 +1,7 @@
 # ADR 0001 — The package map: a core that retains nothing, operators by what they retain, the periphery by external system
 
 - **Created:** 2026-10-07
-- **Revised:** 2026-11-03 (`join.Merge` becomes `join.MergeJoin`: one word, one sense); 2 earlier, from 2026-10-23, in its `git log`
+- **Revised:** 2026-11-10 (stage in `architecture.md`'s sense: any step, an operator one of its two forms); 3 earlier, from 2026-10-23, in its `git log`
 - **Theme:** core
 
 ## Problem
@@ -32,9 +32,12 @@ batch, and it is the core's own tool for restoring full batches; `Split`
 holds at most one pending batch per branch; `Merge` holds one `iter.Pull`
 coroutine per source and buffers no batch.
 
-Two words name what these packages export. An **operator** is a function
-from `Stream[A]` to `Stream[B]` and composes over a whole stream. A
-**stage** is a function from one batch to the next, called once per batch:
+Two words name what these packages export, in the sense
+`docs/design/architecture.md` gives them. A **stage** is any step of the
+pipeline — a batch in, a batch out, in order — and it is written two ways.
+An **operator** is a stage that composes over a whole stream, a function
+from `Stream[A]` to `Stream[B]`. The other form runs inside one call
+answering one batch, a function over that batch called once per batch:
 `parallel.Ordered` takes one, `httpstream.Handler` is one, and `web/stream`
 writes its stages as functions over the batch's `[]Exchange`.
 
