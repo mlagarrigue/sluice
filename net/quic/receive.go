@@ -2117,6 +2117,7 @@ func (c *Conn) streamFor(id uint64, space int, sendSide bool) (*Stream, bool, er
 		last = s
 	}
 	*seen = count
+	c.grantHeldStreamSlotsLocked(uni)
 	if !c.batchMode {
 		c.signalAccept()
 	}

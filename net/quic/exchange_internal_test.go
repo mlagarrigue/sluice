@@ -274,3 +274,53 @@ func TestStreamCreditIsReturnedWhenThePeerIsAtTheLimit(t *testing.T) {
 		t.Error("a peer far from the limit got its slots back one by one, not by the batch")
 	}
 }
+
+// The same rule, reached by the other road: slots retired while the peer was
+// far from its limit are held in the batch, and the peer then opens toward
+// the limit with none of its remaining streams finishing. Opening is what
+// brings it within a batch, so opening releases the held slots: read on
+// retirements alone, nothing ever did, and the peer stayed at a limit of
+// 100 with 89 streams alive — STREAMS_BLOCKED, which §4.6 does not let a
+// grant wait on, changed nothing.
+func TestHeldStreamSlotsAreGrantedWhenThePeerOpensToTheLimit(t *testing.T) {
+	c, _ := newMigratableServer(t, "slots-held")
+	c.OnStreamFrames(CreditOnDelivery, func([]Frame) error { return nil })
+	now := time.Now()
+
+	// The peer opens its first 88 streams; eleven complete both ways and
+	// retire, under the batch of twelve and far from the limit.
+	if err := c.frames(spaceApplication, streamFrame(nil, 4*87, 0, "x", false), now); err != nil {
+		t.Fatal(err)
+	}
+	for n := range uint64(11) {
+		id := 4 * n
+		s, err := c.Stream(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.CloseWrite(); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.frames(spaceApplication, streamFrame(nil, id, 0, "", true), now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c.mu.Lock()
+	limit, held := c.localMaxStreamsBidi, c.retiredBidi
+	c.mu.Unlock()
+	if limit != 100 || held != 11 {
+		t.Fatalf("setup: limit %d, %d slots held; want 100 and 11", limit, held)
+	}
+
+	// Its 89th stream brings the peer within a batch of the limit (11 left
+	// of a batch of 12): the held slots come back with it.
+	if err := c.frames(spaceApplication, streamFrame(nil, 4*88, 0, "x", false), now); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	limit, held = c.localMaxStreamsBidi, c.retiredBidi
+	c.mu.Unlock()
+	if limit != 111 || held != 0 {
+		t.Fatalf("within a batch of the limit: limit %d, %d slots held; want 111 and none (the grant is queued with the raise)", limit, held)
+	}
+}

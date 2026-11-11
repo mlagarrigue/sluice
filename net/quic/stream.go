@@ -1168,16 +1168,35 @@ func (c *Conn) retireTaken(s *Stream) {
 // two more retirements. A server answering one small request at a time
 // stays far from the limit, so its grants still go by the batch.
 //
+// The rule is read on both events that move the peer toward it: a
+// retirement here, and the peer opening streams (grantHeldStreamSlotsLocked
+// from streamFor). Read on retirements alone, slots retired while the peer
+// was far from the limit stayed in the batch when it then opened up to the
+// limit with none of its streams finishing — the case above, reached by
+// the other road, and STREAMS_BLOCKED, which §4.6 does not let a grant wait
+// on, never came to release them.
+//
 // The limit is raised as the grant is queued, not when it leaves — the
 // same choice as recvQuota.nextMax, with the same reason. Callers hold c.mu.
 func (c *Conn) returnStreamSlotLocked(uni bool) {
+	if uni {
+		c.retiredUni++
+	} else {
+		c.retiredBidi++
+	}
+	c.grantHeldStreamSlotsLocked(uni)
+}
+
+// grantHeldStreamSlotsLocked grants the retired slots held back, when the
+// batch is full or the peer has opened to within a batch of its limit
+// (returnStreamSlotLocked). Callers hold c.mu.
+func (c *Conn) grantHeldStreamSlotsLocked(uni bool) {
 	limit, retired, seen, initial, typ := &c.localMaxStreamsBidi, &c.retiredBidi, c.seenPeerBidi, c.params.InitialMaxStreamsBidi, uint64(frameMaxStreams)
 	if uni {
 		limit, retired, seen, initial, typ = &c.localMaxStreamsUni, &c.retiredUni, c.seenPeerUni, c.params.InitialMaxStreamsUni, frameMaxStreams|1
 	}
-	*retired++
 	batch := max(1, initial/8)
-	if *retired < batch && *limit-seen >= batch {
+	if *retired == 0 || *retired < batch && *limit-seen >= batch {
 		return
 	}
 	*limit += *retired
