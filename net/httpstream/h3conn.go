@@ -141,6 +141,10 @@ type h3Assembler struct {
 	// only.
 	pending []uint64
 	queued  int
+	// fin is whether the delivery a drain is reading ends its stream: a
+	// frame drain refuses on its declaration alone is then one the peer cut
+	// short, which RFC 9114 §7.1 makes the connection's error.
+	fin bool
 	// closedBodies lists the streams whose handler returned from a body still
 	// arriving, appended from the handler's goroutine under closedMu; the
 	// next delivery forgets them.
@@ -604,8 +608,9 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 		headBefore := st.gotHead
 		st.buf = append(st.buf, f.Data...)
 
-		a.queued = 0
+		a.queued, a.fin = 0, f.Fin
 		err := a.drain(st)
+		a.fin = false
 		a.assembling += len(st.buf) + len(st.req.Body) - before
 		// What drain consumed outright — header blocks decoded, frame
 		// headers parsed — stopped being retained now; the body bytes it
@@ -1220,6 +1225,20 @@ func (a *h3Assembler) rawStreamBound() int {
 	return a.cfg.MaxBodyBytes + a.cfg.MaxHeaderBytes + h3FrameSlack
 }
 
+// truncated is the connection error for a frame that has not all arrived —
+// its payload shorter than its length; a whole frame over its bound reaches
+// drain's last section too — on a stream whose delivery ends it (RFC 9114 §7.1: "if the last frame on
+// the stream was truncated, this MUST be treated as a connection error of
+// type H3_FRAME_ERROR"), judged before the frame's declared size: refused on
+// that size, the stream alone was reset or answered 413, and the FIN that
+// cut the frame was never looked at. Frames makes the same judgment for a
+// frame under its bound.
+func (a *h3Assembler) truncated(st *h3Stream, length uint64, payload []byte) error {
+	return h3ConnectionError{Code: h3FrameError, Err: fmt.Errorf(
+		"%w: stream %d ended inside a frame of %d bytes, %d short",
+		ErrH3Protocol, st.id, length, length-uint64(len(payload)))}
+}
+
 // drain consumes whole HTTP/3 frames out of a stream's buffer, leaving what
 // has not arrived. A QUIC stream is a byte stream: a frame split across two
 // datagrams is ordinary rather than an error.
@@ -1428,6 +1447,9 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 				}
 				return nil
 			case typ == h3Headers && length > uint64(a.cfg.MaxHeaderBytes): //nolint:gosec // G115: positive config, set by Config.resolve
+				if a.fin && uint64(len(payload)) < length {
+					return a.truncated(st, length, payload)
+				}
 				return fmt.Errorf("%w: a HEADERS frame of %d bytes, over the %d header bound",
 					ErrTooLarge, length, a.cfg.MaxHeaderBytes)
 			case requestTypeFault(typ) != nil:
@@ -1440,6 +1462,9 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 			case typ == h3Data && st.gotTrailers:
 				return fmt.Errorf("%w: DATA after the trailers", errH3FrameUnexpected)
 			case typ == h3Data && uint64(len(st.req.Body))+length > uint64(a.cfg.MaxBodyBytes): //nolint:gosec // G115: positive config, set by Config.resolve
+				if a.fin && uint64(len(payload)) < length {
+					return a.truncated(st, length, payload)
+				}
 				return h3StatusFail(413, st.req.Method, "%w: a body over %d bytes", ErrTooLarge, a.cfg.MaxBodyBytes)
 			}
 		}

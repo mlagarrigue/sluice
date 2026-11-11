@@ -320,6 +320,38 @@ func TestH3FinMidFrameIsAConnectionError(t *testing.T) {
 	}
 }
 
+// The same truncation, in a frame whose declared length is over its bound:
+// a HEADERS over MaxHeaderBytes, head or trailers, and a DATA that would take
+// a whole body past MaxBodyBytes are refused on that declaration before the
+// payload is waited for, and the FIN that cut the frame in the same delivery
+// went unjudged — the stream was reset, or answered 413, and the connection
+// went on. The truncation is judged first: the size of a frame that never
+// arrived is not the stream's fault to answer.
+func TestH3FinInsideAFrameOverItsBoundIsAConnectionError(t *testing.T) {
+	cut := func(typ, length uint64) []byte {
+		return append(varint.Append(varint.Append(nil, typ), length), 1, 2, 3) // three bytes of a longer payload
+	}
+	after := func(frame []byte) []byte { return append(h3Request("POST", "/x"), frame...) }
+	for _, tt := range []struct {
+		name   string
+		stream []byte
+	}{
+		{"HEADERS under the bound", cut(h3Headers, 100)},
+		{"HEADERS over MaxHeaderBytes", cut(h3Headers, 1025)},
+		{"DATA over MaxBodyBytes", after(cut(h3Data, 4097))},
+		{"trailers over MaxHeaderBytes", after(cut(h3Headers, 1025))},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			a := testAssembler(Config{MaxHeaderBytes: 1024, MaxBodyBytes: 4096, BodyDelivery: BodyWhole})
+			batch, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, tt.stream, true)})
+			if batch.Len() != 0 || len(failed) != 0 {
+				t.Fatalf("served or answered on the stream (batch=%d failed=%v); the connection is at fault", batch.Len(), failed)
+			}
+			connErr(t, err, h3FrameError)
+		})
+	}
+}
+
 // RFC 9114 §4.1: a stream that ends "without enough of the HTTP message to
 // provide a complete response" is aborted with H3_REQUEST_INCOMPLETE — the
 // message is short, not malformed. A FIN before any HEADERS used to be
