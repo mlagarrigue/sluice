@@ -1177,6 +1177,12 @@ type chunkProgress struct {
 	trailer       bool
 	trailerBytes  int
 	trailerFields int
+	// lineSeen is how much of a trailer line still short of its CRLF the
+	// validating pass has searched, from r: the next call resumes there, as
+	// bodyStream.lineSeen does for a streamed body, so a line delivered a
+	// byte per read is searched once in all rather than from its start on
+	// every read. Zero between lines.
+	lineSeen int
 
 	// need, for a Content-Length body, is how many bytes from at the
 	// request takes, once its head has been parsed and accepted; zero until
@@ -1395,12 +1401,26 @@ func walkChunks(buf []byte, cfg Config, p *chunkProgress, move bool, out []Heade
 	}
 	for {
 		limit := cfg.MaxHeaderBytes - trailerBytes - 2
-		line, rest, ok := cutCRLF(buf[r:], limit)
+		// The validating pass resumes one byte before where its search of
+		// a partial line stopped: a CR that ended what was seen may meet its
+		// LF now. The moving pass walks a whole, validated framing once.
+		from := 0
+		if !move {
+			from = min(max(p.lineSeen-1, 0), len(buf)-r)
+		}
+		cut, rest, ok := cutCRLF(buf[r+from:], limit-from)
 		if !ok {
 			if len(buf)-r > limit+1 {
 				return 0, 0, out, fmt.Errorf("%w: trailers over %d bytes", errHeadersTooLarge, cfg.MaxHeaderBytes)
 			}
+			if !move {
+				p.lineSeen = len(buf) - r
+			}
 			return 0, 0, out, errIncomplete
+		}
+		line := buf[r : r+from+len(cut)]
+		if !move {
+			p.lineSeen = 0
 		}
 		trailerBytes += len(buf) - len(rest) - r
 		r = len(buf) - len(rest)

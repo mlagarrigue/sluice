@@ -118,3 +118,48 @@ func TestAStreamedTrailerLineIsScannedOnce(t *testing.T) {
 		t.Errorf("the body ended on %v: the partial trailer line was scanned again from its start by a later read", err)
 	}
 }
+
+// Under BodyWhole, the same partial trailer line, through the walk a read
+// resumes once the head of a chunked request was accepted
+// (resumeAcceptedBody): the first call holds eight bytes of the line and no
+// CRLF; a CRLF is then planted at the line's second byte, inside what that
+// call searched, and two bytes are appended. A walk that resumes where its
+// search stopped does not see it and is still incomplete; a walk that
+// searches the line from its start on every read — up to MaxHeaderBytes
+// per byte received — cuts the line "X" and refuses it. The control plants
+// the CRLF before the first call: the line "X" is indeed refused.
+func TestAWholeBodyTrailerLineIsScannedOnce(t *testing.T) {
+	cfg := Config{BodyDelivery: BodyWhole}.mustResolve()
+	head := "POST /x HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n"
+	body := "0\r\nX-Trailer: aaaaaaaa"
+	line := len(head) + len("0\r\n")
+
+	ctl := []byte(head + body)
+	ctl[line+1], ctl[line+2] = '\r', '\n'
+	cp := &chunkProgress{chunked: true, headersEnd: len(head)}
+	if err := resumeAcceptedBody(ctl, cfg, cp); err != nil {
+		t.Fatalf("control: the line \"X\" was not refused (err %v); the test cannot discriminate", err)
+	}
+
+	buf := []byte(head + body)
+	p := &chunkProgress{chunked: true, headersEnd: len(head)}
+	if err := resumeAcceptedBody(buf, cfg, p); !errors.Is(err, errIncomplete) {
+		t.Fatalf("first call: %v, want errIncomplete", err)
+	}
+	buf[line+1], buf[line+2] = '\r', '\n'
+	buf = append(buf, 'a', 'a')
+	if err := resumeAcceptedBody(buf, cfg, p); !errors.Is(err, errIncomplete) {
+		t.Errorf("second call: %v, want errIncomplete: the planted CRLF, in bytes the first call had searched, was found — the line was searched again from its start", err)
+	}
+	// Without the plant, a CR that ends what one call searched meets its LF
+	// in the next, and the walk ends whole.
+	buf = []byte(head + body + "\r")
+	p = &chunkProgress{chunked: true, headersEnd: len(head)}
+	if _, _, _, err := walkChunks(buf[len(head):], cfg, p, false, nil); !errors.Is(err, errIncomplete) {
+		t.Fatalf("the line up to its CR: %v, want errIncomplete", err)
+	}
+	buf = append(buf, '\n', '\r', '\n')
+	if _, _, _, err := walkChunks(buf[len(head):], cfg, p, false, nil); err != nil {
+		t.Errorf("the CR's LF and the blank line: %v, want the body whole", err)
+	}
+}
