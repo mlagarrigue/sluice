@@ -1,6 +1,7 @@
 package quic
 
 import (
+	"context"
 	"errors"
 	"io"
 	"testing"
@@ -137,5 +138,91 @@ func TestResetFinalSizeIsHeldLikeAFin(t *testing.T) {
 	finalSizeErr(t, err, "a FIN below the final size after a reset")
 	if _, _, _, err := s.deliver(Frame{Type: FrameStream, StreamID: s.id, offset: 7, Data: []byte("abc"), Fin: true}, nil); err != nil {
 		t.Fatalf("a FIN at the reset's final size: %v, want it accepted", err)
+	}
+}
+
+// A stream this end opened leaves the connection's table when its end has
+// been handed to the reader (readEnded), not when the read loop filed the
+// FIN (recvDone): the hand-off that follows looks the stream up there to
+// deliver the last bytes and the end. The test holds deliverMu, which that
+// hand-off takes first, so the real read loop stops between the two — where
+// a descheduled read goroutine would sit — and the application closes its
+// sending side there, on another goroutine. Retired at that point, the
+// stream lost its last bytes and its FIN: Read never returned them nor EOF.
+// The control closes after the packet was handled.
+func TestOwnStreamClosedBetweenFINAndHandOffKeepsItsEnd(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		close func(*Stream) error
+		racey bool
+	}{
+		{"control: CloseWrite after the hand-off", (*Stream).CloseWrite, false},
+		{"CloseWrite between FIN and hand-off", (*Stream).CloseWrite, true},
+		{"Reset between FIN and hand-off", func(s *Stream) error { return s.Reset(7) }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := newBenchConn(t)
+			defer c.Close()
+			c.mu.Lock()
+			c.peerMaxStreamsBidi = 1
+			c.mu.Unlock()
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			s, err := c.OpenStream(ctx)
+			if err != nil {
+				t.Fatalf("OpenStream: %v", err)
+			}
+
+			c.deliverMu.Lock()
+			done := make(chan error, 1)
+			go func() {
+				done <- c.framesIn(spaceApplication, false, streamFrame(nil, s.id, 0, "resp", true), time.Now())
+			}()
+			filed := func() bool {
+				s.mu.Lock()
+				defer s.mu.Unlock()
+				return s.recvDone
+			}
+			for deadline := time.Now().Add(10 * time.Second); !filed(); time.Sleep(time.Millisecond) {
+				if time.Now().After(deadline) {
+					c.deliverMu.Unlock()
+					t.Fatal("the read loop never filed the FIN")
+				}
+			}
+			if tc.racey {
+				if err := tc.close(s); err != nil {
+					c.deliverMu.Unlock()
+					t.Fatalf("close: %v", err)
+				}
+			}
+			c.deliverMu.Unlock()
+			if err := <-done; err != nil {
+				t.Fatalf("framesIn: %v", err)
+			}
+			if !tc.racey {
+				if err := tc.close(s); err != nil {
+					t.Fatalf("close: %v", err)
+				}
+			}
+
+			p := make([]byte, 16)
+			select {
+			case r := <-readAsync(s, p):
+				if r.err != nil || string(p[:r.n]) != "resp" {
+					t.Fatalf("Read returned %q, %v; want the four bytes", p[:r.n], r.err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("Read still parked after the read loop handled the stream's last bytes and FIN")
+			}
+			if _, err := s.Read(p); !errors.Is(err, io.EOF) {
+				t.Fatalf("second Read: %v, want io.EOF", err)
+			}
+			c.mu.Lock()
+			_, open := c.streams[s.id]
+			c.mu.Unlock()
+			if open {
+				t.Fatal("the stream is still in the table with both directions done")
+			}
+		})
 	}
 }

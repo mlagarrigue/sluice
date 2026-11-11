@@ -31,7 +31,7 @@ type Stream struct {
 	// reset) lives under the stream's own lock; the send side (offsets,
 	// credit, this end's reset) lives under the connection's, which
 	// serialises every packet written. The lock order is c.mu → s.mu:
-	// Conn.maybeRemoveLocked takes s.mu (via Stream.recvState) while holding
+	// Conn.maybeRemoveLocked takes s.mu (via Stream.endState) while holding
 	// c.mu, so s.mu must never be held while taking c.mu.
 
 	id   uint64
@@ -58,7 +58,10 @@ type Stream struct {
 	// delta reaches buf, and a Read looping between the two saw an empty buf
 	// and a finished stream, and returned EOF with the last frame's bytes
 	// still in flight. quic-go's client found that: one echo in twenty came
-	// back a frame short (interop/quicgo_test.go).
+	// back a frame short (interop/quicgo_test.go). The stream leaves the
+	// connection's table on this flag too (maybeRemoveLocked), for the same
+	// reason: retired on recvDone, a CloseWrite between the two dropped the
+	// last delta, which the hand-off looks the stream up to deliver.
 	readEnded bool
 	// endTaken says the application is done with the receive side: a Read
 	// took the last byte or returned the end — EOF or the reset — or it
@@ -111,7 +114,7 @@ func newStream(c *Conn, id uint64) *Stream {
 	// wait forever for a FIN nobody can send.
 	if id&0x02 != 0 {
 		if (id&1 == 0) == c.isClient {
-			s.recvDone = true // this end opened it; the peer never writes
+			s.recvDone, s.readEnded = true, true // this end opened it; the peer never writes
 		} else {
 			s.sendClosed = true // the peer opened it; this end never writes
 		}
@@ -763,12 +766,13 @@ func (s *Stream) WasReset() (uint64, bool) {
 	return s.writeCode, s.writeReset
 }
 
-// recvState reports, under s.mu, whether nothing more will arrive and
-// whether the application has taken the end (endTaken).
-func (s *Stream) recvState() (finished, taken bool) {
+// endState reports, under s.mu, whether the end has been handed to the
+// reader's side (readEnded) and whether the application has taken it
+// (endTaken).
+func (s *Stream) endState() (handed, taken bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.recvDone, s.endTaken
+	return s.readEnded, s.endTaken
 }
 
 // grantLocked counts n bytes the application consumed against the stream's
@@ -1066,8 +1070,10 @@ func (c *Conn) Stream(id uint64) (*Stream, error) {
 }
 
 // maybeRemoveLocked retires a stream once both directions are done: the
-// receive side has delivered its FIN or been reset, and the send side has
-// said its final word (FIN or RESET_STREAM). Leaving the table is what marks
+// receive side has handed its FIN or its reset to the reader (readEnded —
+// not recvDone, which the read loop sets before the last delta is
+// dispatched, and the dispatch finds the stream through this table), and
+// the send side has said its final word (FIN or RESET_STREAM). Leaving the table is what marks
 // the stream closed (see Conn.streams): frames still in flight for it are
 // tolerated rather than reopening it, for as long as the connection lives.
 // For peer-initiated streams the slot is granted back with MAX_STREAMS,
@@ -1089,9 +1095,9 @@ func (c *Conn) maybeRemoveLocked(s *Stream) {
 	if _, present := c.streams[s.id]; !present {
 		return // already retired
 	}
-	finished, taken := s.recvState()
-	if !finished {
-		return
+	handed, taken := s.endState()
+	if !handed {
+		return // the read loop retires it once the end is dispatched
 	}
 	peerInitiated := (s.id&1 == 0) != c.isClient
 	if peerInitiated && !c.batchMode && (s.queued || !taken) {
