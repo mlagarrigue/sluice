@@ -303,14 +303,20 @@ func TestH2NoResetOnAClosedStreamOutOfTheRing(t *testing.T) {
 	t.Cleanup(func() { _ = conn.Close() })
 	c := h2clientOn(t, conn)
 	// With MaxConcurrentStreams 1 the ring holds one stream: stream 1 has
-	// left it once stream 3 is answered.
-	for _, id := range []uint32{1, 3} {
-		c.request(id, "GET", "/a")
-		c.flush()
-		c.pump(func() bool { return c.ended[id] })
-		if !c.ended[id] {
-			t.Fatalf("stream %d was not answered", id)
-		}
+	// left it once stream 3 is answered — or refused, while stream 1 still
+	// counts against the limit, which retires stream 3 into the ring all
+	// the same.
+	c.request(1, "GET", "/a")
+	c.flush()
+	c.pump(func() bool { return c.ended[1] })
+	if !c.ended[1] {
+		t.Fatal("stream 1 was not answered")
+	}
+	c.request(3, "GET", "/a")
+	c.flush()
+	c.pump(func() bool { return c.ended[3] || c.resets[3] != 0 })
+	if !c.ended[3] && c.resets[3] == 0 {
+		t.Fatal("nothing came back for stream 3")
 	}
 	c.frame(h2Frame{Type: frameWindowUpdate, StreamID: 1, Payload: []byte{0, 0, 0, 0}})
 	// Answered, or refused while stream 3 still counts against the limit of
