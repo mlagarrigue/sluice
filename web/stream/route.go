@@ -344,10 +344,17 @@ func (c compiledRoute) match(path []byte) ([][]byte, bool) {
 // pattern's wildcards appear. name is what the refusal calls it, so a client
 // is told which parameter was wrong rather than that something was.
 //
-// An index the matched route has no wildcard for is the handler and the
-// table disagreeing about the same pattern — a programming error, so it
+// An exchange already refused — the router answered 404, 405 or 501, or
+// a stage before refused it — has no route to read from: PathInt64 reports
+// false and leaves its refusal as it is, as [DecodeJSON] does, so a handler
+// that reads every exchange of a batch need not test [Exchange.Refused]
+// first. An index the matched route has no wildcard for is the handler and
+// the table disagreeing about the same pattern — a programming error, so it
 // panics rather than inventing a client-facing refusal for it.
 func PathInt64(e *Exchange, i int, name string) (int64, bool) {
+	if e.Refused() {
+		return 0, false
+	}
 	if i < 0 || i >= len(e.Params) {
 		panic(fmt.Sprintf("stream: param %d of a route that matched %d wildcards", i, len(e.Params)))
 	}
