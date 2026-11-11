@@ -256,11 +256,12 @@ type Conn struct {
 	connSend sendQuota
 	connRecv recvQuota
 	control  []byte // small control frames waiting to ride the next packet
-	// controlRetires and controlNewCIDs count the RETIRE_CONNECTION_ID and
-	// NEW_CONNECTION_ID frames in control — the two control frames a peer
-	// can make this end queue at will; see queueRetireLocked and
-	// issueLocalCIDsLocked.
-	controlRetires int
+	// controlRetires holds the sequence of each RETIRE_CONNECTION_ID in
+	// control, in queue order, and controlNewCIDs counts its
+	// NEW_CONNECTION_ID frames — the two control frames a peer can make this
+	// end queue at will; see queueRetireLocked and issueLocalCIDsLocked. The
+	// retirements leave from the front as the queue does (takeQueuedLocked).
+	controlRetires []uint64
 	controlNewCIDs int
 	// grants holds the flow-control credit frames — MAX_DATA, MAX_STREAM_DATA,
 	// MAX_STREAMS — queued apart from control because they alone may exceed

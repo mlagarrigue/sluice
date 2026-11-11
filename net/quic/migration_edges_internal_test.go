@@ -224,7 +224,7 @@ func TestPeerIdentifiersAtTheirEdges(t *testing.T) {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.params.ActiveConnIDLimit, c.controlRetires = 8, 8
+	c.params.ActiveConnIDLimit, c.controlRetires = 8, []uint64{90, 91, 92, 93, 94, 95, 96, 97}
 	if err := c.queueRetireLocked(99); err != nil {
 		t.Errorf("a ninth retirement under a limit of 8: %v", err)
 	}

@@ -577,23 +577,25 @@ func (c *Conn) pooledPeerCIDLocked(cid []byte) bool {
 // sequence already retired each ask for it again (§19.16), and §19.15 says
 // "receipt of the same frame multiple times MUST NOT be treated as a
 // connection error" — without the check, twenty copies in one datagram
-// fill the bound with the same frame and end the connection. Callers hold
-// mu.
+// fill the bound with the same frame and end the connection. The check
+// reads the sequences of the retirements waiting (controlRetires), at most
+// the bound, not the whole queue: a parse of every frame in it, the
+// blocked frames of every stream at its limit included, cost each copy a
+// walk of the queue a peer holding its ACKs keeps full. Callers hold mu.
 func (c *Conn) queueRetireLocked(seq uint64) error {
-	frame := appendFrame(nil, frameRetireConnectionID, seq)
-	if c.controlHoldsLocked(frame) {
+	if slices.Contains(c.controlRetires, seq) {
 		return nil
 	}
 	limit := max(2*min(c.params.ActiveConnIDLimit, maxActiveConnIDLimit), 8)
-	if uint64(c.controlRetires) >= limit { //nolint:gosec // G115: a count, never negative
+	if uint64(len(c.controlRetires)) >= limit {
 		return &transportError{
 			code: transportConnectionIDLimit,
 			err: fmt.Errorf("%w: the peer forced %d connection identifier retirements this end has not yet sent",
-				ErrQUIC, c.controlRetires),
+				ErrQUIC, len(c.controlRetires)),
 		}
 	}
-	c.control = append(c.control, frame...)
-	c.controlRetires++
+	c.control = appendFrame(c.control, frameRetireConnectionID, seq)
+	c.controlRetires = append(c.controlRetires, seq)
 	return nil
 }
 

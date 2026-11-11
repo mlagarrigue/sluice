@@ -1,7 +1,6 @@
 package quic
 
 import (
-	"bytes"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -418,10 +417,10 @@ func (c *Conn) takeQueuedLocked(room, carried int) []byte {
 	if n, retires, newCIDs := cutFrames(c.control, room); n > 0 && c.canSendLocked(carried+len(out)+n+64) {
 		out = append(out, c.control[:n]...)
 		c.control = c.control[n:]
-		c.controlRetires -= retires
+		c.controlRetires = c.controlRetires[retires:]
 		c.controlNewCIDs -= newCIDs
 		if len(c.control) == 0 {
-			c.control, c.controlRetires, c.controlNewCIDs = nil, 0, 0
+			c.control, c.controlRetires, c.controlNewCIDs = nil, nil, 0
 		}
 	}
 	return out
@@ -1867,9 +1866,9 @@ func (c *Conn) blockedResendInterval() time.Duration {
 func (c *Conn) resendBlockedFramesLocked(now time.Time) {
 	blocked := false
 	inFlight := c.elicitingInFlightLocked()
-	// The frames already waiting are read once per tick: asking
-	// controlHoldsLocked for each blocked stream walked the whole queue
-	// every time, B²/2 parses for B streams parked at their limit, which
+	// The frames already waiting are read once per tick: asking the queue
+	// for each blocked stream walked the whole of it every time, B²/2
+	// parses for B streams parked at their limit, which
 	// BenchmarkResendBlocked measures at 16, 256 and 4096 streams.
 	var held map[blockedKey]bool
 	queue := func(typ byte, id, limit uint64) {
@@ -1946,22 +1945,6 @@ func (c *Conn) heldBlockedLocked() map[blockedKey]bool {
 		q = rest
 	}
 	return held
-}
-
-// controlHoldsLocked reports whether frame, one encoded frame, waits in the
-// control queue as it is. Callers hold mu.
-func (c *Conn) controlHoldsLocked(frame []byte) bool {
-	for q := c.control; len(q) > 0; {
-		_, rest, err := parseFrame(q)
-		if err != nil {
-			return false
-		}
-		if bytes.Equal(q[:len(q)-len(rest)], frame) {
-			return true
-		}
-		q = rest
-	}
-	return false
 }
 
 // creditConsumed reports application-consumed stream bytes to flow control,

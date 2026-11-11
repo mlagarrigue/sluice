@@ -1872,11 +1872,11 @@ func TestQueuedFramesLeaveWithinTheMTU(t *testing.T) {
 	}
 	for seq := range uint64(20) {
 		c.control = appendFrame(c.control, frameRetireConnectionID, seq)
-		c.controlRetires++
+		c.controlRetires = append(c.controlRetires, seq)
 	}
 	queued := len(c.grants) + len(c.control)
 	c.flushControlLocked()
-	left, retires := len(c.grants)+len(c.control), c.controlRetires
+	left, retires := len(c.grants)+len(c.control), len(c.controlRetires)
 	c.mu.Unlock()
 	if left != 0 || retires != 0 {
 		t.Fatalf("%d bytes and %d retirements still queued after the flush, want none", left, retires)
@@ -3188,7 +3188,7 @@ func TestCopiesOfARetiredNewConnectionIDQueueOneRetirement(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
-	queued := c.controlRetires
+	queued := len(c.controlRetires)
 	c.mu.Unlock()
 	var packet []byte
 	for range 20 {
@@ -3199,8 +3199,8 @@ func TestCopiesOfARetiredNewConnectionIDQueueOneRetirement(t *testing.T) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.controlRetires != queued {
-		t.Errorf("%d retirements queued after twenty copies, %d before: the one waiting answers them all", c.controlRetires, queued)
+	if len(c.controlRetires) != queued {
+		t.Errorf("%d retirements queued after twenty copies, %d before: the one waiting answers them all", len(c.controlRetires), queued)
 	}
 }
 
