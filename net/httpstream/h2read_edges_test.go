@@ -552,3 +552,49 @@ func TestH2SettingsApplyEveryEntry(t *testing.T) {
 		t.Fatalf("frame size %d after SETTINGS, want 32768", got)
 	}
 }
+
+// A body that turns streamed and ends within one frame batch is handed over
+// at the end of the batch, and until then it is half-closed (remote) all
+// the same (RFC 9113 §5.1): a DATA or a HEADERS after its END_STREAM in that
+// batch draws RST_STREAM(STREAM_CLOSED), and the handler reads the body that
+// ended — not the bytes past it, beyond the content-length the head stated.
+// The stream stayed open until the handover, and both were taken in.
+func TestH2FramesAfterTheEndOfABodyThatTurnedStreamedAreStreamClosed(t *testing.T) {
+	head := headersFrame(1, flagEndHeaders, headBlock("POST", "/", [2]string{"content-length", "200"}))
+	end := dataFrame(1, flagEndStream, 200)
+	for _, tc := range []struct {
+		name  string
+		after []h2Frame
+	}{
+		{"nothing after (control)", nil},
+		{"DATA after END_STREAM", []h2Frame{dataFrame(1, 0, 50)}},
+		{"two DATA after END_STREAM", []h2Frame{dataFrame(1, 0, 50), dataFrame(1, 0, 50)}},
+		{"trailers after END_STREAM", []h2Frame{headersFrame(1, endBoth, literal(nil, "x-t", "v"))}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newBenchH2Server(Config{BodyDelivery: BodyStreamed, MaxBodyBytes: 100, MaxStreamedBodyBytes: 1 << 20})
+			ready := feed(t, s, append([]h2Frame{head, end}, tc.after...)...)
+			if len(ready) != 1 {
+				t.Fatalf("%d requests handed over, want 1", len(ready))
+			}
+			body, err := ready[0].ReadAll(nil, 1<<20)
+			if err != nil || len(body) != 200 {
+				t.Errorf("the handler read %d body bytes (%v), want the 200 sent before END_STREAM", len(body), err)
+			}
+			if len(ready[0].Trailers()) != 0 {
+				t.Errorf("trailers %v taken in after END_STREAM", ready[0].Trailers())
+			}
+			rst := framesOn(queued(t, s), frameRSTStream, 1)
+			want := 0
+			if tc.after != nil {
+				want = 1
+			}
+			if len(rst) != want {
+				t.Fatalf("%d RST_STREAM on stream 1, want %d", len(rst), want)
+			}
+			if want == 1 && be32(rst[0].Payload) != errStreamClosed {
+				t.Errorf("RST_STREAM(%#x), want STREAM_CLOSED", be32(rst[0].Payload))
+			}
+		})
+	}
+}

@@ -70,7 +70,12 @@ func (s *h2Conn) handOver(ready []Request, ids []uint32) (reqs []Request, stream
 		req.body = &bodyStream{q: st.stream}
 		ready = append(ready, req)
 		ids = append(ids, st.id)
-		if !st.stream.unread() {
+		switch {
+		case st.cut:
+			// Reset for a frame after its END_STREAM (reset): handed over
+			// whole all the same, and closed.
+			s.retire(st.id, stateClosed)
+		case !st.stream.unread():
 			// Ended within the batch, past what Body may hold: nothing more
 			// may arrive on it.
 			s.retire(st.id, stateHalfClosed)
@@ -136,6 +141,22 @@ func (s *h2Conn) reset(se streamError) error {
 		// Not counted against the reset allowance either: no reset left.
 		s.w.forget(se.id)
 		return nil
+	}
+	if st := s.streams[se.id]; st != nil && st.bodyEnded && !st.handed {
+		// A frame after the END_STREAM of a body that turned streamed in
+		// this batch: the request is whole and waits for handOver. Reset as
+		// a request whose body did not stream would be — already on its way
+		// to the handler, its stream reset and forgotten by the writer — and
+		// once: a second frame finds the stream closed.
+		if st.cut {
+			return nil
+		}
+		if err := s.countReset(); err != nil {
+			return fmt.Errorf("%w: %w", err, se.err)
+		}
+		st.cut = true
+		s.w.forget(se.id)
+		return s.w.control32(frameRSTStream, se.id, se.code)
 	}
 	if err := s.countReset(); err != nil {
 		return fmt.Errorf("%w: %w", err, se.err)
@@ -560,7 +581,7 @@ func (s *h2Conn) headers(f h2Frame) (*h2Stream, error) {
 		s.discard = fields
 		return nil, nil
 	}
-	if st.state == stateHalfClosed {
+	if st.state == stateHalfClosed || st.bodyEnded {
 		// Before the field-count bound too: a block on a stream the client
 		// ended is STREAM_CLOSED however many fields it holds (§5.1), not a
 		// request to answer 431.
@@ -727,7 +748,7 @@ func (s *h2Conn) data(f h2Frame) (*h2Stream, error) {
 	switch {
 	case st.state == stateClosed:
 		return nil, nil // tolerated within the grace period, and now counted
-	case st.state == stateHalfClosed:
+	case st.state == stateHalfClosed || st.bodyEnded:
 		return nil, streamFail(st.id, errStreamClosed,
 			"%w: DATA on stream %d after END_STREAM", ErrH2Protocol, st.id)
 	case st.gotTrailers:
@@ -872,7 +893,9 @@ func (s *h2Conn) finish(st *h2Stream) (*h2Stream, error) {
 			return nil, streamError{id: st.id, code: errProtocolError, err: err}
 		}
 		if !st.handed {
-			// Ended within the batch that converted it: handOver takes it.
+			// Ended within the batch that converted it: handOver takes it,
+			// and until then nothing more may arrive on it (bodyEnded).
+			st.bodyEnded = true
 			return nil, nil
 		}
 		s.retire(st.id, stateHalfClosed)

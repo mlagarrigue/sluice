@@ -196,6 +196,14 @@ type h2Stream struct {
 	// (§8.1): a body that resumes after its own trailers is a body with no
 	// stated end, bounded only by MaxBodyBytes.
 	gotTrailers bool
+	// bodyEnded marks a body that turned streamed and reached END_STREAM in
+	// the batch that converted it: the stream waits for handOver in the
+	// open state, and is half-closed (remote) all the same (§5.1) — data
+	// and headers refuse what follows. cut marks one this end has reset
+	// for such a frame meanwhile: handOver still hands the whole request
+	// over, as a request whose body did not stream already is, and retires
+	// it closed.
+	bodyEnded, cut bool
 
 	recvWind int32 // what we have granted the peer on this stream
 	// windowGrace is the overshoot tolerated above recvWind on a stream
