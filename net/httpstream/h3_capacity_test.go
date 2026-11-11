@@ -1,7 +1,9 @@
 package httpstream
 
 import (
+	"runtime"
 	"testing"
+	"weak"
 
 	"github.com/mlagarrigue/sluice/net/quic"
 )
@@ -55,5 +57,70 @@ func TestH3AssemblerRetainedCapacity(t *testing.T) {
 	}
 	if cap(a.frames) > h3FramesKept {
 		t.Errorf("the frame scratch keeps %d entries after the burst, over %d", cap(a.frames), h3FramesKept)
+	}
+}
+
+// The frame scratch keeps no view past its length. Hostile shape: each
+// request stream carries HEADERS, k empty DATA frames and one DATA frame
+// near MaxBodyBytes, k decreasing from one stream to the next, all in one
+// delivery with FIN; each stream's buffer is about MaxBodyBytes. The test
+// takes a weak pointer to every payload held by a scratch entry past its
+// length, checks they are reachable, then clears those entries alone and
+// collects: a buffer that dies then was kept reachable by the scratch and
+// nothing else (the request body is a separate copy) — one per entry, up to
+// h3FramesKept, before keepFrames cleared what a longer parse left.
+func TestH3FrameScratchKeepsNoStreamBufferPastItsLength(t *testing.T) {
+	const maxBody = 64 << 10
+	a := testAssembler(Config{MaxBodyBytes: maxBody})
+	const streams = 20
+	big := make([]byte, maxBody-1024)
+	for i := range streams {
+		for j := range big {
+			big[j] = byte(i + 1)
+		}
+		buf := h3Request("POST", "/upload")
+		for range streams - i {
+			buf = appendH3Frame(buf, h3Data, nil)
+		}
+		buf = appendH3Frame(buf, h3Data, big)
+		if _, _, _, err := a.Frames([]quic.Frame{streamFrame(uint64(i)*4, buf, true)}); err != nil {
+			t.Fatalf("stream %d: %v", i*4, err)
+		}
+	}
+	full := a.frames[:cap(a.frames)]
+	type held struct {
+		w    weak.Pointer[byte]
+		mark byte
+	}
+	var ws []held
+	seen := map[byte]bool{}
+	for _, f := range full[len(a.frames):] {
+		if len(f.Payload) == 0 || seen[f.Payload[0]] {
+			continue
+		}
+		seen[f.Payload[0]] = true
+		ws = append(ws, held{weak.Make(&f.Payload[0]), f.Payload[0]})
+	}
+	runtime.GC()
+	runtime.GC()
+	live := 0
+	for _, h := range ws {
+		if h.w.Value() != nil {
+			live++
+		}
+	}
+	clear(full[len(a.frames):])
+	runtime.GC()
+	runtime.GC()
+	freed := 0
+	for _, h := range ws {
+		if h.w.Value() == nil {
+			freed++
+		}
+	}
+	t.Logf("stale buffers: %d reachable before clearing the stale entries, %d collected after; each about %d bytes; aggregate bound 4*MaxBodyBytes = %d",
+		live, freed, maxBody, 4*maxBody)
+	if live > 0 && freed > 0 {
+		t.Errorf("%d stream buffers of ~%d bytes were kept reachable only by stale frame-scratch entries", freed, maxBody)
 	}
 }

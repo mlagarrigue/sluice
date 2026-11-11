@@ -1269,6 +1269,7 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 			return nil
 		}
 	}
+	prev := len(a.frames)
 	frames, rest, skip, err := parseH3Frames(a.frames[:0], st.buf, a.cfg.MaxBodyBytes)
 	st.skip += skip // one of the two is zero: a skip owed empties the buffer first
 	// A frame over the bound leaves rest at its start. A DATA frame there is
@@ -1288,7 +1289,7 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 			return err
 		}
 	}
-	a.frames = keepFrames(frames)
+	a.frames = keepFrames(frames, prev)
 	for _, f := range frames {
 		switch f.Type {
 		case h3Headers:
@@ -1523,9 +1524,19 @@ const h3BufferSlack = 4096
 // transport may hand a large in-order delta at once — grows it to one entry
 // per frame, 32 bytes each; that size is let go rather than held for the
 // connection's life.
-func keepFrames(frames []h3Frame) []h3Frame {
+//
+// prev is how many entries the previous parse left. Those past this parse's
+// length are cleared: each holds its Payload, a view into the buffer of the
+// stream it was parsed from, and that buffer, released by its stream once
+// consumed, stayed reachable through the scratch alone — up to one per
+// entry, each the size of a delivery, outside every count (the QUIC side
+// clears its own scratch for the same reason, Conn.putScratch).
+func keepFrames(frames []h3Frame, prev int) []h3Frame {
 	if cap(frames) > h3FramesKept {
 		return nil
+	}
+	if prev > len(frames) {
+		clear(frames[len(frames):prev])
 	}
 	return frames
 }

@@ -126,10 +126,11 @@ func (a *h3Assembler) controlFrames(u *h3Uni) error {
 				"%w: the control stream opened with frame %#x, not SETTINGS", ErrH3Protocol, typ)}
 		}
 	}
+	prev := len(a.frames)
 	frames, rest, skip, err := parseH3Frames(a.frames[:0], u.buf, a.cfg.MaxHeaderBytes)
 	// Added, not set: a skip still owed emptied the buffer before the parse,
 	// which then started none; a parse that started one found none owed.
-	a.frames, u.skip = keepFrames(frames), u.skip+skip
+	a.frames, u.skip = keepFrames(frames, prev), u.skip+skip
 	if err != nil {
 		// A frame too long is a layout fault (H3_FRAME_ERROR) — unless its
 		// type has no place here at any length, which is judged first: the
