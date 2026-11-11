@@ -613,13 +613,19 @@ func TestAForgottenConnectionIsNotRoutedAgain(t *testing.T) {
 	client.flushDatagramLocked()
 	client.flushBatchLocked()
 	client.mu.Unlock()
+	// The client stays held to the end: a datagram it sent after this,
+	// fed to the server's read loop, could be taken by the loop after the
+	// end — its select picks at random between the close and a waiting
+	// datagram — while this test drives processDatagram itself, two
+	// goroutines in one TLS state (a race the detector caught on arm64).
 	pc.mu.Lock()
 	held := pc.held
-	pc.hold = false
+	pc.held = nil
 	pc.mu.Unlock()
 	if len(held) == 0 {
 		t.Fatal("inconclusive: the client sent nothing for the retirement")
 	}
+	waitFor(t, "the server's read loop to take what was fed to it", func() bool { return len(server.incoming) == 0 })
 
 	// The silent end, and the listener forgetting the connection.
 	server.idleExpired()
