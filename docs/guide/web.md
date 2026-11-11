@@ -117,6 +117,10 @@ otherwise be decoded as if the client had meant to send it.
 > the document lists the members to set, which is what this handler does.
 > `DecodeJSON` accepts both; advertise the second. `web/stream` names it in
 > an `Accept-Patch` header when it refuses a PATCH with the wrong label.
+> A member set to `null` in that document asks for the member to be
+> removed (RFC 7396 §2). Decoded into a pointer field, it cannot be told
+> from a member left out: give the field the type `json.RawMessage`, which
+> holds `null` in the first case and stays empty in the second.
 
 With `curl`, remember `-H 'Content-Type: application/merge-patch+json'`.
 
