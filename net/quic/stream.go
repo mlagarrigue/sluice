@@ -583,6 +583,20 @@ func (s *Stream) Reset(code uint64) error {
 	err := c.sendPacketLocked(spaceApplication, frame, sendOpts{}) // ungated: see sendOpts.waitCwnd
 	c.maybeRemoveLocked(s)
 	c.cond.Broadcast() // a writer blocked on credit for this stream gives up
+	return sentOrRecorded(err)
+}
+
+// sentOrRecorded is a send's error as a caller sees it: a packet sealed and
+// recorded whose datagram the socket refused (errSentUnwritten) is not one
+// — recovery resends its frames when the loss is declared, and
+// Stats.WriteFailures counts it, as for every other packet. Returned, it
+// ended the connection under a caller that returns its error, the HTTP/3
+// server's batch callback among them, for a refusal of the socket's
+// surroundings (a lost route, a firewall), not of the peer.
+func sentOrRecorded(err error) error {
+	if errors.Is(err, errSentUnwritten) {
+		return nil
+	}
 	return err
 }
 
@@ -644,7 +658,7 @@ func (s *Stream) StopSending(code uint64) error {
 	err := c.sendPacketLocked(spaceApplication, frame, sendOpts{}) // ungated: see sendOpts.waitCwnd
 	c.maybeRemoveLocked(s)
 	c.flushControlLocked()
-	return err
+	return sentOrRecorded(err)
 }
 
 // abandon records a RESET_STREAM that arrived, releasing whoever is reading.

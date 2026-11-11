@@ -1225,8 +1225,8 @@ func (c *Conn) sendCrypto(l tls.QUICEncryptionLevel, data []byte) error {
 			sp.retrans = append(sp.retrans, frame)
 			continue
 		}
-		if err := c.sendPacketLocked(space, frame, sendOpts{}); err != nil {
-			return err
+		if err := sentOrRecorded(c.sendPacketLocked(space, frame, sendOpts{})); err != nil {
+			return err // a refused datagram's CRYPTO goes again with recovery
 		}
 	}
 	return nil
