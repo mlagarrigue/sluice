@@ -934,7 +934,9 @@ func (c *Conn) migrateLocked(to net.Addr, via net.PacketConn, now time.Time) {
 		// peer, it will not be able to send anything on the new path
 		// until the peer provides one." The connection stays where it
 		// is; the peer's first packet from the new address after its
-		// NEW_CONNECTION_ID moves it.
+		// NEW_CONNECTION_ID moves it — which a peer at its limit can issue
+		// only once this end retires one (reclaimAnsweredLocked).
+		c.reclaimAnsweredLocked()
 		return
 	}
 	// A candidate this end already validated from the socket in use, at
@@ -985,6 +987,7 @@ func (c *Conn) migrateLocked(to net.Addr, via net.PacketConn, now time.Time) {
 			c.adoptPeerCIDAtLocked(i)
 		}
 	}
+	c.forgetAnsweredLocked(c.answered...)
 	c.answered = c.answered[:0]
 	if prevalidated {
 		c.amplActive = false
@@ -1545,9 +1548,10 @@ func (c *Conn) preferredPathChallengeLocked(now time.Time) (frame, dcid []byte) 
 // identifiers already used — ok is false and the challenge goes
 // unanswered, the rule mayFollowLocked states: §8.2.2's MUST respond meets
 // §9.5's MUST NOT reuse, and §9.5 itself says such an endpoint "cannot
-// ... respond to probes". A conformant peer, which issues identifiers up to
-// active_connection_id_limit before probing, never gets here. cid is nil
-// for "the one in use". Callers hold mu.
+// ... respond to probes". The oldest address answered then gives its
+// identifier back (reclaimAnsweredLocked), so that the peer, at its limit,
+// can issue the one a repeat of the challenge needs. cid is nil for "the
+// one in use". Callers hold mu.
 func (c *Conn) newPathCIDLocked() (cid []byte, ok bool) {
 	if c.pathProbe.target != nil && sameAddr(c.rxFrom, c.pathProbe.target) {
 		return c.pathProbe.targetCID, true
@@ -1565,6 +1569,7 @@ func (c *Conn) newPathCIDLocked() (cid []byte, ok bool) {
 	}
 	cid, _, ok = c.pickFreshPeerCIDLocked()
 	if !ok {
+		c.reclaimAnsweredLocked()
 		return nil, false
 	}
 	c.answered = slices.DeleteFunc(c.answered, func(a answeredPath) bool { return sameAddr(a.from, c.rxFrom) })
@@ -1573,12 +1578,49 @@ func (c *Conn) newPathCIDLocked() (cid []byte, ok bool) {
 }
 
 // rememberAnsweredLocked records a new address answered, past
-// maxAnsweredPaths dropping the oldest. Callers hold mu.
+// maxAnsweredPaths forgetting the oldest. Callers hold mu.
 func (c *Conn) rememberAnsweredLocked(a answeredPath) {
 	if len(c.answered) == maxAnsweredPaths {
+		c.forgetAnsweredLocked(c.answered[0])
 		c.answered = c.answered[1:]
 	}
 	c.answered = append(c.answered, a)
+}
+
+// forgetAnsweredLocked retires the peer identifiers that answered addresses
+// were given, as those addresses leave c.answered: nothing sends under them
+// again — a later challenge from the same address takes a fresh one — and
+// §5.1.2 has an endpoint "retire connection IDs when they are no longer
+// actively using either the local or destination address for which the
+// connection ID was used". Kept pooled as used, each was one identifier
+// less for good: three probes the peer never moved to took the default
+// limit's whole reserve, and the peer, at its limit, could issue no other.
+// The identifier a migration adopted is in use, and retirePeerCIDLocked
+// leaves it. Callers hold mu.
+func (c *Conn) forgetAnsweredLocked(forgotten ...answeredPath) {
+	for _, a := range forgotten {
+		if a.cid == nil {
+			continue
+		}
+		if i := slices.IndexFunc(c.peerCIDs, func(e peerCID) bool { return bytes.Equal(e.cid, a.cid) }); i >= 0 {
+			c.retirePeerCIDLocked(c.peerCIDs[i].seq)
+		}
+	}
+}
+
+// reclaimAnsweredLocked forgets the oldest address answered, when a probe
+// or a migration finds no identifier left to send under. The attempt at
+// hand still goes without (mayFollowLocked), but the retirement asks the
+// peer for a replacement (§5.1.2), and the next attempt finds it. The
+// oldest is the address least likely still in play: one the peer is
+// probing now has had its challenge answered most recently. Callers hold
+// mu.
+func (c *Conn) reclaimAnsweredLocked() {
+	if len(c.answered) == 0 {
+		return
+	}
+	c.forgetAnsweredLocked(c.answered[0])
+	c.answered = slices.Delete(c.answered, 0, 1)
 }
 
 // candidateChallengeLocked is a server's own PATH_CHALLENGE toward the new
