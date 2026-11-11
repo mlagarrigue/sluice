@@ -180,6 +180,15 @@ type sentPacket struct {
 	// ect0 marks a packet whose datagram left with the ECT(0) codepoint,
 	// which the peer's ECN counts must then account for (§13.4.2.1).
 	ect0 bool
+	// offPath marks a packet sent off the path in use — a PATH_RESPONSE
+	// toward the address a challenge came from, a PATH_CHALLENGE toward a
+	// preferred address or a candidate, anything from another local
+	// socket — while that path stays the same: RFC 9002 §7, such packets
+	// "do not alter the current path's congestion controller", and §5.3,
+	// they "do not contribute RTT samples to the current path". It never
+	// entered the flight (sealLocked), and onPath treats it as a previous
+	// path's packet.
+	offPath bool
 	// appLimited is the snapshot's last field: whether the sender was
 	// application-limited when the packet left.
 	appLimited bool
@@ -250,8 +259,11 @@ type sentTracker struct {
 	pathStart time.Time
 }
 
-// onPath reports whether p was sent on the current path (see pathStart).
-func (s *sentTracker) onPath(p *sentPacket) bool { return !p.sentAt.Before(s.pathStart) }
+// onPath reports whether p was sent on the current path: not before the
+// last migration (see pathStart), and not off it since (offPath).
+func (s *sentTracker) onPath(p *sentPacket) bool {
+	return !p.offPath && !p.sentAt.Before(s.pathStart)
+}
 
 // errOptimisticAck is markAcked's verdict on an ACK that covers the skipped
 // number; handleAck turns it into the connection error.

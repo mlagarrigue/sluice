@@ -1123,7 +1123,8 @@ func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad, lengthWidth int) ([
 	if p.opts.ackOnly {
 		return out, nil
 	}
-	record := sentPacket{pn: p.pn, sentAt: p.now, size: size, ackEliciting: true, pmtuProbe: p.opts.pmtuProbe, ect0: p.ecn == ecnECT0}
+	offPath := !p.onPath || (p.opts.via != nil && p.opts.via != c.pc)
+	record := sentPacket{pn: p.pn, sentAt: p.now, size: size, ackEliciting: true, pmtuProbe: p.opts.pmtuProbe, ect0: p.ecn == ecnECT0, offPath: offPath}
 	c.delivery.onSent(&record, c.cc.bytesInFlight())
 	if p.opts.pmtuProbe {
 		// Counted here, not where the probe was decided: a packet refused
@@ -1140,7 +1141,11 @@ func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad, lengthWidth int) ([
 	}
 	sp.sent.record(record)
 	sp.lastElicit = p.now
-	c.cc.onSent(p.now, size)
+	if !offPath {
+		// A packet off the path in use is not this path's flight: neither
+		// its acknowledgement nor its loss takes it back out (onPath).
+		c.cc.onSent(p.now, size)
+	}
 	// Every send spends pacing tokens — probes, ACKs and grants occupy the
 	// wire like anything else — but only the waitCwnd gate above ever waits
 	// on them (the pacer's doc says why the rest must not).
