@@ -233,7 +233,11 @@ func DialEarly(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls.C
 // flow-control account start over from the server's own parameters —
 // crypto/tls reports them before the refusal, from the same
 // EncryptedExtensions — or from nothing when a HelloRetryRequest refused
-// 0-RTT before any arrived.
+// 0-RTT before any arrived. Two things built before the refusal outlive
+// it, and both are cut where they surface: a 0-RTT packet still gathered
+// is dropped when it is sealed (sealLocked), and a writer parked on the
+// congestion window does not refund its charge to the new account
+// (Stream.writeLocked).
 func (c *Conn) rejectEarlyLocked() {
 	c.earlySealer = nil
 	c.earlyRejected = true

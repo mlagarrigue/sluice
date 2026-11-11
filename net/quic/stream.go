@@ -522,7 +522,13 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 		// at this offset.
 		if err := c.sendPacketLocked(spaceApplication, frame, opts); err != nil && !errors.Is(err, errSentUnwritten) {
 			s.sendQ.sent -= uint64(n)
-			c.connSend.sent -= uint64(n)
+			if !s.rejected.Load() {
+				// A refused 0-RTT started the connection's account over
+				// (rejectEarlyLocked), this charge with it: refunding it
+				// from the new account would wrap the counter and leave
+				// the connection without credit for good.
+				c.connSend.sent -= uint64(n)
+			}
 			if errors.Is(err, errRefit) {
 				continue // cut again for the datagram size now in force
 			}

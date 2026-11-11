@@ -1020,6 +1020,13 @@ func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad, lengthWidth int) ([
 		return dst, nil
 	}
 	if sealer == nil {
+		if p.early && c.earlyRejected {
+			// A 0-RTT packet built before the server refused 0-RTT: its
+			// streams were reset (rejectEarlyLocked, RFC 9001 §4.6.2), and
+			// the stream opened next takes the same identifier, so its
+			// frames are dropped with it rather than sent under 1-RTT.
+			return dst, nil
+		}
 		// A 0-RTT packet whose keys the 1-RTT ones replaced: the space
 		// lives on, so its frames go back to the front of the
 		// retransmission queue and leave again under 1-RTT (RFC 9000
