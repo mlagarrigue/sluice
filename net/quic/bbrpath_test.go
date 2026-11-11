@@ -8,15 +8,14 @@ import "time"
 // and its acknowledgement carries what was delivered since, over the longer
 // of the round trip and the link's serialisation of those bytes — so a
 // round's last acknowledgement samples the round's rate, capped at the
-// link's (draft-ietf-ccwg-bbr-06 §4.1.1.2.4).
+// link's (draft-ietf-ccwg-bbr-07 §4.1.1.2.4).
 type bbrPath struct {
 	cc        congestionController // the controller driven, bbr3_test.go's
 	now       time.Time
 	rtt       time.Duration
 	link      float64 // bytes per second
 	delivered int
-	lost      int  // C.lost
-	afterLoss bool // the last datagram off the queue was lost: a loss extends its range
+	lost      int // C.lost
 	queue     []bbrSent
 	// acks holds the delivered count after each acknowledgement since the
 	// last send: the path is ACK-clocked, its k-th datagram sent as the k-th
@@ -77,21 +76,16 @@ func (p *bbrPath) acked(rated bool) ackEvent {
 	p.delivered += 1200
 	p.est.delivered = p.delivered
 	p.acks = append(p.acks, p.delivered)
-	p.afterLoss = false
 	ev := ackEvent{now: p.now, sentAt: s.sentAt, size: 1200, srtt: p.rtt, delivered: p.delivered - s.prior, appLimited: s.appLimited, rated: rated}
 	ev.txInFlight, ev.lost = s.txInFlight, p.lost-s.lost
 	ev.sendElapsed = time.Duration(float64(ev.delivered) / p.link * float64(time.Second))
 	return ev
 }
 
-// lose declares the oldest n datagrams lost now, as one batch: one lost
-// range, or none if the datagram before them was lost too, and the
-// crossing as declareLost finds it.
+// lose declares the oldest n datagrams lost now, as one batch: n loss
+// events, and the crossing as declareLost finds it.
 func (p *bbrPath) lose(n int) {
-	ev := lossEvent{now: p.now, latestSent: p.queue[n-1].sentAt, bytes: n * 1200}
-	if !p.afterLoss {
-		ev.ranges = 1
-	}
+	ev := lossEvent{now: p.now, latestSent: p.queue[n-1].sentAt, bytes: n * 1200, packets: n}
 	for _, s := range p.queue[:n] {
 		p.lost += 1200
 		if lost := p.lost - s.lost; ev.crossing.size == 0 && lossTooHigh(lost, s.txInFlight) {
@@ -99,7 +93,6 @@ func (p *bbrPath) lose(n int) {
 		}
 	}
 	p.queue = p.queue[n:]
-	p.afterLoss = true
 	p.acks = p.acks[:0]
 	p.cc.onLost(ev)
 }

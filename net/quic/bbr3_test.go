@@ -171,50 +171,59 @@ func TestBBR3InflightLongtermSlopeFloor(t *testing.T) {
 	}
 }
 
-// Startup ends on loss (§5.3.1.3): a round in recovery with six
-// discontiguous lost ranges and more than 2% lost sets inflight_longterm
-// to the product or the round's volume, sets full_bw_now as well as
-// full_bw_reached (test A.2), and Drain follows. Fewer ranges — six losses
-// in one range — or a lower rate, do not.
+// Startup ends on loss (draft-ietf-ccwg-bbr-07 §5.3.1.3): a loss round in
+// recovery with six loss events — lost packets, six in a row counting six
+// — whose closing acknowledgement saw more than 2% of its flight lost since
+// it left (IsInflightTooHigh) sets inflight_longterm to the product or the
+// round's volume and full_bw_reached, and Drain follows. Five events, or a
+// lower rate, do not.
 func TestBBR3StartupExitsOnLoss(t *testing.T) {
 	p, b := bbr3AtLink(t)
-	// Rounds at the link's rate, with losses of one datagram among the
-	// acknowledgements, closed by a round of one datagram sent after the
-	// losses. Every round here is flat for the plateau estimator, which is
-	// kept out of the way: the loss exit is what is read.
-	lossRound := func(n, events, between int) {
+	// A flight of n datagrams: lead acknowledged, then the first loss opens
+	// the loss round, and one datagram sent right after it will close the
+	// round; the other events follow, between acknowledgements apart or in
+	// one batch, and the flight is acknowledged, the closing datagram last. A round of one
+	// datagram ends the recovery period. Every round here is flat for the
+	// plateau estimator, which is kept out of the way: the loss exit is
+	// what is read.
+	lossRound := func(n, lead, events, between int) {
 		b.fullBwCount = 0
 		p.send(n)
 		p.now = p.now.Add(p.rtt)
-		for range events {
-			p.ack(between)
-			p.lose(1)
+		p.ack(lead)
+		p.lose(1)
+		p.send(1)
+		if between == 0 {
+			p.lose(events - 1) // in a row: one batch
+		} else {
+			for range events - 1 {
+				p.ack(between)
+				p.lose(1)
+			}
 		}
-		p.ack(len(p.queue))
+		p.ack(len(p.queue) - 1)
+		p.now = p.now.Add(p.rtt)
+		p.ack(1)
 		p.round(1)
 	}
-	// Five events at 2.5%: not enough events.
-	lossRound(200, 5, 20)
+	// Five events, four of them after the closing datagram joined a flight
+	// of 180: over 2%, but not enough events.
+	lossRound(200, 20, 5, 20)
 	if b.state != bbr3Startup || b.fullBwReached {
 		t.Fatalf("five loss events ended Startup (state %d)", b.state)
 	}
-	// Six losses at 3.5%, one after the other: a single range, declared in
-	// six batches.
-	lossRound(200, 6, 0)
+	// Six events, five after it joined a flight of 550: under 2%.
+	lossRound(600, 50, 6, 50)
 	if b.state != bbr3Startup || b.fullBwReached {
-		t.Fatalf("six losses in one range ended Startup (state %d)", b.state)
+		t.Fatalf("six loss events at under 1%% ended Startup (state %d)", b.state)
 	}
-	// Six events at 1.2%: too few bytes.
-	lossRound(600, 6, 99)
-	if b.state != bbr3Startup {
-		t.Fatalf("six loss events at 1%% ended Startup (state %d)", b.state)
-	}
-	// Six events at 3.5%.
-	// The acknowledgement that closes the round also drains: one datagram
-	// in flight is under the product, so ProbeBW is entered at once.
-	lossRound(200, 6, 32)
-	if !b.fullBwReached || !b.fullBwNow || b.state == bbr3Startup {
-		t.Fatalf("six loss events at 3%%: full %v now %v, state %d, want Startup over", b.fullBwReached, b.fullBwNow, b.state)
+	// Six losses in a row, the last five declared in one batch after it
+	// joined a flight of 180. The
+	// acknowledgements that follow drain the flight under the product, so
+	// ProbeBW is entered at once.
+	lossRound(200, 20, 6, 0)
+	if !b.fullBwReached || b.state == bbr3Startup {
+		t.Fatalf("six losses in a row at 3%%: full %v, state %d, want Startup over", b.fullBwReached, b.state)
 	}
 	if b.inflightLongterm == bbr3Unbounded || b.inflightLongterm < b.bdpMultiple(b.bw, 1) {
 		t.Fatalf("inflight_longterm = %d after the exit, want at least the product %d", b.inflightLongterm, b.bdpMultiple(b.bw, 1))
@@ -283,7 +292,7 @@ func TestBBR3ProbeBWPhases(t *testing.T) {
 	if b.state != bbr3ProbeBWUp || b.pacingGain != 1.25 || b.cwndGain != 2.25 {
 		t.Fatalf("after a round of REFILL: state %d gains %v/%v, want UP at 1.25 and 2.25", b.state, b.pacingGain, b.cwndGain)
 	}
-	if !b.bwProbeSamples {
+	if !b.checkProbeLoss {
 		t.Fatal("UP did not mark its samples as a probe's")
 	}
 	// Three rounds at the link, no growth: the third's first
@@ -387,7 +396,7 @@ func TestBBR3InflightLongterm(t *testing.T) {
 	if want := int(bbr3Beta * 80 * 1200); bound != want {
 		t.Fatalf("inflight_longterm = %d after the loss, want 0.7 × the product, %d", bound, want)
 	}
-	if b.bwProbeSamples {
+	if b.checkProbeLoss {
 		t.Fatal("the probe's samples still count after the reaction")
 	}
 	p.ack(45)
@@ -523,12 +532,12 @@ func TestBBR3InflightLongtermFromTheLostPackets(t *testing.T) {
 	p.send(100)
 	p.now = p.now.Add(p.rtt)
 	p.ack(1) // the third flat round: DOWN
-	if b.state != bbr3ProbeBWDown || b.inflightLongterm != bbr3Unbounded || !b.bwProbeSamples {
-		t.Fatalf("state %d bound %d probe samples %v, want DOWN after a loss-free UP, the samples still counting", b.state, b.inflightLongterm, b.bwProbeSamples)
+	if b.state != bbr3ProbeBWDown || b.inflightLongterm != bbr3Unbounded || !b.checkProbeLoss {
+		t.Fatalf("state %d bound %d probe samples %v, want DOWN after a loss-free UP, the samples still counting", b.state, b.inflightLongterm, b.checkProbeLoss)
 	}
 	p.ack(60)
 	p.lose(5)
-	if b.bwProbeSamples {
+	if b.checkProbeLoss {
 		t.Fatal("the losses did not end the probe's samples")
 	}
 	floor := int(bbr3Beta * 80 * 1200)
@@ -545,16 +554,16 @@ func TestBBR3AppLimitedLossLeavesTheBound(t *testing.T) {
 	p.now = p.now.Add(3 * time.Second)
 	p.round(80) // REFILL
 	p.round(80) // UP
-	if b.state != bbr3ProbeBWUp || !b.bwProbeSamples {
-		t.Fatalf("state %d probe samples %v, want UP with the samples counting", b.state, b.bwProbeSamples)
+	if b.state != bbr3ProbeBWUp || !b.checkProbeLoss {
+		t.Fatalf("state %d probe samples %v, want UP with the samples counting", b.state, b.checkProbeLoss)
 	}
 	p.est.markAppLimited(b.inFlight)
 	p.send(60)
 	p.now = p.now.Add(p.rtt)
 	p.ack(50)
 	p.lose(5)
-	if b.state != bbr3ProbeBWDown || b.bwProbeSamples {
-		t.Fatalf("state %d probe samples %v after losses over 2%%, want DOWN with the samples ended", b.state, b.bwProbeSamples)
+	if b.state != bbr3ProbeBWDown || b.checkProbeLoss {
+		t.Fatalf("state %d probe samples %v after losses over 2%%, want DOWN with the samples ended", b.state, b.checkProbeLoss)
 	}
 	if b.inflightLongterm != bbr3Unbounded {
 		t.Fatalf("inflight_longterm = %d after application-limited losses, want it left unbounded", b.inflightLongterm)
@@ -597,8 +606,7 @@ func TestBBR3ShortTermModel(t *testing.T) {
 	}
 }
 
-// A probe_rtt_min_delay five seconds old sends CRUISE to ProbeRTT
-// (§5.3.4.3): the window drops to half a product, and after 200 ms and a
+// A min_rtt ten seconds old sends CRUISE to ProbeRTT (§5.3.4.3): the window drops to half a product, and after 200 ms and a
 // round there the window comes back and CRUISE resumes directly.
 func TestBBR3ProbeRTT(t *testing.T) {
 	p, b := bbr3Cruising(t)
@@ -611,11 +619,11 @@ func TestBBR3ProbeRTT(t *testing.T) {
 	}
 	p.now = p.now.Add(p.rtt)
 	p.send(80)
-	b.probeRTTMinStamp = p.now.Add(-bbr3ProbeRTTInterval - time.Second)
+	b.minRTTStamp = p.now.Add(-bbr3MinRTTFilterLen - time.Second)
 	p.ack(80)
 	half := b.probeRTTCwnd()
 	if b.state != bbr3ProbeRTT || b.cwndGain != 0.5 || b.window() != half || half != 40*1200 {
-		t.Fatalf("after an expired probe_rtt_min_delay: state %d, cwnd gain %v, window %d, want ProbeRTT at half the product %d", b.state, b.cwndGain, b.window(), half)
+		t.Fatalf("after an expired min_rtt: state %d, cwnd gain %v, window %d, want ProbeRTT at half the product %d", b.state, b.cwndGain, b.window(), half)
 	}
 	if !b.probeRTTDoneStamp.IsZero() {
 		t.Fatal("the 200 ms started with 80 datagrams still in flight")
@@ -647,8 +655,8 @@ func TestBBR3ProbeRTT(t *testing.T) {
 	}
 	// The exit is read at the round's send (§5.4.1, a restart from idle in
 	// ProbeRTT) or at its acknowledgement: either way the stamp moved.
-	if !b.probeRTTMinStamp.After(entered) {
-		t.Fatal("leaving ProbeRTT did not restamp probe_rtt_min_delay")
+	if !b.minRTTStamp.After(entered) {
+		t.Fatal("leaving ProbeRTT did not restamp min_rtt")
 	}
 }
 
@@ -673,7 +681,7 @@ func TestBBRProbeRTTKeepsTheDeliveryRate(t *testing.T) {
 			"BBR",
 			func(est *deliveryEstimator) congestionController { return newBBR3(1200, est) },
 			func(cc congestionController, now time.Time) {
-				cc.(*bbr3).probeRTTMinStamp = now.Add(-bbr3ProbeRTTInterval - time.Second)
+				cc.(*bbr3).minRTTStamp = now.Add(-bbr3MinRTTFilterLen - time.Second)
 			},
 			func(cc congestionController) bool { return cc.(*bbr3).state == bbr3ProbeRTT },
 		},
@@ -821,7 +829,33 @@ func TestBBR3MarksWhileProbingBoundTheFlight(t *testing.T) {
 	if b.inflightLongterm != want {
 		t.Fatalf("inflight_longterm = %d, want %d", b.inflightLongterm, want)
 	}
-	if b.bwProbeSamples {
+	if b.checkProbeLoss {
 		t.Fatal("the probe reacted but still counts its samples: it would react again")
 	}
+}
+
+// ProbeRTT is scheduled by min_rtt alone (draft-ietf-ccwg-bbr-07 §5.3.4.3):
+// on a steady path every sample equals min_rtt, which is never restamped,
+// and ProbeRTT starts once BBR.MinRTTFilterLen, ten seconds, has passed
+// since its stamp. Draft -06 kept a separate five-second schedule.
+func TestBBR3ProbeRTTWaitsMinRTTFilterLen(t *testing.T) {
+	p, b := bbr3Cruising(t)
+	stamp := b.minRTTStamp
+	if stamp.IsZero() {
+		t.Fatal("no min_rtt stamp after Startup")
+	}
+	p.send(80)
+	for p.now.Sub(stamp) < 2*bbr3MinRTTFilterLen {
+		p.now = p.now.Add(p.rtt)
+		p.send(80)
+		stampBefore := b.minRTTStamp
+		p.ack(80)
+		if b.state == bbr3ProbeRTT {
+			if since := p.now.Sub(stampBefore); since <= bbr3MinRTTFilterLen {
+				t.Fatalf("ProbeRTT entered %v after min_rtt was stamped, before MinRTTFilterLen %v", since, bbr3MinRTTFilterLen)
+			}
+			return
+		}
+	}
+	t.Fatalf("no ProbeRTT within %v of the min_rtt stamp", 2*bbr3MinRTTFilterLen)
 }

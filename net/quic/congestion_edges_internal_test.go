@@ -62,8 +62,8 @@ func TestBBRSignalsAtTheirEdges(t *testing.T) {
 	b := newBBR3(1200, nil)
 	b.lossRoundDelivered, b.delivered = 1000, 1500
 	b.updateLatestDeliverySignals(rateSample{}, 1000)
-	if !b.lossRoundStart || b.roundDelivered != 500 {
-		t.Errorf("a packet sent at the loss round's mark: start %v, delivered %d", b.lossRoundStart, b.roundDelivered)
+	if !b.lossRoundStart || b.lossRoundDelivered != 1500 {
+		t.Errorf("a packet sent at the loss round's mark: start %v, mark %d", b.lossRoundStart, b.lossRoundDelivered)
 	}
 
 	b = newBBR3(1200, nil)
@@ -207,30 +207,42 @@ func TestBBRLongTermBoundRises(t *testing.T) {
 	}
 }
 
-// The minimum round trip at its edges: a zero sample changes nothing, an
-// equal one keeps its stamp, a lower one is taken, and min_rtt keeps its
-// stamp for an equal probe_rtt_min_delay.
+// The minimum round trip at its edges (draft-ietf-ccwg-bbr-07 §5.3.4.3):
+// a zero sample changes nothing even on an expired min_rtt, which stays
+// expired; an equal one keeps the stamp; a lower one is taken; an expired
+// min_rtt takes any sample, after leaving half its product as ProbeRTT's
+// cap.
 func TestBBRMinRTTAtItsEdges(t *testing.T) {
 	const ms = time.Millisecond
 	now := time.Now()
 	old := now.Add(-time.Minute)
 	b := newBBR3(1200, nil)
-	b.probeRTTMinDelay, b.probeRTTMinStamp, b.minRTT, b.minRTTStamp = 50*ms, old, 50*ms, now
+	b.minRTT, b.minRTTStamp = 50*ms, old
 	b.updateMinRTT(now, 0)
-	if b.probeRTTMinDelay != 50*ms {
-		t.Errorf("a zero sample set probe_rtt_min_delay to %v", b.probeRTTMinDelay)
+	if b.minRTT != 50*ms || !b.minRTTStamp.Equal(old) || !b.minRTTExpired {
+		t.Errorf("a zero sample on an expired min_rtt: %v stamped %v, expired %v", b.minRTT, b.minRTTStamp, b.minRTTExpired)
 	}
 
-	t0, t1 := now.Add(-2*time.Second), now.Add(-time.Second)
+	t0 := now.Add(-2 * time.Second)
 	b = newBBR3(1200, nil)
-	b.probeRTTMinDelay, b.probeRTTMinStamp, b.minRTT, b.minRTTStamp = 50*ms, t1, 50*ms, t0
+	b.minRTT, b.minRTTStamp = 50*ms, t0
 	b.updateMinRTT(now, 50*ms)
-	if !b.probeRTTMinStamp.Equal(t1) || !b.minRTTStamp.Equal(t0) {
-		t.Errorf("an equal sample moved the stamps: %v, %v", b.probeRTTMinStamp, b.minRTTStamp)
+	if !b.minRTTStamp.Equal(t0) || b.minRTTExpired || b.probeRTTCwndCap != bbr3Unbounded {
+		t.Errorf("an equal sample: stamp %v, expired %v, cap %d", b.minRTTStamp, b.minRTTExpired, b.probeRTTCwndCap)
 	}
 	b.updateMinRTT(now, 40*ms)
-	if b.probeRTTMinDelay != 40*ms || b.minRTT != 40*ms {
-		t.Errorf("a lower sample: probe_rtt_min_delay %v, min_rtt %v", b.probeRTTMinDelay, b.minRTT)
+	if b.minRTT != 40*ms || !b.minRTTStamp.Equal(now) {
+		t.Errorf("a lower sample: min_rtt %v stamped %v", b.minRTT, b.minRTTStamp)
+	}
+
+	b = newBBR3(1200, nil)
+	b.minRTT, b.minRTTStamp, b.bw = 50*ms, now.Add(-bbr3MinRTTFilterLen-ms), 1e6
+	b.updateMinRTT(now, 80*ms)
+	if !b.minRTTExpired || b.minRTT != 80*ms || !b.minRTTStamp.Equal(now) || b.probeRTTCwndCap != 25000 {
+		t.Errorf("an expired min_rtt: expired %v, min_rtt %v stamped %v, cap %d, want 80ms now and half of 50ms at 1 MB/s", b.minRTTExpired, b.minRTT, b.minRTTStamp, b.probeRTTCwndCap)
+	}
+	if got := b.probeRTTCwnd(); got != 25000 {
+		t.Errorf("ProbeRTTCwnd = %d with the new product at 40 000, want the cap 25 000", got)
 	}
 }
 
@@ -281,7 +293,7 @@ func TestBBRWindowAndRateAtTheirEdges(t *testing.T) {
 // A loss batch with no crossing packet leaves the probe's bound alone.
 func TestBBRLossWithoutCrossing(t *testing.T) {
 	b := newBBR3(1200, nil)
-	b.bwProbeSamples = true
+	b.checkProbeLoss = true
 	now := time.Now()
 	b.onLost(lossEvent{now: now, latestSent: now, bytes: 1200})
 	if b.prevProbeTooHigh || b.inflightLongterm != bbr3Unbounded {

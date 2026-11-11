@@ -141,7 +141,7 @@ func TestStatsCountsLostPackets(t *testing.T) {
 // lesser of the two, the share of a sample interval the queue can stand
 // empty after a loss; the line bounds it above with only measurement
 // noise, since nothing is delivered faster than the line
-// (draft-ietf-ccwg-bbr-06 §4.1.1.2.4). An interval read twice too long
+// (draft-ietf-ccwg-bbr-07 §4.1.1.2.4). An interval read twice too long
 // reads 0.50.
 //
 // The transfer runs in a synctest bubble: the link is dgram.Pair and the

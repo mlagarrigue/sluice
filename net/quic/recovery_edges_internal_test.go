@@ -117,11 +117,11 @@ func TestLargeAboveTheBase(t *testing.T) {
 
 	var s sentTracker
 	out = ackOutcome{}
-	s.declareLost(&out, &sentPacket{pn: 1, size: pmtuBaseSize}, nil, false)
+	s.declareLost(&out, &sentPacket{pn: 1, size: pmtuBaseSize}, nil)
 	if out.largeLost != 0 || len(out.lost) != 0 || len(s.lost) != 0 {
 		t.Errorf("a 1200-byte packet without payload lost: large %d, %d payloads, %d remembered", out.largeLost, len(out.lost), len(s.lost))
 	}
-	s.declareLost(&out, &sentPacket{pn: 2, size: pmtuBaseSize + 1, payload: []byte{framePing}}, nil, false)
+	s.declareLost(&out, &sentPacket{pn: 2, size: pmtuBaseSize + 1, payload: []byte{framePing}}, nil)
 	if out.largeLost != 1 || len(out.lost) != 1 || len(s.lost) != 1 {
 		t.Errorf("a 1201-byte packet lost: large %d, %d payloads, %d remembered", out.largeLost, len(out.lost), len(s.lost))
 	}
@@ -133,7 +133,7 @@ func TestLossCrossingCountsSinceThePacketLeft(t *testing.T) {
 	var s sentTracker
 	var out ackOutcome
 	est := &deliveryEstimator{lost: 1000}
-	s.declareLost(&out, &sentPacket{pn: 1, size: 100, lost: 900, txInFlight: 5000}, est, false)
+	s.declareLost(&out, &sentPacket{pn: 1, size: 100, lost: 900, txInFlight: 5000}, est)
 	if out.crossing.lost != 200 {
 		t.Errorf("crossing.lost = %d, want 1000 + 100 - 900", out.crossing.lost)
 	}

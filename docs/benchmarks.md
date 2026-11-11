@@ -1064,7 +1064,7 @@ draft's later revisions add one, and that figure is the next step's
 criterion. Reno stays the default: nothing here is a measurement
 against a real client.
 
-**BBR as the IETF drafts it** (draft-ietf-ccwg-bbr-06, the version Linux
+**BBR as the IETF drafts it** (draft-ietf-ccwg-bbr-07, the version Linux
 ships as BBRv3, `CongestionBBR`) keeps version 1's model of the path and
 reads loss as evidence about how much the path holds: a round that loses
 more than 2% while probing bounds the volume in flight, with 15% of that
@@ -1124,13 +1124,13 @@ most in a round) and the max filter keeps the highest over two ProbeBW
 cycles, so the cruise paces at 0.99 × 1.056 of the line and adds 4% of
 a product to the queue every round, with nothing to drain it before the
 next probe (two to three seconds, or 63 rounds) or ProbeRTT (five
-seconds). That figure is not a property of the draft on a path without
+seconds when this was measured, under draft -06; ten since draft -07). That figure is not a property of the draft on a path without
 a signal; it asks for ECN (§3.7: measured below) or an estimator that
 does not keep upward noise. Both criteria are rewritten as measured;
 nothing in the controller is tuned toward them. Reno stays the default:
 nothing here is a measurement against a real client.
 
-**BBR with ECN.** draft-ietf-ccwg-bbr-06 §3.7 specifies no response to
+**BBR with ECN.** draft-ietf-ccwg-bbr-07 §3.7 specifies no response to
 CE marks, only that a connection that marks its packets ECT MUST treat
 them as congestion. The response here reads a mark as a loss without the
 retransmission: a round that saw one between probes cuts the short-term

@@ -131,7 +131,7 @@ p.Congestion = quic.CongestionConfig{Algorithm: quic.CongestionCubic} // or quic
   by default for CUBIC, RFC 9406 — the initial slow start ends on the
   round trip rising, with fewer losses and a somewhat fuller queue on a
   deep buffer) and `DisableFastConvergence`, for a flow alone on its path.
-- **BBR** (draft-ietf-ccwg-bbr-06, what Linux ships as BBRv3,
+- **BBR** (draft-ietf-ccwg-bbr-07, what Linux ships as BBRv3,
   `CongestionBBR`): a model of the path — the highest delivery rate and the
   lowest round trip seen recently — in which loss is evidence of how much
   the path holds. 16 times NewReno with 1% loss, about 3 times with burst

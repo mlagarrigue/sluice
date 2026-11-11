@@ -1,7 +1,7 @@
 # ADR 0015 — The QUIC server: transport machinery, a real listener, a moving client
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-11-11 (`MaxConnsPerIP` counts against its bound only the connections that proved their address); 19 earlier, from 2026-10-03, in its `git log`
+- **Revised:** 2026-11-12 (`CongestionBBR` follows draft-ietf-ccwg-bbr-07); 20 earlier, from 2026-10-03, in its `git log`
 - **Theme:** quic
 
 ## Problem
@@ -29,7 +29,7 @@ what an authenticated packet proves the peer did. Recovery is RFC 9002's —
 packet- and time-threshold loss detection, probe timeouts — and congestion
 control is the controller the caller picks (`quic.Config.Congestion`):
 NewReno by default (RFC 9002 §7), `CongestionCubic` (RFC 9438) and
-`CongestionBBR` (draft-ietf-ccwg-bbr-06), the last two experimental.
+`CongestionBBR` (draft-ietf-ccwg-bbr-07), the last two experimental.
 
 Persistent congestion is the one §7.6 defines: two ack-eliciting losses
 further apart than three probe intervals, with nothing acknowledged between

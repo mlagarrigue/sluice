@@ -147,7 +147,7 @@ type Stats struct {
 
 	// DeliveryRate is how fast the network delivered this end's packets, in
 	// bytes per second, as the last reliable sample measured it
-	// (draft-ietf-ccwg-bbr-06 §4.1): the bytes an
+	// (draft-ietf-ccwg-bbr-07 §4.1): the bytes an
 	// acknowledgement proved delivered, over the longer of the time they
 	// took to send and the time they took to be acknowledged. Samples taken
 	// while the application had nothing to send, or while BBR's ProbeRTT

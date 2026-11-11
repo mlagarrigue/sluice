@@ -220,7 +220,7 @@ func TestNewControllerByAlgorithm(t *testing.T) {
 	}
 	b3, ok := newController(CongestionConfig{Algorithm: CongestionBBR}, 1200, &deliveryEstimator{}).(*bbr3)
 	if !ok {
-		t.Fatal("CongestionBBR did not build a draft-ietf-ccwg-bbr-06 controller")
+		t.Fatal("CongestionBBR did not build a draft-ietf-ccwg-bbr-07 controller")
 	}
 	if b3.window() != newNewReno(1200).cwnd || b3.state != bbr3Startup || b3.pacingGain != bbr3StartupPacingGain || b3.cwndGain != 2 {
 		t.Errorf("BBR starts with window %d, state %d, gains %v/%v: want Reno's window, Startup, 2.77 and 2", b3.window(), b3.state, b3.pacingGain, b3.cwndGain)

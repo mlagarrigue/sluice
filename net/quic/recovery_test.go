@@ -825,11 +825,10 @@ func ackCovering(t *testing.T, now time.Time, pns ...uint64) Frame {
 // Lost packets count into C.lost in number order, and the first whose
 // losses since it left — RS.lost = C.lost - P.lost, itself included —
 // exceed 2% of the flight it joined (P.tx_in_flight) is the batch's
-// crossing for BBR (draft-ietf-ccwg-bbr-06 §5.5.10.2), the count running
-// across batches. A range lost across two batches counts once toward
-// Startup's discontiguous ranges (§5.3.1.3); an acknowledged packet
-// between two losses splits them.
-func TestLossesCountTheirRangesAndCrossing(t *testing.T) {
+// crossing for BBR (draft-ietf-ccwg-bbr-07 §5.5.10.2), the count running
+// across batches. Each lost packet is one of the loss events Startup counts
+// (§2.13, §5.3.1.3), whether or not the packet before it was lost too.
+func TestLossesCountTheirPacketsAndCrossing(t *testing.T) {
 	var est deliveryEstimator
 	var s sentTracker
 	var rtt rttEstimator
@@ -851,22 +850,22 @@ func TestLossesCountTheirRangesAndCrossing(t *testing.T) {
 		}
 		return out
 	}
-	// 4 acknowledged: 0 and 1 are three below it, one range; 200 bytes
-	// lost of a flight of 10 200 is under 2%.
+	// 4 acknowledged: 0 and 1 are three below it, two loss events; 200
+	// bytes lost of a flight of 10 200 is under 2%.
 	out := ack(3, 4)
-	if out.lostRanges != 1 || out.crossing != (lostPacket{}) {
-		t.Fatalf("first batch: %d ranges, crossing %+v, want 1 and none", out.lostRanges, out.crossing)
+	if out.lostPackets != 2 || out.crossing != (lostPacket{}) {
+		t.Fatalf("first batch: %d packets, crossing %+v, want 2 and none", out.lostPackets, out.crossing)
 	}
-	// 5: 2 is lost, the range extended; 300 bytes lost since it joined a
-	// flight of 10 300 cross 2%.
+	// 5: 2 is lost, next to 1; 300 bytes lost since it joined a flight of
+	// 10 300 cross 2%.
 	out = ack(5)
-	if want := (lostPacket{size: 100, txInFlight: 10300, lost: 300}); out.lostRanges != 0 || out.crossing != want {
-		t.Fatalf("second batch: %d ranges, crossing %+v, want 0 and %+v", out.lostRanges, out.crossing, want)
+	if want := (lostPacket{size: 100, txInFlight: 10300, lost: 300}); out.lostPackets != 1 || out.crossing != want {
+		t.Fatalf("second batch: %d packets, crossing %+v, want 1 and %+v", out.lostPackets, out.crossing, want)
 	}
-	// 9: 6 is lost after 5 was acknowledged, a second range.
+	// 9: 6 is lost after 5 was acknowledged.
 	out = ack(9)
-	if want := (lostPacket{size: 100, txInFlight: 10700, lost: 400, appLimited: true}); out.lostRanges != 1 || out.crossing != want {
-		t.Fatalf("third batch: %d ranges, crossing %+v, want 1 and %+v", out.lostRanges, out.crossing, want)
+	if want := (lostPacket{size: 100, txInFlight: 10700, lost: 400, appLimited: true}); out.lostPackets != 1 || out.crossing != want {
+		t.Fatalf("third batch: %d packets, crossing %+v, want 1 and %+v", out.lostPackets, out.crossing, want)
 	}
 	if est.lost != 400 {
 		t.Fatalf("C.lost = %d, want 400", est.lost)
@@ -885,7 +884,7 @@ func TestSentPacketSize(t *testing.T) {
 	}
 }
 
-// The delivery-rate sample, by hand (draft-ietf-ccwg-bbr-06 §4.1.2.3).
+// The delivery-rate sample, by hand (draft-ietf-ccwg-bbr-07 §4.1.2.3).
 // Three packets of 1000 bytes leave an idle connection 10 ms apart and
 // are acknowledged together 120 ms after the first: the sample is re-based on
 // the newest, whose send interval is 20 ms and whose acknowledgement
