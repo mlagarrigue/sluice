@@ -161,9 +161,12 @@ The figures are a laptop's ([measurements](#measurements-what-is-missing)).
   itself allows per field; the handshake keeps its own 64 KiB bound.
 - **An outgoing message is bounded at 1 GiB less one byte** — PostgreSQL's
   allocation limit, which nothing moves: in practice, a query parameter
-  that large. It is refused before a byte leaves (`ErrOutgoingTooLarge`),
-  and the connection serves the next query. A larger value is split:
-  PostgreSQL stores no field over 1 GiB anyway.
+  that large, or a SQL text. It is refused before a byte leaves
+  (`ErrOutgoingTooLarge`), for a query, a `Tx.Pipeline` part or a
+  statement alike, and the connection serves the next query. A larger
+  value is split: PostgreSQL stores no field over 1 GiB anyway. A COPY
+  batch larger than that leaves as several CopyData messages, which the
+  protocol lets a client divide freely: nothing is refused.
 - **A batch is bounded at 64 MiB of values** as well as at `BatchRows` rows.
   A batch whose values reach it is delivered with the row that crossed it,
   and the next row opens the next batch: nothing fails, the consumer sees

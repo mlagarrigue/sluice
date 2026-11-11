@@ -148,6 +148,22 @@ func (tx *Tx) Pipeline(ctx context.Context, parts []Part, cfg QueryConfig, fn fu
 		if err := checkSQLText(p.SQL); err != nil {
 			return fmt.Errorf("pipeline part %d: %w", i, err)
 		}
+		// The Bind's and the Parse's lengths too, as Query judges them: left to
+		// Flush, the refusal came after the sender had closed the socket
+		// for a pipeline that sent nothing, and a connection whose stream
+		// was intact was broken. The set_config Bind carries the setting's
+		// name and value.
+		if err := checkBindLen(p.Params); err != nil {
+			return fmt.Errorf("pipeline part %d: %w", i, err)
+		}
+		if err := checkParseLen(p.SQL, len(p.Params)); err != nil {
+			return fmt.Errorf("pipeline part %d: %w", i, err)
+		}
+		if p.Setting != "" {
+			if err := checkBindLen([]Param{{Value: []byte(p.Setting)}, {Value: []byte(p.Value)}}); err != nil {
+				return fmt.Errorf("pipeline part %d, its setting: %w", i, err)
+			}
+		}
 	}
 
 	if err := c.beginBusy(); err != nil {
@@ -216,9 +232,9 @@ func (tx *Tx) Pipeline(ctx context.Context, parts []Part, cfg QueryConfig, fn fu
 	defer w.disarm()
 	err = c.readPipeline(ctx, parts, batchRows, batchBytes, fn)
 	if sendErr := join(); sendErr != nil {
-		if c.broken == nil {
-			c.broken = fmt.Errorf("%w: sending the pipeline: %w", ErrConnBroken, sendErr)
-		}
+		// The write's error, whatever the read broke the connection with
+		// first: the sender's close is what ended that read.
+		c.broken = fmt.Errorf("%w: sending the pipeline: %w", ErrConnBroken, sendErr)
 		err = c.broken
 	}
 	return c.settleCancel(ctx, w, err)

@@ -597,17 +597,20 @@ func checkNoNUL(what, s string) error {
 	return nil
 }
 
-// checkSQLText refuses statement text that carries a NUL.
+// checkSQLText refuses statement text that carries a NUL, or that no
+// statement message could carry under the outgoing bound (checkParseLen).
 //
 // Query and Parse frame the SQL as a C string, so a NUL ends it early and the
 // server reads the rest of the message as whatever fields follow — answered
 // with "invalid message format" or a syntax error at a position the caller
-// never wrote. Refused here, where the error can say what is wrong.
+// never wrote. Refused here, where the error can say what is wrong. A text
+// over the bound is refused here too, before anything is buffered: left to
+// Flush, the refusal broke a connection whose stream was intact.
 func checkSQLText(sql string) error {
 	if strings.IndexByte(sql, 0) >= 0 {
 		return errors.New("postgres: the SQL text contains a NUL byte, which the protocol cannot carry: it would end the statement early")
 	}
-	return nil
+	return checkParseLen(sql, 0)
 }
 
 // appendParam appends one key/value pair as the two C strings the packet wants.

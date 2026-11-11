@@ -729,6 +729,20 @@ func checkBindLen(params []Param) error {
 	return nil
 }
 
+// checkParseLen refuses, before anything is buffered, a Parse of sql
+// declaring nParams types that the wire layer would refuse at Flush: under
+// the longest statement name, its length is the text, the name, the type
+// count and four bytes a type. With no parameter it bounds a simple Query's
+// text too, which checkSQLText relies on.
+func checkParseLen(sql string, nParams int) error {
+	n := pgwire.LengthSize + len(maxStmtName) + 1 + len(sql) + 1 + 2 + 4*nParams
+	if n > maxOutgoing {
+		return fmt.Errorf("%w: a %d-byte statement message for a SQL text of %d bytes, over the %d bytes a server accepts in one message",
+			pgwire.ErrOutgoingTooLarge, n, len(sql), maxOutgoing)
+	}
+	return nil
+}
+
 // writeBind queues a Bind of the unnamed portal to stmt with the values of
 // params. The scratch is cleared once the values are buffered, so the
 // connection does not keep the caller's bytes alive until its next query.
@@ -1156,6 +1170,9 @@ func (q *query) run(sql string, params []Param, yield func(sluice.Batch[Row]) bo
 		return err
 	}
 	if err := checkBindLen(params); err != nil {
+		return err
+	}
+	if err := checkParseLen(sql, len(params)); err != nil {
 		return err
 	}
 	// A consumer that already wants nothing costs the server nothing: no

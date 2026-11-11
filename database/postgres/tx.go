@@ -814,9 +814,9 @@ func (tx *Tx) Savepoints(ctx context.Context, names ...string) error {
 	// Joined before returning: the next statement reuses the Writer's
 	// buffer, which is the sender's until it has returned.
 	if err := c.joinSender(sent); err != nil {
-		if c.broken == nil {
-			c.broken = fmt.Errorf("%w: establishing %d savepoints: %w", ErrConnBroken, len(names), err)
-		}
+		// The write's error, whatever the read broke the connection with
+		// first: the sender's close is what ended that read.
+		c.broken = fmt.Errorf("%w: establishing %d savepoints: %w", ErrConnBroken, len(names), err)
 		first = c.broken
 	}
 	if c.broken != nil {

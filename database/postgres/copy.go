@@ -751,10 +751,17 @@ func (cp *Copier) flushData() error {
 	return nil
 }
 
-// writeData sends one CopyData carrying body, which may be the copier's own
-// buffer or the caller's.
+// writeData sends body, which may be the copier's own buffer or the
+// caller's, as CopyData: one message, or several when body is more than one
+// message may carry. The frontend may "divide the data stream arbitrarily"
+// (PostgreSQL 18 §54.7, CopyData), and a batch of WriteTuples over the
+// outgoing bound sent as one message was refused at Flush and the
+// connection broken.
 func (cp *Copier) writeData(body []byte) error {
 	c := cp.conn
+	for most := maxOutgoing - pgwire.LengthSize; len(body) > most; body = body[most:] {
+		c.w.Message(pgwire.FrontendCopyData, body[:most])
+	}
 	c.w.Message(pgwire.FrontendCopyData, body)
 	if err := c.w.Flush(); err != nil {
 		return c.breakConn(err)
