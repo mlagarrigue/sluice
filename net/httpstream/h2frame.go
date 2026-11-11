@@ -168,11 +168,12 @@ type frameReader struct {
 	// whether any stream activity ever arrived; until it has, the clock is
 	// ReadTimeout's, the bound a connection that has not spoken yet gets.
 	//
-	// A DATA frame counts only on a stream live says is open: an empty DATA
-	// on a stream closed long ago is tolerated without an answer (h2Conn.data),
-	// and counted as use, nine bytes per IdleTimeout held a connection that
-	// carried no request — RFC 9113 §10.5's idle connection, kept by the one
-	// frame the clock did not tell apart.
+	// A frame of a stream counts only on a stream live says is open or not
+	// yet opened: an empty DATA or HEADERS on a stream closed long ago is
+	// tolerated without an answer (h2Conn.data, h2Conn.stream), and counted
+	// as use, nine bytes per IdleTimeout held a connection that carried no
+	// request — RFC 9113 §10.5's idle connection, kept by frames the clock
+	// did not tell apart.
 	idleAt         time.Time
 	streamActivity bool
 	streamSeen     bool
@@ -235,12 +236,11 @@ func (r *frameReader) next() ([]h2Frame, bool) {
 }
 
 // usesStream reports whether f is use of the connection for the idle clock:
-// a HEADERS or CONTINUATION, or a DATA on a stream that is open (live).
+// a HEADERS, CONTINUATION or DATA on a stream that is open or not yet opened
+// (live).
 func (r *frameReader) usesStream(f h2Frame) bool {
 	switch f.Type {
-	case frameHeaders, frameContinuation:
-		return true
-	case frameData:
+	case frameHeaders, frameContinuation, frameData:
 		return r.live == nil || r.live(f.StreamID)
 	}
 	return false

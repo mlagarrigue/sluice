@@ -1,6 +1,7 @@
 package httpstream
 
 import (
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -180,5 +181,61 @@ func TestH2NothingQueuedForAStreamTheWriterForgot(t *testing.T) {
 			t.Fatalf("frame type %#x queued on stream %d after the writer forgot it (RFC 9113 §6.4)", f.Type, st.id)
 		}
 		ctrl = ctrl[n:]
+	}
+}
+
+// What 73d0cd7 said of an empty DATA holds for a HEADERS: one on a stream
+// both END_STREAM flags closed is decoded and dropped with no answer, and it
+// must not count as use of the connection either, or one such frame per
+// half IdleTimeout held a connection with no request in flight (RFC 9113
+// §10.5; the godoc of Config.IdleTimeout).
+func TestH2HeadersOnAClosedStreamDoNotHoldTheIdleClock(t *testing.T) {
+	const idle = 200 * time.Millisecond
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	served := make(chan error, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			served <- err
+			return
+		}
+		cfg := Config{Logger: discardLogger(), ReadTimeout: 5 * time.Second, IdleTimeout: idle, LingerTimeout: 100 * time.Millisecond}
+		served <- ServeH2Conn(t.Context(), c, cfg, echoTarget)
+	}()
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	c := h2clientOn(t, conn)
+	c.request(1, "GET", "/once")
+	c.flush()
+	c.pump(func() bool { return c.ended[1] })
+	if !c.ended[1] {
+		t.Fatal("the request was not answered")
+	}
+	late, _ := appendH2Frame(nil, h2Frame{Type: frameHeaders, Flags: flagEndHeaders | flagEndStream, StreamID: 1})
+	deadline := time.Now().Add(10 * idle)
+	for time.Now().Before(deadline) {
+		if _, err := conn.Write(late); err != nil {
+			break
+		}
+		select {
+		case err := <-served:
+			if errors.Is(err, ErrShutdownForced) {
+				t.Fatal(err)
+			}
+			return // closed under the trickle: the clock did not restart
+		case <-time.After(idle / 2):
+		}
+	}
+	select {
+	case <-served:
+	case <-time.After(idle / 4):
+		t.Fatalf("the connection outlived %v of empty HEADERS frames on a closed stream with no request in flight", 10*idle)
 	}
 }

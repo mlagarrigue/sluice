@@ -640,7 +640,7 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 	// slowloris bound.
 	// live is asked by the reader on this goroutine, between two batches:
 	// the stream table is the one consume keeps.
-	src := framesWith(c, cfg, func() bool { return s.inFlight.Load() > 0 }, func(id uint32) bool { return s.streams[id] != nil })
+	src := framesWith(c, cfg, func() bool { return s.inFlight.Load() > 0 }, func(id uint32) bool { return s.streams[id] != nil || id > s.lastID })
 	var fatal error
 	greeted := false
 	src.Stream()(func(b sluice.Batch[h2Frame]) bool {
