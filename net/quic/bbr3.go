@@ -59,17 +59,23 @@ import (
 // long-term model when a loss episode starts (SaveStateUponLoss, from
 // BBRNoteLoss), the state a loss sends out of Startup or ProbeBW_UP
 // (undo_state), and restores them if the transport later concludes that
-// no packet of the episode was lost (HandleSpuriousLossDetection). The
-// transport cannot conclude it: the ACK scan drops a packet from the
-// flight record the moment it declares it lost (sentTracker), so a late
-// acknowledgement of that number matches nothing and is never seen. A
-// detector would keep lost packets in the record on the ACK path, and
-// track each episode until all of its packets are acknowledged — a cost
-// on every scan for a call RFC 9002 leaves optional (§6.1, A.1). Without
-// it, the saved state would have no reader, so none is kept; a spurious
-// loss costs what a real one does. Revisit when the transport keeps lost
-// packets for reordering (an adaptive threshold, RFC 9002 §6.1.1): the
-// detector then comes for free and the undo is wired to it.
+// no packet of the episode was lost (HandleSpuriousLossDetection). Half of
+// that conclusion exists: the flight record remembers the last lostMemory
+// packets it declared lost (sentTracker.lost), and an acknowledgement that
+// arrives for one of them later is recognised (lateAcked) — it takes the
+// packet's payload off the retransmission queue. The other half does not:
+// nothing records which losses made up an episode, so nothing can say
+// that all of them were acknowledged after all; an episode of more than
+// lostMemory packets could never be confirmed; and no call reaches the
+// controller when one is. Building it — an episode per recovery, the state
+// saved when it opens, the ACK path telling the controller — is a cost for
+// a call RFC 9002 leaves optional (§6.1, A.1), on a path that reorders past
+// the packet and time thresholds (§6.1.1, §6.1.2), which no measurement
+// of this transport has shown. So no state is saved, and a spurious loss
+// costs what a real one does. Revisit when a measured path loses throughput
+// to reordering, or when the transport adopts an adaptive reordering
+// threshold (§6.1.1), which needs the same episode record: the undo is
+// then wired to it.
 type bbr3 struct {
 	// est is the connection's delivery estimator, which ProbeRTT marks
 	// application-limited (handleProbeRTT).
