@@ -208,8 +208,11 @@ type sentTracker struct {
 	packets []sentPacket
 	// limit is the record's bound, maxTrackedPackets when zero (see
 	// there); a test lowers it.
-	limit    int
-	lossTime time.Time // when the earliest time-threshold candidate matures
+	limit int
+	// offPathOut is how many offPath packets the record holds that are
+	// neither acknowledged nor declared lost (countOffPathAnswerLocked).
+	offPathOut int
+	lossTime   time.Time // when the earliest time-threshold candidate matures
 	// lost remembers the packets declared lost whose payload went to the
 	// retransmission queue, the newest last: a late acknowledgement of one
 	// — the packet arrived after all, reordered — takes its payload off the
@@ -270,6 +273,9 @@ func (s *sentTracker) onPath(p *sentPacket) bool {
 var errOptimisticAck = errors.New("quic: the peer acknowledged a packet number that was skipped on purpose")
 
 func (s *sentTracker) record(p sentPacket) {
+	if p.offPath {
+		s.offPathOut++
+	}
 	s.packets = append(s.packets, p)
 }
 
@@ -450,6 +456,9 @@ func (s *sentTracker) markAcked(largest uint64, rangeData []byte) (ackOutcome, e
 		for i >= 0 && s.packets[i].pn >= lo {
 			if p := &s.packets[i]; !p.acked {
 				p.acked = true
+				if p.offPath {
+					s.offPathOut--
+				}
 				out.mark(p, s.onPath(p), largest)
 			}
 			i--
@@ -764,6 +773,9 @@ func (s *sentTracker) collectTimeLosses(now time.Time, rtt *rttEstimator, est *d
 // ranges (§5.3.1.3). A lost probe or a previous path's packet sits in its
 // range without ever opening one.
 func (s *sentTracker) declareLost(out *ackOutcome, p *sentPacket, est *deliveryEstimator, extends bool) bool {
+	if p.offPath {
+		s.offPathOut--
+	}
 	onPath := s.onPath(p)
 	if p.pmtuProbe {
 		out.probeLost, out.probeLostPN = true, p.pn
@@ -888,6 +900,7 @@ func (s *sentTracker) takeAll() (payloads [][]byte, bytes int) {
 		}
 	}
 	s.packets = nil
+	s.offPathOut = 0
 	s.lossTime = time.Time{}
 	return payloads, bytes
 }

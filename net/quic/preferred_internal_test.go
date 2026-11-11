@@ -1398,3 +1398,83 @@ func TestPreferredPathIsAnsweredWithTheWindowFull(t *testing.T) {
 		t.Errorf("%d datagrams left by the preferred socket after 101 unacknowledged challenges, want %d", n, maxOffPathAnswers)
 	}
 }
+
+// A peer that acknowledges every answer toward its other addresses is
+// answered however many times it probes them (RFC 9000 §8.2.2: an endpoint
+// "MUST respond by echoing the data"). The bound on answers toward other
+// paths counts those still waiting for their acknowledgement; counting
+// every answer since the path in use last changed left a peer probing a
+// ninth time unanswered for good. The challenges alternate between two
+// other addresses, each answered under an identifier of its own, and every
+// answer is acknowledged by an ACK frame received on the path in use.
+func TestAcknowledgedOffPathAnswersDoNotRunOut(t *testing.T) {
+	c, main := newMigratableServer(t, "acked-off")
+	peerA := fakeFuzzAddr("acked-off:peerA")
+	now := time.Now()
+	for seq, cid := range []string{"cli-cid1", "cli-cid2"} {
+		if err := c.frames(spaceApplication, ncidFrame(uint64(seq+1), 0, []byte(cid), make([]byte, 16)), now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	answersTo := func(addr fakeFuzzAddr) int {
+		n := 0
+		for _, w := range main.recorded() {
+			if !sameAddr(w.to, addr) {
+				continue
+			}
+			for _, f := range openShort(t, w.data, len("cli-cid1")) {
+				if f.Type == framePathResponse {
+					n++
+				}
+			}
+		}
+		return n
+	}
+	ackAll := func(at time.Time) {
+		c.mu.Lock()
+		var pns []uint64
+		for _, p := range c.spaces[spaceApplication].sent.packets {
+			pns = append(pns, p.pn)
+		}
+		c.mu.Unlock()
+		for _, pn := range pns {
+			rxFromNewAddress(c, peerA, 100, true)
+			c.mu.Lock()
+			c.rxVia = nil
+			c.mu.Unlock()
+			ack := varint.Append(nil, frameACK)
+			ack = varint.Append(ack, pn)
+			ack = varint.Append(ack, 0) // delay
+			ack = varint.Append(ack, 0) // no further range
+			ack = varint.Append(ack, 0) // first range: pn alone
+			if err := c.frames(spaceApplication, ack, at); err != nil {
+				t.Fatalf("ACK of %d: %v", pn, err)
+			}
+		}
+	}
+
+	const challenges = maxOffPathAnswers + 4
+	for i := range challenges {
+		at := now.Add(time.Duration(i) * time.Minute)
+		ackAll(at)
+		c.mu.Lock()
+		left := len(c.spaces[spaceApplication].sent.packets)
+		c.mu.Unlock()
+		if left != 0 {
+			t.Fatalf("challenge %d: %d packets still on the sent record after acknowledging them all", i+1, left)
+		}
+		other := fakeFuzzAddr(fmt.Sprintf("acked-off:peer%d", i%2))
+		rxFromNewAddress(c, other, 1200, true)
+		c.mu.Lock()
+		c.rxVia = nil
+		c.rxLocalCIDSeq = c.pathLocalSeq + 1
+		c.mu.Unlock()
+		challenge := append(varint.Append(nil, framePathChallenge), byte(i), 2, 3, 4, 5, 6, 7, 8)
+		if err := c.frames(spaceApplication, challenge, at.Add(time.Second)); err != nil {
+			t.Fatalf("challenge %d: %v", i+1, err)
+		}
+		if got := answersTo(other); got != i/2+1 {
+			t.Fatalf("challenge %d, every earlier answer acknowledged: %d answers to that address, want %d", i+1, got, i/2+1)
+		}
+	}
+}

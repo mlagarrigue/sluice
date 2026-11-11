@@ -435,17 +435,6 @@ type Conn struct {
 		addr       net.Addr
 		recv, sent int64
 	}
-	// offPathAnswers counts the PATH_RESPONSE packets sent toward a path
-	// other than the one in use — another peer address, or this end's other
-	// socket — while the path in use was pc and peer; a count kept under
-	// another path in use starts again from zero. The congestion window of
-	// the path in use does not gate those packets
-	// (answerPathChallengesLocked); this count does, at maxOffPathAnswers.
-	offPathAnswers struct {
-		pc   net.PacketConn
-		peer net.Addr
-		n    int
-	}
 	// heldResponse is the answer to the latest PATH_CHALLENGE on the path
 	// in use that met a full congestion window (answerPathChallengesLocked):
 	// held until the window has room, then sent (sendHeldResponseLocked),

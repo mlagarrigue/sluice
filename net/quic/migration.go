@@ -1504,26 +1504,24 @@ func (c *Conn) sendHeldResponseLocked() {
 	_ = c.sendPacketLocked(spaceApplication, h.frame[:], sendOpts{noRetrans: true, padTo: 1200})
 }
 
-// maxOffPathAnswers is how many PATH_RESPONSE packets leave toward paths
-// other than the one in use while that path stays the same. A validation
-// takes one challenge and a few repeats when answers are lost; a peer that
-// keeps challenging from elsewhere without ever acknowledging gets this
-// many packets on the sent record, not one per challenge.
+// maxOffPathAnswers is how many packets sent off the path in use — answers
+// toward other paths, and this end's own probes of them — may wait for
+// their acknowledgement before a further answer toward another path is
+// refused. A validation takes one challenge and a few repeats when
+// answers are lost; a peer that keeps challenging from elsewhere without
+// ever acknowledging gets this many packets on the sent record, not one
+// per challenge. A peer that acknowledges them is answered for as long as
+// it probes: the count is of the unacknowledged, not of every answer since
+// the path in use last changed, which left a peer probing a ninth time in
+// the life of a path unanswered for good.
 const maxOffPathAnswers = 8
 
-// countOffPathAnswerLocked counts one PATH_RESPONSE packet toward a path
-// other than the one in use and reports whether it may leave: at most
-// maxOffPathAnswers while the path in use stays the same. Callers hold mu.
+// countOffPathAnswerLocked reports whether one more answer may leave toward
+// a path other than the one in use: fewer than maxOffPathAnswers off-path
+// packets wait for their acknowledgement (sentTracker.offPathOut). Callers
+// hold mu.
 func (c *Conn) countOffPathAnswerLocked() bool {
-	a := &c.offPathAnswers
-	if a.pc != c.pc || !sameAddr(a.peer, c.peer) {
-		a.pc, a.peer, a.n = c.pc, c.peer, 0
-	}
-	if a.n >= maxOffPathAnswers {
-		return false
-	}
-	a.n++
-	return true
+	return c.spaces[spaceApplication].sent.offPathOut < maxOffPathAnswers
 }
 
 // preferredPathChallengeLocked is the server half of §9.6.2, taken when a

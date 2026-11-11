@@ -46,9 +46,9 @@ type sendOpts struct {
 	// holds its stream's slot while its record stands (maybeRemoveLocked):
 	// a peer that never acknowledges has as many in flight as streams it
 	// may open. A PATH_RESPONSE on the path in use fits in the window or
-	// is dropped; one toward another path leaves ungated, at most
-	// maxOffPathAnswers while the path in use stays the same
-	// (answerPathChallengesLocked).
+	// waits for room (heldResponse); one toward another path leaves
+	// ungated, while fewer than maxOffPathAnswers off-path packets wait for
+	// their acknowledgement (answerPathChallengesLocked).
 	waitCwnd bool
 	// deadline bounds that wait (Stream.SetWriteDeadline); nil, or a zero
 	// time, waits without bound. It points at the stream's deadline rather
