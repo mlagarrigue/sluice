@@ -535,3 +535,122 @@ func (p *firstInitialPC) get() []byte {
 	defer p.mu.Unlock()
 	return p.first
 }
+
+// A connection leaves the listener's table once, when it is forgotten. A
+// datagram it had already taken off its queue at that moment — here a
+// RETIRE_CONNECTION_ID, which makes it issue a replacement identifier —
+// must not put it back: nothing would forget it a second time, and the
+// table entry, the connection and its MaxConns slot would stay for the
+// listener's lifetime. A real datagram goes through the connection's own
+// processDatagram, as the fed read loop does with one it picked over
+// c.closed. Control against a false result: the retired sequence must have
+// left the server's localCIDs, or the datagram never carried the frame.
+
+// heldWritesPC holds what is written to it while hold is set.
+type heldWritesPC struct {
+	net.PacketConn
+	mu   sync.Mutex
+	hold bool
+	held [][]byte
+}
+
+func (p *heldWritesPC) WriteTo(b []byte, to net.Addr) (int, error) {
+	p.mu.Lock()
+	if p.hold {
+		p.held = append(p.held, append([]byte(nil), b...))
+		p.mu.Unlock()
+		return len(b), nil
+	}
+	p.mu.Unlock()
+	return p.PacketConn.WriteTo(b, to)
+}
+
+func TestAForgottenConnectionIsNotRoutedAgain(t *testing.T) {
+	l, _ := newInternalUDPListener(t, "udp", "127.0.0.1:0", ListenerConfig{})
+	raw := loopbackSocket(t)
+	pc := &heldWritesPC{PacketConn: raw}
+	client := dialInternal(t, pc, l.Addr())
+	server, err := l.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A server identifier, other than the one the client sends under, that
+	// the client has pooled.
+	var seq uint64
+	waitFor(t, "a spare server identifier pooled by the client", func() bool {
+		server.mu.Lock()
+		var spares []uint64
+		for _, e := range server.localCIDs {
+			if e.seq != server.rxLocalCIDSeq {
+				spares = append(spares, e.seq)
+			}
+		}
+		server.mu.Unlock()
+		client.mu.Lock()
+		defer client.mu.Unlock()
+		for _, s := range spares {
+			if s == client.currentPeerSeq {
+				continue
+			}
+			for _, e := range client.peerCIDs {
+				if e.seq == s {
+					seq = s
+					return true
+				}
+			}
+		}
+		return false
+	})
+
+	// The client queues the retirement and sends it; the datagram is held.
+	pc.mu.Lock()
+	pc.hold = true
+	pc.mu.Unlock()
+	client.mu.Lock()
+	client.retirePeerCIDLocked(seq)
+	client.flushControlLocked()
+	client.flushDatagramLocked()
+	client.flushBatchLocked()
+	client.mu.Unlock()
+	pc.mu.Lock()
+	held := pc.held
+	pc.hold = false
+	pc.mu.Unlock()
+	if len(held) == 0 {
+		t.Fatal("inconclusive: the client sent nothing for the retirement")
+	}
+
+	// The silent end, and the listener forgetting the connection.
+	server.idleExpired()
+	select {
+	case <-server.gone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the connection never released its socket")
+	}
+	waitFor(t, "the listener to forget the connection", func() bool { return routed(l) == 0 })
+
+	// What the fed read loop does with a datagram it already took.
+	for _, d := range held {
+		_ = server.processDatagram(rawDatagram{data: d, from: raw.LocalAddr()})
+	}
+
+	server.mu.Lock()
+	handled := true
+	for _, e := range server.localCIDs {
+		if e.seq == seq {
+			handled = false
+		}
+	}
+	server.mu.Unlock()
+	if !handled {
+		t.Fatalf("inconclusive: the held datagram did not retire sequence %d", seq)
+	}
+	l.mu.Lock()
+	slots, entries := len(l.keysOf), len(l.byDCID)
+	l.mu.Unlock()
+	t.Logf("retired seq %d after the end; keysOf %d, byDCID %d", seq, slots, entries)
+	if slots != 0 || entries != 0 {
+		t.Errorf("a forgotten connection is routed again by a real datagram: keysOf %d, byDCID %d (want 0, 0)", slots, entries)
+	}
+}

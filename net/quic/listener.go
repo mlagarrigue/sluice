@@ -1343,7 +1343,9 @@ func (l *Listener) prepareConn(c *Conn) error {
 	if l.preferred == nil {
 		return nil
 	}
-	cid, err := l.addLocalCID(c)
+	l.mu.Lock()
+	cid, err := l.mintLocalCIDLocked(c)
+	l.mu.Unlock()
 	if err != nil {
 		return err
 	}
@@ -1531,9 +1533,26 @@ func (l *Listener) forget(c *Conn) {
 // is what an identifier *is*. Called with the connection's mu held — the
 // established order is Conn.mu then Listener.mu, and nothing under l.mu ever
 // takes a connection's lock.
+//
+// A connection the listener already forgot is refused, as peerTokenAdded
+// refuses it: forget runs once, when gone closes, and a datagram the
+// connection took off its queue before that — a RETIRE_CONNECTION_ID asking
+// for a replacement — is still processed after it. Routed again, the
+// connection would hold its table entries and its MaxConns slot for the
+// listener's lifetime, with no second forget to come.
 func (l *Listener) addLocalCID(c *Conn) ([]byte, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if _, live := l.keysOf[c]; !live {
+		return nil, net.ErrClosed
+	}
+	return l.mintLocalCIDLocked(c)
+}
+
+// mintLocalCIDLocked mints an identifier unused in the demux table and routes
+// it to c. prepareConn calls it before the connection's first keys are
+// routed; everything later goes through addLocalCID. Callers hold l.mu.
+func (l *Listener) mintLocalCIDLocked(c *Conn) ([]byte, error) {
 	if l.closed {
 		return nil, net.ErrClosed
 	}
