@@ -553,6 +553,17 @@ func (c *Conn) gatherLocked(on bool) {
 	}
 }
 
+// pendingOnPathLocked is the sealed size of the packet gathered and not yet
+// sealed, when it goes to the path in use: not yet in amplSent, which
+// sealLocked raises, yet leaving in the same datagram as what is checked
+// against the §8.1 budget next. Callers hold mu.
+func (c *Conn) pendingOnPathLocked() int {
+	if p := c.dgramPend; p != nil && p.onPath {
+		return sealedLen(len(p.prefix), len(p.payload), 0)
+	}
+	return 0
+}
+
 // gatheredLenLocked is the size the gathered datagram would have if sealed
 // now, padding excluded. Callers hold mu.
 func (c *Conn) gatheredLenLocked() int {
@@ -842,7 +853,7 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 	// path's; an off-path PATH_RESPONSE answers a challenge inside an
 	// authenticated packet, which only the peer can produce — not an
 	// amplification primitive.
-	if c.amplActive && onPath && c.amplSent+int64(size) > 3*c.amplRecv {
+	if c.amplActive && onPath && c.amplSent+int64(c.pendingOnPathLocked()+size) > 3*c.amplRecv {
 		withholdLocked(sp, retransPart, opts)
 		return nil
 	}
