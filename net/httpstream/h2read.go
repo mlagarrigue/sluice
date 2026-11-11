@@ -612,13 +612,17 @@ func (s *h2Conn) headers(f h2Frame) (*h2Stream, error) {
 		// §8.1.1: a malformed request is a stream error. It is the whole
 		// point of the per-stream path — one bad request among a hundred
 		// costs that one. The method is looked up again for the 400's
-		// shape: buildRequest returned nothing.
+		// shape: buildRequest returned nothing. A content-length past the
+		// machine word is well formed and too large: 413, as below.
 		var method []byte
 		for _, h := range fields {
 			if string(h.Name) == ":method" {
 				method = h.Value
 				break
 			}
+		}
+		if errors.Is(err, ErrTooLarge) {
+			return nil, statusFail(st.id, 413, method, "%w", err)
 		}
 		return nil, malformedFail(st.id, method, err)
 	}
@@ -995,27 +999,6 @@ func edgedWithWhitespace(v []byte) bool {
 	}
 	first, last := v[0], v[len(v)-1]
 	return first == ' ' || first == '\t' || last == ' ' || last == '\t'
-}
-
-// parseContentLength parses a decimal content-length the way the h1 parser
-// does: digits only, overflow refused per digit rather than detected after
-// the wrap — a wrapped length is a small "valid" number, which is exactly the
-// disagreement the check exists to prevent.
-func parseContentLength(v []byte) (int, error) {
-	if len(v) == 0 {
-		return 0, fmt.Errorf("%w: an empty content-length", ErrH2Protocol)
-	}
-	n := 0
-	for _, c := range v {
-		if c < '0' || c > '9' {
-			return 0, fmt.Errorf("%w: content-length %q is not a number", ErrH2Protocol, v)
-		}
-		if n > maxWindow/10 {
-			return 0, fmt.Errorf("%w: content-length %q overflows", ErrH2Protocol, v)
-		}
-		n = n*10 + int(c-'0')
-	}
-	return n, nil
 }
 
 // applySettings validates every entry in order, then applies the last value

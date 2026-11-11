@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"math"
 	"net/netip"
 )
 
@@ -326,9 +327,12 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 			if declared >= 0 {
 				return req, 0, fmt.Errorf("%w: content-length appears twice", protocolErr)
 			}
-			n, err := parseContentLength(h.Value)
-			if err != nil {
+			n, over, ok := decimalLength(h.Value, math.MaxInt) // the caller's bound decides the rest
+			switch {
+			case !ok:
 				return req, 0, fmt.Errorf("%w: content-length %q is not a length", protocolErr, h.Value)
+			case over:
+				return req, 0, fmt.Errorf("%w: content-length %q", ErrTooLarge, h.Value)
 			}
 			declared = n
 		case "cookie":
@@ -1425,10 +1429,12 @@ digits:
 		default:
 			break digits
 		}
-		n = n*16 + d
-		if n > budget {
+		// Tested before the multiplication, which would wrap past the
+		// machine word under a budget of math.MaxInt (no bound).
+		if n > budget/16 || n*16 > budget-d {
 			return 0, fmt.Errorf("%w: a chunked body over the bound", ErrTooLarge)
 		}
+		n = n*16 + d
 	}
 	if i == 0 {
 		return 0, fmt.Errorf("%w: chunk size %q is not hexadecimal", ErrMalformed, line)
@@ -1541,19 +1547,42 @@ func contentLength(req Request, cfg Config) (int, error) {
 	// A streamed body has a bound of its own; the whole-body bound still
 	// decides, in parseRequest, which bodies are handed over whole.
 	bound := max(cfg.MaxBodyBytes, cfg.MaxStreamedBodyBytes)
-	n := 0
-	for _, c := range raw {
-		// Digits only: no sign, no whitespace, no hex. strconv would accept a
-		// leading '+' that a peer may not.
-		if c < '0' || c > '9' {
-			return 0, fmt.Errorf("%w: Content-Length %q is not a number", ErrMalformed, raw)
-		}
-		n = n*10 + int(c-'0')
-		if n > bound {
-			return 0, fmt.Errorf("%w: a body over %d bytes", ErrTooLarge, bound)
-		}
+	n, over, ok := decimalLength(raw, bound)
+	switch {
+	case !ok:
+		return 0, fmt.Errorf("%w: Content-Length %q is not a number", ErrMalformed, raw)
+	case over:
+		return 0, fmt.Errorf("%w: a body over %d bytes", ErrTooLarge, bound)
 	}
 	return n, nil
+}
+
+// decimalLength reads a length written in decimal digits — no sign, no
+// whitespace, no hex: strconv would accept a leading '+' that a peer may
+// not — for all three versions of HTTP. ok is false for anything else.
+// over reports a length past bound, tested before each multiplication so
+// that nothing wraps: a length with more digits than the machine word
+// holds is a valid length too large to take (RFC 9110 §8.6), never the
+// small number a wrap would make of it. The digits are still all checked,
+// so that a malformed field is malformed whatever its length.
+func decimalLength(v []byte, bound int) (n int, over, ok bool) {
+	if len(v) == 0 {
+		return 0, false, false
+	}
+	for _, c := range v {
+		if c < '0' || c > '9' {
+			return 0, false, false
+		}
+		if d := int(c - '0'); !over && (n > bound/10 || n*10 > bound-d) {
+			over = true
+		} else if !over {
+			n = n*10 + d
+		}
+	}
+	if over {
+		return 0, true, true
+	}
+	return n, false, true
 }
 
 // cutCRLF splits the line ending at the first CRLF, the line holding at most

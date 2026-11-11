@@ -511,15 +511,19 @@ func TestH2GraceBeforeTheSettingsAckIsTheDefaultWindow(t *testing.T) {
 	}
 }
 
-// A content-length that fits is held to the body bound (413); one that
-// overflows is malformed (400).
-func TestH2ContentLengthOverflowIsMalformed(t *testing.T) {
+// A content-length is held to the body bound (413) however many digits it
+// has, past 2^31 and past the machine word alike (RFC 9110 §8.6: any
+// decimal value is a length); only one that is not a number is malformed
+// (400).
+func TestH2ContentLengthIsJudgedByTheBodyBound(t *testing.T) {
 	s := newBenchH2Server(Config{BodyDelivery: BodyWhole})
 	feed(t, s,
 		headersFrame(1, endBoth, headBlock("GET", "/", [2]string{"content-length", "2147483640"})),
-		headersFrame(3, endBoth, headBlock("GET", "/", [2]string{"content-length", "21474836480"})))
+		headersFrame(3, endBoth, headBlock("GET", "/", [2]string{"content-length", "21474836480"})),
+		headersFrame(5, endBoth, headBlock("GET", "/", [2]string{"content-length", "18446744073709551621"})),
+		headersFrame(7, endBoth, headBlock("GET", "/", [2]string{"content-length", "+5"})))
 	got := queued(t, s)
-	for id, want := range map[uint32]int{1: 413, 3: 400} {
+	for id, want := range map[uint32]int{1: 413, 3: 413, 5: 413, 7: 400} {
 		heads := framesOn(got, frameHeaders, id)
 		if len(heads) != 1 || h2Status(heads[0].Payload) != want {
 			t.Errorf("stream %d: want one %d", id, want)

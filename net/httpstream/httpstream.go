@@ -51,6 +51,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"time"
 
 	"github.com/mlagarrigue/sluice/internal/ipkey"
@@ -673,6 +674,7 @@ func (c Config) resolve() (Config, error) {
 		err = errors.Join(err, fmt.Errorf("httpstream: Config.InitialWindowSize %d is outside 1..%d (RFC 9113 §6.5.2) — zero means %d",
 			c.InitialWindowSize, maxWindow, defaultInitialWindow))
 	}
+	err = errors.Join(err, ceilings(c))
 	if c.MaxStreamedBodyBytes < 0 {
 		err = errors.Join(err, fmt.Errorf("httpstream: Config.MaxStreamedBodyBytes %d is negative — zero means Config.MaxBodyBytes", c.MaxStreamedBodyBytes))
 	}
@@ -718,6 +720,43 @@ func (c Config) logger() *slog.Logger {
 		return c.Logger
 	}
 	return slog.Default()
+}
+
+// ceilings refuses the bounds the request buffer or the wire cannot hold.
+// The buffer holds a request line, its headers and a body at their
+// bounds together (maxBuffer), so each is kept under a quarter of the
+// machine word, past which the sum overflows; MaxStreamedBodyBytes, which
+// no buffer holds, may be math.MaxInt. HTTP/2 announces MaxHeaderBytes and
+// MaxConcurrentStreams in SETTINGS values of 32 bits (RFC 9113 §6.5.1), so
+// neither may be larger.
+func ceilings(c Config) error {
+	var err error
+	for _, f := range [...]struct {
+		name string
+		v    int
+	}{
+		{"Config.MaxRequestLineBytes", c.MaxRequestLineBytes},
+		{"Config.MaxHeaderBytes", c.MaxHeaderBytes},
+		{"Config.MaxBodyBytes", c.MaxBodyBytes},
+	} {
+		if f.v > math.MaxInt/4 {
+			err = errors.Join(err, fmt.Errorf("httpstream: %s %d is over %d: the request buffer, which holds a request line, its headers and a body together, would overflow",
+				f.name, f.v, math.MaxInt/4))
+		}
+	}
+	for _, f := range [...]struct {
+		name string
+		v    int
+	}{
+		{"Config.MaxHeaderBytes", c.MaxHeaderBytes},
+		{"Config.MaxConcurrentStreams", c.MaxConcurrentStreams},
+	} {
+		if f.v > math.MaxUint32 {
+			err = errors.Join(err, fmt.Errorf("httpstream: %s %d is over %d: HTTP/2 announces it in a 32-bit SETTINGS value (RFC 9113 §6.5.1)",
+				f.name, f.v, uint32(math.MaxUint32)))
+		}
+	}
+	return err
 }
 
 // orDefault sets *v to def when it is zero and refuses it when it is

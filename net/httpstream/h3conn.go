@@ -1353,6 +1353,11 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 					// call a conforming request malformed.
 					return h3StatusFail(501, nil, "%w", err)
 				}
+				if errors.Is(err, ErrTooLarge) {
+					// A content-length past the machine word: well
+					// formed and too large, 413 as below.
+					return h3StatusFail(413, nil, "%w", err)
+				}
 				return err
 			}
 			st.headers, st.declared, st.req = req.Headers, declared, req
