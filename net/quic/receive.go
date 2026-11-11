@@ -1049,8 +1049,15 @@ func (c *Conn) recordFullLocked() error {
 const maxKeptFrames = 64
 
 // keepDenseFor is how many packets a frame scratch grown past maxKeptFrames
-// is kept after the last packet that needed it.
+// is kept after the last packet that needed it, when that packet was the
+// first: each dense packet after it doubles the time, maxDenseDoublings
+// times at most (denseWindow).
 const keepDenseFor = 64
+
+// maxDenseDoublings caps the doubling of keepDenseFor at 2^10 times, some
+// 65,000 packets: a peer whose dense packets come further apart than that
+// pays for the growth again, less than a byte allocated per byte it sent.
+const maxDenseDoublings = 10
 
 // keepScratch reports whether a frame scratch of capacity n is kept for the
 // next packet: always when it is ordinary, and when it is larger, until
@@ -1065,15 +1072,32 @@ const keepDenseFor = 64
 // of the largest datagram it reads (recvBufSize), and only while its peer
 // sends them — keepDenseFor ordinary packets later it is gone, rather than
 // held for the connection's whole life on the strength of one packet.
+//
+// A peer that sends a dense packet, then keepDenseFor ordinary ones, and
+// again, found the scratch dropped just before each dense packet and paid
+// the growth every round — 90 bytes allocated per byte received. So the
+// time it is kept doubles with each dense packet that comes back
+// (denseWindow): one dense packet still leaves it held keepDenseFor
+// packets, and a peer that keeps sending them keeps it as long as they
+// keep coming, at no more than one dense packet already costs.
 func (c *Conn) keepScratch(n int) bool {
-	return n <= maxKeptFrames || c.denseAgo < keepDenseFor
+	return n <= maxKeptFrames || c.denseAgo < c.denseWindow()
+}
+
+// denseWindow is how many packets after the last dense one keepScratch
+// keeps a dense scratch: keepDenseFor, doubled for each dense packet seen
+// after the first, maxDenseDoublings times at most.
+func (c *Conn) denseWindow() int {
+	return keepDenseFor << max(c.denseSeen-1, 0)
 }
 
 // noteParsed counts a packet that parsed to n frames for keepScratch.
 func (c *Conn) noteParsed(n int) {
-	if n > maxKeptFrames {
+	switch {
+	case n > maxKeptFrames:
 		c.denseAgo = 0
-	} else if c.denseAgo < keepDenseFor {
+		c.denseSeen = min(c.denseSeen+1, maxDenseDoublings+1)
+	case c.denseAgo < c.denseWindow():
 		c.denseAgo++
 	}
 }

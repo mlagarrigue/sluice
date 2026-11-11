@@ -1,6 +1,8 @@
 package quic
 
 import (
+	"bytes"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -53,6 +55,55 @@ func TestTheReceiveScratchesDoNotKeepOnePacketsSize(t *testing.T) {
 	for _, s := range c.settleScratch[:cap(c.settleScratch)] {
 		if s.s != nil {
 			t.Fatal("the settle scratch keeps a stream past the batch")
+		}
+	}
+}
+
+// A peer that sends a dense packet — 1 400 PINGs — then keepDenseFor
+// ordinary ones, and again, finds the frame scratch dropped just before
+// each dense packet, and had it regrown by doubling every round: 90 bytes
+// allocated per byte received, where dense packets in a row allocate
+// nothing. A dense packet that comes back lengthens the time the scratch
+// is kept, so the round costs no more than a gap one packet shorter, which
+// the scratch already survived: at most four bytes allocated per byte
+// received (RFC 9000 §21.9), once the peer has kept at it a few rounds.
+func TestADensePacketThatComesBackDoesNotRegrowTheScratch(t *testing.T) {
+	perRound := func(gap int) (alloc, wire uint64) {
+		c, _ := newMigratableServer(t, "dense-again")
+		dense := bytes.Repeat([]byte{framePing}, 1400)
+		sparse := []byte{framePing}
+		now := time.Now()
+		round := func() {
+			if err := c.frames(spaceApplication, dense, now); err != nil {
+				t.Fatal(err)
+			}
+			for range gap {
+				if err := c.frames(spaceApplication, sparse, now); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		// The steady state of a peer that keeps at it: the rounds before
+		// the window has doubled past the gap pay the growth, once each.
+		for range 16 { // past maxDenseDoublings + 1
+			round()
+		}
+		const rounds = 20
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		for range rounds {
+			round()
+		}
+		runtime.ReadMemStats(&after)
+		const overhead = 29 // a short header and an AEAD tag, per packet
+		return (after.TotalAlloc - before.TotalAlloc) / rounds,
+			uint64(len(dense) + overhead + gap*(len(sparse)+overhead))
+	}
+	for _, gap := range []int{keepDenseFor - 1, keepDenseFor, 4 * keepDenseFor} {
+		alloc, wire := perRound(gap)
+		if alloc > 4*wire {
+			t.Errorf("a dense packet every %d packets: %d bytes allocated per round of %d bytes received, over four per byte", gap+1, alloc, wire)
 		}
 	}
 }
