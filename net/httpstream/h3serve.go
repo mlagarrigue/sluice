@@ -449,6 +449,11 @@ type h3Serving struct {
 	idleT    *time.Timer
 	idleSeen int64
 	idleDone bool
+	// idleClosing is set once the idle clock has taken the GOAWAY: the
+	// connection ends with nothing in flight (closeIdle declares it idle at
+	// that price), so a stop whose grace passes during the wait for the
+	// GOAWAY's acknowledgement is not a forced one (end).
+	idleClosing atomic.Bool
 }
 
 // startIdle arms the idle clock. QUIC's own idle timer restarts on every
@@ -488,12 +493,22 @@ func (s *h3Serving) idleTick() {
 		// nothing in flight and closes it.
 		return
 	}
+	s.idleClosing.Store(true)
 	wb := writeBoundOf(s.cfg)
 	if err := wb.write(s.control.SetWriteDeadline, s.control.Write, appendH3Frame(nil, h3GoAway, varint.Append(nil, from))); err != nil {
 		_ = s.c.CloseWithError(h3GracefulCode())
 		return
 	}
-	_ = s.c.ShutdownWithError(s.forced, h3GracefulCode())
+	// The wait for the GOAWAY's acknowledgement is a write waiting on the
+	// peer, bounded as every write on the control stream is
+	// (Config.WriteTimeout); the close comes at its end either way. Under
+	// s.forced alone, which only a stopped server's grace ends, a peer that
+	// kept pinging and acknowledged nothing restarted QUIC's idle timer with
+	// each packet and held the connection, and its place under MaxConns,
+	// for as long as the server ran.
+	ctx, cancel := context.WithTimeout(s.forced, s.cfg.WriteTimeout)
+	defer cancel()
+	_ = s.c.ShutdownWithError(ctx, h3GracefulCode())
 }
 
 // stopIdle stops the idle clock at the connection's end.
@@ -761,7 +776,14 @@ func (s *h3Serving) end() error {
 		select {
 		case <-finished:
 		default:
-			return ErrShutdownForced
+			if !s.idleClosing.Load() {
+				return ErrShutdownForced
+			}
+			// The idle close owns the end, with nothing in flight: the
+			// grace ran out during the wait for its GOAWAY's
+			// acknowledgement, not during an answer, and finished closes
+			// as soon as its goroutine runs.
+			<-finished
 		}
 	}
 	return h3CloseErr(s.c.Err())
