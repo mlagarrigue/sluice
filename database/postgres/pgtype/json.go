@@ -55,7 +55,7 @@ func DecodeJSONB(b []byte) ([]byte, error) {
 // It is one line and it exists anyway, because the call site is where the
 // difference with [AppendJSONB] has to be visible. A caller reaching for
 // "append some JSON" and finding one function would pick wrong half the time.
-func AppendJSON(dst, text []byte) []byte { return append(dst, text...) }
+func AppendJSON(dst, text []byte) []byte { return append(valued(dst), text...) }
 
 // DecodeJSON returns the text of a json value, which has no version byte.
 // The slice borrows the batch's storage.

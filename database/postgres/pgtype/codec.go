@@ -157,16 +157,31 @@ func DecodeFloat8(b []byte) (float64, error) {
 }
 
 // AppendText appends a string. text, varchar, name and bpchar share this form:
-// the bytes as they are, with the length carried by the field header.
-func AppendText(dst []byte, s string) []byte { return append(dst, s...) }
+// the bytes as they are, with the length carried by the field header. The
+// result is never nil, an empty string onto a nil dst included: a nil Value
+// is NULL to the parameter that carries it (postgres.Param), and the empty
+// string is not NULL.
+func AppendText(dst []byte, s string) []byte { return append(valued(dst), s...) }
+
+// valued is dst, or an empty slice that is not nil when dst is nil: what an
+// appender of a value that may be empty starts from, so that the empty
+// value never reads as NULL. The empty literal points at the runtime's
+// zero-size base and allocates nothing.
+func valued(dst []byte) []byte {
+	if dst == nil {
+		return []byte{}
+	}
+	return dst
+}
 
 // DecodeText decodes a string, copying it out of the wire buffer — a string is
 // immutable in Go and the buffer is not, so borrowing would hand back a value
 // that changes underneath its holder.
 func DecodeText(b []byte) string { return string(b) }
 
-// AppendBytea appends raw bytes.
-func AppendBytea(dst, b []byte) []byte { return append(dst, b...) }
+// AppendBytea appends raw bytes. The result is never nil, as AppendText's:
+// an empty bytea is not NULL.
+func AppendBytea(dst, b []byte) []byte { return append(valued(dst), b...) }
 
 // AppendTimestampTZ appends a timestamptz: microseconds since 2000-01-01
 // UTC.
