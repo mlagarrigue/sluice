@@ -563,8 +563,9 @@ func serveConn(ctx context.Context, c *prefixConn, st *connState, cfg Config, ha
 			// failed under the reader (no status), is logged as over HTTP/2
 			// and HTTP/3. A request refused by a bound (413, 414, 431) or for
 			// a feature this end lacks (501, 505) is a conforming client's,
-			// and its status tells it; a timeout is an ordinary end.
-			if status == 0 || status == 400 {
+			// and its status tells it; a timeout is an ordinary end, and so
+			// is a client closing mid-request (errClosedMidRequest).
+			if (status == 0 || status == 400) && !errors.Is(err, errClosedMidRequest) {
 				reportConnEnd(cfg.logger(), "http/1.1", c.RemoteAddr(), err)
 			}
 		}

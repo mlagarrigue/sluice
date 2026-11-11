@@ -214,3 +214,59 @@ func TestServeLogsAConnectionEndedInError(t *testing.T) {
 		_ = c.conn.Close()
 	})
 }
+
+// A client that closes in the middle of its request — an upload it
+// cancelled, RFC 9112 §8 — ends the connection the ordinary way the
+// Config.Logger doc names: it may still get its 400, and no warn is
+// written. A request that is malformed is still logged.
+func TestAPeerClosingMidRequestIsNotLoggedAsAnError(t *testing.T) {
+	warns := func(cfg Config, partial string) []string {
+		rec := &logRecorder{}
+		cfg.Logger = slog.New(rec)
+		addr, _ := serveTest(t, cfg, echoTarget)
+		c := dial(t, addr)
+		if _, err := io.WriteString(c, partial); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.(*net.TCPConn).CloseWrite(); err != nil {
+			t.Fatal(err)
+		}
+		// The server reports before its two-stage close, so the record, if
+		// any, is written once the client reads EOF.
+		_, _ = io.Copy(io.Discard, c)
+		rec.mu.Lock()
+		defer rec.mu.Unlock()
+		var out []string
+		for _, r := range rec.records {
+			if r.Level >= slog.LevelWarn {
+				var b strings.Builder
+				b.WriteString(r.Message)
+				r.Attrs(func(a slog.Attr) bool {
+					if a.Key == "err" {
+						b.WriteString(" err=" + a.Value.String())
+					}
+					return true
+				})
+				out = append(out, b.String())
+			}
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name    string
+		cfg     Config
+		partial string
+		logged  bool
+	}{
+		{"a complete request, then the close", Config{}, "GET /a HTTP/1.1\r\nHost: h\r\n\r\n", false},
+		{"closed mid-head", Config{}, "POST /up HTTP/1.1\r\nHost: h\r\nContent-Le", false},
+		{"closed mid-body, BodyWhole", Config{BodyDelivery: BodyWhole}, "POST /up HTTP/1.1\r\nHost: h\r\nContent-Length: 100\r\n\r\npart", false},
+		{"a malformed request", Config{}, "GET /a HTTP/1.1\r\nHost: h\r\nHost: g\r\n\r\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if w := warns(tc.cfg, tc.partial); (len(w) > 0) != tc.logged {
+				t.Errorf("warn records %q, want logged = %v", w, tc.logged)
+			}
+		})
+	}
+}

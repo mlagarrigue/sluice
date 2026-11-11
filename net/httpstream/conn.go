@@ -400,6 +400,13 @@ func (r *h1Conn) resting() bool {
 	return r.n <= 2 && string(r.buf[:r.n]) == "\r\n"[:r.n]
 }
 
+// errClosedMidRequest is a client closing in the middle of a request — an
+// upload it cancelled, a timeout on its side (RFC 9112 §8). It is
+// malformed for statusFor, so the client may still get its 400 (the MAY of
+// §8), and an ordinary end for the log, as the Config.Logger doc names the
+// peer's close: serveConn does not report it.
+var errClosedMidRequest = errors.New("the connection closed mid-request")
+
 // fill reads once, growing the buffer toward the ceiling but never past it.
 func (r *h1Conn) fill() error {
 	limit := r.cfg.maxBuffer()
@@ -474,7 +481,7 @@ func (r *h1Conn) fill() error {
 			if r.resting() {
 				return io.EOF // a clean close between requests
 			}
-			return fmt.Errorf("%w: the connection closed mid-request", ErrMalformed)
+			return fmt.Errorf("%w: %w", ErrMalformed, errClosedMidRequest)
 		}
 		if idle && isTimeout(err) {
 			// Nobody is owed an answer: no request had started, so there is
