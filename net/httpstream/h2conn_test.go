@@ -3348,3 +3348,62 @@ func TestServeH2ClosesTheConnectionAfterAnErrorGoAway(t *testing.T) {
 		t.Fatal("ServeH2Conn did not return after the connection error")
 	}
 }
+
+// A response the HTTP/2 writer refuses — a content-length the handler set, a
+// connection-specific field — is replaced by a 500 with a body. Replacing a
+// 204 or a 304, the 500 still carries its body and ends its stream: whether
+// a body goes is decided on the status sent, not on the one refused. The
+// 200 case checks the client sees END_STREAM at all.
+func TestH2FiveHundredReplacingANoBodyStatusIsWhole(t *testing.T) {
+	want := string(transportError(500).Body)
+	cases := []struct {
+		name   string
+		status int
+		header Header
+	}{
+		{"200 with content-length (control)", 200, Header{Name: []byte("content-length"), Value: []byte("0")}},
+		{"204 with content-length", 204, Header{Name: []byte("content-length"), Value: []byte("0")}},
+		{"304 with connection", 304, Header{Name: []byte("connection"), Value: []byte("close")}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = ln.Close() })
+			handle := func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+				out := make([]Response, b.Len())
+				for i := range out {
+					out[i] = Response{Status: tc.status, Headers: []Header{tc.header}}
+				}
+				return sluice.Batch[Response]{Items: out}
+			}
+			go func() {
+				c, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				_ = ServeH2Conn(t.Context(), c, Config{Logger: discardLogger()}, handle)
+			}()
+			conn, err := net.Dial("tcp", ln.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+			c := h2clientOn(t, conn)
+			c.request(1, "GET", "/x")
+			c.flush()
+			c.pump(func() bool { return c.ended[1] || c.resets[1] != 0 })
+			if st := h2Status(c.heads[1]); st != 500 {
+				t.Fatalf("stream 1 head status %d, want the 500 that replaces a refused %d", st, tc.status)
+			}
+			if !c.ended[1] {
+				t.Fatalf("500 replacing a refused %d: no END_STREAM on stream 1 (reset %d, body %q)", tc.status, c.resets[1], c.got[1])
+			}
+			if c.got[1] != want {
+				t.Fatalf("500 replacing a refused %d: body %q, want %q", tc.status, c.got[1], want)
+			}
+		})
+	}
+}

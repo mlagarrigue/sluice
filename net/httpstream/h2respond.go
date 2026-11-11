@@ -164,7 +164,7 @@ func (s *h2Conn) answer(got *h2Applied) {
 				s.answers = append(s.answers, a)
 				continue
 			}
-			if !noBody {
+			if _, none := noLengthAndBody(r.Status, method); !none { // the 500's status, not the refused 204's or 304's
 				a.body = r.Body
 			}
 			mid = len(out)
