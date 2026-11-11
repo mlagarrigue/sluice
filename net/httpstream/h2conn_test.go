@@ -2498,6 +2498,36 @@ func TestH2HeaderTableSizeChangeOpensTheNextBlock(t *testing.T) {
 		t.Errorf("after 4096, 1000, 2000 the block opens % x, want % x", c.heads[5][:min(len(c.heads[5]), len(want))], want)
 	}
 	decodes(5)
+
+	// The same within one frame (RFC 9113 §6.5.3 processes its values in
+	// order): 0 then 4096, back at the size already in force, is still a
+	// dip the decoder must see (RFC 7541 §4.2) — nghttp2 closes the
+	// connection on a block that leaves it out.
+	tableSize(4096)
+	c.request(7, "GET", "/")
+	c.flush()
+	c.bodies(4)
+	decodes(7)
+	c.frame(h2Frame{Type: frameSettings, Payload: settingsPayload(
+		[2]uint32{settingHeaderTableSize, 0}, [2]uint32{settingHeaderTableSize, 4096})})
+	c.request(9, "GET", "/")
+	c.flush()
+	c.bodies(5)
+	want = append(hpackTableSizeUpdate(0), hpackTableSizeUpdate(4096)...)
+	if !bytes.HasPrefix(c.heads[9], want) {
+		t.Errorf("after 0, 4096 in one frame the block opens % x, want % x", c.heads[9][:min(len(c.heads[9]), len(want))], want)
+	}
+	decodes(9)
+
+	// A frame that repeats the size in force, alone, changes nothing.
+	tableSize(4096)
+	c.request(11, "GET", "/")
+	c.flush()
+	c.bodies(6)
+	if len(c.heads[11]) == 0 || c.heads[11][0]&0xe0 == 0x20 {
+		t.Errorf("a frame repeating the size in force opens the block % x", c.heads[11][:min(len(c.heads[11]), 4)])
+	}
+	decodes(11)
 	if c.sawGoAway {
 		t.Errorf("the connection ended: GOAWAY %x", c.goAway)
 	}

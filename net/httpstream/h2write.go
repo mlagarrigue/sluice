@@ -785,20 +785,21 @@ func (w *h2Writer) controlLocked(f h2Frame) error {
 // ackSettings queues the ACK for a peer's SETTINGS and, in the same critical
 // section, records what a SETTINGS_HEADER_TABLE_SIZE in it obliges the next
 // header block to say. One section, so that no head can leave between the
-// ACK and the obligation, in either order.
-func (w *h2Writer) ackSettings(table uint32, haveTable bool) error {
+// ACK and the obligation, in either order. A frame that ends at the size in
+// force still owes the block an update when it dipped below it on the way.
+func (w *h2Writer) ackSettings(table tableSizes) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if err := w.controlLocked(h2Frame{Type: frameSettings, Flags: flagAck}); err != nil {
 		return err
 	}
-	if haveTable && table != w.peerTable {
-		w.peerTable = table
-		size := min(table, hpackEncoderTableSize)
-		if !w.tableUpdate || size < w.tableMin {
-			w.tableMin = size
+	if table.set && (table.last != w.peerTable || table.low < table.last) {
+		w.peerTable = table.last
+		low := min(table.low, hpackEncoderTableSize)
+		if !w.tableUpdate || low < w.tableMin {
+			w.tableMin = low
 		}
-		w.tableFinal = size
+		w.tableFinal = min(table.last, hpackEncoderTableSize)
 		w.tableUpdate = true
 	}
 	return nil

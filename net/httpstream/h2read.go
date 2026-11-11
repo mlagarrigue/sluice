@@ -323,11 +323,11 @@ func (s *h2Conn) frame(f h2Frame) (*h2Stream, error) {
 			s.settingsAcked = true
 			return nil, nil
 		}
-		table, haveTable, err := s.applySettings(f.Payload)
+		table, err := s.applySettings(f.Payload)
 		if err != nil {
 			return nil, err
 		}
-		return nil, s.w.ackSettings(table, haveTable)
+		return nil, s.w.ackSettings(table)
 
 	case framePing:
 		if f.Flags&flagAck != 0 {
@@ -1032,8 +1032,10 @@ func parseContentLength(v []byte) (int, error) {
 //
 // SETTINGS_HEADER_TABLE_SIZE is returned rather than applied: it changes what
 // the next header block this end sends must begin with, and that is decided
-// where the ACK is queued (see [h2Writer.ackSettings]).
-func (s *h2Conn) applySettings(payload []byte) (table uint32, haveTable bool, err error) {
+// where the ACK is queued (see [h2Writer.ackSettings]). Its smallest value
+// is returned with its last: processed in order, 0 then 4096 is a dip to 0
+// the decoder must be told of, though the frame ends where it began.
+func (s *h2Conn) applySettings(payload []byte) (table tableSizes, err error) {
 	var (
 		haveWindow, haveFrame bool
 		window, frame         uint32
@@ -1044,15 +1046,18 @@ func (s *h2Conn) applySettings(payload []byte) (table uint32, haveTable bool, er
 		payload = payload[6:]
 		switch id {
 		case settingHeaderTableSize:
-			table, haveTable = v, true
+			if !table.set || v < table.low {
+				table.low = v
+			}
+			table.last, table.set = v, true
 		case settingInitialWindowSize:
 			if v > maxWindow {
-				return 0, false, fmt.Errorf("%w: %w: an initial window of %d", ErrH2Protocol, errFlowControl, v)
+				return tableSizes{}, fmt.Errorf("%w: %w: an initial window of %d", ErrH2Protocol, errFlowControl, v)
 			}
 			window, haveWindow = v, true
 		case settingMaxFrameSize:
 			if v < defaultMaxFrameSize || v > maxFrameSize {
-				return 0, false, fmt.Errorf("%w: a maximum frame size of %d", ErrH2Protocol, v)
+				return tableSizes{}, fmt.Errorf("%w: a maximum frame size of %d", ErrH2Protocol, v)
 			}
 			frame, haveFrame = v, true
 		case settingMaxHeaderListSize:
@@ -1061,17 +1066,25 @@ func (s *h2Conn) applySettings(payload []byte) (table uint32, haveTable bool, er
 			s.peerMaxHeaderList.Store(v)
 		case settingEnablePush:
 			if v > 1 {
-				return 0, false, fmt.Errorf("%w: ENABLE_PUSH of %d", ErrH2Protocol, v)
+				return tableSizes{}, fmt.Errorf("%w: ENABLE_PUSH of %d", ErrH2Protocol, v)
 			}
 		}
 	}
 	if haveWindow {
 		if err := s.w.setInitialWindow(int32(window)); err != nil { //nolint:gosec // G115: bounded above
-			return 0, false, err
+			return tableSizes{}, err
 		}
 	}
 	if haveFrame {
 		s.w.setMaxFrame(int(frame))
 	}
-	return table, haveTable, nil
+	return table, nil
+}
+
+// tableSizes is what one SETTINGS frame said of SETTINGS_HEADER_TABLE_SIZE:
+// the last value, the setting from then on, and the smallest, which the next
+// header block signals first when it is under the last (RFC 7541 §4.2).
+type tableSizes struct {
+	low, last uint32
+	set       bool
 }
