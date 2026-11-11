@@ -80,8 +80,9 @@ func (c *Conn) endTLS() {
 // On a connection that owns its socket the handshake is the socket's reader
 // until a read loop takes over: a close meanwhile leaves the socket, and
 // gone, to it (closing.loop), and a failed handshake hands them back once
-// it has stopped reading (releaseSocket) — the read deadline the close's
-// jolt left to wake it cleared with them.
+// it has stopped reading (releaseSocket), or once the closing state it
+// holds ends (holdClosing) — the read deadline the close's jolt left to
+// wake it cleared with them.
 func (c *Conn) handshake(ctx context.Context) error {
 	c.mu.Lock()
 	c.closing.loop = c.incoming == nil && !c.closing.left
@@ -89,7 +90,20 @@ func (c *Conn) handshake(ctx context.Context) error {
 	err := c.driveHandshake(ctx)
 	if err != nil {
 		c.endTLS()
-		c.releaseSocket()
+		c.mu.Lock()
+		held := c.closing.loop && c.closing.active.Load()
+		c.mu.Unlock()
+		if held {
+			// The close left a held closing or draining state
+			// (Config.HoldClosing) on a socket no read loop will ever read —
+			// it starts only after a handshake that succeeds. Held here as
+			// that loop would hold it, then left: the socket handed back
+			// with its read deadline cleared, gone closed, Wait released.
+			// releaseSocket alone waits for a leave nothing would make.
+			go c.holdClosing(make([]byte, c.recvBufSize()))
+		} else {
+			c.releaseSocket()
+		}
 	}
 	return err
 }
