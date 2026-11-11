@@ -520,6 +520,7 @@ var adrNamedLater = map[string][]string{
 	"c54b3411f6e4d90d9d03bca4914c3612a5fe5302": {"0001", "0004"}, // join.Merge becomes join.MergeJoin
 	"22fc38060976c103a43b559edb457110860262ec": {"0015"},         // the BBR draft cited by its revision
 	"cd0041d5ac43f5da13366b6bec8a779e99459ca8": {"0018"},         // IdleTimeout read by HTTP/3's own idle clock
+	"f9c05215c11336a298c0065ae1df0f7b246f933b": {"0015"},         // MaxConnsPerIP counts the addresses proved
 }
 
 // unnamedADRChanges lists, for the git repository at dir, every commit after
