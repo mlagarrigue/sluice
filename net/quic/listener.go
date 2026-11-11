@@ -123,9 +123,15 @@ type ListenerConfig struct {
 	// IPv6PrefixBits long; an IPv4-mapped IPv6 address counts as IPv4. The
 	// address is the one the first Initial came from: a peer that later
 	// migrates to another address keeps its count on the first, since the
-	// bound is on admission. Zero means no bound: a figure that is fair
-	// to a home connection starves a carrier-grade NAT, so the operator
-	// chooses. Negative is refused by [NewListener].
+	// bound is on admission. A handshake admitted without a Retry has not
+	// proved it can receive at that address until it completes: past the
+	// bound, a new Initial from the address gets a Retry rather than a
+	// refusal, and one that comes back with a valid token is admitted over
+	// such handshakes, so a forged source cannot hold the address's slots
+	// against a client really there; only connections that proved the
+	// address are refused at the bound. Zero means no bound: a figure that
+	// is fair to a home connection starves a carrier-grade NAT, so the
+	// operator chooses. Negative is refused by [NewListener].
 	MaxConnsPerIP int
 
 	// IPv4PrefixBits and IPv6PrefixBits are how much of a source address
@@ -389,6 +395,14 @@ type Listener struct {
 	// back without the address. MaxConns itself reads len(keysOf).
 	connsByIP map[string]int
 	ipOf      map[*Conn]string
+	// unvalidated holds the address key of each connection admitted without
+	// a Retry token, until its handshake completes or it is forgotten, and
+	// unvalidatedByIP counts them by address: a source that has shown
+	// nothing of its reach — an Initial decrypts under keys its own
+	// identifier derives — whose slot under MaxConnsPerIP a client really
+	// at that address may take back by proving it (handleNewInitial).
+	unvalidated     map[*Conn]string
+	unvalidatedByIP map[string]int
 	// byToken files the connections in keysOf by the stateless reset tokens
 	// their peers announced, each token under its image by tokenPRF, and
 	// tokensOf is each connection's images: resetFor finds the one
@@ -602,18 +616,20 @@ func NewListener(pc net.PacketConn, cfg *tls.Config, params Config, lcfg Listene
 	l := &Listener{
 		pc: pc, sourced: packetInfoSocket(pc), preferred: lcfg.PreferredAddress, preferredV4: preferredV4, preferredV6: preferredV6,
 		cfg: serverTLSConfig(cfg), params: params, lcfg: lcfg,
-		spent:        spentTokens{ttl: lcfg.RetryTokenTTL, max: lcfg.MaxSpentRetryTokens},
-		byDCID:       make(map[string]*Conn),
-		keysOf:       make(map[*Conn][]string),
-		pendingConns: make(map[*Conn]struct{}),
-		connsByIP:    make(map[string]int),
-		ipOf:         make(map[*Conn]string),
-		byToken:      make(map[[16]byte]*Conn),
-		tokensOf:     make(map[*Conn][][16]byte),
-		tokenPRF:     tokenPRF,
-		accepted:     make(chan *Conn, lcfg.MaxPendingConns),
-		stop:         make(chan struct{}),
-		done:         make(chan struct{}),
+		spent:           spentTokens{ttl: lcfg.RetryTokenTTL, max: lcfg.MaxSpentRetryTokens},
+		byDCID:          make(map[string]*Conn),
+		keysOf:          make(map[*Conn][]string),
+		pendingConns:    make(map[*Conn]struct{}),
+		connsByIP:       make(map[string]int),
+		unvalidated:     make(map[*Conn]string),
+		unvalidatedByIP: make(map[string]int),
+		ipOf:            make(map[*Conn]string),
+		byToken:         make(map[[16]byte]*Conn),
+		tokensOf:        make(map[*Conn][][16]byte),
+		tokenPRF:        tokenPRF,
+		accepted:        make(chan *Conn, lcfg.MaxPendingConns),
+		stop:            make(chan struct{}),
+		done:            make(chan struct{}),
 	}
 	if lcfg.EarlyData {
 		l.early = newEarlyGate(lcfg.EarlyDataWindow, lcfg.MaxEarlyDataTickets)
@@ -1076,14 +1092,18 @@ func (l *Listener) handleNewInitial(datagram []byte, from net.Addr, h longHeader
 
 	l.mu.Lock()
 	pending := len(l.pendingConns)
-	total, fromIP := len(l.keysOf), l.connsByIP[l.connKey(from)]
+	ip := l.connKey(from)
+	total, fromIP, unproven := len(l.keysOf), l.connsByIP[ip], l.unvalidatedByIP[ip]
 	l.mu.Unlock()
-	// The three bounds refuse the same way; only the pending table's
-	// high-water mark below turns the Retry flow on, since Retry defends
-	// that table's slots, not the total.
+	// The three bounds refuse the same way. The address's bound counts only the
+	// connections that proved the address: one full of handshakes that
+	// never did — a forged source fills it for the price of an Initial
+	// each, and a client really there would be refused until they time
+	// out — asks for a Retry below instead, and admits over them an
+	// Initial whose token proves the address.
 	if pending >= l.lcfg.MaxPendingConns ||
 		(l.lcfg.MaxConns > 0 && total >= l.lcfg.MaxConns) ||
-		(l.lcfg.MaxConnsPerIP > 0 && fromIP >= l.lcfg.MaxConnsPerIP) {
+		(l.lcfg.MaxConnsPerIP > 0 && fromIP-unproven >= l.lcfg.MaxConnsPerIP) {
 		// RFC 9000 §5.2.2: a server with no room SHOULD say so — a
 		// stateless CONNECTION_REFUSED close costs one sealed packet
 		// against a decrypted ≥1200-byte Initial and spares the client its
@@ -1101,8 +1121,10 @@ func (l *Listener) handleNewInitial(datagram []byte, from net.Addr, h longHeader
 	// a token, which only the Retry flow can verify — a token must never
 	// reach the direct path unexamined, where the handshake it starts
 	// would not echo retry_source_connection_id and the client would
-	// refuse it.
-	retry := l.lcfg.AlwaysRetry || pending >= l.lcfg.MaxPendingConns/2
+	// refuse it. A fourth: an address at its bound only through
+	// handshakes that never proved it (above).
+	full := l.lcfg.MaxConnsPerIP > 0 && fromIP >= l.lcfg.MaxConnsPerIP
+	retry := l.lcfg.AlwaysRetry || full || pending >= l.lcfg.MaxPendingConns/2
 	if len(h.Token) > 0 || retry {
 		l.handleRetryFlow(datagram, from, h, &keys, via, ecn, retry)
 		return
@@ -1316,6 +1338,10 @@ func (l *Listener) bootstrapConn(datagram []byte, from net.Addr, h longHeader, r
 	ip := l.connKey(from)
 	l.ipOf[c] = ip
 	l.connsByIP[ip]++
+	if rt == nil {
+		l.unvalidated[c] = ip
+		l.unvalidatedByIP[ip]++
+	}
 	l.mu.Unlock()
 
 	go l.runHandshake(c, datagram, from, ecn)
@@ -1442,7 +1468,15 @@ func (l *Listener) runHandshake(c *Conn, first []byte, from net.Addr, ecn uint8)
 	// still bound it — and a handshake that fails afterwards closes it
 	// under its new owner.
 	hsDone := make(chan error, 1)
-	go func() { hsDone <- c.handshake(context.Background()) }()
+	go func() {
+		err := c.handshake(context.Background())
+		if err == nil {
+			l.mu.Lock()
+			l.provenLocked(c)
+			l.mu.Unlock()
+		}
+		hsDone <- err
+	}()
 	select {
 	case err := <-hsDone:
 		if err != nil {
@@ -1524,7 +1558,23 @@ func (l *Listener) forget(c *Conn) {
 			delete(l.connsByIP, ip)
 		}
 	}
+	l.provenLocked(c)
 	l.mu.Unlock()
+}
+
+// provenLocked takes c off the unproven count of its address: its handshake
+// completed, which proves the address (RFC 9000 §8.1), or it is forgotten.
+// Idempotent. Callers hold l.mu.
+func (l *Listener) provenLocked(c *Conn) {
+	ip, ok := l.unvalidated[c]
+	if !ok {
+		return
+	}
+	delete(l.unvalidated, c)
+	l.unvalidatedByIP[ip]--
+	if l.unvalidatedByIP[ip] <= 0 {
+		delete(l.unvalidatedByIP, ip)
+	}
 }
 
 // addLocalCID and removeLocalCID are the [cidRegistrar] a Listener gives

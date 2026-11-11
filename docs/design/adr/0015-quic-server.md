@@ -1,7 +1,7 @@
 # ADR 0015 — The QUIC server: transport machinery, a real listener, a moving client
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-11-03 (`quic.Config` holds the controller; a /64 bounds a host, not a site; what moving the deadline costs, in the present tense; subheadings; the BBR draft cited by its revision); 18 earlier, from 2026-10-03, in its `git log`
+- **Revised:** 2026-11-11 (`MaxConnsPerIP` counts against its bound only the connections that proved their address); 19 earlier, from 2026-10-03, in its `git log`
 - **Theme:** quic
 
 ## Problem
@@ -54,6 +54,12 @@ moves once to the handshake's start plus the connection's idle timeout, when
 that is later); what the listener carries in total, accepted connections
 included, is bounded by `MaxConns` and per source address by
 `MaxConnsPerIP`, both unset by default and refused the same way.
+
+A handshake admitted without a Retry has not proved its address until it
+completes, and counts against `MaxConnsPerIP` only once it has: an address
+at its bound through such handshakes alone gets a Retry, and the client that
+comes back with a valid token is admitted over them, so a forged source does
+not hold an address's slots against the client really there.
 
 `MaxConnsPerIP` counts an address by its prefix — /32 for IPv4 and /64 for
 IPv6 by default, set by `IPv4PrefixBits` and `IPv6PrefixBits` — because
