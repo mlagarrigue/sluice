@@ -1,7 +1,7 @@
 # ADR 0009 — One request contract for three protocols
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-11-03 (subheadings in the Decision; `Config.QUICConfig`); 4 earlier, from 2026-10-15, in its `git log`
+- **Revised:** 2026-11-11 (the memory bound counts the read-ahead); 5 earlier, from 2026-10-15, in its `git log`
 - **Theme:** httpstream
 
 ## Problem
@@ -144,8 +144,10 @@ A body held whole (`BodyWhole`) has a cost: a connection's read buffer
 grows toward one request at its ceiling — request line, headers and body
 bounds together, about 1 MiB at the defaults — and holds it for
 `ReadTimeout` at most before an unfinished request is refused. The
-server's bound is that sum times `MaxConns`; a server without `MaxConns`
-has none. That cost is why the default streams: a streamed body hands the
+server's bound is twice that sum per connection, times `MaxConns`: an
+HTTP/1.1 connection also keeps what a pipelining client sent ahead while a
+response streamed or a handler watched its context's `Done`, bounded by the
+same sum. A server without `MaxConns` has none. That cost is why the default streams: a streamed body hands the
 handler a request whose framing is still open, which the handler reads
 through `Request.Stream`, bounded by `MaxStreamedBodyBytes` and paced by
 `ReadTimeout` per wait.

@@ -72,8 +72,10 @@ func newRequestReader(c net.Conn, st *connState, cfg Config) sluice.Source[Reque
 	return sluice.NewSource(sluice.Stream[Request](r.stream), func() error { return r.err })
 }
 
-// maxBuffer is the most one connection may hold at once: a single request at
-// its ceiling. It is also what bounds a batch — requests are batched when
+// maxBuffer is the most one connection's request buffer may hold: a single
+// request at its ceiling. What the peer watch reads ahead is bounded by the
+// same figure (watchPeerThen), so a connection holds two at most. It is also
+// what bounds a batch — requests are batched when
 // they fit in one buffer together, so a workload of small JSON calls batches
 // well and one of megabyte uploads does not batch at all, which is the honest
 // behaviour rather than a configurable that would let a client choose how

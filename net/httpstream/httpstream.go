@@ -393,11 +393,15 @@ type Config struct {
 	// client that was refused retries, as it would after a reset. [ServeH3Conn]
 	// is not bound by it; QUIC bounds its connections in the transport.
 	//
-	// It is also the memory bound: each connection may hold one request at
-	// its ceiling, MaxRequestLineBytes + MaxHeaderBytes + MaxBodyBytes plus
-	// four bytes of line endings (about 1 MiB at the defaults), for ReadTimeout at most, so MaxConns times
-	// that sum is the most the request buffers occupy. A public socket sets
-	// it; a server without it is bounded by the peers' goodwill.
+	// It is also the memory bound. A request buffer holds one request at its
+	// ceiling: MaxRequestLineBytes + MaxHeaderBytes + MaxBodyBytes plus four
+	// bytes of line endings, about 1 MiB at the defaults. An HTTP/1.1
+	// connection holds two at most: the one its requests are read from, for
+	// ReadTimeout at most, and what a pipelining client sent ahead while a
+	// response streamed or a handler watched its context's Done, kept for
+	// the requests that follow. So MaxConns times two request buffers is the
+	// most the request buffers occupy. A public socket sets it; a server
+	// without it is bounded by the peers' goodwill.
 	MaxConns int
 
 	// MaxConnsPerIP is the same bound applied per remote address, so that

@@ -1241,9 +1241,10 @@ var errPeerGone = errors.New("httpstream: the client left during a streamed resp
 // or the reset or close that ends the response.
 //
 // What it reads is not lost. A client that pipelines its next request while
-// this one streams has those bytes kept, up to limit, and put back in front
-// of the connection when the watch stops, for the request reader to find
-// where it would have read them. Past limit the watch stops reading and the
+// this one streams has those bytes kept and put back in front of the
+// connection when the watch stops, for the request reader to find where it
+// would have read them. What is kept there, from this watch and the earlier
+// ones together, stays within limit; there the watch stops reading and the
 // client is not watched for the rest of this response.
 type peerWatch struct {
 	c          *prefixConn
@@ -1284,23 +1285,28 @@ func watchPeer(c *prefixConn, limit int) *peerWatch {
 // watchPeerThen is watchPeer with a function run when the watch ends, on the
 // watching goroutine, before done is closed: the handler's context learns
 // the client left without a goroutine of its own waiting on done.
+//
+// limit bounds the connection's read-ahead, not the watch's: what earlier
+// watches put back and the request reader has not taken yet counts against
+// it. Each watch reading a whole limit of its own made a client that
+// pipelines without a pause leave one limit more in front of the connection
+// per batch served. With the read-ahead at limit, the watch reads nothing,
+// so for this response a client that resets or half-closes is seen only when
+// a write fails — the client is the one that filled it, a moment ago.
 func watchPeerThen(c *prefixConn, limit int, ended func(*peerWatch)) *peerWatch {
 	w := &peerWatch{c: c, done: make(chan struct{})}
+	limit -= len(c.head)
+	if limit <= 0 {
+		w.end(ended)
+		return w
+	}
 	// No deadline while watching: the request reader set one for the request
 	// it read, and that clock says nothing about how long a response may
 	// take to produce. stop sets it to the past to end the read, and the
 	// request reader sets its own again before its next read.
 	if err := c.SetReadDeadline(time.Time{}); err != nil {
 		w.gone.Store(true) // a connection that refuses a deadline is closed
-		if ended == nil {
-			close(w.done)
-			return w
-		}
-		// Not on this goroutine: its caller may hold the lock ended takes.
-		go func() {
-			defer close(w.done)
-			ended(w)
-		}()
+		w.end(ended)
 		return w
 	}
 	go func() {
@@ -1334,13 +1340,30 @@ func watchPeerThen(c *prefixConn, limit int, ended func(*peerWatch)) *peerWatch 
 	return w
 }
 
+// end finishes a watch that reads nothing.
+func (w *peerWatch) end(ended func(*peerWatch)) {
+	if ended == nil {
+		close(w.done)
+		return
+	}
+	// Not on this goroutine: its caller may hold the lock ended takes.
+	go func() {
+		defer close(w.done)
+		ended(w)
+	}()
+}
+
 // stop ends the watch and puts back what it read. It returns only once the
 // watching goroutine has, so the connection has a single reader again.
 func (w *peerWatch) stop() {
 	w.stopping.Store(true)
 	_ = w.c.SetReadDeadline(time.Unix(1, 0))
 	<-w.done
-	if len(w.got) > 0 {
+	switch {
+	case len(w.got) == 0:
+	case len(w.c.head) == 0:
+		w.c.head = w.got
+	default:
 		w.c.head = append(w.c.head, w.got...)
 	}
 }
