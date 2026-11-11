@@ -446,6 +446,18 @@ type Conn struct {
 		peer net.Addr
 		n    int
 	}
+	// heldResponse is the answer to the latest PATH_CHALLENGE on the path
+	// in use that met a full congestion window (answerPathChallengesLocked):
+	// held until the window has room, then sent (sendHeldResponseLocked),
+	// and dropped if the path in use changed meanwhile. One is enough —
+	// §8.2.3 validates a path on a response to any challenge sent on it —
+	// and one is all a peer challenging into a full window can make wait.
+	heldResponse struct {
+		frame [9]byte // PATH_RESPONSE, type and data
+		pc    net.PacketConn
+		peer  net.Addr
+		owed  bool
+	}
 
 	// registrar issues this connection's additional identifiers: the
 	// [Listener]'s demux table for a connection it manages, an

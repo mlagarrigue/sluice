@@ -1246,8 +1246,9 @@ func (c *Conn) flushControlLocked() {
 	}
 	// The DPLPMTUD probe waits on the same things the control queue does —
 	// a validated path, room in the window — and is retried from the same
-	// place.
+	// place, and so is a PATH_RESPONSE a full window held back.
 	c.maybeProbePMTULocked()
+	c.sendHeldResponseLocked()
 	for {
 		c.issueLocalCIDsLocked()
 		before := len(c.grants) + len(c.control)

@@ -1411,6 +1411,7 @@ func (c *Conn) answerPathChallengesLocked(responses []byte, now time.Time) {
 	// address on top.
 	gated := onPath && !offSocket
 	if gated && !c.canSendLocked(padTo) {
+		c.holdResponseLocked(responses)
 		return
 	}
 	// A challenge that reached a server's preferred-address socket is
@@ -1462,6 +1463,7 @@ func (c *Conn) answerPathChallengesLocked(responses []byte, now time.Time) {
 			probe = nil
 		}
 		if gated && padTo == 0 && !c.canSendLocked(len(payload)+64) {
+			c.holdResponseLocked(responses)
 			return
 		}
 		if !gated && !c.countOffPathAnswerLocked() {
@@ -1471,6 +1473,35 @@ func (c *Conn) answerPathChallengesLocked(responses []byte, now time.Time) {
 		responses = responses[n:]
 		padTo = 0
 	}
+}
+
+// holdResponseLocked keeps the last of responses — PATH_RESPONSE frames on
+// the path in use that the congestion window cannot take now — to leave
+// when it can: §8.2.2 lets congestion control delay a PATH_RESPONSE, not
+// drop it. Callers hold mu.
+func (c *Conn) holdResponseLocked(responses []byte) {
+	h := &c.heldResponse
+	copy(h.frame[:], responses[len(responses)-len(h.frame):])
+	h.pc, h.peer, h.owed = c.pc, c.peer, true
+}
+
+// sendHeldResponseLocked sends the held PATH_RESPONSE once the window has
+// room for its datagram, expanded to 1200 bytes as §8.2.2 asks; one held
+// for a path no longer in use is dropped. Callers hold mu.
+func (c *Conn) sendHeldResponseLocked() {
+	h := &c.heldResponse
+	if !h.owed {
+		return
+	}
+	if h.pc != c.pc || !sameAddr(h.peer, c.peer) {
+		h.owed = false
+		return
+	}
+	if !c.canSendLocked(1200) {
+		return
+	}
+	h.owed = false
+	_ = c.sendPacketLocked(spaceApplication, h.frame[:], sendOpts{noRetrans: true, padTo: 1200})
 }
 
 // maxOffPathAnswers is how many PATH_RESPONSE packets leave toward paths

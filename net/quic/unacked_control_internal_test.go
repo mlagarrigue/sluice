@@ -1,6 +1,7 @@
 package quic
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"testing"
@@ -250,5 +251,65 @@ func TestAcknowledgedResetsGiveTheirStreamSlotsBack(t *testing.T) {
 	}
 	if regranted <= granted {
 		t.Fatalf("MAX_STREAMS stayed at %d after every reset was acknowledged", regranted)
+	}
+}
+
+// A PATH_CHALLENGE on the path in use that finds the congestion window full
+// is answered once the window opens, not dropped: RFC 9000 §8.2.2 lets
+// congestion control delay a PATH_RESPONSE ("MUST NOT delay ... unless
+// constrained by congestion control"), not suppress it. A peer validating
+// the path during a bulk transfer from this end otherwise saw every
+// challenge go unanswered. The control, with the window open, checks the
+// answer can be seen at all.
+func TestAPathResponseHeldByAFullWindowLeavesWhenItOpens(t *testing.T) {
+	data := []byte{9, 8, 7, 6, 5, 4, 3, 2}
+	challenge := append(varint.Append(nil, framePathChallenge), data...)
+	answered := func(pc *recordingPC) bool {
+		for _, w := range pc.recorded() {
+			for _, f := range openShort(t, w.data, len("peercid0")) {
+				if f.Type == framePathResponse && bytes.Equal(f.Data, data) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	c0, pc0 := newMigratableServer(t, "held-ctl")
+	c0.mu.Lock()
+	c0.rxFrom, c0.rxVia, c0.rxDatagramLen, c0.rxHighest = c0.peer, nil, 1200, true
+	c0.mu.Unlock()
+	if err := c0.frames(spaceApplication, challenge, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if !answered(pc0) {
+		t.Fatal("control: no PATH_RESPONSE even with the window open")
+	}
+
+	c, pc := newMigratableServer(t, "held-full")
+	c.mu.Lock()
+	for c.cc.canSend(1200) {
+		c.cc.onSent(time.Now(), 1200)
+	}
+	c.rxFrom, c.rxVia, c.rxDatagramLen, c.rxHighest = c.peer, nil, 1200, true
+	c.mu.Unlock()
+	if err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if answered(pc) {
+		t.Fatal("precondition lost: the answer left through a full window")
+	}
+	c.mu.Lock()
+	c.cc.onLifted(c.cc.bytesInFlight())
+	c.mu.Unlock()
+	if err := c.frames(spaceApplication, varint.Append(nil, framePing), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	c.flushControlLocked()
+	c.flushBatchLocked()
+	c.mu.Unlock()
+	if !answered(pc) {
+		t.Errorf("the challenge met a full window and the window opened: still no PATH_RESPONSE in %d datagrams", len(pc.recorded()))
 	}
 }
