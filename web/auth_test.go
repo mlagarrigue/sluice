@@ -547,7 +547,9 @@ func TestBearer(t *testing.T) {
 
 // What goes back to the requester must not say which half of a forgery was
 // right. Expired and wrongly-signed are different errors for the log and the
-// same diagnostic for the client.
+// same diagnostic for the client. The comparison is on what the client
+// reads — the diagnostic rendered by web.Problems and serialized, every
+// field — and that rendering carries the text of neither error (guarantee S7).
 func TestAuthenticateDoesNotLeakWhyItFailed(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	v := verifier(t, web.HMACConfig{Now: func() time.Time { return now }})
@@ -569,10 +571,17 @@ func TestAuthenticateDoesNotLeakWhyItFailed(t *testing.T) {
 		if p.Subject != "" {
 			t.Error("a principal came back from a refused token")
 		}
-		diags = append(diags, d.Code+"/"+d.MessageID)
+		sent, jerr := json.Marshal(web.Problems([]diagnostics.Diagnostic{d}))
+		if jerr != nil {
+			t.Fatal(jerr)
+		}
+		if strings.Contains(string(sent), err.Error()) {
+			t.Errorf("the client reads the verifier's reason %q: %s", err.Error(), sent)
+		}
+		diags = append(diags, string(sent))
 	}
 	if diags[0] != diags[1] {
-		t.Errorf("the client can tell an expired token from a forged one: %q vs %q", diags[0], diags[1])
+		t.Errorf("the client can tell an expired token from a forged one:\n%s\n%s", diags[0], diags[1])
 	}
 	// And the internal errors are still distinguishable, for the log.
 	if errors.Is(errFor(t, v, expired), web.ErrTokenSignature) {

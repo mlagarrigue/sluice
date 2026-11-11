@@ -1,7 +1,10 @@
 package diagnostics
 
 import (
+	"encoding/json"
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -111,9 +114,12 @@ func TestDiagnosticWithers(t *testing.T) {
 }
 
 // The cause is reachable for logging through errors.Is, and unexported so a
-// serializer cannot reach it by walking exported fields (guarantee S7).
+// serializer cannot reach it by walking exported fields (guarantee S7). Both
+// halves are checked on what a serializer sees: no exported field of the type
+// can hold an error, and encoding/json, given a cause whose own fields are
+// exported, writes none of them.
 func TestDiagnosticCauseIsWrappedNotExported(t *testing.T) {
-	inner := errors.New("pq: null value in column \"client_id\"")
+	inner := &leakyError{Query: "insert into orders", Detail: "null value in column client_id"}
 	d := NewDiagnostic(Critical, "Sales.Order.ClientMustExist", Field("clientID")).
 		WithCause(inner)
 
@@ -125,7 +131,31 @@ func TestDiagnosticCauseIsWrappedNotExported(t *testing.T) {
 	if got := d.String(); got != "Critical Sales.Order.ClientMustExist at clientID" {
 		t.Errorf("String = %q, must not include the cause", got)
 	}
+
+	errType := reflect.TypeFor[error]()
+	for f := range reflect.TypeFor[Diagnostic]().Fields() {
+		if f.IsExported() && (f.Type == errType || f.Type.Kind() == reflect.Interface && f.Type.NumMethod() == 0 || f.Type.Implements(errType)) {
+			t.Errorf("Diagnostic.%s is exported and can hold an error: a serializer walking the fields reaches the cause", f.Name)
+		}
+	}
+	out, err := json.Marshal(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{inner.Query, inner.Detail} {
+		if strings.Contains(string(out), secret) {
+			t.Errorf("json.Marshal of a diagnostic carries its cause's %q: %s", secret, out)
+		}
+	}
 }
+
+// leakyError is an internal error whose fields are exported, the kind a
+// driver returns: a serializer that reached it would write them.
+type leakyError struct {
+	Query, Detail string
+}
+
+func (e *leakyError) Error() string { return e.Detail }
 
 func TestDiagnosticNoCause(t *testing.T) {
 	d := NewDiagnostic(Info, "Sales.Order.Normalised", Path{})
