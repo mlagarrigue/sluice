@@ -101,6 +101,24 @@ func (c *cubic) startEpoch(now time.Time) {
 	c.frac = 0
 }
 
+// setMaxDatagram takes a new datagram size — a PMTU probe acknowledged, a
+// black hole detected (pmtu.go) — and, inside an avoidance stage, moves K so
+// that the curve keeps the value it has at this instant. The curve is
+// C·S·(t − K)³ + wMax, S the datagram size, and K was computed for the old
+// S (startEpoch): read with the new one it no longer passed through the
+// stage's first window at t = 0, and a larger S put it under the window,
+// stopping the concave growth until it caught up. Keeping its value now,
+// (t − K')³·S' = (t − K)³·S, gives K' = t − ∛(S/S')·(t − K) — at t = 0, the
+// K startEpoch would compute with the new size. RFC 9438 assumes a constant
+// SMSS and says nothing of a change.
+func (c *cubic) setMaxDatagram(bytes int) {
+	if c.inEpoch && bytes != c.maxDatagram {
+		t := c.t.Seconds()
+		c.k = t - math.Cbrt(float64(c.maxDatagram)/float64(bytes))*(t-c.k)
+	}
+	c.newReno.setMaxDatagram(bytes)
+}
+
 // onAcked grows the window: Reno's way in slow start, HyStart++ included
 // (newReno.slowStart; the round it reads is Reno's §7.8 round, closed by
 // absorb), and in avoidance by what the curve or the Reno

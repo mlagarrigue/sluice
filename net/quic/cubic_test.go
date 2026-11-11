@@ -242,3 +242,41 @@ func TestNewControllerByAlgorithm(t *testing.T) {
 		t.Errorf("an unknown choice built a %T", c.cc)
 	}
 }
+
+// A datagram size that changes inside an avoidance stage — a PMTU probe
+// acknowledged, a black hole detected — rescales the curve, and K with it,
+// so that the curve keeps the value it had at that instant: at t = 0 the
+// window the stage started with (§4.2), and never above wMax before K. K
+// computed with the old size and the curve read with the new one put
+// W_cubic(0) at 76 440 bytes for a stage opened at 84 000 when the size
+// went from 1200 to 1452.
+func TestCubicCurveKeepsItsValueWhenTheDatagramSizeChanges(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		name  string
+		after time.Duration // into the stage when the size changes
+		sizes []int
+	}{
+		{"at the stage's start, up", 0, []int{1452}},
+		{"at the stage's start, down", 0, []int{1200 * 3 / 4}},
+		{"two seconds in, up then back", 2 * time.Second, []int{1452, 1200}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cc := cubicInAvoidance(now)
+			cc.t = tc.after
+			for _, size := range tc.sizes {
+				before := cc.wCubic(cc.t.Seconds())
+				cc.setMaxDatagram(size)
+				if got := cc.wCubic(cc.t.Seconds()); math.Abs(got-before) > 1e-6 {
+					t.Errorf("to %d bytes at t = %v: W_cubic moved from %v to %v", size, cc.t, before, got)
+				}
+				if tc.after == 0 && math.Abs(cc.wCubic(0)-84000) > 1e-6 {
+					t.Errorf("to %d bytes: W_cubic(0) = %v, want the stage's first window, 84000", size, cc.wCubic(0))
+				}
+				if got := cc.wCubic(cc.k); math.Abs(got-cc.wMax) > 1e-6 || cc.k < cc.t.Seconds() {
+					t.Errorf("to %d bytes: K = %v (t = %v), W_cubic(K) = %v, want wMax %v ahead", size, cc.k, cc.t, got, cc.wMax)
+				}
+			}
+		})
+	}
+}
