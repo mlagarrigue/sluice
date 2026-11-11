@@ -129,15 +129,7 @@ func (s *h2Conn) expireAssembly() error {
 // open indefinitely for the cost of one refusal each, which is the rapid-reset
 // shape with the roles swapped.
 func (s *h2Conn) reset(se streamError) error {
-	if s.streams[se.id] == nil && s.closed[se.id] == stateHalfClosed && s.w.responded(se.id) {
-		// Its request ended and its answer reached END_STREAM: "closed" in
-		// §5.1's state machine, where this server's books still say
-		// half-closed. A late frame on it is the peer's fault and answered
-		// with nothing, as below; the books catch up so the next one is
-		// tolerated without asking.
-		s.closed[se.id] = stateClosed
-	}
-	if s.streams[se.id] == nil && s.closed[se.id] == stateClosed {
+	if s.streams[se.id] == nil && s.closedNow(se.id) {
 		// The stream is closed already — the peer reset it, or it finished —
 		// and RFC 9113 §5.1 forbids any frame but PRIORITY on a closed
 		// stream: the failure is noted on this side and nothing is sent.
@@ -170,6 +162,28 @@ func (s *h2Conn) countReset() error {
 			ErrH2Protocol, errCalm, s.resets, s.served)
 	}
 	return nil
+}
+
+// closedNow reports whether id, which is not open, is closed in RFC 9113
+// §5.1's state machine. The closed-stream ring answers for the streams it
+// holds; one whose request ended and whose answer reached END_STREAM is
+// closed where the ring still says half-closed, and the ring catches up so
+// the next question is answered without asking the writer. A stream the
+// ring no longer holds is closed too when its identifier is one the client
+// has passed and no answer of this end is still being written on it:
+// opened and finished, reset, or skipped, which §5.1.1 closes implicitly.
+// Reading the zero state for it instead made a stream error on a stream
+// gone from the ring draw the RST_STREAM a stream still in it does not.
+func (s *h2Conn) closedNow(id uint32) bool {
+	state, known := s.closed[id]
+	switch {
+	case !known:
+		return !s.idle(id) && !s.w.answering(id)
+	case state == stateHalfClosed && s.w.responded(id):
+		s.closed[id] = stateClosed
+		return true
+	}
+	return state == stateClosed
 }
 
 // idle reports a stream the client has not opened (RFC 9113 §5.1): an even
@@ -546,6 +560,13 @@ func (s *h2Conn) headers(f h2Frame) (*h2Stream, error) {
 		s.discard = fields
 		return nil, nil
 	}
+	if st.state == stateHalfClosed {
+		// Before the field-count bound too: a block on a stream the client
+		// ended is STREAM_CLOSED however many fields it holds (§5.1), not a
+		// request to answer 431.
+		return nil, streamFail(st.id, errStreamClosed,
+			"%w: HEADERS on stream %d after it ended", ErrH2Protocol, st.id)
+	}
 	// The field-count bound the h1 parser applies as it reads, applied here
 	// at the first moment the count exists. The byte bound the decoder
 	// enforces is not this bound: a block of near-empty fields fits the
@@ -555,11 +576,7 @@ func (s *h2Conn) headers(f h2Frame) (*h2Stream, error) {
 		return nil, statusFail(st.id, 431, nil, "%w: over %d header fields", ErrTooLarge, s.cfg.MaxHeaders)
 	}
 
-	switch {
-	case st.state == stateHalfClosed:
-		return nil, streamFail(st.id, errStreamClosed,
-			"%w: HEADERS on stream %d after it ended", ErrH2Protocol, st.id)
-	case st.gotHead:
+	if st.gotHead {
 		// A trailer section, held to the head's bounds and delivered in
 		// Request.Trailers — but it ends the message, and §8.1 makes a
 		// pseudo-header in it malformed: a trailer that carries :status or

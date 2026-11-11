@@ -1,10 +1,14 @@
 package httpstream
 
 import (
+	"context"
 	"errors"
 	"net"
+	"strconv"
 	"testing"
 	"time"
+
+	"github.com/mlagarrigue/sluice"
 )
 
 // RFC 9113 §5.1: "An endpoint MUST NOT send frames other than PRIORITY on a
@@ -237,5 +241,112 @@ func TestH2HeadersOnAClosedStreamDoNotHoldTheIdleClock(t *testing.T) {
 	case <-served:
 	case <-time.After(idle / 4):
 		t.Fatalf("the connection outlived %v of empty HEADERS frames on a closed stream with no request in flight", 10*idle)
+	}
+}
+
+// A handler's grant may be computed before the peer's RST_STREAM is read and
+// sent after: streamGrant asks whether the stream is still in the writer's
+// books. It asked a ring of the last 64 forgotten streams, and a stream
+// forgotten longer ago got its WINDOW_UPDATE (RFC 9113 §6.4: no frame but
+// PRIORITY after a RST_STREAM). It asks the send windows now, which interim
+// asks too: exact for every stream.
+func TestH2NoGrantOnAStreamForgottenLongAgo(t *testing.T) {
+	cfg, err := Config{}.resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := newH2Writer(nil, cfg) // run is not started: the control queue is inspected, never written
+	w.open(1)
+	w.forget(1)
+	for id := uint32(3); id < 3+2*64; id += 2 {
+		w.open(id)
+		w.forget(id)
+	}
+	if err := w.streamGrant(1, 100); err != nil {
+		t.Fatal(err)
+	}
+	for ctrl := w.ctrl; len(ctrl) > 0; {
+		f, n, err := parseFrame(ctrl, cfg.MaxFrameSize)
+		if err != nil {
+			t.Fatalf("control queue: %v", err)
+		}
+		if f.StreamID == 1 {
+			t.Fatalf("frame type %#x queued on stream 1, forgotten 65 forgets ago (RFC 9113 §6.4)", f.Type)
+		}
+		ctrl = ctrl[n:]
+	}
+}
+
+// A stream that has left the closed-stream ring is still closed: its
+// identifier is at or below the highest the client opened, and no answer of
+// this end is being written on it. A stream error found on it — a
+// WINDOW_UPDATE of zero — is noted, as on a stream the ring still holds,
+// not answered with the RST_STREAM RFC 9113 §5.1 forbids on a closed stream
+// and charged to the reset allowance.
+func TestH2NoResetOnAClosedStreamOutOfTheRing(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		_ = ServeH2Conn(t.Context(), c, Config{Logger: discardLogger(), MaxConcurrentStreams: 1}, echoTarget)
+	}()
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	c := h2clientOn(t, conn)
+	// With MaxConcurrentStreams 1 the ring holds one stream: stream 1 has
+	// left it once stream 3 is answered.
+	for _, id := range []uint32{1, 3} {
+		c.request(id, "GET", "/a")
+		c.flush()
+		c.pump(func() bool { return c.ended[id] })
+		if !c.ended[id] {
+			t.Fatalf("stream %d was not answered", id)
+		}
+	}
+	c.frame(h2Frame{Type: frameWindowUpdate, StreamID: 1, Payload: []byte{0, 0, 0, 0}})
+	c.request(5, "GET", "/c") // answered after the frame before it was applied
+	c.flush()
+	c.pump(func() bool { return c.ended[5] })
+	if !c.ended[5] {
+		t.Fatal("the request behind the frame was not answered")
+	}
+	if n := c.resetCount[1]; n > 0 {
+		t.Fatalf("RST_STREAM(%#x) sent on stream 1, closed by both END_STREAM flags and answered (RFC 9113 §5.1)", c.resets[1])
+	}
+}
+
+// A HEADERS on a stream half-closed by the client's END_STREAM is a stream
+// error of type STREAM_CLOSED (RFC 9113 §5.1), however many fields it
+// decodes to: the field-count bound came first, and such a block drew a 431
+// head and RST_STREAM(NO_ERROR), as if it were a request.
+func TestH2OversizedHeadersOnAHalfClosedStreamIsStreamClosed(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release) // before serveTest's cleanup, which waits for the handler
+	addr, _ := serveTest(t, Config{MaxHeaders: 64}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		<-release
+		return sluice.Batch[Response]{Items: make([]Response, b.Len())}
+	})
+	c := dialH2(t, addr)
+	c.request(1, "GET", "/held")
+	var block []byte
+	for i := range 65 {
+		block = literal(block, "x-f"+strconv.Itoa(i), "v")
+	}
+	c.frame(h2Frame{Type: frameHeaders, Flags: flagEndHeaders | flagEndStream, StreamID: 1, Payload: block})
+	c.flush()
+	if code := c.waitReset(1); code != errStreamClosed {
+		t.Errorf("stream 1 was reset with %#x, want STREAM_CLOSED (%#x)", code, errStreamClosed)
+	}
+	if got := h2Status(c.heads[1]); got != 0 {
+		t.Errorf("a %d head answered a block on a half-closed stream", got)
 	}
 }

@@ -995,11 +995,17 @@ func (w *h2Writer) reset(id, code uint32) error {
 // question is asked under w.mu, as reset asks it, so a forget either comes
 // first and the grant is dropped, or comes after and the grant is a frame
 // that crossed the peer's reset on the wire, which §5.1 has the peer
-// ignore.
+// ignore. The question is the send window's, which interim asks too: in
+// the books from open until the answer ends, is given up, or the stream is
+// forgotten, so exact for every stream, where the ring of the last 64
+// forgotten streams let a grant through to one forgotten longer ago. A
+// grant is owed to a request body still arriving, and once the answer has
+// ended that body has ended too, or its stream is reset behind the answer
+// (resetAfter): nothing is lost by asking the window.
 func (w *h2Writer) streamGrant(id, inc uint32) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if slices.Contains(w.gone, id) {
+	if _, alive := w.windows[id]; !alive {
 		return nil
 	}
 	var p [4]byte
@@ -1052,6 +1058,16 @@ func (w *h2Writer) responded(id uint32) bool {
 	defer w.mu.Unlock()
 	_, ok := w.ended[id]
 	return ok
+}
+
+// answering reports whether id's answer is still this end's to write: its
+// send window is in the books from open until the answer ends, is given up,
+// or the stream is forgotten. Safe from the read goroutine.
+func (w *h2Writer) answering(id uint32) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_, alive := w.windows[id]
+	return alive
 }
 
 // noteEndedLocked records that id's answer reached END_STREAM, unless the
