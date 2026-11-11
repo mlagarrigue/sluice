@@ -313,11 +313,13 @@ func TestH2NoResetOnAClosedStreamOutOfTheRing(t *testing.T) {
 		}
 	}
 	c.frame(h2Frame{Type: frameWindowUpdate, StreamID: 1, Payload: []byte{0, 0, 0, 0}})
-	c.request(5, "GET", "/c") // answered after the frame before it was applied
+	// Answered, or refused while stream 3 still counts against the limit of
+	// one: either way after the frame before it was applied.
+	c.request(5, "GET", "/c")
 	c.flush()
-	c.pump(func() bool { return c.ended[5] })
-	if !c.ended[5] {
-		t.Fatal("the request behind the frame was not answered")
+	c.pump(func() bool { return c.ended[5] || c.resets[5] != 0 })
+	if !c.ended[5] && c.resets[5] == 0 {
+		t.Fatal("nothing came back for the request behind the frame")
 	}
 	if n := c.resetCount[1]; n > 0 {
 		t.Fatalf("RST_STREAM(%#x) sent on stream 1, closed by both END_STREAM flags and answered (RFC 9113 §5.1)", c.resets[1])
