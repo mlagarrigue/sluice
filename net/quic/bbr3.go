@@ -26,16 +26,17 @@ import (
 //
 // The state machine (§5.1): Startup at a pacing gain of 2.77 leaves on a
 // bandwidth plateau or on a loss round with six lost packets whose last
-// acknowledgement saw more than 2% lost (§5.3.1.3), Drain paces at half the estimate until the flight is down
-// to the product, three rounds at most (§5.3.2), ProbeBW cycles through
-// DOWN, CRUISE, REFILL and UP (§5.3.3) — probing every two to three
-// seconds, or as often as a Reno flow of the same window would (§5.3.3.8)
-// — and ProbeRTT halves the window for 200 ms whenever min_rtt has gone ten
-// seconds without a lower sample (§5.3.4). extra_acked (§5.5.9) adds the aggregation the path shows to
-// the window. The send quantum is one datagram, the unit the pacer
-// releases. The CE marks the peer reports (§3.7: the draft specifies no
-// response, only that marks MUST be treated as congestion) are read as a
-// loss is, less the retransmission: a marked round cuts the short-term
+// acknowledgement saw more than 2% lost (§5.3.1.3), Drain paces at half
+// the estimate until the flight is down to the product, three rounds at
+// most (§5.3.2), ProbeBW cycles through DOWN, CRUISE, REFILL and UP
+// (§5.3.3) — probing every two to three seconds, or as often as a Reno
+// flow of the same window would (§5.3.3.8) — and ProbeRTT halves the
+// window for 200 ms whenever min_rtt has gone ten seconds without a lower
+// sample (§5.3.4). extra_acked (§5.5.9) adds the aggregation the path
+// shows to the window. The send quantum is one datagram, the unit the
+// pacer releases. The CE marks the peer reports (§3.7: the draft specifies
+// no response, only that marks MUST be treated as congestion) are read as
+// a loss is, less the retransmission: a marked round cuts the short-term
 // model by 0.7 (onMarked), and marks count with losses against the 2% a
 // probe may cause, so a probe that marks more than that bounds
 // inflight_longterm and goes DOWN. Not the DCTCP-style response Linux
@@ -44,11 +45,12 @@ import (
 // Every loss test is the draft's, per packet: RS.lost and RS.tx_in_flight
 // from the stamps each packet took when it left (lostPacket, ackEvent).
 //
-// One reading differs from the draft's pseudocode: the precautionary exit from ProbeBW_UP (§5.3.3.7) compares
-// inflight_longterm with the flight before the acknowledged packet left
-// it, Linux's prior_in_flight. The window is capped at inflight_longterm
-// in UP, so the flight after an acknowledgement is always under it and the
-// draft's C.inflight read there would never stop a probe.
+// One reading differs from the draft's pseudocode: the precautionary exit
+// from ProbeBW_UP (§5.3.3.7) compares inflight_longterm with the flight
+// before the acknowledged packet left it, Linux's prior_in_flight. The
+// window is capped at inflight_longterm in UP, so the flight after an
+// acknowledgement is always under it and the draft's C.inflight read there
+// would never stop a probe.
 //
 // Left out of draft -07 on purpose: the undo of a spurious loss recovery
 // (§2.15, §5.2.5, §5.5.11). The draft saves the window and the short- and
@@ -156,10 +158,11 @@ type bbr3 struct {
 	fullBwPending bool
 	// ProbeBW (§5.3.3.9): when DOWN started and how long to wait before
 	// REFILL, whether the acknowledgements still answer a probe that has
-	// stopped, whether a loss may still speak for the last probe, and the slope inflight_longterm is
-	// raised at in UP. prevProbeTooHigh says the last probe lost too much,
-	// prevProbePrecautionary that the last UP stopped at inflight_longterm
-	// for that reason (§2.14, §5.3.3.6); both start false.
+	// stopped, whether a loss may still speak for the last probe, and the
+	// slope inflight_longterm is raised at in UP. prevProbeTooHigh says the
+	// last probe lost too much, prevProbePrecautionary that the last UP
+	// stopped at inflight_longterm for that reason (§2.14, §5.3.3.6); both
+	// start false.
 	cycleStamp             time.Time
 	bwProbeWait            time.Duration
 	isBwProbeStopping      bool

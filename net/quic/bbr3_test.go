@@ -182,10 +182,10 @@ func TestBBR3StartupExitsOnLoss(t *testing.T) {
 	// A flight of n datagrams: lead acknowledged, then the first loss opens
 	// the loss round, and one datagram sent right after it will close the
 	// round; the other events follow, between acknowledgements apart or in
-	// one batch, and the flight is acknowledged, the closing datagram last. A round of one
-	// datagram ends the recovery period. Every round here is flat for the
-	// plateau estimator, which is kept out of the way: the loss exit is
-	// what is read.
+	// one batch, and the flight is acknowledged, the closing datagram last.
+	// A round of one datagram ends the recovery period. Every round here is
+	// flat for the plateau estimator, which is kept out of the way: the
+	// loss exit is what is read.
 	lossRound := func(n, lead, events, between int) {
 		b.fullBwCount = 0
 		p.send(n)
@@ -606,8 +606,9 @@ func TestBBR3ShortTermModel(t *testing.T) {
 	}
 }
 
-// A min_rtt ten seconds old sends CRUISE to ProbeRTT (§5.3.4.3): the window drops to half a product, and after 200 ms and a
-// round there the window comes back and CRUISE resumes directly.
+// A min_rtt ten seconds old sends CRUISE to ProbeRTT (§5.3.4.3): the
+// window drops to half a product, and after 200 ms and a round there the
+// window comes back and CRUISE resumes directly.
 func TestBBR3ProbeRTT(t *testing.T) {
 	p, b := bbr3Cruising(t)
 	before := b.window()
