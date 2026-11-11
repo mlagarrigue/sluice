@@ -1318,6 +1318,22 @@ func capRefusesTheSecondDial(t *testing.T, lcfg ListenerConfig) {
 	if err != nil {
 		t.Fatalf("the first Dial under the cap: %v", err)
 	}
+	// The client's Dial returns on its own handshake; the server proves the
+	// address when the client's Finished reaches it, a moment later. Until
+	// then the first connection does not count against MaxConnsPerIP — an
+	// Initial past the bound is sent a Retry and admitted with its token
+	// (ListenerConfig.MaxConnsPerIP) — so the second Dial waits for it.
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		l.mu.Lock()
+		unproven := len(l.unvalidated)
+		l.mu.Unlock()
+		if unproven == 0 {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatal("the first connection's handshake never completed on the server")
+		}
+	}
 	start := time.Now()
 	second, err := dial()
 	if err == nil {
