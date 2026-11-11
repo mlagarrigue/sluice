@@ -283,7 +283,15 @@ func (r *replReader) u64(what string) uint64 {
 	return v
 }
 
+// cstring reads a NUL-terminated string. Once the reader has failed it reads
+// nothing: a string with no NUL consumes nothing, and a caller that reads on
+// in a loop before it looks at r.err — relation, once per declared column —
+// would scan the whole rest of the message again at each turn, the count
+// declared times the message's length.
 func (r *replReader) cstring(what string) string {
+	if r.err != nil {
+		return ""
+	}
 	i := 0
 	for i < len(r.b) && r.b[i] != 0 {
 		i++
@@ -452,6 +460,9 @@ func (d *replDecoder) relation(r *replReader) {
 	}
 	rel.Columns = make([]RelationColumn, n)
 	for i := range rel.Columns {
+		if r.err != nil {
+			return // the first column that fails ends the read, as Truncate's
+		}
 		col := &rel.Columns[i]
 		col.Key = r.u8("a Relation column")&1 != 0
 		col.Name = r.cstring("a Relation column")
