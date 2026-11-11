@@ -314,12 +314,6 @@ type h2Conn struct {
 	// must increase, and one that goes backwards is a client reusing a
 	// closed stream rather than opening a new one.
 	lastID uint32
-	// goAwayLast is the last stream identifier the connection has announced
-	// in a GOAWAY so far, 2^31-1 until one is sent: RFC 9113 §6.8 forbids
-	// raising it, and a stream refused after the drain's second GOAWAY
-	// still advances lastID. Atomic because beginDrain runs on the drain's
-	// own goroutine while the reader may be sending an error's GOAWAY.
-	goAwayLast atomic.Uint32
 	// settingsAcked is set once the peer has acknowledged this end's
 	// SETTINGS. Before that, a stream the peer opens is sized by the
 	// protocol's default window, whatever InitialWindowSize says (§6.9.2),
@@ -563,7 +557,6 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 		w:        newH2Writer(c, cfg),
 		settled:  make(chan struct{}, 1),
 	}
-	s.goAwayLast.Store(maxStreamID)
 	s.w.answered = s.answered
 
 	go s.w.run()
@@ -846,22 +839,12 @@ func (s *h2Conn) goAway(code uint32) {
 // never have reached, before the reader knows the real one (RFC 9113 §6.8).
 // Whatever the caller names, the identifier sent never rises above one
 // already announced (§6.8 MUST NOT): the peer may have retried the streams
-// past it elsewhere.
+// past it elsewhere, and a stream refused after the drain's second GOAWAY
+// still advances lastID. The writer keeps that floor (h2Writer.goAway):
+// beginDrain runs on the drain's own goroutine while the reader may be
+// sending an error's GOAWAY, and the floor and the queueing are one step.
 func (s *h2Conn) goAwayWith(last, code uint32) {
-	for {
-		announced := s.goAwayLast.Load()
-		if last >= announced {
-			last = announced
-			break
-		}
-		if s.goAwayLast.CompareAndSwap(announced, last) {
-			break
-		}
-	}
-	payload := make([]byte, 8)
-	be32put(payload[:4], last)
-	be32put(payload[4:8], code)
-	_ = s.w.control(h2Frame{Type: frameGoAway, Payload: payload})
+	_ = s.w.goAway(last, code)
 }
 
 // The steps of a graceful shutdown, in drainStep; see serveH2Conn.

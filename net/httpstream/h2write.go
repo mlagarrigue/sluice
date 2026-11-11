@@ -159,6 +159,11 @@ type h2Writer struct {
 	// is the difference between a connection the peer keeps and one it kills
 	// for silence.
 	ctrl []byte
+	// goAwayLast is the last stream identifier a GOAWAY queued in ctrl has
+	// named, 2^31-1 until one is: RFC 9113 §6.8 forbids raising it. Kept
+	// here, under mu, because the floor and the queueing must be one step —
+	// see goAway.
+	goAwayLast uint32
 
 	jobs     []*h2Job // queued response data
 	inflight []*h2Job // completed in this round, waiting on the socket write
@@ -232,16 +237,17 @@ const hpackEncoderTableSize = 4096
 
 func newH2Writer(c net.Conn, cfg Config) *h2Writer {
 	w := &h2Writer{
-		conn:      c,
-		cfg:       cfg,
-		done:      make(chan struct{}),
-		windows:   make(map[uint32]int32),
-		ended:     make(map[uint32]struct{}),
-		evicted:   make(map[uint32]struct{}),
-		connWind:  defaultInitialWindow,
-		initial:   defaultInitialWindow,
-		maxFrame:  defaultMaxFrameSize,
-		peerTable: hpackEncoderTableSize,
+		conn:       c,
+		cfg:        cfg,
+		done:       make(chan struct{}),
+		windows:    make(map[uint32]int32),
+		ended:      make(map[uint32]struct{}),
+		evicted:    make(map[uint32]struct{}),
+		connWind:   defaultInitialWindow,
+		initial:    defaultInitialWindow,
+		maxFrame:   defaultMaxFrameSize,
+		peerTable:  hpackEncoderTableSize,
+		goAwayLast: maxStreamID,
 	}
 	w.cond = sync.NewCond(&w.mu)
 	return w
@@ -769,6 +775,32 @@ func (w *h2Writer) control(f h2Frame) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.controlLocked(f)
+}
+
+// goAway queues a GOAWAY naming last, or the identifier an earlier GOAWAY
+// named if that is lower, and code. The floor is read and lowered after the
+// wait for room in ctrl and in the same critical section as the queueing:
+// with the floor kept apart, the drain's 2^31-1 and the reader's last
+// stream, sent from two goroutines, could each pass the floor and then be
+// queued in the other order, raising the identifier on the wire (RFC 9113
+// §6.8 MUST NOT) — and a wait releases mu, so a floor read before it would
+// be stale after it.
+func (w *h2Writer) goAway(last, code uint32) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := w.waitCtrlLocked(); err != nil {
+		return err
+	}
+	last = min(last, w.goAwayLast)
+	w.goAwayLast = last
+	var p [8]byte
+	be32put(p[:4], last)
+	be32put(p[4:], code)
+	if err := w.appendCtrl(h2Frame{Type: frameGoAway, Payload: p[:]}); err != nil {
+		return err
+	}
+	w.cond.Broadcast()
+	return nil
 }
 
 func (w *h2Writer) controlLocked(f h2Frame) error {

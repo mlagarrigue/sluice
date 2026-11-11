@@ -268,3 +268,39 @@ func TestH2WriterInitialWindowMovesByTheDifference(t *testing.T) {
 		t.Errorf("window %d, want 110", w.windows[1])
 	}
 }
+
+// The drain's GOAWAY (2^31-1) and the reader's (its last stream) come from
+// two goroutines, and the identifier must never rise on the wire (RFC 9113
+// §6.8). With the floor lowered in one step and the frame queued in another,
+// each could pass the floor and then be queued in the other order: the
+// GOAWAYs in the control queue are read back here, in the order they would
+// go out, and must not increase.
+func TestH2GoAwayIdentifiersQueuedFromTwoGoroutinesNeverRise(t *testing.T) {
+	for range 1000 {
+		s := &h2Conn{w: testWriter()}
+		start := make(chan struct{})
+		done := make(chan struct{}, 2)
+		for _, last := range []uint32{maxStreamID, 5} {
+			go func() {
+				<-start
+				s.goAwayWith(last, errNoError)
+				done <- struct{}{}
+			}()
+		}
+		close(start)
+		<-done
+		<-done
+		var ids []uint32
+		for out := s.w.ctrl; len(out) >= frameHeaderSize; {
+			n := int(out[0])<<16 | int(out[1])<<8 | int(out[2])
+			if out[3] == frameGoAway {
+				p := out[frameHeaderSize:]
+				ids = append(ids, uint32(p[0]&0x7f)<<24|uint32(p[1])<<16|uint32(p[2])<<8|uint32(p[3]))
+			}
+			out = out[frameHeaderSize+n:]
+		}
+		if len(ids) != 2 || ids[1] > ids[0] {
+			t.Fatalf("GOAWAYs queued with last stream %v; the identifier rose", ids)
+		}
+	}
+}
