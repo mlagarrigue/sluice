@@ -1557,6 +1557,65 @@ func TestNothingIsWrittenAfterTheCtxEndedOnTheOwedReady(t *testing.T) {
 	}
 }
 
+// The COMMIT a Copier.WriteTuples sends once RowsPerTx rows are in, cancelled
+// after the backend read it and before it ran it, leaves the block open and
+// aborted, as the COMMIT of Copier.Close or Tx.Commit does: WriteTuples ends
+// it with a ROLLBACK as they do. The copy had already given its transaction
+// up (commitTx), so neither Abort nor Close would roll back, and the next
+// Begin answered ErrTxOpen on a connection that looked healthy.
+func TestARowsPerTxCommitCancelledBeforeItRanLeavesNoBlockOpen(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, conn := newScriptedPipe(t)
+		conn.cancelKey = CancelKey{PID: 1, Secret: testSecret}
+		packets := make(chan []byte, 1)
+		conn.cancelDial = cancelHolding(0, packets) // confirms at once
+		conn.cancelTimeout = time.Second
+		sawRollback := make(chan bool, 1)
+		go func() {
+			srv.read() // BEGIN
+			srv.write(beCommandComplete("BEGIN"), frame(pgwire.BackendReadyForQuery, "T"))
+			srv.read() // COPY
+			srv.write(beCopyInResponse())
+			for got := ""; !strings.Contains(got, "c"); {
+				got += srv.read() // the rows, then CopyDone
+			}
+			srv.write(beCommandComplete("COPY 1"), frame(pgwire.BackendReadyForQuery, "T"))
+			srv.read() // the COMMIT RowsPerTx sends
+			<-packets  // the cancellation, which wins the race to the backend
+			srv.write(beErrorResponse("57014", "canceling statement due to user request"),
+				frame(pgwire.BackendReadyForQuery, "E"))
+			n, err := srv.conn.Read(srv.buf)
+			if err != nil || !strings.HasPrefix(frontendTypes(srv.buf[:n]), "Q") {
+				sawRollback <- false
+				return
+			}
+			sawRollback <- true
+			srv.write(beCommandComplete("ROLLBACK"), frame(pgwire.BackendReadyForQuery, "I"))
+		}()
+		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		defer cancel()
+		cp, err := conn.CopyFrom(ctx, "COPY t FROM STDIN WITH (FORMAT BINARY)", CopyConfig{RowsPerTx: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = cp.WriteTuples(tuple(new(int64(1)), nil), 1)
+		inTx, broken := conn.inTx, conn.Err()
+		_ = conn.rw.Close() // releases the script if nothing more was written
+		if !<-sawRollback {
+			t.Error("no ROLLBACK was sent to end the aborted block")
+		}
+		if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrConnBroken) {
+			t.Errorf("WriteTuples = %v, want ctx's error and not ErrConnBroken", err)
+		}
+		if inTx {
+			t.Error("the connection still believes a transaction is open")
+		}
+		if broken != nil {
+			t.Errorf("the connection is broken: %v", broken)
+		}
+	})
+}
+
 // Copier.Close cancelled after the backend read its COMMIT and before it ran
 // it: the block stays open, aborted, and Close ends it with a ROLLBACK as
 // Tx.Commit does, rather than leaving the connection in a transaction. A

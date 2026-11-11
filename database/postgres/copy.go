@@ -279,7 +279,18 @@ func (cp *Copier) WriteTuples(tuples []byte, rows int) error {
 		// still finishable.
 		return cp.conn.settleCancel(cp.ctx, w, fmt.Errorf("abandoning the copy: %w", err))
 	}
-	if err := cp.conn.settleCancel(cp.ctx, w, cp.write(tuples, rows)); err != nil {
+	err := cp.conn.settleCancel(cp.ctx, w, cp.write(tuples, rows))
+	if c := cp.conn; err != nil && c.broken == nil && c.inTx && !cp.inTx {
+		// The COMMIT RowsPerTx sent was cancelled after the backend read it
+		// and before it ran it: the copy had given its transaction up
+		// (commitTx), and the block is still open, aborted — nothing would
+		// end it, neither Abort nor Close, and the next Begin would answer
+		// ErrTxOpen. Ended here, as Close and Tx.Commit end theirs.
+		if rbErr := c.rollbackLeftBlock(); rbErr != nil {
+			err = errors.Join(err, rbErr)
+		}
+	}
+	if err != nil {
 		return cp.fail(err)
 	}
 	return nil
