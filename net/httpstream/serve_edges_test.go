@@ -189,6 +189,50 @@ func TestAStreamedBatchAtItsEdges(t *testing.T) {
 	}
 }
 
+// The close of a batch that carries a streamed response is decided over the
+// batch, as the buffered path decides it: a handler's Connection: close on
+// any response puts the close on the last one and only there (RFC 9112
+// §9.6), whichever of them asked and whether the last is streamed or not.
+// Written one by one, the buffered responses each decided on a batch of
+// their own: the first closed with two responses behind it, and the last
+// said keep-alive on a connection about to close.
+func TestTheCloseOfAStreamedBatchIsDecidedOverTheBatch(t *testing.T) {
+	answers := map[string]Response{
+		"/a": {Status: 200, Headers: []Header{{Name: []byte("Connection"), Value: []byte("close")}}, Body: []byte("a")},
+		"/s": {Status: 200, Stream: streamOf("zz")},
+		"/c": {Status: 200, Body: []byte("c")},
+	}
+	addr, sizes := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		out := make([]Response, b.Len())
+		for i, r := range b.Items {
+			out[i] = answers[string(r.Target)]
+		}
+		return sluice.Batch[Response]{Items: out}
+	})
+	c := dial(t, addr)
+	get := func(target string) string { return string(req("GET "+target+" HTTP/1.1", "Host: h")) }
+	if _, err := io.WriteString(c, get("/a")+get("/s")+get("/c")); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	raw, err := io.ReadAll(c)
+	if err != nil {
+		t.Errorf("the connection stayed open after the batch whose handler asked to close: %v", err)
+	}
+	if got := sizes(); len(got) != 1 || got[0] != 3 {
+		t.Skipf("setup: the three requests arrived in batches %v, not one", got)
+	}
+	var said []string
+	for _, line := range strings.Split(string(raw), "\r\n") {
+		if v, ok := strings.CutPrefix(line, "Connection: "); ok {
+			said = append(said, v)
+		}
+	}
+	if want := []string{"keep-alive", "keep-alive", "close"}; strings.Join(said, ",") != strings.Join(want, ",") {
+		t.Errorf("the three responses said Connection %q, want %q:\n%s", said, want, raw)
+	}
+}
+
 // failingOn fails every write that carries mark.
 type failingOn struct {
 	net.Conn

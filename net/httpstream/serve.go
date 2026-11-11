@@ -1447,14 +1447,19 @@ func writeStreamedBatch(c *prefixConn, st *connState, cfg Config, requests []Req
 		}
 		closing := i == len(res)-1 && (closeAfter || i < len(requests) && !requests[i].KeepAlive)
 		if !r.streamed() {
-			var oneReq []Request
+			var method []byte
+			http10 := false
 			if i < len(requests) {
-				oneReq = requests[i : i+1]
+				method, http10 = requests[i].Method, requests[i].http10
 			}
 			// Appended behind whatever is already pending, not written on its
-			// own: WriteBatch returns nil on refusal and buf keeps the
+			// own: appendResponse returns nil on refusal and buf keeps the
 			// responses gathered so far, which is what lets fail flush them.
-			out, err := WriteBatch(buf, cfg, oneReq, []Response{r})
+			// The close is the batch's, as WriteBatch decides it over the
+			// whole batch: written as a batch of one, each response decided
+			// alone, and a handler's Connection: close went out on its own
+			// response with others behind it (RFC 9112 §9.6).
+			out, err := appendResponse(buf, method, closing, http10, keepAlive, r, dateFor(time.Now()))
 			if err != nil {
 				reportPanic(cfg.logger(), err)
 				return fail(i, err)
