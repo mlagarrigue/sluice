@@ -36,7 +36,10 @@ type sendOpts struct {
 	// would hold what it frees — a reset waits on the data it cancels, a
 	// keepalive misses the idle clock it serves. Flow-control grants are the
 	// same choice, written at takeQueuedLocked. The excess is bounded by the
-	// count of such events, as a probe's is by the PTO (§7.5).
+	// count of such events, as a probe's is by the PTO (§7.5), and all of
+	// it together by the sent record's bound (maxTrackedPackets): a peer
+	// that acknowledges none of these sends fills the record, and is
+	// closed at its next packet.
 	//
 	// Two ungated sends answer the peer instead, at the peer's pace, and
 	// carry their own bound. The RESET_STREAM that answers a STOP_SENDING
@@ -178,7 +181,7 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 			if len(c.spaces[space].retrans) > 0 {
 				c.retransmitLocked()
 			}
-			ready := c.cc.canSend(len(payload) + 64)
+			ready := c.canSendLocked(len(payload) + 64)
 			if ready {
 				// The window has room; the pacer decides *when*. A deficit
 				// arms a deadline the timer loop answers with a broadcast —
@@ -355,6 +358,29 @@ func (c *Conn) sendsEarlyLocked() bool {
 // writer builds its frame again for the size now in force.
 var errRefit = errors.New("quic: the datagram size fell while the packet waited")
 
+// errRecordFull is writePacketLocked's refusal of an ack-eliciting packet
+// while the application space's sent record is at its bound.
+var errRecordFull = errors.New("quic: the sent record is at its bound")
+
+// canSendLocked is the congestion window's answer for n more bytes, with
+// the sent record's half-bound behind it (maxTrackedPackets): every send
+// the window gates asks here, so a flow the window would let grow past the
+// record's bound waits for acknowledgements instead. Callers hold mu.
+func (c *Conn) canSendLocked(n int) bool {
+	return c.cc.canSend(n) && 2*c.trackedLocked() < c.spaces[spaceApplication].sent.bound()
+}
+
+// trackedLocked is how many packets the application space's sent record
+// holds, counting the gathered one not yet sealed, which joins it when
+// sealed. Callers hold mu.
+func (c *Conn) trackedLocked() int {
+	n := len(c.spaces[spaceApplication].sent.packets)
+	if p := c.dgramPend; p != nil && p.space == spaceApplication && !p.opts.ackOnly {
+		n++
+	}
+	return n
+}
+
 // packetOverhead is what a packet of space costs on the wire beyond its
 // payload: its header, the packet number and the AEAD tag. A long header's
 // Length field is counted at two bytes, which covers any packet under
@@ -389,7 +415,7 @@ func (c *Conn) takeQueuedLocked(room, carried int) []byte {
 		}
 		room -= n
 	}
-	if n, retires, newCIDs := cutFrames(c.control, room); n > 0 && c.cc.canSend(carried+len(out)+n+64) {
+	if n, retires, newCIDs := cutFrames(c.control, room); n > 0 && c.canSendLocked(carried+len(out)+n+64) {
 		out = append(out, c.control[:n]...)
 		c.control = c.control[n:]
 		c.controlRetires -= retires
@@ -632,6 +658,13 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 	// state replays the kept datagram without coming through here).
 	if c.draining || (c.closeSent && !opts.close) {
 		return errClosed
+	}
+	if space == spaceApplication && !opts.ackOnly && c.trackedLocked() >= sp.sent.bound() {
+		// The record is at its bound (maxTrackedPackets): a packet that
+		// would join it is not sent, and the peer that let it fill is
+		// told at its next packet (framesIn).
+		c.recordFull = true
+		return errRecordFull
 	}
 	const pnLen = 4
 	// A DialEarly client before its 1-RTT keys sends application data in
@@ -1173,7 +1206,7 @@ func (c *Conn) sendCrypto(l tls.QUICEncryptionLevel, data []byte) error {
 		// RFC 9000 §7.5 requires and no more, closed with
 		// CRYPTO_BUFFER_EXCEEDED on the first (runner amplificationlimit).
 		sp := &c.spaces[space]
-		if len(sp.retrans) > 0 || !c.cc.canSend(len(frame)+64) {
+		if len(sp.retrans) > 0 || !c.canSendLocked(len(frame)+64) {
 			sp.retrans = append(sp.retrans, frame)
 			continue
 		}
@@ -1299,7 +1332,7 @@ func (c *Conn) retransmitLocked() {
 				sp.retrans = sp.retrans[1:] // nothing of it is owed any more
 				continue
 			}
-			if !c.cc.canSend(len(payload) + 64) {
+			if !c.canSendLocked(len(payload) + 64) {
 				return
 			}
 			if d := c.pacer.until(len(payload)+c.packetOverhead(space), rate); d > 0 {

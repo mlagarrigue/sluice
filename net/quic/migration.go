@@ -1410,7 +1410,7 @@ func (c *Conn) answerPathChallengesLocked(responses []byte, now time.Time) {
 	// a count instead (offPathAnswers), with the §8 books of the off-path
 	// address on top.
 	gated := onPath && !offSocket
-	if gated && !c.cc.canSend(padTo) {
+	if gated && !c.canSendLocked(padTo) {
 		return
 	}
 	// A challenge that reached a server's preferred-address socket is
@@ -1461,7 +1461,7 @@ func (c *Conn) answerPathChallengesLocked(responses []byte, now time.Time) {
 			payload = append(payload, probe...)
 			probe = nil
 		}
-		if gated && padTo == 0 && !c.cc.canSend(len(payload)+64) {
+		if gated && padTo == 0 && !c.canSendLocked(len(payload)+64) {
 			return
 		}
 		if !gated && !c.countOffPathAnswerLocked() {

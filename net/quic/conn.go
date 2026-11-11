@@ -212,7 +212,11 @@ type Conn struct {
 	gather    bool
 	dgram     []byte
 	dgramPend *pendingPacket
-	dgramPad  bool
+	// recordFull says a send found the application space's sent record at
+	// its bound (maxTrackedPackets); the next packet from the peer closes
+	// the connection (framesIn).
+	recordFull bool
+	dgramPad   bool
 	// batching, batch, batchSeg, batchN and batchShort are send batching:
 	// while batching is set (Stream.write), 1-RTT datagrams bound for the
 	// current path are sealed back to back into batch — every one batchSeg

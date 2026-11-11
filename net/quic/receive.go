@@ -717,6 +717,11 @@ func (c *Conn) processPacket(space int, early bool, pn uint64, payload []byte, n
 		c.amplActive = false
 		c.extendHandshakeLocked()
 	}
+	if err := c.recordFullLocked(); err != nil {
+		c.mu.Unlock()
+		c.abort(err)
+		return err
+	}
 	c.mu.Unlock()
 
 	if err := c.framesIn(space, early, payload, now); err != nil {
@@ -1013,7 +1018,29 @@ func (c *Conn) handleRetry(h longHeader) {
 // per-packet state it uses (parseScratch, batchScratch, rxProgress) is the
 // loop's alone, under no lock.
 func (c *Conn) frames(space int, payload []byte, now time.Time) error {
+	c.mu.Lock()
+	err := c.recordFullLocked()
+	c.mu.Unlock()
+	if err != nil {
+		return err
+	}
 	return c.framesIn(space, false, payload, now)
+}
+
+// recordFullLocked is the connection error owed once a send found the
+// application space's sent record at its bound (maxTrackedPackets): the
+// peer acknowledged none of as many ack-eliciting packets, which RFC 9000
+// §13.2.1 has it acknowledge within max_ack_delay. Asked as each of the
+// peer's packets is processed, the point where a connection error already
+// closes the connection. Callers hold mu.
+func (c *Conn) recordFullLocked() error {
+	if !c.recordFull {
+		return nil
+	}
+	return &transportError{
+		code: transportProtocolViolation,
+		err:  fmt.Errorf("%w: the peer acknowledged none of %d packets", ErrQUIC, c.spaces[spaceApplication].sent.bound()),
+	}
 }
 
 // maxKeptFrames is the most frames a frame scratch keeps between packets

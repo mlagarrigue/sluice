@@ -162,6 +162,16 @@ A section number with no RFC named is RFC 9000's.
   the AEAD's integrity limit (AEAD_LIMIT_REACHED, RFC 9001 §6.6). Garbage,
   forgeries and strays are counted (`Conn.Stats`, and the listener's own
   `Listener.DiscardedPackets` in front) and dropped.
+- **A peer that does not acknowledge**: every ack-eliciting packet stays in
+  memory until its ACK, and that record has a written bound, 32,768
+  packets. The sends the congestion window governs stop at half of it: an
+  honest transfer levels off there (about 23 MB in flight in full-size
+  packets) and waits for its acknowledgements as it would for the window.
+  Only the sends the window does not govern (flow-control credit, the
+  answer to a STOP_SENDING, path challenges, probes) go past it, one per
+  event; a peer that acknowledges none of them fills the record, and its
+  next packet closes the connection with PROTOCOL_VIOLATION (§13.2.1:
+  acknowledge within `max_ack_delay`).
 - **Key update** (RFC 9001 §6): a peer's rotation is followed, old read
   keys are kept three probe timeouts for stragglers, and this end rotates
   its own keys before the AEAD's confidentiality limit (RFC 9001 §6.6)

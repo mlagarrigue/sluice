@@ -195,7 +195,7 @@ func (c *Conn) maybeProbePMTULocked() {
 		c.pmtu.done = true
 		return
 	}
-	if !c.cc.canSend(target) {
+	if !c.canSendLocked(target) {
 		return
 	}
 	sp := &c.spaces[spaceApplication]

@@ -196,7 +196,10 @@ type sentPacket struct {
 // appended in order — the packet number only grows — so the slice is sorted
 // by construction and pruned from the front as acknowledgements arrive.
 type sentTracker struct {
-	packets  []sentPacket
+	packets []sentPacket
+	// limit is the record's bound, maxTrackedPackets when zero (see
+	// there); a test lowers it.
+	limit    int
 	lossTime time.Time // when the earliest time-threshold candidate matures
 	// lost remembers the packets declared lost whose payload went to the
 	// retransmission queue, the newest last: a late acknowledgement of one
@@ -256,6 +259,29 @@ var errOptimisticAck = errors.New("quic: the peer acknowledged a packet number t
 
 func (s *sentTracker) record(p sentPacket) {
 	s.packets = append(s.packets, p)
+}
+
+// maxTrackedPackets bounds the application space's sent record, the one
+// structure every ack-eliciting packet joins and only an ACK empties. The
+// sends the congestion window gates stop at half of it (Conn.canSendLocked):
+// an honest flow levels off there — 16,384 packets, some 23 MB in flight at
+// 1,452 bytes, 1.9 Gbit/s at a 100 ms round trip; arithmetic, not a
+// measurement — and waits for acknowledgements as it would for the window.
+// The sends the window does not gate (sendOpts.waitCwnd: grants, a
+// RESET_STREAM in answer, path challenges, probes) are one per event, and
+// reach the bound only from a peer that acknowledges none of them: past
+// it nothing ack-eliciting is sent (writePacketLocked), and the next
+// packet the peer sends closes the connection (framesIn). One bound for
+// every send rather than one per frame type: a send added later, gated or
+// not, is under it by construction.
+const maxTrackedPackets = 1 << 15
+
+// bound is the record's limit.
+func (s *sentTracker) bound() int {
+	if s.limit > 0 {
+		return s.limit
+	}
+	return maxTrackedPackets
 }
 
 // skipNumber reports whether pn is the number to leave unused, and draws the
