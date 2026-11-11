@@ -326,6 +326,28 @@ func (c *Conn) settleReady() error {
 	return c.broken
 }
 
+// settleOwed reads the ReadyForQuery a batched read left owed, under the
+// watch its caller armed, and then reads ctx again. A ctx that ends during
+// that read sends the cancellation to a backend that has no statement of
+// this call to cancel — nothing of it is written yet — and the server's
+// confirmation spends it; the statement written next would then run with
+// its ctx over and nothing left to stop it, which every entry point's
+// "a context already done abandons" excludes. So the statement is abandoned
+// here, before a byte of it leaves, as it is when ctx is done on arrival.
+func (c *Conn) settleOwed(ctx context.Context) error {
+	if !c.readyOwed {
+		return nil
+	}
+	if err := c.claim(nil); err != nil {
+		return err
+	}
+	c.endBusy()
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("abandoning the statement: %w", err)
+	}
+	return nil
+}
+
 // execBusy is exec behind the busy guard, for the simple-statement entry
 // points. The guard covers every entry point, not only query.run and
 // Tx.Pipeline, because the gap is not harmless: an Exec issued from inside a

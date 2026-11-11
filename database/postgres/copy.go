@@ -271,6 +271,14 @@ func (cp *Copier) WriteTuples(tuples []byte, rows int) error {
 		return cp.conn.settleCancel(cp.ctx, w, err)
 	}
 	defer cp.conn.endBusy()
+	if err := cp.ctx.Err(); err != nil {
+		// Ended while the claim read an owed ReadyForQuery: the
+		// cancellation went to a backend with nothing of this batch to
+		// cancel, and the BEGIN, the COPY or the rows written now would run
+		// past it (Conn.settleOwed). Abandoned as on arrival, the copy
+		// still finishable.
+		return cp.conn.settleCancel(cp.ctx, w, fmt.Errorf("abandoning the copy: %w", err))
+	}
 	if err := cp.conn.settleCancel(cp.ctx, w, cp.write(tuples, rows)); err != nil {
 		return cp.fail(err)
 	}

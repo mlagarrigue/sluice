@@ -166,7 +166,11 @@ func (c *Conn) Begin(ctx context.Context, cfg TxConfig) (*Tx, error) {
 		begin += " READ ONLY"
 	}
 	w := c.watchCancel(ctx)
-	if err := c.settleCancel(ctx, w, c.execBusy(begin)); err != nil {
+	err = c.settleOwed(ctx)
+	if err == nil {
+		err = c.execBusy(begin)
+	}
+	if err := c.settleCancel(ctx, w, err); err != nil {
 		return nil, fmt.Errorf("opening the transaction: %w", err)
 	}
 	c.inTx = true
@@ -208,7 +212,11 @@ func (c *Conn) Exec(ctx context.Context, sql string) error {
 		return fmt.Errorf("abandoning the statement: %w", err)
 	}
 	w := c.watchCancel(ctx)
-	return c.settleCancel(ctx, w, c.execUser(sql))
+	err := c.settleOwed(ctx)
+	if err == nil {
+		err = c.execUser(sql)
+	}
+	return c.settleCancel(ctx, w, err)
 }
 
 // CommandTag is the server's word on a statement it completed: "UPDATE 3",

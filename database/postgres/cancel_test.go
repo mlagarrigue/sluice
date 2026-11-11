@@ -1485,6 +1485,78 @@ func TestTheOwedReadyForQueryIsReadUnderWatch(t *testing.T) {
 	}
 }
 
+// The owed ReadyForQuery is read under the next entry point's watch, so a
+// ctx that ends during that read sends its cancellation — to a backend with
+// nothing of this call to cancel, and the server's confirmation spends it.
+// The statement must not be written after that: it would run with its ctx
+// over and no cancellation left. Exec, Begin and WriteTuples abandon it as
+// they do a ctx done on arrival, and the connection stays whole.
+func TestNothingIsWrittenAfterTheCtxEndedOnTheOwedReady(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(ctx context.Context, conn *Conn) error
+	}{
+		{"Conn.Exec", func(ctx context.Context, conn *Conn) error {
+			return conn.Exec(ctx, "INSERT INTO t VALUES (1)")
+		}},
+		{"Conn.Begin", func(ctx context.Context, conn *Conn) error {
+			_, err := conn.Begin(ctx, TxConfig{})
+			return err
+		}},
+		{"Copier.WriteTuples", func(ctx context.Context, conn *Conn) error {
+			cp, err := conn.CopyFrom(ctx, "COPY t FROM STDIN (FORMAT binary)", CopyConfig{RowsPerTx: 10})
+			if err != nil {
+				return err
+			}
+			return cp.WriteTuples([]byte{0, 1, 0, 0, 0, 1, 7}, 1)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				srv, conn := newScriptedPipe(t)
+				conn.cancelKey = CancelKey{PID: 1, Secret: testSecret}
+				packets := make(chan []byte, 1)
+				conn.cancelDial = cancelHolding(0, packets) // confirms at once
+				conn.cancelTimeout = time.Second
+				sent := make(chan string, 1)
+				go func() {
+					srv.read() // the batched query
+					srv.answer()
+					srv.read() // its Sync
+					// The ReadyForQuery is held until the entry point's ctx
+					// has ended and its cancellation reached the server.
+					<-packets
+					srv.write(beReadyForQuery())
+					n, err := srv.conn.Read(srv.buf)
+					if err != nil {
+						sent <- ""
+						return
+					}
+					sent <- frontendTypes(srv.buf[:n])
+				}()
+				readAll(t, conn, "SELECT 1")
+				if !conn.readyOwed {
+					t.Fatal("setup: the batched read did not leave its ReadyForQuery owed")
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+				defer cancel()
+				err := tc.run(ctx, conn)
+				broken := conn.Err()
+				_ = conn.rw.Close() // releases the script if nothing was written
+				if got := <-sent; got != "" {
+					t.Fatalf("%s wrote %q after its ctx had ended and its cancellation was spent on the owed ReadyForQuery (returned %v)", tc.name, got, err)
+				}
+				if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrConnBroken) {
+					t.Errorf("%s = %v, want ctx's error alone", tc.name, err)
+				}
+				if broken != nil {
+					t.Errorf("the connection was broken: %v", broken)
+				}
+			})
+		})
+	}
+}
+
 // Copier.Close cancelled after the backend read its COMMIT and before it ran
 // it: the block stays open, aborted, and Close ends it with a ROLLBACK as
 // Tx.Commit does, rather than leaving the connection in a transaction. A
