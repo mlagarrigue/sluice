@@ -972,6 +972,48 @@ func TestH2RefusesHostDisagreeingWithAuthority(t *testing.T) {
 	}
 }
 
+// Host names one entity, and HTTP/1.1 answers two Host lines with a 400 (RFC
+// 9112 §3.2). A second host field is refused on HTTP/2 as well, whether or
+// not the first agrees with :authority: comparing only the first let a
+// handler, or a hop reading the last one, route on a host the check never
+// saw (RFC 9113 §8.3.1).
+func TestH2RefusesASecondHost(t *testing.T) {
+	noAuthority := literal(literal(literal(literal(literal(nil,
+		":method", "GET"), ":path", "/a"), ":scheme", "http"),
+		"host", "a.test"), "host", "b.test")
+	for _, tt := range []struct {
+		name  string
+		block []byte
+	}{
+		{"after one that agrees with :authority", headBlock("GET", "/a",
+			[2]string{":authority", "a.test"}, [2]string{"host", "a.test"}, [2]string{"host", "b.test"})},
+		{"without :authority", noAuthority},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			addr, sizes := serveTest(t, Config{}, echoTarget)
+			c := dialH2(t, addr)
+			c.frame(h2Frame{Type: frameHeaders, Flags: flagEndHeaders | flagEndStream, StreamID: 1, Payload: tt.block})
+			c.request(3, "GET", "/b")
+			c.flush()
+
+			if code := c.waitReset(1); code != 0x1 {
+				t.Errorf("stream 1 was reset with %#x, want PROTOCOL_ERROR (0x1)", code)
+			}
+			if got := h2Status(c.heads[1]); got != 400 {
+				t.Errorf("status before the reset = %d, want 400", got)
+			}
+			if got := c.bodies(2)[3]; got != "/b" {
+				t.Errorf("stream 3 answered %q; a malformed neighbour took it down", got)
+			}
+			for _, n := range sizes() {
+				if n != 1 {
+					t.Errorf("the handler saw a batch of %d; the request with two hosts reached it", n)
+				}
+			}
+		})
+	}
+}
+
 // The rapid-reset bound is a rate, not a lifetime count. A long-lived
 // connection that serves requests may go on cancelling — 257 legitimate
 // cancellations over an afternoon are not an attack — while one that only

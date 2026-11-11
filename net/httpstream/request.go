@@ -247,6 +247,16 @@ func checkRequestTrailer(h Header, protocolErr error) error {
 // a request that reaches an HTTP/1.1 hop unchecked is how a smuggled request
 // is written.
 //
+// It reads in this order:
+//
+//  1. one pass over the fields: pseudo-headers first and each once, then
+//     the regular fields held to the h1 octet rules, the connection-specific
+//     fields refused, host and content-length once each, TE held to
+//     "trailers", cookies joined;
+//  2. CONNECT, refused as malformed or as a tunnel;
+//  3. the pseudo-header values, held to the h1 request line's rules;
+//  4. the authority, required for http and https and compared with host.
+//
 // Errors wrap protocolErr; the caller maps them to its own stream error. The
 // regular fields are returned in fields' own storage, the pseudo-headers
 // dropped; declared is the content-length the head stated, or -1.
@@ -309,7 +319,14 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 		switch string(h.Name) {
 		case "host":
 			// The same rule as :authority below: a host that is not an
-			// authority is malformed, not a request with an odd host.
+			// authority is malformed, not a request with an odd host. A
+			// second one is malformed too, as two Host lines are a 400 on
+			// HTTP/1.1 (RFC 9112 §3.2): withAuthority compares one host
+			// with :authority, and a hop reading the other would route on
+			// a host nothing checked (RFC 9113 §8.3.1, RFC 9114 §4.3.1).
+			if hostSeen {
+				return req, 0, fmt.Errorf("%w: host appears twice", protocolErr)
+			}
 			hostSeen = true
 			if !validAuthority(h.Value) {
 				return req, 0, fmt.Errorf("%w: host %q is not an authority", protocolErr, h.Value)

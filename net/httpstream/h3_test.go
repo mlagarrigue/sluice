@@ -311,6 +311,24 @@ func TestH3RefusesMalformedRequests(t *testing.T) {
 			{[]byte(":scheme"), []byte("https")},
 			{[]byte("host"), []byte("")},
 		}},
+		// Host names one entity: HTTP/1.1 answers two Host lines with a 400
+		// (RFC 9112 §3.2), and comparing only the first with :authority let
+		// a hop reading the last route on a host never checked.
+		{"a second host after one that agrees with :authority", []Header{
+			{[]byte(":method"), []byte("GET")},
+			{[]byte(":path"), []byte("/x")},
+			{[]byte(":scheme"), []byte("https")},
+			{[]byte(":authority"), []byte("a.test")},
+			{[]byte("host"), []byte("a.test")},
+			{[]byte("host"), []byte("b.test")},
+		}},
+		{"two host fields without :authority", []Header{
+			{[]byte(":method"), []byte("GET")},
+			{[]byte(":path"), []byte("/x")},
+			{[]byte(":scheme"), []byte("https")},
+			{[]byte("host"), []byte("a.test")},
+			{[]byte("host"), []byte("b.test")},
+		}},
 		// RFC 9110 §5.5 keeps every C0 control but HTAB, and DEL, out of
 		// field content — not only NUL, CR and LF.
 		{"a field value with a C0 control", []Header{
