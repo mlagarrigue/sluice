@@ -592,20 +592,33 @@ func appendStatusAndHeaders(dst []byte, res Response, date []byte) ([]byte, erro
 // false, ahead of the handler's fields, which needs this pass before the one
 // that writes them. Believed, but read: a Date a sender generates MUST be an
 // IMF-fixdate (RFC 9110 §5.6.7), and one the writer could not parse is
-// refused rather than sent for a cache to misdate the entry by. The parse
-// costs only the handler that dates its own responses; the common path
-// compares four bytes per field.
+// refused rather than sent for a cache to misdate the entry by. Parsing is
+// not enough: time.Parse takes an hour of one digit, a fractional second,
+// names in lower case and a day name that is not the date's, none of which
+// IMF-fixdate produces, so the value passes only if formatting the instant it
+// names gives it back byte for byte. Date is one HTTP-date, not a list (RFC
+// 9110 §6.6.1), so a sender MUST NOT generate it twice (§5.3): a second one
+// is refused too, or a cache reading the last would date the entry by a
+// value nothing checked. The parse costs only the
+// handler that dates its own responses, without an allocation; the common
+// path compares four bytes per field.
 func datedBy(headers []Header) (dated bool, err error) {
 	for _, h := range headers {
 		// The length first, inline: most names are not four bytes long.
-		if len(h.Name) == len("date") && equalFold(h.Name, "date") {
-			if _, err := time.Parse(dateLayout, string(h.Value)); err != nil {
-				return true, fmt.Errorf("%w: the Date %q is not an IMF-fixdate", ErrMalformed, h.Value)
-			}
-			return true, nil
+		if len(h.Name) != len("date") || !equalFold(h.Name, "date") {
+			continue
+		}
+		if dated {
+			return true, fmt.Errorf("%w: a second Date, %q", ErrMalformed, h.Value)
+		}
+		dated = true
+		t, err := time.Parse(dateLayout, string(h.Value))
+		var again [len(dateLayout)]byte
+		if err != nil || !bytes.Equal(t.AppendFormat(again[:0], dateLayout), h.Value) {
+			return true, fmt.Errorf("%w: the Date %q is not an IMF-fixdate", ErrMalformed, h.Value)
 		}
 	}
-	return false, nil
+	return dated, nil
 }
 
 // noLengthAndBody applies RFC 9110 §8.6 / §9.3.2's constraint on a

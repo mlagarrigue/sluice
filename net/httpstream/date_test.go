@@ -302,3 +302,37 @@ func TestDateValueIsCachedPerSecond(t *testing.T) {
 		t.Errorf("the next second: %q", b)
 	}
 }
+
+// A Date a handler sets passes only as the IMF-fixdate of the instant it
+// names (RFC 9110 §5.6.7). time.Parse alone let through what that form never
+// produces — an hour of one digit, a fractional second, names in lower
+// case, a day name that is not the date's — and the first Date field was the
+// only one read, though Date is a singleton field.
+func TestAHandlerDateIsAnIMFFixdateOnce(t *testing.T) {
+	for _, v := range []string{
+		"Tue, 20 Oct 2026 5:04:05 GMT",
+		"Tue, 20 Oct 2026 05:04:05.5 GMT",
+		"tue, 20 oct 2026 05:04:05 GMT",
+		"Mon, 20 Oct 2026 05:04:05 GMT",
+		"Tue, 20 Oct 2026 05:04:05 UTC",
+	} {
+		if _, err := datedBy([]Header{{Name: []byte("Date"), Value: []byte(v)}}); !errors.Is(err, ErrMalformed) {
+			t.Errorf("Date %q: %v, want ErrMalformed; IMF-fixdate does not produce it", v, err)
+		}
+	}
+	for _, two := range [][]Header{
+		{{Name: []byte("Date"), Value: []byte("Tue, 20 Oct 2026 05:04:05 GMT")}, {Name: []byte("Date"), Value: []byte("yesterday")}},
+		{{Name: []byte("Date"), Value: []byte("Tue, 20 Oct 2026 05:04:05 GMT")}, {Name: []byte("date"), Value: []byte("Tue, 20 Oct 2026 05:04:05 GMT")}},
+	} {
+		if _, err := datedBy(two); !errors.Is(err, ErrMalformed) {
+			t.Errorf("two Date fields %q and %q: %v, want ErrMalformed", two[0].Value, two[1].Value, err)
+		}
+	}
+	good := []Header{{Name: []byte("X-A"), Value: []byte("1")}, {Name: []byte("Date"), Value: []byte("Tue, 20 Oct 2026 05:04:05 GMT")}}
+	if dated, err := datedBy(good); !dated || err != nil {
+		t.Fatalf("an IMF-fixdate: dated %v, %v", dated, err)
+	}
+	if n := testing.AllocsPerRun(100, func() { _, _ = datedBy(good) }); n != 0 {
+		t.Errorf("reading a handler's Date allocates %v times", n)
+	}
+}
