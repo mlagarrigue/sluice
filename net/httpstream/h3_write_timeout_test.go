@@ -204,3 +204,41 @@ func TestH3DribbleReaderIsResetWithinTheTimeout(t *testing.T) {
 		t.Errorf("the reset took %v, want under %v", took.Round(time.Millisecond), 3*timeout)
 	}
 }
+
+// A streamed response without trailers whose producer stays silent past
+// WriteTimeout after its last batch, then ends, still ends its stream: the
+// FIN takes a deadline of its own, as the trailers' write does. Under the
+// last batch's deadline, long past, the transport refused the FIN and
+// nothing reset the stream, so the client read a body that never ended.
+// The case with no pause checks the client reads EOF at all.
+func TestH3StreamedFinAfterASilenceLongerThanWriteTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		pause time.Duration
+	}{
+		{"no pause", 0},
+		{"silence past WriteTimeout", 400 * time.Millisecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, client := connPair(t, quic.DefaultConfig())
+			s := openedStream(t, server, client)
+			cfg := Config{WriteTimeout: 50 * time.Millisecond}.mustResolve()
+			producer := sluice.Stream[[]byte](func(yield func(sluice.Batch[[]byte]) bool) {
+				if !yield(sluice.Batch[[]byte]{Items: [][]byte{[]byte("abc")}}) {
+					return
+				}
+				time.Sleep(tc.pause) // a silence, not a measurement
+			})
+			r := Response{Status: 200, Stream: producer}
+			whole := writeH3Response(server, s.ID(), r, []byte("GET"), h3NoFieldSectionLimit, writeBoundOf(cfg), dateFor(time.Now()), func() {})
+			_ = s.SetReadDeadline(time.Now().Add(5 * time.Second))
+			_, err := io.ReadAll(s)
+			if !whole {
+				t.Error("writeH3Response reported the response not whole")
+			}
+			if err != nil {
+				t.Errorf("the client did not read the body to its end: %v", err)
+			}
+		})
+	}
+}

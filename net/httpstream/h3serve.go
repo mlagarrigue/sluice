@@ -1143,7 +1143,12 @@ func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSe
 		return false
 	}
 	if r.Trailers == nil {
-		return s.CloseWrite() == nil
+		// The FIN alone, under a deadline of its own: the last batch's has
+		// passed if the producer was silent longer than WriteTimeout before
+		// it ended, and the transport refuses a write past its deadline.
+		// One that fails resets the stream, so the client never waits on a
+		// body that will not end.
+		return writeH3Bounded(s, nil, true, wb)
 	}
 	tail, err := appendH3Trailers(sc.head[:0], r, fieldSection, sc)
 	if err != nil {
