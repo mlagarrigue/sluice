@@ -542,10 +542,11 @@ func TestReportOf(t *testing.T) {
 	}
 }
 
-// 204 and 304 carry no content: WriteJSON sends the status alone, with no
-// Content-Type and no error, whatever body it was handed.
-func TestWriteJSONSendsNoContentFor204And304(t *testing.T) {
-	for _, status := range []int{http.StatusNoContent, http.StatusNotModified} {
+// 204, 205 and 304 carry no content: WriteJSON sends the status alone, with
+// no Content-Type and no error, whatever body it was handed. net/http lets a
+// 205 carry a body, so nothing below WriteJSON would keep it off.
+func TestWriteJSONSendsNoContentFor204205And304(t *testing.T) {
+	for _, status := range []int{http.StatusNoContent, http.StatusResetContent, http.StatusNotModified} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			if err := web.WriteJSON(w, status, map[string]int{"a": 1}); err != nil {
 				t.Errorf("status %d: WriteJSON = %v, want nil", status, err)

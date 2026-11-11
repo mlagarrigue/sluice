@@ -92,10 +92,12 @@ func TestRenderKeepsTheStatusWhenTheBodyWillNotMarshal(t *testing.T) {
 	}
 }
 
-// A 204 or 304 has no content: no body, whatever serve returned, and no
-// Content-Type describing one. The exchange's own headers still go out.
-func TestRenderSendsNoContentFor204And304(t *testing.T) {
-	for _, status := range []int{204, 304} {
+// A 204, 205 or 304 has no content: no body, whatever serve returned, and no
+// Content-Type describing one. The exchange's own headers still go out, and
+// the response is one the transport writes: a 205 with a body is refused
+// there, and became a 500.
+func TestRenderSendsNoContentFor204205And304(t *testing.T) {
+	for _, status := range []int{204, 205, 304} {
 		ex := []Exchange{exchangeFor("GET", "/a")}
 		ex[0].Headers = append(ex[0].Headers, httpstream.Header{
 			Name: []byte("etag"), Value: []byte(`"v1"`),
@@ -113,6 +115,9 @@ func TestRenderSendsNoContentFor204And304(t *testing.T) {
 		}
 		if etag := headerOf(res, "etag"); etag != `"v1"` {
 			t.Errorf("%d: etag = %q, the exchange's own header was dropped", status, etag)
+		}
+		if _, err := httpstream.WriteBatch(nil, httpstream.Config{}, nil, out.Items); err != nil {
+			t.Errorf("%d: the transport refuses the rendered response: %v", status, err)
 		}
 	}
 }

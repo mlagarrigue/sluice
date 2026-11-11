@@ -23,8 +23,8 @@ import (
 // [web.Problems] are the defaults to reach for there.
 //
 // Every response with a body carries Content-Type: application/json, then
-// whatever [Exchange.Headers] accumulated. A 204 or 304 carries no body and
-// no Content-Type, whatever serve returned for it. A body that will not
+// whatever [Exchange.Headers] accumulated. A 204, 205 or 304 carries no
+// body and no Content-Type, whatever serve returned for it. A body that will not
 // marshal is answered as [web.WriteJSON] answers it — the intended status
 // with an empty body and no Content-Type, since a right status with no
 // document beats a wrong status with one. A
@@ -73,10 +73,11 @@ func RenderOpen(exchanges []Exchange, serve func(i, open int) (status int, body 
 			open++
 		}
 
-		// A 204 or 304 has no content (RFC 9110 §15.3.5, §15.4.5), so there
-		// is nothing for a Content-Type to describe and no body to marshal;
-		// the transport would drop the bytes anyway.
-		if status == 204 || status == 304 {
+		// A 204, 205 or 304 has no content (RFC 9110 §15.3.5, §15.3.6,
+		// §15.4.5), so there is nothing for a Content-Type to describe and
+		// no body to marshal. The transport drops the bytes of a 204 or 304
+		// and refuses those of a 205, which made a 205 rendered here a 500.
+		if status == 204 || status == 205 || status == 304 {
 			out[i] = httpstream.Response{Status: status, Headers: slices.Clone(e.Headers)}
 			continue
 		}

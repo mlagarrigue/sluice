@@ -390,10 +390,12 @@ func Remedies(as []diagnostics.Affordance) []Remedy {
 // status is committed is returned for the caller to log; there is no honest
 // way to report it to the client.
 func WriteJSON(w http.ResponseWriter, status int, body any) error {
-	// 204 and 304 carry no content (RFC 9110 §15.3.5, §15.4.5): net/http
-	// refuses the write with ErrBodyNotAllowed, so the body is not encoded
-	// and only the status goes out — the same rule web/stream's Render keeps.
-	if status == http.StatusNoContent || status == http.StatusNotModified {
+	// 204, 205 and 304 carry no content (RFC 9110 §15.3.5, §15.3.6,
+	// §15.4.5), so the body is not encoded and only the status goes out —
+	// the same rule web/stream's Render keeps. net/http refuses a body on a
+	// 204 or 304 with ErrBodyNotAllowed but sends one on a 205: the rule is
+	// kept here, not left to the server below.
+	if status == http.StatusNoContent || status == http.StatusResetContent || status == http.StatusNotModified {
 		w.WriteHeader(status)
 		return nil
 	}
