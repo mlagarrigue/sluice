@@ -277,3 +277,123 @@ func TestH2EmptyDataOnAClosedStreamDoesNotHoldTheIdleClock(t *testing.T) {
 		t.Fatalf("the connection outlived %v of empty DATA frames on a closed stream with no request in flight; want the idle close within two IdleTimeouts", 10*idle)
 	}
 }
+
+// The HTTP/2 frame reader consulted its idle clock only when its buffer was
+// empty (frameReader.fill): with any byte of a frame still short of its end,
+// it armed ReadTimeout instead, and next cleared that deadline every time a
+// batch was consumed. A peer that followed each whole frame with the first
+// byte of the next kept the buffer non-empty at every read: each round got a
+// fresh ReadTimeout, the idle clock was never read, and the connection —
+// which carried no request — was kept for as long as the peer kept sending. It is
+// TestH2PingAloneDoesNotKeepAnIdleConnection with one byte moved: that
+// test, the control, sends whole PINGs and is closed within two
+// IdleTimeouts.
+//
+// The test serves one request, then sends PING after PING, each write
+// carrying the rest of one frame and the first byte of the next. It expects
+// the GOAWAY of the idle close within ten IdleTimeouts.
+func TestH2AFramePrefixLeftInTheBufferDoesNotStopTheIdleClock(t *testing.T) {
+	const idle = 300 * time.Millisecond
+	addr, _ := serveH2(t, Config{IdleTimeout: idle, ReadTimeout: 3 * idle}, echoTarget)
+	c := dialH2(t, addr)
+	c.request(1, "GET", "/once")
+	c.flush()
+	if got := c.bodies(1)[1]; got != "/once" {
+		t.Fatalf("stream 1 answered %q", got)
+	}
+
+	ping, err := appendH2Frame(nil, h2Frame{Type: framePing, Payload: []byte("keepaliv")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.conn.Write(ping[:1]); err != nil {
+		t.Fatal(err)
+	}
+	round := append(append([]byte(nil), ping[1:]...), ping[0]) // the rest of one PING, the first byte of the next
+
+	start := time.Now()
+	tmp := make([]byte, 4096)
+	var ended error
+	for !c.sawGoAway && ended == nil && time.Since(start) < 10*idle {
+		if _, err := c.conn.Write(round); err != nil {
+			ended = err
+			break
+		}
+		_ = c.conn.SetReadDeadline(time.Now().Add(idle / 3))
+		n, err := c.conn.Read(tmp)
+		c.in = append(c.in, tmp[:n]...)
+		c.parse()
+		if err != nil {
+			var ne net.Error
+			if errors.Is(err, io.EOF) || !errors.As(err, &ne) || !ne.Timeout() {
+				ended = err
+			}
+		}
+	}
+	switch {
+	case c.sawGoAway:
+		t.Logf("GOAWAY after %v", time.Since(start))
+	case ended != nil:
+		t.Fatalf("the connection ended without a GOAWAY (%v): the test controls nothing", ended)
+	default:
+		t.Errorf("a connection fed nothing but PINGs, one byte of the next always in the reader's buffer, is still served after %v of a %v IdleTimeout; want the idle GOAWAY", time.Since(start), idle)
+	}
+}
+
+// The same with no request ever sent: the frames are connection-level
+// WINDOW_UPDATEs rather than PINGs, and ReadTimeout equals IdleTimeout. The
+// whole-frame variant is the control: it must be closed, or the test proves
+// nothing. The offset variant writes, at each round, the rest of one frame
+// and the first byte of the next, so the reader's buffer is never empty when
+// it waits.
+func TestH2WindowUpdatesOffsetByOneByteDoNotHoldAnUnusedConnection(t *testing.T) {
+	const idle = 300 * time.Millisecond
+	frame, err := appendH2Frame(nil, h2Frame{Type: frameWindowUpdate, Payload: []byte{0, 0, 0, 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(t *testing.T, offset bool) (goAway bool, ended error) {
+		t.Helper()
+		addr, _ := serveH2(t, Config{IdleTimeout: idle, ReadTimeout: idle}, echoTarget)
+		c := dialH2(t, addr)
+		round := frame
+		if offset {
+			if _, err := c.conn.Write(frame[:1]); err != nil {
+				t.Fatal(err)
+			}
+			round = append(append([]byte(nil), frame[1:]...), frame[0])
+		}
+		tmp := make([]byte, 4096)
+		for i := 0; i < 30 && !c.sawGoAway; i++ { // 30 rounds of idle/3: ten IdleTimeouts
+			if _, err := c.conn.Write(round); err != nil {
+				return c.sawGoAway, err
+			}
+			_ = c.conn.SetReadDeadline(time.Now().Add(idle / 3))
+			n, err := c.conn.Read(tmp)
+			c.in = append(c.in, tmp[:n]...)
+			c.parse()
+			if err != nil {
+				var ne net.Error
+				if errors.Is(err, io.EOF) || !errors.As(err, &ne) || !ne.Timeout() {
+					return c.sawGoAway, err
+				}
+			}
+		}
+		return c.sawGoAway, nil
+	}
+	t.Run("control: whole frames", func(t *testing.T) {
+		if goAway, ended := run(t, false); !goAway && ended == nil {
+			t.Fatal("whole WINDOW_UPDATEs kept an unused connection: the control fails, the test proves nothing")
+		}
+	})
+	t.Run("offset by one byte", func(t *testing.T) {
+		goAway, ended := run(t, true)
+		switch {
+		case goAway:
+		case ended != nil:
+			t.Fatalf("the connection ended without GOAWAY (%v): the test controls nothing", ended)
+		default:
+			t.Error("an unused connection fed WINDOW_UPDATEs, one byte of the next always buffered, is still served after ten IdleTimeouts")
+		}
+	})
+}

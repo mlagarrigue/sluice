@@ -151,17 +151,20 @@ func fuzzH2AcceptableErr(err error) bool {
 
 // A peer that stops mid-frame is cut off by ReadTimeout, and ServeH2Conn says so
 // with the socket's deadline error. That is the bound working, and the
-// fuzzer used to report it as a bug.
+// fuzzer used to report it as a bug. The frame follows a request, under a
+// long IdleTimeout: on a connection that has asked nothing, or one at rest,
+// the idle clock is the nearer deadline and ends it as an idle close.
 func TestFuzzH2AcceptsAReadTimeout(t *testing.T) {
 	client, server := net.Pipe()
 	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
 	done := make(chan error, 1)
 	go func() {
-		done <- ServeH2Conn(t.Context(), server, Config{ReadTimeout: 50 * time.Millisecond}, fuzzH2Handler)
+		done <- ServeH2Conn(t.Context(), server, Config{ReadTimeout: 50 * time.Millisecond, IdleTimeout: time.Minute}, fuzzH2Handler)
 	}()
 	go func() { _, _ = io.Copy(io.Discard, client) }()
 
 	in := append([]byte(Preface), fuzzFrame(frameSettings, 0, 0, nil)...)
+	in = append(in, fuzzFrame(frameHeaders, flagEndHeaders|flagEndStream, 1, headBlock("GET", "/"))...)
 	in = append(in, 0, 0, 8) // the first three bytes of a frame header
 	if _, err := client.Write(in); err != nil {
 		t.Fatal(err)

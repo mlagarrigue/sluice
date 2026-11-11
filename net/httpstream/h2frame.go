@@ -369,32 +369,31 @@ func (r *frameReader) fill() error {
 	// the idle deadline holds across rounds that bring no stream activity:
 	// were a PING to restart it, a connection with no stream ever opened
 	// could be held for nothing at the price of 17 bytes per IdleTimeout.
+	//
+	// A frame begun does not stop the idle clock either: a peer that sent
+	// each whole frame with the first byte of the next behind it kept the
+	// buffer from ever being empty, and the clock was never read — a
+	// connection held with no request for seventeen bytes per ReadTimeout.
+	// With nothing owed, the deadline is the nearer of the frame's and the
+	// idle clock's, and the idle clock's ending the read is the idle close.
 	for {
 		var deadline time.Time
-		owed := false
+		owed, idleCut := false, false
 		switch {
-		case r.n > 0:
-			if r.deadline.IsZero() {
-				r.deadline = time.Now().Add(r.cfg.ReadTimeout)
-			}
-			deadline = r.deadline
 		case r.busy != nil && r.busy():
 			owed = true
 			r.idleAt = time.Time{}
 			deadline = time.Now().Add(r.cfg.IdleTimeout)
-		default:
-			if r.idleAt.IsZero() || r.streamActivity {
-				wait := r.cfg.IdleTimeout
-				if !r.streamSeen {
-					// Nothing has been asked of this connection yet: the
-					// bound is the one a request has to arrive in, not the
-					// one a connection may rest between two of them.
-					wait = r.cfg.ReadTimeout
-				}
-				r.idleAt = time.Now().Add(wait)
-				r.streamActivity = false
+			if r.n > 0 {
+				deadline = r.frameDeadline()
 			}
-			deadline = r.idleAt
+		case r.n > 0:
+			deadline = r.frameDeadline()
+			if idle := r.idleClock(); idle.Before(deadline) {
+				deadline, idleCut = idle, true
+			}
+		default:
+			deadline = r.idleClock()
 		}
 		if err := r.conn.SetReadDeadline(deadline); err != nil {
 			return err
@@ -410,6 +409,9 @@ func (r *frameReader) fill() error {
 		if errors.Is(err, io.EOF) {
 			return fmt.Errorf("%w: the connection closed mid-frame", ErrH2Protocol)
 		}
+		if idleCut && isTimeout(err) {
+			return fmt.Errorf("%w: %w", errIdleTimeout, err)
+		}
 		if r.n == 0 && isTimeout(err) {
 			if owed {
 				// Silence while answers are owed is expected: a streamed
@@ -420,6 +422,32 @@ func (r *frameReader) fill() error {
 		}
 		return err
 	}
+}
+
+// frameDeadline is the bound on the frame begun in the buffer: ReadTimeout
+// from the moment its first byte waited, kept until the frame is consumed
+// (next).
+func (r *frameReader) frameDeadline() time.Time {
+	if r.deadline.IsZero() {
+		r.deadline = time.Now().Add(r.cfg.ReadTimeout)
+	}
+	return r.deadline
+}
+
+// idleClock is the idle clock with nothing owed, re-armed after stream
+// activity: IdleTimeout, or ReadTimeout while nothing has been asked of the
+// connection yet — the bound a request has to arrive in, not the one a
+// connection may rest between two of them.
+func (r *frameReader) idleClock() time.Time {
+	if r.idleAt.IsZero() || r.streamActivity {
+		wait := r.cfg.IdleTimeout
+		if !r.streamSeen {
+			wait = r.cfg.ReadTimeout
+		}
+		r.idleAt = time.Now().Add(wait)
+		r.streamActivity = false
+	}
+	return r.idleAt
 }
 
 // parseFrame reads one frame header and its payload.
