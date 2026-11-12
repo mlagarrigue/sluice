@@ -365,6 +365,11 @@ func (c *Conn) readPipeline(ctx context.Context, parts []Part, batchRows, batchB
 				return fmt.Errorf("pipeline part %d: %w (%w: %d later parts never ran)",
 					failedAt, failed, ErrPipelineAborted, skipped)
 			}
+			// Fewer cycles than parts: one part's rows went under another's
+			// index, so nothing delivered can be trusted (checkPipelinePart).
+			if part != len(parts) {
+				return c.breakConn(fmt.Errorf("%w: the server answered %d result cycles for the %d parts the pipeline sent", ErrProtocol, part, len(parts)))
+			}
 			return nil
 
 		case pgwire.BackendParseComplete, pgwire.BackendBindComplete, pgwire.BackendNoData,
