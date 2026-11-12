@@ -94,9 +94,10 @@ their fields are in the package documentation.
 > environment variables, and skip without the first: `SLUICE_PG`, the
 > server's `host:port` (`127.0.0.1:5432`); `SLUICE_PG_USER`, the role;
 > `SLUICE_PG_DB`, the database; `SLUICE_PG_PASSWORD`, the role's password.
-> Any PostgreSQL from 14 to 18 serves: one in a container, or the
-> throwaway cluster `internal/bench/scripts/pgdev.sh start` sets up and
-> exports the variables for ([Contributing](../../CONTRIBUTING.md)).
+> Any PostgreSQL from 15 to 19 serves (19 from its release candidate): one
+> in a container, or the throwaway cluster
+> `internal/bench/scripts/pgdev.sh start` sets up and exports the variables
+> for ([Contributing](../../CONTRIBUTING.md)).
 >
 > ```sh
 > SLUICE_PG=127.0.0.1:5432 SLUICE_PG_USER=sluice SLUICE_PG_DB=sluice \

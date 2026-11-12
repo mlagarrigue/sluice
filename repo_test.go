@@ -1075,6 +1075,44 @@ func TestH3SpecIsPinned(t *testing.T) {
 	}
 }
 
+// TestPostgresRangeMatchesTheCIMatrix: the postgres job plays every major the
+// PostgreSQL project still supports, and three documents name that range to
+// a reader choosing a server. A major that leaves the matrix at its end of
+// life, or one that joins it, moves them in the same commit.
+func TestPostgresRangeMatchesTheCIMatrix(t *testing.T) {
+	ci, err := os.ReadFile(".github/workflows/ci.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^\s+postgres: \[([^\]]*)\]$`).FindSubmatch(ci)
+	if m == nil {
+		t.Fatal(".github/workflows/ci.yml: no postgres: [...] matrix")
+	}
+	var majors []string
+	for _, v := range strings.Split(string(m[1]), ",") {
+		majors = append(majors, strings.Trim(strings.TrimSpace(v), `"`))
+	}
+	if len(majors) == 0 {
+		t.Fatal(".github/workflows/ci.yml: an empty postgres matrix")
+	}
+	lo, hi := majors[0], majors[len(majors)-1]
+	for file, phrase := range map[string]string{
+		"docs/guide/postgres.md":               "Any PostgreSQL from " + lo + " to " + hi + " serves",
+		"CONTRIBUTING.md":                      "PostgreSQL " + lo + " to " + hi + " (",
+		"docs/reference/protocol-positions.md": "PostgreSQL " + lo + " to " + hi + " (",
+	} {
+		page, err := os.ReadFile(file) //nolint:gosec // G304: a path from the table above
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The guide wraps its lines inside a quote block.
+		flat := strings.Join(strings.Fields(strings.ReplaceAll(string(page), "\n>", " ")), " ")
+		if !strings.Contains(flat, phrase) {
+			t.Errorf("%s does not say %q, the range the CI matrix plays (%s)", file, phrase, strings.Join(majors, ", "))
+		}
+	}
+}
+
 // TestHeavyTestsRunThroughTheirScripts: mutation and fuzzing run beside
 // nothing else, with their workers sized to the memory left and every process
 // capped (scripts/alone.sh); started directly they have none of that, and

@@ -312,13 +312,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Every major the PostgreSQL project still supports. 14 to 16 take
-        # TLS only after an SSLRequest; 17 also takes it directly, and speaks
-        # protocol 3.0 only, negotiating a 3.2 request down; 18 speaks 3.2,
-        # and with it the long cancellation key. 19 forces
-        # standard_conforming_strings on, and runs from its release
-        # candidate until it ships.
-        postgres: ["14", "15", "16", "17", "18", "19"]
+        # Every major the PostgreSQL project still supports (14 left on
+        # 2026-11-12, its end of life). 15 and 16 take TLS only after an
+        # SSLRequest; 17 also takes it directly, and speaks protocol 3.0
+        # only, negotiating a 3.2 request down; 18 speaks 3.2, and with it
+        # the long cancellation key. 19 forces standard_conforming_strings
+        # on, and runs from its release candidate until it ships. The
+        # documents that name the range tested follow this list
+        # (TestPostgresRangeMatchesTheCIMatrix).
+        postgres: ["15", "16", "17", "18", "19"]
         include:
           - postgres: "19"
             tag: "19rc1"
