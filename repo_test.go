@@ -1305,8 +1305,9 @@ func parseDir(t *testing.T, fset *token.FileSet, dir string, tests bool) []*ast.
 // no Example, each with the reason; empty while every one has its own.
 var guideFunctionsWithoutExample = map[string]string{}
 
-// A function the guides or the README present to the reader as `pkg.Func`
-// has an Example in its package (ExampleFunc, or ExampleFunc_suffix), which
+// A function the guides or the README present to the reader — as `pkg.Func`
+// in a sentence, or called as pkg.Func( in a code block — has an Example in
+// its package (ExampleFunc, or ExampleFunc_suffix), which
 // go test compiles and, when it states its output, runs: what the guide
 // shows in a sentence, the example shows working. The guides are the list of
 // what a reader meets first; a function they do not name is the godoc's.
@@ -1348,15 +1349,32 @@ func TestGuideFunctionsHaveAnExample(t *testing.T) {
 		t.Fatal(err)
 	}
 	named := map[string]bool{}
-	ref := regexp.MustCompile("`([a-z]+)\\.([A-Z][A-Za-z0-9]*)\\b")
+	// Inline code names a function by its first word; a code block shows it
+	// called, anywhere on a line. The block's own lines are what is read, so
+	// a qualified call in a sentence outside code is not counted twice.
+	inline := regexp.MustCompile("`([a-z]+)\\.([A-Z][A-Za-z0-9]*)\\b")
+	called := regexp.MustCompile(`\b([a-z]+)\.([A-Z][A-Za-z0-9]*)\(`)
+	note := func(ms [][]string) {
+		for _, m := range ms {
+			if funcs[m[1]][m[2]] && !examples[m[1]][m[2]] {
+				named[m[1]+"."+m[2]] = true
+			}
+		}
+	}
 	for _, page := range append(pages, "README.md") {
 		b, err := os.ReadFile(page) //nolint:gosec // G304: a repository path, not input
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, m := range ref.FindAllStringSubmatch(string(b), -1) {
-			if funcs[m[1]][m[2]] && !examples[m[1]][m[2]] {
-				named[m[1]+"."+m[2]] = true
+		note(inline.FindAllStringSubmatch(string(b), -1))
+		inBlock := false
+		for line := range strings.Lines(string(b)) {
+			if strings.HasPrefix(strings.TrimSpace(line), "```") {
+				inBlock = !inBlock
+				continue
+			}
+			if inBlock {
+				note(called.FindAllStringSubmatch(line, -1))
 			}
 		}
 	}
