@@ -1562,71 +1562,7 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 			if q.stale {
 				continue // a batch of the portal a re-bind destroyed
 			}
-			// Without a demand, the next batches are asked for now, before
-			// this one reaches the consumer, and at least two are kept asked
-			// for: the server produces batch k+1 while the consumer works
-			// through batch k, and finds the Execute for k+2 waiting when it
-			// is done, so it never idles for a round trip. When a round trip
-			// outlasts a batch, two are not enough for that, and the first
-			// PortalSuspended sets how many: see [depth]. Asking after delivery put
-			// that round trip on every batch, 3.0 ms of a 3.5 ms gap with pgx
-			// on a wide read, measured; one batch ahead took back a fifth of
-			// it, because the server still waited for k+1 to be read before
-			// it heard of k+2, and two kept asked for but topped up after
-			// delivery took back three fifths. The price is a first batch
-			// that arrives one write later — 5% on its p50, measured — and
-			// an early stop that drains the batches asked for.
-			//
-			// An Execute that reaches a portal already at its end is answered
-			// with no rows and a CommandComplete, which the resync discards:
-			// a portal that suspends is one the backend fetches from — a
-			// SELECT, or a statement whose RETURNING rows it holds in a store
-			// — and only the run-once kind, which never suspends, refuses a
-			// second Execute (PortalRun in the backend's pquery.c). So asking
-			// ahead is safe from the first PortalSuspended on, and never
-			// before it.
-			//
-			// A demand is timed the same way while it has no limit — a
-			// limit sizes the batch below BatchRows, and a depth timed on a
-			// short batch would be too deep for every full one after — and
-			// tops up here too while its bound holds. Topped up after
-			// delivery instead, in run, the same Executes in flight left a
-			// wide read on loopback 15% behind the same read without a
-			// demand, measured; topped up here, level with it. Right after
-			// a move it waits for run: Executes sent now would continue a
-			// portal the next move destroys, and AdvanceBy, publishing the
-			// last key delivered, moves on every batch.
-			if !q.boundAt.IsZero() && q.allowed < 0 {
-				batch := time.Since(q.boundAt)
-				var e *stmtEntry
-				if q.entry >= 0 && c.stmts != nil {
-					e = &c.stmts.entries[q.entry]
-					if e.batch == 0 || batch < e.batch {
-						e.batch = batch
-					}
-					batch = e.batch
-				}
-				q.ahead = depth(c.rtt, batch)
-				if e != nil {
-					e.ahead = q.ahead
-				}
-			}
-			q.boundAt = time.Time{}
-			// Executes sent with the query may already cover the depth.
-			if q.demand == nil || (!q.moved && q.allowed < 0) {
-				if n := q.ahead - q.asked; n > 0 {
-					if err := q.askNext(n); err != nil {
-						return false, err
-					}
-				}
-			}
-			more := q.emit(yield)
-			q.suspendedRows = q.rowsRead
-			if !more {
-				q.stopped = true
-				return true, nil // the consumer stopped; the deferred resync tidies up
-			}
-			return false, nil
+			return q.suspended(yield)
 
 		case pgwire.BackendCommandComplete, pgwire.BackendEmptyQuery:
 			if q.stale {
@@ -1687,21 +1623,7 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 			c.closeCompleted()
 
 		case pgwire.BackendBindComplete:
-			if q.stale {
-				// The re-bind's: what follows is the new portal's.
-				q.stale, q.rows, q.held = false, q.held, nil
-			}
-			// Expected, and the end of the round trip a batched read times.
-			// The first batch is timed from here too, rather than from its
-			// first DataRow, which would put a branch on every row: only the
-			// description, which costs the server nothing, comes between.
-			if !q.sentAt.IsZero() {
-				now := time.Now()
-				if d := now.Sub(q.sentAt); c.rtt == 0 || d < c.rtt {
-					c.rtt = d
-				}
-				q.sentAt, q.boundAt = time.Time{}, now
-			}
+			q.bindCompleted()
 
 		case pgwire.BackendNoData:
 			// Expected acknowledgement.
@@ -1743,6 +1665,98 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 		default:
 			return false, c.breakConn(fmt.Errorf("%w: unexpected message type %q during a query", ErrProtocol, m.Type))
 		}
+	}
+}
+
+// suspended asks ahead and hands the batch on after a PortalSuspended of
+// the live portal. It returns what readChunk returns: done when the consumer
+// stopped.
+func (q *query) suspended(yield func(sluice.Batch[Row]) bool) (done bool, err error) {
+	c := q.conn
+	// Without a demand, the next batches are asked for now, before
+	// this one reaches the consumer, and at least two are kept asked
+	// for: the server produces batch k+1 while the consumer works
+	// through batch k, and finds the Execute for k+2 waiting when it
+	// is done, so it never idles for a round trip. When a round trip
+	// outlasts a batch, two are not enough for that, and the first
+	// PortalSuspended sets how many: see [depth]. Asking after delivery put
+	// that round trip on every batch, 3.0 ms of a 3.5 ms gap with pgx
+	// on a wide read, measured; one batch ahead took back a fifth of
+	// it, because the server still waited for k+1 to be read before
+	// it heard of k+2, and two kept asked for but topped up after
+	// delivery took back three fifths. The price is a first batch
+	// that arrives one write later — 5% on its p50, measured — and
+	// an early stop that drains the batches asked for.
+	//
+	// An Execute that reaches a portal already at its end is answered
+	// with no rows and a CommandComplete, which the resync discards:
+	// a portal that suspends is one the backend fetches from — a
+	// SELECT, or a statement whose RETURNING rows it holds in a store
+	// — and only the run-once kind, which never suspends, refuses a
+	// second Execute (PortalRun in the backend's pquery.c). So asking
+	// ahead is safe from the first PortalSuspended on, and never
+	// before it.
+	//
+	// A demand is timed the same way while it has no limit — a
+	// limit sizes the batch below BatchRows, and a depth timed on a
+	// short batch would be too deep for every full one after — and
+	// tops up here too while its bound holds. Topped up after
+	// delivery instead, in run, the same Executes in flight left a
+	// wide read on loopback 15% behind the same read without a
+	// demand, measured; topped up here, level with it. Right after
+	// a move it waits for run: Executes sent now would continue a
+	// portal the next move destroys, and AdvanceBy, publishing the
+	// last key delivered, moves on every batch.
+	if !q.boundAt.IsZero() && q.allowed < 0 {
+		batch := time.Since(q.boundAt)
+		var e *stmtEntry
+		if q.entry >= 0 && c.stmts != nil {
+			e = &c.stmts.entries[q.entry]
+			if e.batch == 0 || batch < e.batch {
+				e.batch = batch
+			}
+			batch = e.batch
+		}
+		q.ahead = depth(c.rtt, batch)
+		if e != nil {
+			e.ahead = q.ahead
+		}
+	}
+	q.boundAt = time.Time{}
+	// Executes sent with the query may already cover the depth.
+	if q.demand == nil || (!q.moved && q.allowed < 0) {
+		if n := q.ahead - q.asked; n > 0 {
+			if err := q.askNext(n); err != nil {
+				return false, err
+			}
+		}
+	}
+	more := q.emit(yield)
+	q.suspendedRows = q.rowsRead
+	if !more {
+		q.stopped = true
+		return true, nil // the consumer stopped; the deferred resync tidies up
+	}
+	return false, nil
+}
+
+// bindCompleted handles a BindComplete.
+func (q *query) bindCompleted() {
+	c := q.conn
+	if q.stale {
+		// The re-bind's: what follows is the new portal's.
+		q.stale, q.rows, q.held = false, q.held, nil
+	}
+	// Expected, and the end of the round trip a batched read times.
+	// The first batch is timed from here too, rather than from its
+	// first DataRow, which would put a branch on every row: only the
+	// description, which costs the server nothing, comes between.
+	if !q.sentAt.IsZero() {
+		now := time.Now()
+		if d := now.Sub(q.sentAt); c.rtt == 0 || d < c.rtt {
+			c.rtt = d
+		}
+		q.sentAt, q.boundAt = time.Time{}, now
 	}
 }
 
