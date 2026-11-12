@@ -1,9 +1,47 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
+
+// TestCertificateIsVerifiedUnlessAsked: against the trivial server, whose
+// certificate is generated at startup, a stage verifies the certificate by
+// default and gets no answer; the same stage under -no-verify is served
+// whole. -no-verify beside -ca is refused before anything is sent.
+func TestCertificateIsVerifiedUnlessAsked(t *testing.T) {
+	s := startTrivial(t, 10000)
+	args := []string{
+		"-url", s.URL, "-proto", protoH1, "-keyspace", "10000", "-warmup", "0", "-drain", "0",
+		"-scenario", "unit", "-rate", "100", "-duration", "300ms", "-conns", "2",
+	}
+	for _, verify := range []bool{true, false} {
+		a := args
+		if !verify {
+			a = append(append([]string{}, args...), "-no-verify")
+		}
+		c, err := parse(a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl, err := c.newClient()
+		if err != nil {
+			t.Fatal(err)
+		}
+		rep, _, err := c.stage.run(context.Background(), cl)
+		cl.close()
+		switch {
+		case verify && err == nil && rep.OK > 0:
+			t.Errorf("verifying: %d answers ok from a certificate nobody signed", rep.OK)
+		case !verify && (err != nil || rep.Failed()):
+			t.Errorf("-no-verify: err %v, %d ok of %d sent", err, rep.OK, rep.Sent)
+		}
+	}
+	if _, err := parse(append(append([]string{}, args...), "-no-verify", "-ca", "ca.pem")); err == nil {
+		t.Error("-no-verify with -ca accepted")
+	}
+}
 
 // TestClear: HTTP/1.1 in clear (TLS off, the study's level 2) is a stage
 // like any other, no handshake in it and "none" published; HTTP/2 and

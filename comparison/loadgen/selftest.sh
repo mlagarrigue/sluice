@@ -49,7 +49,7 @@ for sc in $SCENARIOS; do
     for enc in $ENCODINGS; do
       cell=$sc-$p-$enc
       log=$OUT/$cell.jsonl
-      "$bin" -url "https://$ADDR" -proto "$p" -scenario "$sc" -encoding "$enc" -rates "$RATES" \
+      "$bin" -no-verify -url "https://$ADDR" -proto "$p" -scenario "$sc" -encoding "$enc" -rates "$RATES" \
         -duration "$DURATION" -warmup "$WARMUP" -drain "$DRAIN" -keyspace "$KEYSPACE" \
         -max-conns "$MAX_CONNS" -cpuprofile "$OUT/$cell.prof" > "$log" 2> "$OUT/$cell.err" || true
       held=$(jq -r 'select(.held) | .rate' "$log" | tail -1)

@@ -90,12 +90,16 @@ func (c campaign) newClient() (*client, error) {
 	case protoH3:
 		// quic-go sets "h3" itself.
 	}
-	if st.ca == "" {
-		// The apparatus talks to a server it started itself, often under a
-		// certificate generated at startup; -ca is for the campaign, whose
-		// certificate is fixed and published.
-		cfg.InsecureSkipVerify = true //nolint:gosec // G402: see above
-	} else {
+	// The certificate is verified unless -no-verify says otherwise: against
+	// -ca when given (the campaign, whose certificate is fixed and
+	// published), else against the system's roots. -no-verify is for a
+	// server the apparatus started itself under a certificate generated at
+	// startup, and must be asked for: a generator pointed at a real host
+	// never trusts it blindly by default.
+	switch {
+	case st.noVerify:
+		cfg.InsecureSkipVerify = true //nolint:gosec // G402: asked for by -no-verify, see above
+	case st.ca != "":
 		pem, err := os.ReadFile(st.ca)
 		if err != nil {
 			return nil, err

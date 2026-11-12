@@ -339,7 +339,7 @@ func (s *trivialServer) close() {
 }
 
 // selfSigned is a certificate for 127.0.0.1 and localhost, valid a day: the
-// generator trusts any certificate when -ca is empty.
+// generator accepts it under -no-verify.
 func selfSigned() (tls.Certificate, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {

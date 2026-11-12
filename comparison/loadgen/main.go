@@ -127,6 +127,7 @@ type stage struct {
 	keyspace int
 	seed     uint64
 	ca       string
+	noVerify bool          // -no-verify: any certificate, for a server that made its own at startup
 	slo      time.Duration // X: the p99 the scenario must hold (§3.2)
 	rtt      time.Duration // the RTT injected on the wire, for C only (§3.5)
 	newConns int           // percent of requests that open a fresh connection (§3.6)
@@ -184,7 +185,8 @@ func parse(args []string) (campaign, error) {
 	fs.StringVar(&name, "scenario", "unit", "static, unit, list, write or mixed (80 % unit, 15 % list, 5 % write)")
 	fs.IntVar(&st.keyspace, "keyspace", 100000, "ids the table holds, 1..keyspace; every request draws a different one")
 	fs.Uint64Var(&st.seed, "seed", 1, "seed of the draw, the same for every contender of a round (§2.1)")
-	fs.StringVar(&st.ca, "ca", "", "PEM file of the CA that signed the server's certificate; empty trusts any certificate")
+	fs.StringVar(&st.ca, "ca", "", "PEM file of the CA that signed the server's certificate; empty verifies it against the system's roots")
+	fs.BoolVar(&st.noVerify, "no-verify", false, "accept any certificate from the server: for one that generated its own at startup (the trivial server, a local or chained run of the study's); never with -ca")
 	fs.DurationVar(&st.slo, "slo", 0, "X: the p99 to hold; 0 takes the scenario's (static 10ms, unit and write 25ms, list 100ms, mixed 50ms). A request unanswered 10 X + 4 RTT after it was due timed out")
 	fs.DurationVar(&st.rtt, "rtt", 0, "the round trip injected on the wire, for the budget C = 2 R (RTT + X) of a ramp and the deadline 10 X + 4 RTT of a request")
 	fs.StringVar(&st.encoding, "encoding", "identity", "the content coding asked for in Accept-Encoding: identity, gzip or deflate (br and zstd once their decoders are in go.mod)")
@@ -238,6 +240,8 @@ func parse(args []string) (campaign, error) {
 		return c, fmt.Errorf("-url %s: in clear, -proto h1 only (h2c is not a configuration of the study, QUIC is always TLS)", st.url)
 	case !strings.HasPrefix(st.url, "http://") && !strings.HasPrefix(st.url, "https://"):
 		return c, fmt.Errorf("-url %s: want http:// or https://", st.url)
+	case st.noVerify && st.ca != "":
+		return c, fmt.Errorf("-no-verify with -ca %s: verify against the CA, or accept any certificate, not both", st.ca)
 	}
 	if st.slo == 0 {
 		st.slo = defaultSLO[name]

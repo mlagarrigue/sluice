@@ -18,6 +18,11 @@ import (
 // the test asks for them, since a test runs its stages back to back.
 func testCampaign(tb testing.TB, proto, url string, args ...string) campaign {
 	tb.Helper()
+	// The test servers make their certificates at startup: -no-verify, as
+	// for every server the apparatus starts itself.
+	if strings.HasPrefix(url, "https://") {
+		args = append([]string{"-no-verify"}, args...)
+	}
 	c, err := parse(append([]string{"-url", url, "-proto", proto, "-keyspace", "10000", "-warmup", "0", "-drain", "0"}, args...))
 	if err != nil {
 		tb.Fatal(err)

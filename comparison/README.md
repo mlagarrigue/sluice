@@ -95,7 +95,7 @@ docker build -f comparison/sluice/Dockerfile --target opt -t sluice-study:opt . 
 docker build -f comparison/sluice/Dockerfile --target doc -t sluice-study:doc .
 docker build -f comparison/loadgen/Dockerfile -t sluice-loadgen .
 docker run -d --name study --network <net> -e PGHOST=… -e PGUSER=… -e PGPASSWORD -e PGDATABASE=… sluice-study:opt
-docker run --rm --network <net> sluice-loadgen -conformance https://<reference>:8443 -url https://study:8443
+docker run --rm --network <net> sluice-loadgen -no-verify -conformance https://<reference>:8443 -url https://study:8443
 ```
 
 Two versions of the server's image (§1.4, §2.4): `doc` is what Docker's
@@ -482,7 +482,7 @@ and reads it the same way. What it must honour:
 ### Checking a contender against R
 
 ```
-go run -C comparison/loadgen . -conformance https://127.0.0.1:8443 -url https://127.0.0.1:9443 -checks 300
+go run -C comparison/loadgen . -no-verify -conformance https://127.0.0.1:8443 -url https://127.0.0.1:9443 -checks 300
 ```
 
 Before a series, every contender answers the requests a seed draws — unit
@@ -595,10 +595,10 @@ URL) under `-proto h1` (HTTP/1.1, the default),
   resumed a session (`-tls-resume`).
 
 ```
-go run -C comparison/loadgen . -url https://127.0.0.1:8443 -scenario list -rate 200 -duration 5s
-go run -C comparison/loadgen . -url https://127.0.0.1:8443 -scenario list -rate 200 -encoding gzip
-go run -C comparison/loadgen . -url https://127.0.0.1:8443 -scenario unit -proto h3 -rates 1000,4000 -duration 3s
-go run -C comparison/loadgen . -h       # every flag; -ca verifies the server, empty trusts it
+go run -C comparison/loadgen . -no-verify -url https://127.0.0.1:8443 -scenario list -rate 200 -duration 5s
+go run -C comparison/loadgen . -no-verify -url https://127.0.0.1:8443 -scenario list -rate 200 -encoding gzip
+go run -C comparison/loadgen . -no-verify -url https://127.0.0.1:8443 -scenario unit -proto h3 -rates 1000,4000 -duration 3s
+go run -C comparison/loadgen . -h       # every flag; -ca names the CA, -no-verify accepts a certificate made at startup
 ```
 
 The exit status is 1 when the stage is not a measurement: any request
@@ -711,8 +711,8 @@ rows are one byte array, a list is a slice of it between two offsets), the
 generator's validation at 100 % on. It is the same binary under `-trivial`,
 run as a process of its own so that its goroutines never share the
 generator's scheduler, serving HTTP/1.1 and HTTP/2 on TCP and HTTP/3 on UDP
-at the same port, under a certificate generated at startup (`-ca` empty
-trusts it). Asked for gzip or deflate, it compresses every 200 on the fly
+at the same port, under a certificate generated at startup (`-no-verify`
+accepts it). Asked for gzip or deflate, it compresses every 200 on the fly
 at level 1, the level the study compares at (§2.3 bis), with encoders
 reused from a pool: ~90 µs for a list page, a third of what the generator
 spends decoding and checking it. A page cannot be compressed once at

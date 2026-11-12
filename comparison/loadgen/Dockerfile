@@ -2,7 +2,7 @@
 # §0). Build from the repository root, like the server's image:
 #
 #   docker build -f comparison/loadgen/Dockerfile -t sluice-loadgen .
-#   docker run --rm --network <net> sluice-loadgen -url https://<server>:8443 -scenario unit -rate 1000
+#   docker run --rm --network <net> sluice-loadgen -no-verify -url https://<server>:8443 -scenario unit -rate 1000
 #
 # The module has no replace (it shares no code with the framework it
 # measures), so only its own files enter the build. The binary is static,

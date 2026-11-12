@@ -125,7 +125,7 @@ host_cpu() {
 metrics_point() {
   local name=$CHAIN-metrics-$RANDOM
   docker run -d --name "$name" --network "container:$tnet" "$TESTER_IMAGE" \
-    -metrics -url "https://$web:8443" -proto "$PROTO" >/dev/null
+    -metrics -no-verify -url "https://$web:8443" -proto "$PROTO" >/dev/null
   docker wait "$name" >/dev/null
   docker logs "$name" 2>/dev/null || echo null
   docker rm "$name" >/dev/null
@@ -239,7 +239,7 @@ launch() {
   local ready=$CHAIN-ready
   docker rm -f "$web" "$ready" >/dev/null 2>&1 || true
   docker run -d --name "$ready" --network "container:$tnet" "$TESTER_IMAGE" \
-    -ready "${READY_WITHIN:-120s}" -url "https://$web:8443" -proto "$PROTO" \
+    -ready "${READY_WITHIN:-120s}" -no-verify -url "https://$web:8443" -proto "$PROTO" \
     -scenario "$SCENARIO" -keyspace "$ROWS" >/dev/null
   until [ "$(docker inspect "$ready" --format '{{.State.Running}}' 2>/dev/null)" = true ]; do
     [ "$(docker inspect "$ready" --format '{{.State.Status}}')" = exited ] && break
@@ -291,7 +291,7 @@ boot() {
   docker rm -f "$tester" >/dev/null 2>&1 || true
   docker run -d --name "$tester" --network "container:$tnet" --cpuset-cpus "$TESTER_CPUS" \
     --ulimit nofile="$NOFILE:$NOFILE" \
-    "$TESTER_IMAGE" -url "https://$web:8443" -proto "$PROTO" -scenario "$SCENARIO" \
+    "$TESTER_IMAGE" -no-verify -url "https://$web:8443" -proto "$PROTO" -scenario "$SCENARIO" \
     -profile plateau -window "$window" -rate "$RATE" -duration "$settle" -warmup 0s \
     -keyspace "$ROWS" -rtt "$RTT" -seed "$SEED" -conns "$CONNS" >/dev/null
   docker wait "$tester" >/dev/null
@@ -391,7 +391,7 @@ SQL
 
   docker run -d --name "$tester" --network "container:$tnet" --cpuset-cpus "$TESTER_CPUS" \
     --ulimit nofile="$NOFILE:$NOFILE" \
-    "$TESTER_IMAGE" -url "https://$web:8443" -proto "$PROTO" -scenario "$SCENARIO" \
+    "$TESTER_IMAGE" -no-verify -url "https://$web:8443" -proto "$PROTO" -scenario "$SCENARIO" \
     -rate "$RATE" -duration "$DURATION" -warmup "$WARMUP" -keyspace "$ROWS" -rtt "$RTT" \
     -seed "$SEED" -conns "$CONNS" >/dev/null
   local code; code=$(docker wait "$tester")
