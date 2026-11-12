@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -515,4 +516,24 @@ func TestShutdownStopsWaitingWhenItsContextEnds(t *testing.T) {
 			t.Errorf("Close once the pipeline returned: %v", err)
 		}
 	})
+}
+
+// What is queued when the gateway closes leaves in full batches, as it would
+// have open: closing changes when the calls are served, not how many share a
+// batch.
+func TestDrainClosingServesFullBatches(t *testing.T) {
+	g := &Gateway[int, string]{in: make(chan *Call[int, string], 8), size: 4}
+	var sizes []int
+	b := &batcher[int, string]{g: g, timer: time.NewTimer(time.Hour), yield: func(batch sluice.Batch[*Call[int, string]]) bool {
+		sizes = append(sizes, len(batch.Items))
+		return true
+	}}
+	defer b.timer.Stop()
+	for i := range 8 {
+		g.in <- &Call[int, string]{In: i}
+	}
+	b.drainClosing()
+	if !slices.Equal(sizes, []int{4, 4}) {
+		t.Errorf("batches of %v at close, want [4 4]", sizes)
+	}
 }
