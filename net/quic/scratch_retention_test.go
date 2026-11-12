@@ -18,6 +18,9 @@ func TestTheReceiveScratchesDoNotKeepOnePacketsSize(t *testing.T) {
 		[]byte("dcid0000"), []byte("scid0000"), false, DefaultConfig())
 	defer c.Close()
 	installAppSealer(t, c)
+	// A registered callback, under the credit mode that settles on
+	// delivery: settleScratch is filled only there (settleBatchConsumption).
+	c.OnStreamFrames(CreditOnDelivery, func([]Frame) error { return nil })
 	const parked = 40 << 10
 	data := make([]byte, parked)
 	ids := []uint64{0, 4, 8, 12}
@@ -51,6 +54,9 @@ func TestTheReceiveScratchesDoNotKeepOnePacketsSize(t *testing.T) {
 		if f.Data != nil {
 			t.Fatal("the parse scratch keeps a frame, and the packet buffer it points into, past the packet")
 		}
+	}
+	if cap(c.settleScratch) == 0 {
+		t.Fatal("the settle scratch was never used: its clause proves nothing")
 	}
 	for _, s := range c.settleScratch[:cap(c.settleScratch)] {
 		if s.s != nil {
