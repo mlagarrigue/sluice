@@ -70,6 +70,11 @@ table of its latest complete pass is on the
 [`interop-results` branch](https://github.com/mlagarrigue/sluice/tree/interop-results);
 a failed case, or a direction that wrote no results, is run once more.
 
+A Sunday pass is what the [exit condition](exit-conditions.md) counts, and
+none has finished green yet (three, from 2026-10-25 to 2026-11-08), while
+passes started by hand have; every pass, scheduled or by hand, is listed on
+the workflow's page.
+
 `interop/expected-results.json` records
 every case of every implementation the workflow crosses, with the cause
 of every failure, and a pass that departs from it fails the job. Green

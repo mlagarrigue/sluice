@@ -19,7 +19,8 @@ version to the next. Production use. For QUIC, **interoperability** beyond
 the runner's peers: everything is checked against itself, against the
 examples published in the standard (RFC 9001), against a test harness that
 loses, shuffles and forges packets, and against the implementations written
-by someone else that the QUIC Interop Runner crosses every Sunday
+by someone else that the QUIC Interop Runner crosses every Sunday, in a
+weekly pass that has not finished green yet
 ([the detail](../reference/protocol-positions.md#the-interop-runner-in-detail)) — which is serious,
 but a test bench is not a real network, nor its peers every peer. A
 review by security specialists. Fuzzing

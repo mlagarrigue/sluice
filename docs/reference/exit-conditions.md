@@ -19,8 +19,9 @@ bullet per package, each condition in it checkable:
   - *Interop*: the *QUIC Interop Runner*'s weekly workflow green, not a
     pass started by hand, with `interop/expected-results.json` unchanged:
     every case against quic-go and ngtcp2, each direction, passing or
-    failing for its written cause. Not yet: only passes started by hand
-    have been ([in detail](protocol-positions.md#the-interop-runner-in-detail)).
+    failing for its written cause. Not yet: the weekly pass runs every
+    Sunday, and none has finished green so far
+    ([in detail](protocol-positions.md#the-interop-runner-in-detail)).
   - *Review*: an external review of the handshake and key handling,
     linked from `SECURITY.md`. Not done.
   - *Measurement*: throughput and latency against a real third-party
