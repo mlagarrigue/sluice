@@ -33,11 +33,16 @@ setting costs — is read by the `audit/` module, which changes nothing
 ## HTTP/1.1 exposed directly
 
 Supported by construction, with no proxy in front. Parsing refuses anything
-two hops could read differently: obsolete line folding, a space before the
-colon, control characters, `Transfer-Encoding` next to `Content-Length`. An
-absolute-form target (`GET http://host/path`) is served as the origin-form
-it holds (`GET /path`), its authority taking the Host's place. A proxy that
-re-splits chunks is not required.
+two hops could read differently: obsolete **line folding** (a header
+continued on the next line by leading whitespace — `X-A: one`, then
+` two` — which one reader joins and another splits), a space before the
+colon (`Host : example.com`), control characters, `Transfer-Encoding` next
+to `Content-Length` (two ways of saying where the body ends). A request's
+target comes in two forms: **origin-form**, the path alone (`GET /path`),
+what a client sends to the server; and **absolute-form**, the whole URL
+(`GET http://host/path`), what a client sends to a proxy. An absolute-form
+target is served as the origin-form it holds, its authority taking the
+Host's place. A proxy that re-splits chunks is not required.
 
 Where it is decided: `net/httpstream/request.go`, `splitRequestLine` and
 `parseHeaders`.
@@ -177,6 +182,27 @@ bare socket.
 ```go
 tlsConfig := &tls.Config{
     Certificates: []tls.Certificate{cert},
+    MinVersion:   tls.VersionTLS13,
+    NextProtos:   []string{"h2", "http/1.1"}, // ALPN: a browser opens HTTP/2 this way only
+}
+err := httpstream.Serve(ctx, tls.NewListener(ln, tlsConfig), httpstream.Config{}, handle)
+```
+
+Every TLS 1.3 suite is **AEAD** (encryption and authentication in one pass),
+and Go picks them itself. **ALPN** is the TLS extension by which client and
+server agree on the protocol inside. The package itself checks nothing of
+what was negotiated: it reads neither the version, nor the suite, nor the
+ALPN, and the preface picks the protocol, as in clear text.
+
+For clients still on TLS 1.2, list the suites, to keep them off those
+RFC 9113 (Appendix A) prohibits for HTTP/2; the compression and
+renegotiation it prohibits too, `crypto/tls` never does on the server side.
+`scripts/interop-http.sh` replays curl and h2spec over `https://` with
+exactly this configuration:
+
+```go
+tlsConfig := &tls.Config{
+    Certificates: []tls.Certificate{cert},
     MinVersion:   tls.VersionTLS12,
     CipherSuites: []uint16{ // TLS 1.2 only: TLS 1.3 picks its own, all AEAD
         tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
@@ -186,21 +212,9 @@ tlsConfig := &tls.Config{
         tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
         tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
     },
-    NextProtos: []string{"h2", "http/1.1"}, // ALPN: a browser opens HTTP/2 this way only
+    NextProtos: []string{"h2", "http/1.1"},
 }
-err := httpstream.Serve(ctx, tls.NewListener(ln, tlsConfig), httpstream.Config{}, handle)
 ```
-
-TLS 1.3 alone would do (`MinVersion: tls.VersionTLS13`, no `CipherSuites`):
-all of its suites are **AEAD** (encryption and authentication in one pass)
-and Go picks them itself. The list only serves clients still on TLS 1.2, to
-keep them off the suites RFC 9113 (Appendix A) prohibits for HTTP/2; the
-compression and renegotiation it prohibits too, `crypto/tls` never does on
-the server side. ALPN is the TLS extension by which client and server agree
-on the protocol inside. The package itself checks nothing of what was
-negotiated: it reads neither the version, nor the suite, nor the ALPN, and
-the preface picks the protocol, as in clear text. `scripts/interop-http.sh`
-replays curl and h2spec over `https://` with exactly this configuration.
 
 ## Settings at deployment
 
@@ -246,14 +260,15 @@ counters your program reads when it likes
 > **In plain words:** plug the `Logger` into your service's log, and
 > export the counters you want to follow through your own metrics.
 
-## HTTP/3: flow-control credit, in every section
+## HTTP/3: when the server grants credit
 
 One behavior of `ServeH3Conn` completes the sections above without fitting
 in one. Its server grants a stream new flow-control credit — the right to
 send more bytes — only once it has released the bytes it holds (*manual
 credit*), so that what a client sends stays under the announced windows.
 That mode turns on only if the windows the connection announces cover the
-layer's *admission bounds*: under `BodyWhole`, `MaxBodyBytes` per stream,
+layer's *admission bounds* — the most it agrees to hold for a request
+before the handler reads it: under `BodyWhole`, `MaxBodyBytes` per stream,
 four times that across the connection, and room for headers; when bodies
 stream, a request's head. On smaller windows the transport grants credit
 as data arrives, and the ceilings of `Config` bound what is held
