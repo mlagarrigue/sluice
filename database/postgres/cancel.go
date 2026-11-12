@@ -62,6 +62,24 @@ func (k CancelKey) String() string {
 // fields one by one and the secret among them.
 func (k CancelKey) GoString() string { return k.String() }
 
+// String names the connection by its backend's PID and by nothing else. A
+// Conn holds its cancellation key's secret ([CancelKey]) in an unexported
+// field, on which fmt calls no method: without String, a *Conn handed to a
+// format verb or to a slog handler was printed field by field, the secret
+// among them.
+func (c *Conn) String() string {
+	switch {
+	case c == nil:
+		return "postgres.Conn(nil)"
+	case !c.cancelKey.Known():
+		return "postgres.Conn{}"
+	}
+	return fmt.Sprintf("postgres.Conn{PID: %d}", c.cancelKey.PID)
+}
+
+// GoString hides the secret from %#v too.
+func (c *Conn) GoString() string { return c.String() }
+
 // CancelKey returns the cancellation key the server sent during startup, for
 // use with [CancelRequest]. It is zero — and [CancelKey.Known] is false — on a
 // connection built by [NewConn].
