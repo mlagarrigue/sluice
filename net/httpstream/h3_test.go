@@ -56,7 +56,7 @@ func h3Request(method, path string, extra ...[2]string) []byte {
 }
 
 // streamFrame wraps stream bytes as the QUIC frame that would carry them.
-func streamFrame(id uint64, data []byte, fin bool) quic.Frame {
+func streamFrame(id quic.StreamID, data []byte, fin bool) quic.Frame {
 	return quic.Frame{Type: quic.FrameStream, StreamID: id, Data: data, Fin: fin}
 }
 
@@ -68,7 +68,7 @@ func streamFrame(id uint64, data []byte, fin bool) quic.Frame {
 // read loop, the handler off it — which is what a server must do and what a
 // test of the assembly alone does not need.
 func serveH3Datagram(a *h3Assembler, frames []quic.Frame, handle Handler) (
-	heads map[uint64][]byte, bodies map[uint64]sluice.Stream[[]byte], failed []h3StreamError, err error,
+	heads map[quic.StreamID][]byte, bodies map[quic.StreamID]sluice.Stream[[]byte], failed []h3StreamError, err error,
 ) {
 	batch, ids, failed, err := a.Frames(frames)
 	if err != nil || batch.Len() == 0 {
@@ -78,8 +78,8 @@ func serveH3Datagram(a *h3Assembler, frames []quic.Frame, handle Handler) (
 	if err != nil {
 		return nil, nil, failed, err
 	}
-	heads = make(map[uint64][]byte, len(ids))
-	bodies = make(map[uint64]sluice.Stream[[]byte], len(ids))
+	heads = make(map[quic.StreamID][]byte, len(ids))
+	bodies = make(map[quic.StreamID]sluice.Stream[[]byte], len(ids))
 	for i, id := range ids {
 		if heads[id], err = appendH3ResponseBasic(nil, res[i]); err != nil {
 			return nil, nil, failed, err
@@ -99,7 +99,7 @@ func TestH3RequestsFromOneDatagramAreOneBatch(t *testing.T) {
 	a := testAssembler(Config{})
 	var frames []quic.Frame
 	for i := range 4 {
-		id := uint64(4 * i) // client-initiated bidirectional
+		id := quic.StreamID(4 * i) // client-initiated bidirectional
 		frames = append(frames, streamFrame(id, h3Request("GET", fmt.Sprintf("/r%d", i)), true))
 	}
 
@@ -122,7 +122,7 @@ func TestH3RequestsFromOneDatagramAreOneBatch(t *testing.T) {
 		t.Fatalf("%d streams answered, want 4", len(out))
 	}
 	for i := range 4 {
-		id := uint64(4 * i)
+		id := quic.StreamID(4 * i)
 		if len(out[id]) == 0 {
 			t.Errorf("stream %d got no answer", id)
 		}
@@ -1130,9 +1130,9 @@ func refusesH3Params(t *testing.T, mutate func(*quic.Config), cfg Config, want s
 // body stays unreleased for the responder to settle.
 func TestH3AssemblerManualCreditBalances(t *testing.T) {
 	a := testAssembler(Config{})
-	released := make(map[uint64]uint64)
+	released := make(map[quic.StreamID]uint64)
 	var releasedTotal uint64
-	a.Credit = func(id, n uint64) {
+	a.Credit = func(id quic.StreamID, n uint64) {
 		released[id] += n
 		releasedTotal += n
 	}
@@ -1634,7 +1634,7 @@ func TestH3LongReservedFrameIsSkippedUnbuffered(t *testing.T) {
 	t.Run("on a request stream", func(t *testing.T) {
 		a := testAssembler(cfg)
 		var released uint64
-		a.Credit = func(_, n uint64) { released += n }
+		a.Credit = func(_ quic.StreamID, n uint64) { released += n }
 		stream := append(reserved(), make([]byte, long)...)
 		stream = append(stream, h3Request("GET", "/after")...)
 		var served int
@@ -2113,7 +2113,7 @@ func TestQPACKListBoundIsAHeadersBound(t *testing.T) {
 
 // h3StreamOf returns the stream with this identifier on c, failing the test
 // when the stream limits refuse it.
-func h3StreamOf(t *testing.T, c *quic.Conn, id uint64) *quic.Stream {
+func h3StreamOf(t *testing.T, c *quic.Conn, id quic.StreamID) *quic.Stream {
 	t.Helper()
 	s, err := c.Stream(id)
 	if err != nil {

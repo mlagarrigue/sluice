@@ -83,6 +83,14 @@ behavior that keep the signatures — a value now refused — come last.
 
 ### QUIC: `net/quic`
 
+- **A stream identifier is a `quic.StreamID`**
+  (`feat(quic)!: a stream identifier is a StreamID`):
+  `Conn.Stream`, `Conn.ReleaseStreamBytes`, `Conn.ReleaseStreamCredit`,
+  `Stream.ID` and `Frame.StreamID` take or return a `StreamID` where they
+  took a `uint64`, so that an identifier and a byte count passed in the
+  wrong order, `ReleaseStreamBytes(n, id)`, no longer compile. A variable
+  taken from `Stream.ID` or `Frame.StreamID`, and a literal constant, need
+  nothing; a `uint64` from elsewhere is written `quic.StreamID(x)`.
 - **`Dial`, `DialEarly` and `NewListener` take a `quic.Config`**
   (`fbea267`): it embeds
   `TransportParameters`, what is announced to the peer, beside the three
@@ -115,7 +123,7 @@ behavior that keep the signatures — a value now refused — come last.
   vanished was held until the application closed it. A configuration that
   wanted connections to live long sets a long duration (`24 * time.Hour`).
 - **`DiscardedPackets` no longer counts failed socket reads**
-  (`feat(quic): socket read failures counted apart`):
+  (`f469c26`):
   `Listener.DiscardedPackets` and `Stats.DiscardedPackets` count datagrams
   and packets only; a failed read of the socket goes to the new
   `Listener.ReadErrors` and `Stats.ReadErrors`. A monitor that watched

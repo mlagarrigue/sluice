@@ -11,13 +11,13 @@ import (
 
 // streamFrame encodes one STREAM frame with its offset and length fields,
 // and the FIN bit when asked.
-func streamFrame(dst []byte, id, off uint64, data string, fin bool) []byte {
+func streamFrame(dst []byte, id StreamID, off uint64, data string, fin bool) []byte {
 	typ := uint64(FrameStream | streamOFF | streamLEN)
 	if fin {
 		typ |= streamFIN
 	}
 	dst = varint.Append(dst, typ)
-	dst = varint.Append(dst, id)
+	dst = appendStreamID(dst, id)
 	dst = varint.Append(dst, off)
 	dst = varint.Append(dst, uint64(len(data)))
 	return append(dst, data...)
@@ -25,12 +25,12 @@ func streamFrame(dst []byte, id, off uint64, data string, fin bool) []byte {
 
 // lateFrames are the four frames a peer may still have in flight for a
 // stream that closed at this end.
-func lateFrames(id uint64) map[string][]byte {
+func lateFrames(id StreamID) map[string][]byte {
 	return map[string][]byte{
 		"STREAM":          streamFrame(nil, id, 0, "req", true),
-		"MAX_STREAM_DATA": appendFrame(nil, frameMaxStreamData, id, 1<<20),
-		"STOP_SENDING":    appendFrame(nil, FrameStopSending, id, 0),
-		"RESET_STREAM":    appendFrame(nil, FrameResetStream, id, 0, 3),
+		"MAX_STREAM_DATA": appendStreamFrame(nil, frameMaxStreamData, id, 1<<20),
+		"STOP_SENDING":    appendStreamFrame(nil, FrameStopSending, id, 0),
+		"RESET_STREAM":    appendStreamFrame(nil, FrameResetStream, id, 0, 3),
 	}
 }
 
@@ -53,12 +53,12 @@ func TestGhostStream(t *testing.T) {
 	defer c.Close()
 
 	const streams = 4096
-	for i := range uint64(streams) {
+	for i := range StreamID(streams) {
 		id := 4 * i // the peer's bidirectional streams, seen from this server
 		// The peer's request with its FIN, then its STOP_SENDING: both
 		// directions end in one packet and the stream leaves the table.
 		payload := streamFrame(nil, id, 0, "req", true)
-		payload = appendFrame(payload, FrameStopSending, id, 0)
+		payload = appendStreamFrame(payload, FrameStopSending, id, 0)
 		if err := c.frames(spaceApplication, payload, time.Now()); err != nil {
 			t.Fatalf("stream %d: %v", id, err)
 		}
@@ -79,7 +79,7 @@ func TestGhostStream(t *testing.T) {
 		t.Fatalf("%d streams still in the table after every one closed", live)
 	}
 
-	for _, id := range []uint64{0, 4, 4 * (streams - 1)} {
+	for _, id := range []StreamID{0, 4, 4 * (streams - 1)} {
 		for name, payload := range lateFrames(id) {
 			if err := c.frames(spaceApplication, payload, time.Now()); err != nil {
 				t.Fatalf("%s on closed stream %d: %v", name, id, err)
@@ -113,7 +113,7 @@ func TestOutOfOrderIDOpensTheLowerStreams(t *testing.T) {
 	if err := c.frames(spaceApplication, streamFrame(nil, 8, 0, "third", false), time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []uint64{0, 4, 8} {
+	for _, want := range []StreamID{0, 4, 8} {
 		s, err := c.AcceptStream(t.Context())
 		if err != nil {
 			t.Fatal(err)
@@ -151,8 +151,8 @@ func TestLateFrameOnOwnClosedStream(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if s.id != 4*i+1 {
-			t.Fatalf("the server's bidirectional stream %d is %d, want %d", i, s.id, 4*i+1)
+		if want := StreamID(4*i + 1); s.id != want {
+			t.Fatalf("the server's bidirectional stream %d is %d, want %d", i, s.id, want)
 		}
 		if err := s.CloseWrite(); err != nil {
 			t.Fatal(err)

@@ -18,7 +18,7 @@ func TestStreamRefusesAnIdentifierPastTheLimit(t *testing.T) {
 
 	for _, tc := range []struct {
 		name string
-		id   uint64
+		id   StreamID
 	}{
 		{"local bidirectional past the peer's grant", 4*2 + 1},
 		{"local bidirectional far past the peer's grant", 4_000_001},
@@ -46,7 +46,7 @@ func TestStreamRefusesAnIdentifierPastTheLimit(t *testing.T) {
 	}
 
 	// The last identifier each limit covers still opens.
-	for _, id := range []uint64{4*1 + 1, 3, 4 * 2, 2} {
+	for _, id := range []StreamID{4*1 + 1, 3, 4 * 2, 2} {
 		s, err := c.Stream(id)
 		if err != nil || s == nil || s.id != id {
 			t.Errorf("Stream(%d) = %v, %v; want the stream", id, s, err)

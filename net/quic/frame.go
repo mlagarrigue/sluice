@@ -55,7 +55,7 @@ type Frame struct {
 
 	// StreamID is the stream a STREAM, RESET_STREAM, STOP_SENDING or
 	// MAX_STREAM_DATA frame is about.
-	StreamID uint64
+	StreamID StreamID
 
 	// offset is where Data belongs in the stream, for STREAM and CRYPTO —
 	// and, reusing the slot, NEW_CONNECTION_ID's Retire Prior To threshold.
@@ -170,11 +170,15 @@ func parseFrame(b []byte) (Frame, []byte, error) {
 		return parseACK(f, rest)
 
 	case f.Type == FrameResetStream:
-		rest, err = takeVarints(rest, &f.StreamID, &f.value, &f.offset)
+		var id uint64
+		rest, err = takeVarints(rest, &id, &f.value, &f.offset)
+		f.StreamID = StreamID(id)
 		return f, rest, err
 
 	case f.Type == FrameStopSending:
-		rest, err = takeVarints(rest, &f.StreamID, &f.value)
+		var id uint64
+		rest, err = takeVarints(rest, &id, &f.value)
+		f.StreamID = StreamID(id)
 		return f, rest, err
 
 	case f.Type == frameNewToken, f.Type == framePathChallenge, f.Type == framePathResponse:
@@ -209,7 +213,9 @@ func parseFrame(b []byte) (Frame, []byte, error) {
 		return f, rest, err
 
 	case f.Type == frameMaxStreamData, f.Type == frameStreamDataBlocked:
-		rest, err = takeVarints(rest, &f.StreamID, &f.value)
+		var id uint64
+		rest, err = takeVarints(rest, &id, &f.value)
+		f.StreamID = StreamID(id)
 		return f, rest, err
 
 	case f.Type == frameNewConnectionID:
@@ -222,10 +228,11 @@ func parseFrame(b []byte) (Frame, []byte, error) {
 }
 
 func parseStream(f Frame, b []byte) (Frame, []byte, error) {
-	var err error
-	if f.StreamID, b, err = readVarint(b); err != nil {
+	id, b, err := readVarint(b)
+	if err != nil {
 		return f, nil, err
 	}
+	f.StreamID = StreamID(id)
 	if f.Type&streamOFF != 0 {
 		if f.offset, b, err = readVarint(b); err != nil {
 			return f, nil, err
@@ -400,6 +407,22 @@ func appendFrame(dst []byte, typ uint64, fields ...uint64) []byte {
 	}
 	return dst
 }
+
+// appendStreamFrame is appendFrame for a frame whose first field is a stream
+// identifier — MAX_STREAM_DATA, RESET_STREAM, STOP_SENDING,
+// STREAM_DATA_BLOCKED. With appendStreamID and the decoders above, it is
+// where a StreamID becomes the wire's integer and back, and nowhere else.
+func appendStreamFrame(dst []byte, typ uint64, id StreamID, fields ...uint64) []byte {
+	dst = varint.Append(dst, typ)
+	dst = appendStreamID(dst, id)
+	for _, v := range fields {
+		dst = varint.Append(dst, v)
+	}
+	return dst
+}
+
+// appendStreamID writes a stream identifier as the wire carries it.
+func appendStreamID(dst []byte, id StreamID) []byte { return varint.Append(dst, uint64(id)) }
 
 func parseNewConnectionID(f Frame, b []byte) (Frame, []byte, error) {
 	var seq, retire uint64

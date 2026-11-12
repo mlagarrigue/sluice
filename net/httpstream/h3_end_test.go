@@ -64,7 +64,7 @@ func TestH3BatchHandedOverAfterTheEndIsCancelled(t *testing.T) {
 				<-started
 				go func() { endDone <- s.end() }()
 			} else {
-				sentinel := s.cancels.register(s.forced, []uint64{1 << 40})
+				sentinel := s.cancels.register(s.forced, []quic.StreamID{1 << 40})
 				s.amu.Lock() // onFrames is in progress on the read goroutine
 				go func() { endDone <- s.end() }()
 				select {

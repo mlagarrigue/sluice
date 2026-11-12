@@ -17,7 +17,7 @@ func TestAResetReleasesTheBytesParkedOutOfOrder(t *testing.T) {
 	data := make([]byte, parked)
 	held := 0
 	for i := range streams {
-		s := newStream(c, uint64(4*i))
+		s := newStream(c, StreamID(4*i))
 		// One byte missing at offset 0: everything after it is parked.
 		if err := s.rasm.add(1, data); err != nil {
 			t.Fatal(err)

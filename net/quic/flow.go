@@ -103,7 +103,7 @@ var errFlowControl = fmt.Errorf("%w: flow control violated", ErrQUIC)
 // initialStreamSendLimit picks the initial per-stream credit this end may
 // send, which depends on who opened the stream and in which direction it
 // runs (§18.2: "local" and "remote" are named from the announcer's side).
-func initialStreamSendLimit(params TransportParameters, id uint64, isClient bool) uint64 {
+func initialStreamSendLimit(params TransportParameters, id StreamID, isClient bool) uint64 {
 	switch {
 	case id&0x02 != 0: // unidirectional: only its opener sends
 		return params.InitialMaxStreamDataUni
@@ -115,7 +115,7 @@ func initialStreamSendLimit(params TransportParameters, id uint64, isClient bool
 	}
 }
 
-func initialStreamRecvLimit(params TransportParameters, id uint64, isClient bool) uint64 {
+func initialStreamRecvLimit(params TransportParameters, id StreamID, isClient bool) uint64 {
 	switch {
 	case id&0x02 != 0:
 		return params.InitialMaxStreamDataUni

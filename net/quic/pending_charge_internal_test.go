@@ -15,7 +15,7 @@ func pendingConn() *Conn {
 func bytelessFrames(n int) []Frame {
 	batch := make([]Frame, n)
 	for i := range batch {
-		batch[i] = Frame{Type: FrameResetStream, StreamID: uint64(4 * i)}
+		batch[i] = Frame{Type: FrameResetStream, StreamID: StreamID(4 * i)}
 	}
 	return batch
 }
@@ -43,7 +43,7 @@ func TestPendingChargeCoversWhatTheCopyHolds(t *testing.T) {
 
 	oneByte := make([]Frame, n)
 	for i := range oneByte {
-		oneByte[i] = Frame{Type: FrameStream, StreamID: uint64(4 * i), Data: []byte{'x'}}
+		oneByte[i] = Frame{Type: FrameStream, StreamID: StreamID(4 * i), Data: []byte{'x'}}
 	}
 	allocs := testing.AllocsPerRun(10, func() { _ = cloneFrames(oneByte) })
 	if allocs > 2 {

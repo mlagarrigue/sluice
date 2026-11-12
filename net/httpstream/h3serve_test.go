@@ -379,7 +379,7 @@ func TestServeH3ReturnsWhileAProducerIsBlocked(t *testing.T) {
 // what this layer releases is exactly what the request streams delivered.
 func TestH3CreditsRequestBytesOnce(t *testing.T) {
 	var released atomic.Uint64
-	count := func(c *quic.Conn, id, n uint64) {
+	count := func(c *quic.Conn, id quic.StreamID, n uint64) {
 		released.Add(n)
 		c.ReleaseStreamBytes(id, n)
 	}
@@ -429,7 +429,7 @@ func TestH3CreditsRequestBytesOnce(t *testing.T) {
 // past the connection window the server announced stall; were the
 // transport still crediting on delivery, all of them would go through.
 func TestH3ServeCreditsOnRelease(t *testing.T) {
-	swallow := func(*quic.Conn, uint64, uint64) {}
+	swallow := func(*quic.Conn, quic.StreamID, uint64) {}
 	h3ReleaseHook.Store(&swallow)
 	t.Cleanup(func() { h3ReleaseHook.Store(nil) })
 
@@ -1180,7 +1180,7 @@ func TestH3AnswersAWellFormedConnectWith501(t *testing.T) {
 // nothing.
 func TestH3CreditCountsTheBytesDeliveredNotTheBodyLeft(t *testing.T) {
 	var released atomic.Uint64
-	count := func(c *quic.Conn, id, n uint64) {
+	count := func(c *quic.Conn, id quic.StreamID, n uint64) {
 		released.Add(n)
 		c.ReleaseStreamBytes(id, n)
 	}

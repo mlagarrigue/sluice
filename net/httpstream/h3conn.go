@@ -31,7 +31,7 @@ import (
 type h3Assembler struct {
 	cfg     Config
 	qpack   *qpackDecoder
-	streams map[uint64]*h3Stream
+	streams map[quic.StreamID]*h3Stream
 
 	// The graceful shutdown's state (RFC 9114 §5.2; ServeH3Conn says how it is
 	// used). mu is shared with the goroutine that begins the shutdown and
@@ -40,13 +40,13 @@ type h3Assembler struct {
 	// the streams this assembler admitted agree — a stream is either
 	// admitted before the GOAWAY, and below its identifier, or rejected.
 	mu       sync.Mutex
-	accepted bool   // whether a request stream was ever admitted
-	last     uint64 // the highest request stream admitted, when accepted
-	draining bool   // the GOAWAY is decided: streams from rejectFrom on are rejected
+	accepted bool          // whether a request stream was ever admitted
+	last     quic.StreamID // the highest request stream admitted, when accepted
+	draining bool          // the GOAWAY is decided: streams from rejectFrom on are rejected
 	// rejectFrom is the identifier the GOAWAY carries: the first request
 	// stream this connection rejects (§5.2: "the indicated identifier or
 	// greater are rejected"), zero when none was ever admitted.
-	rejectFrom uint64
+	rejectFrom quic.StreamID
 	// finished records that Finish was decided — the draining connection
 	// had nothing in flight, under mu — after which admit rejects every
 	// request stream, those below rejectFrom included (§5.2 lets a server
@@ -85,8 +85,8 @@ type h3Assembler struct {
 	// the RESET_STREAM and STOP_SENDING of one cancellation (§4.1.1), in
 	// either order, and a refusal of this end's that crosses them. Bounded
 	// like the tombstones.
-	charged      map[uint64]struct{}
-	chargedOrder []uint64
+	charged      map[quic.StreamID]struct{}
+	chargedOrder []quic.StreamID
 	// Finish, when set, is called by retire when the last in-flight stream
 	// of a draining connection retires: nothing more is owed, the
 	// connection may close. It must not block — it runs on the read
@@ -99,8 +99,8 @@ type h3Assembler struct {
 	// STOP_SENDING, but telling is not enforcing: bytes already in flight —
 	// or a peer that ignores the frame — keep coming, and they must land on
 	// a tombstone, not on a fresh entry. Bounded like every memory here.
-	refused      map[uint64]struct{}
-	refusedOrder []uint64
+	refused      map[quic.StreamID]struct{}
+	refusedOrder []quic.StreamID
 
 	// assembling sums what every unfinished request stream still retains —
 	// its carry buffer and its drained body together. Under a transport
@@ -121,7 +121,7 @@ type h3Assembler struct {
 	// it stops being retained. Request bodies handed to the handler are the
 	// one exception: the handler call releases those once the handler
 	// returns. Nil means the transport credits on delivery.
-	Credit func(streamID, n uint64)
+	Credit func(streamID quic.StreamID, n uint64)
 
 	// CreditConn and CreditStream are Credit's two levels apart, and Interim
 	// writes an interim 100 on a request stream. ServeH3Conn sets them when
@@ -131,8 +131,8 @@ type h3Assembler struct {
 	// level as the handler consumes them (bodyQueue), so the stream window
 	// is the backpressure and one unread body does not stall the others.
 	CreditConn   func(n uint64)
-	CreditStream func(streamID, n uint64)
-	Interim      func(streamID, fieldSection uint64)
+	CreditStream func(streamID quic.StreamID, n uint64)
+	Interim      func(streamID quic.StreamID, fieldSection uint64)
 	// streamWindow is the QUIC stream window a request stream's peer may
 	// fill, the ceiling of a streamed body's ring (bodyQueue.ring).
 	streamWindow int
@@ -142,7 +142,7 @@ type h3Assembler struct {
 	// handed over with its body as a stream. queued counts the body bytes a
 	// drain moved into a stream's queue, released at the connection level
 	// only.
-	pending []uint64
+	pending []quic.StreamID
 	queued  int
 	// fin is whether the delivery a drain is reading ends its stream: a
 	// frame drain refuses on its declaration alone is then one the peer cut
@@ -152,13 +152,13 @@ type h3Assembler struct {
 	// arriving, appended from the handler's goroutine under closedMu; the
 	// next delivery forgets them.
 	closedMu     sync.Mutex
-	closedBodies []uint64
+	closedBodies []quic.StreamID
 
 	// The peer's unidirectional streams (RFC 9114 §6.2): the control stream
 	// and the QPACK pair are critical — their closure, duplication or
 	// misframing is a connection error, not a stream one — and the control
 	// stream is where the client's SETTINGS arrive.
-	unis            map[uint64]*h3Uni
+	unis            map[quic.StreamID]*h3Uni
 	hasControl      bool
 	hasEncoder      bool
 	hasDecoder      bool
@@ -187,7 +187,7 @@ type h3Assembler struct {
 	nextExpiry time.Time
 
 	batch  []Request
-	ids    []uint64
+	ids    []quic.StreamID
 	failed []h3StreamError
 	// after runs parallel to ids: the gate each completed request's final
 	// response waits on, nil for a request that was owed no interim 100.
@@ -212,7 +212,7 @@ type h3Assembler struct {
 const maxRefusedRemembered = 256
 
 type h3Stream struct {
-	id  uint64
+	id  quic.StreamID
 	buf []byte
 	// skip is what is left of an unknown frame being discarded off the
 	// stream (parseH3Frames, skipAhead): its bytes never enter buf. A FIN
@@ -261,7 +261,7 @@ type h3Stream struct {
 // ServeH3Conn writes the 100 on it and closes Done, whether or not the write
 // went through.
 type h3Continue struct {
-	StreamID uint64
+	StreamID quic.StreamID
 	Done     chan struct{}
 }
 
@@ -298,10 +298,10 @@ func newH3Assembler(cfg Config) *h3Assembler {
 	return &h3Assembler{
 		cfg:     cfg,
 		qpack:   newQPACKDecoder(cfg.QPACKStatic, cfg.MaxHeaderBytes),
-		streams: make(map[uint64]*h3Stream),
-		refused: make(map[uint64]struct{}),
-		charged: make(map[uint64]struct{}),
-		unis:    make(map[uint64]*h3Uni),
+		streams: make(map[quic.StreamID]*h3Stream),
+		refused: make(map[quic.StreamID]struct{}),
+		charged: make(map[quic.StreamID]struct{}),
+		unis:    make(map[quic.StreamID]*h3Uni),
 		// §5.2: a client's GOAWAY carries a push ID, at most 2^62-1.
 		peerGoAway:       1 << 62,
 		peerFieldSection: h3NoFieldSectionLimit,
@@ -318,7 +318,7 @@ func newH3Assembler(cfg Config) *h3Assembler {
 // back as an [h3ConnectionError] instead, because a frame layer in doubt
 // cannot be resynchronised.
 type h3StreamError struct {
-	StreamID uint64
+	StreamID quic.StreamID
 	Code     uint64
 	Err      error
 	// Status, when set, is answered on the stream before it is closed —
@@ -475,7 +475,7 @@ func (e h3ConnectionError) Unwrap() error { return e.Err }
 // stream goes to the control or QPACK reader; refuse the whole delivery when a
 // charge in it went over a connection bound (excess); hand over the requests
 // whose head is complete (handOver); and keep the interim 100s still owed.
-func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint64, []h3StreamError, error) {
+func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []quic.StreamID, []h3StreamError, error) {
 	a.batch, a.ids, a.failed = a.batch[:0], a.ids[:0], a.failed[:0]
 	a.after, a.continues = a.after[:0], a.continues[:0]
 	now := time.Now() // one clock read per delivery, not per new stream
@@ -766,7 +766,7 @@ func (a *h3Assembler) creditConn(n int) {
 // into a streamed body, with st's body so far as its first bytes. The caller
 // moves those bytes' accounting.
 func (a *h3Assembler) newH3Body(st *h3Stream) *bodyQueue {
-	b := newBodyQueue(a.cfg, st.id, st.req.Body, st.declared, expectsContinue(st.req), a.streamWindow)
+	b := newBodyQueue(a.cfg, uint64(st.id), st.req.Body, st.declared, expectsContinue(st.req), a.streamWindow)
 	id, credit := st.id, a.CreditStream
 	b.release = func(n int) { credit(id, uint64(n)) } //nolint:gosec // G115: a byte count
 	if interim := a.Interim; interim != nil {
@@ -913,7 +913,7 @@ func (a *h3Assembler) sweep(now time.Time) []h3StreamError {
 // reset folds one RESET_STREAM into assembly state, in packet order. For a
 // request stream that means Forget; for a critical unidirectional stream it
 // is the connection error RFC 9114 §6.2.1 and RFC 9204 §4.2 require.
-func (a *h3Assembler) reset(id uint64) error {
+func (a *h3Assembler) reset(id quic.StreamID) error {
 	switch id & 0x03 {
 	case 0:
 		// The peer abandoned its request (§4.1.1): what arrived for it is
@@ -941,7 +941,7 @@ func (a *h3Assembler) reset(id uint64) error {
 // legitimately be zero — every delivery path calls this with "delivered
 // minus newly retained", and a frame fully absorbed into the carry buffer
 // releases nothing yet.
-func (a *h3Assembler) release(id uint64, n int) {
+func (a *h3Assembler) release(id quic.StreamID, n int) {
 	if a.Credit != nil && n > 0 {
 		a.Credit(id, uint64(n))
 	}
@@ -949,7 +949,7 @@ func (a *h3Assembler) release(id uint64, n int) {
 
 // uniRetained is how many bytes stream id's unidirectional parse currently
 // carries, zero for a stream it does not know.
-func (a *h3Assembler) uniRetained(id uint64) int {
+func (a *h3Assembler) uniRetained(id quic.StreamID) int {
 	if u := a.unis[id]; u != nil {
 		return len(u.buf)
 	}
@@ -965,7 +965,7 @@ func (a *h3Assembler) uniRetained(id uint64) int {
 // peer that only ever sends what gets refused would otherwise hold the
 // connection open indefinitely for the cost of one refusal each, the
 // rapid-reset shape with the roles swapped.
-func (a *h3Assembler) fail(id, code uint64, err error) {
+func (a *h3Assembler) fail(id quic.StreamID, code uint64, err error) {
 	a.dropFailing(id, err)
 	a.countCancel(id)
 	a.failed = append(a.failed, h3StreamError{StreamID: id, Code: code, Err: err})
@@ -976,7 +976,7 @@ func (a *h3Assembler) fail(id, code uint64, err error) {
 // once the status has left, as it does a handler's response, so a draining
 // connection waits for the refusal to be written and acknowledged like any
 // other answer.
-func (a *h3Assembler) answer(id uint64, status int, method []byte, err error) {
+func (a *h3Assembler) answer(id quic.StreamID, status int, method []byte, err error) {
 	var after <-chan struct{}
 	if st := a.drop(id); st != nil {
 		if st.body != nil {
@@ -1011,7 +1011,7 @@ func (a *h3Assembler) answer(id uint64, status int, method []byte, err error) {
 // nothing else. The flat part is in this layer's own unit where HTTP/2's is
 // four batches of frames: a peer may fill the limit and cancel it all four
 // times over before it has let one answer through.
-func (a *h3Assembler) countCancel(id uint64) {
+func (a *h3Assembler) countCancel(id quic.StreamID) {
 	if !remember(a.charged, &a.chargedOrder, id) {
 		return
 	}
@@ -1032,7 +1032,7 @@ func (a *h3Assembler) answered() { a.served.Add(1) }
 // drop discards a stream's assembly state, releasing what it retained, and
 // leaves a tombstone. It returns the state dropped — the stream was being
 // assembled, so admitted and owed a retire — or nil.
-func (a *h3Assembler) drop(id uint64) *h3Stream {
+func (a *h3Assembler) drop(id quic.StreamID) *h3Stream {
 	st := a.streams[id]
 	if st != nil {
 		a.assembling -= len(st.buf) + len(st.req.Body)
@@ -1045,13 +1045,13 @@ func (a *h3Assembler) drop(id uint64) *h3Stream {
 
 // tombstone remembers a stream as dead so later frames on it are dropped
 // rather than re-opening assembly, FIFO-bounded like every memory here.
-func (a *h3Assembler) tombstone(id uint64) {
+func (a *h3Assembler) tombstone(id quic.StreamID) {
 	remember(a.refused, &a.refusedOrder, id)
 }
 
 // remember adds id to set, whose insertion order is order, forgetting the
 // oldest past maxRefusedRemembered, and reports whether id was new.
-func remember(set map[uint64]struct{}, order *[]uint64, id uint64) bool {
+func remember(set map[quic.StreamID]struct{}, order *[]quic.StreamID, id quic.StreamID) bool {
 	if _, ok := set[id]; ok {
 		return false
 	}
@@ -1071,14 +1071,14 @@ func remember(set map[uint64]struct{}, order *[]uint64, id uint64) bool {
 // preceded the reset in the same batch would otherwise recreate an entry no
 // future frame can ever complete — each one a permanently burnt admission
 // slot.
-func (a *h3Assembler) Forget(id uint64) {
+func (a *h3Assembler) Forget(id quic.StreamID) {
 	a.dropFailing(id, errBodyReset)
 }
 
 // dropFailing drops a stream, fails its streamed body with err, and retires
 // it unless its request is the handler's: then the response's writer
 // retires it, as it does every request it answers.
-func (a *h3Assembler) dropFailing(id uint64, err error) {
+func (a *h3Assembler) dropFailing(id quic.StreamID, err error) {
 	st := a.drop(id)
 	if st == nil {
 		return
@@ -1114,7 +1114,7 @@ const (
 // Raised after admit returns, the count would let a drain deciding in
 // between see nothing in flight, finish the connection, and cut the request
 // it had just promised to serve.
-func (a *h3Assembler) admit(id uint64) admission {
+func (a *h3Assembler) admit(id quic.StreamID) admission {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.draining && (a.finished || id >= a.rejectFrom) {
@@ -1154,7 +1154,7 @@ func (a *h3Assembler) claimGoAway(by uint32) bool {
 // connection between one and two IdleTimeouts after its last answer; a
 // stream admitted after the decision is rejected, as past a GOAWAY, never
 // served into a connection that is closing.
-func (a *h3Assembler) closeIdle(seen *int64) (from uint64, ok bool) {
+func (a *h3Assembler) closeIdle(seen *int64) (from quic.StreamID, ok bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.draining {
@@ -1180,7 +1180,7 @@ func (a *h3Assembler) closeIdle(seen *int64) (from uint64, ok bool) {
 // none was — and whether nothing is in flight, in which case the caller
 // calls Finish and no later stream is admitted. From here on admit rejects
 // every stream from that identifier.
-func (a *h3Assembler) beginDrain() (from uint64, idle bool) {
+func (a *h3Assembler) beginDrain() (from quic.StreamID, idle bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.draining = true

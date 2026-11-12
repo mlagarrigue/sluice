@@ -16,11 +16,11 @@ func blockedConn(tb testing.TB, b int) *Conn {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for i := range b {
-		id := uint64(4 * i)
+		id := StreamID(4 * i)
 		s := newStream(c, id)
 		s.sendQ = sendQuota{max: 0, blockedSent: true}
 		c.streams[id] = s
-		c.control = appendFrame(c.control, frameStreamDataBlocked, id, 0)
+		c.control = appendStreamFrame(c.control, frameStreamDataBlocked, id, 0)
 	}
 	return c
 }

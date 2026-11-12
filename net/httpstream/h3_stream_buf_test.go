@@ -68,7 +68,7 @@ func BenchmarkH3StreamedUploadDeliveries(b *testing.B) {
 	chunk := make([]byte, piece)
 	b.ReportAllocs()
 	b.SetBytes(piece * pieces)
-	id := uint64(0)
+	id := quic.StreamID(0)
 	for b.Loop() {
 		a.inFlight.Store(0) // nobody answers: the bound on unanswered streams is not this bench's
 		head := h3Request("POST", "/up")

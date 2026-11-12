@@ -34,7 +34,7 @@ type Stream struct {
 	// Conn.maybeRemoveLocked takes s.mu (via Stream.endState) while holding
 	// c.mu, so s.mu must never be held while taking c.mu.
 
-	id   uint64
+	id   StreamID
 	conn *Conn
 
 	mu    sync.Mutex
@@ -95,7 +95,24 @@ type Stream struct {
 
 // ID reports the stream's identifier. Its two low bits say who opened it and
 // whether it is bidirectional (RFC 9000 §2.1).
-func (s *Stream) ID() uint64 { return s.id }
+func (s *Stream) ID() StreamID { return s.id }
+
+// StreamID identifies a stream within a connection (RFC 9000 §2.1): its
+// least significant bit says which end opened it, the next one whether it
+// is unidirectional. A type of its own so that an identifier and a byte
+// count, both 62-bit integers on the wire, cannot be swapped in a call:
+// [Conn.ReleaseStreamBytes](n, id) does not compile.
+type StreamID uint64
+
+// count is how many streams of id's kind it takes to reach id — the
+// stream's number within its kind, plus one (RFC 9000 §2.1: the two low
+// bits name the kind, the rest number the streams of it). The limits of
+// MAX_STREAMS are counts of this kind.
+func (id StreamID) count() uint64 { return uint64(id>>2) + 1 }
+
+// nthStream is the identifier of the nth stream, from 1, of kind's kind
+// (its two low bits).
+func nthStream(n uint64, kind StreamID) StreamID { return StreamID((n-1)<<2) | kind&0x03 }
 
 // sendOnly says the stream is unidirectional and this end opened it (RFC
 // 9000 §2.1): the peer never writes on it.
@@ -103,7 +120,7 @@ func (s *Stream) sendOnly() bool {
 	return s.id&0x02 != 0 && (s.id&1 == 0) == s.conn.isClient
 }
 
-func newStream(c *Conn, id uint64) *Stream {
+func newStream(c *Conn, id StreamID) *Stream {
 	s := &Stream{id: id, conn: c, ready: make(chan struct{}, 1)}
 	if c.hasPeerParams {
 		s.sendQ.max = initialStreamSendLimit(c.sendLimitsLocked(), id, c.isClient)
@@ -510,7 +527,7 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 
 		last := written+n >= len(p)
 		frame := varint.Append(nil, FrameStream|streamOFF|streamLEN|boolBit(fin && last, streamFIN))
-		frame = varint.Append(frame, s.id)
+		frame = appendStreamID(frame, s.id)
 		frame = varint.Append(frame, s.writeOff)
 		frame = varint.Append(frame, uint64(n))
 		frame = append(frame, p[written:written+n]...)
@@ -591,7 +608,7 @@ func (s *Stream) Reset(code uint64) error {
 	s.writeReset, s.writeCode = true, code
 	s.sendClosed = true
 	c.noteResetLocked(s.id)
-	frame := appendFrame(nil, FrameResetStream, s.id, code, s.writeOff)
+	frame := appendStreamFrame(nil, FrameResetStream, s.id, code, s.writeOff)
 	err := c.sendPacketLocked(spaceApplication, frame, sendOpts{}) // ungated: see sendOpts.waitCwnd
 	c.maybeRemoveLocked(s)
 	c.wakeAllLocked() // a writer blocked on credit for this stream gives up
@@ -666,7 +683,7 @@ func (s *Stream) StopSending(code uint64) error {
 		c.flushControlLocked()
 		return nil
 	}
-	frame := appendFrame(nil, FrameStopSending, s.id, code)
+	frame := appendStreamFrame(nil, FrameStopSending, s.id, code)
 	err := c.sendPacketLocked(spaceApplication, frame, sendOpts{}) // ungated: see sendOpts.waitCwnd
 	c.maybeRemoveLocked(s)
 	c.flushControlLocked()
@@ -752,7 +769,7 @@ func (s *Stream) onStopSendingLocked(code uint64) (stopped bool) {
 	s.writeReset, s.writeCode = true, code
 	s.sendClosed = true
 	s.conn.noteResetLocked(s.id)
-	frame := appendFrame(nil, FrameResetStream, s.id, code, s.writeOff)
+	frame := appendStreamFrame(nil, FrameResetStream, s.id, code, s.writeOff)
 	// Ungated (see sendOpts.waitCwnd), and at the read loop's best effort:
 	// see handleStopSending.
 	_ = s.conn.sendPacketLocked(spaceApplication, frame, sendOpts{})
@@ -938,15 +955,15 @@ func (c *Conn) open(ctx context.Context, uni bool) (*Stream, error) {
 			return nil, err
 		}
 	}
-	base := uint64(1)
+	kind := StreamID(1)
 	if c.isClient {
-		base = 0
+		kind = 0
 	}
 	if uni {
-		base |= 0x02
+		kind |= 0x02
 	}
-	id := base + 4**opened
 	*opened++
+	id := nthStream(*opened, kind)
 	s := newStream(c, id)
 	c.streams[id] = s
 	return s, nil
@@ -1024,7 +1041,7 @@ var ErrStreamLimit = errors.New("quic: stream identifier past the stream limit")
 // open past the limit this end announced, is refused with [ErrStreamLimit]
 // and allocates nothing. Within the grant, a local identifier used out of
 // order opens every lower-numbered stream of its kind (RFC 9000 §2.1).
-func (c *Conn) Stream(id uint64) (*Stream, error) {
+func (c *Conn) Stream(id StreamID) (*Stream, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if s := c.streams[id]; s != nil {
@@ -1032,7 +1049,7 @@ func (c *Conn) Stream(id uint64) (*Stream, error) {
 	}
 	// Within what has been opened and absent from the table means closed
 	// (see Conn.streams): a tombstone, deliberately not re-registered.
-	count := id/4 + 1
+	count := id.count()
 	uni := id&0x02 != 0
 	localInitiated := (id&1 == 0) == c.isClient
 	opened, limit := c.seenPeerBidi, c.localMaxStreamsBidi
@@ -1072,7 +1089,7 @@ func (c *Conn) Stream(id uint64) (*Stream, error) {
 		c.openedBidi = count
 	}
 	for n := first + 1; n <= count; n++ {
-		nid := (n-1)*4 + id&0x03
+		nid := nthStream(n, id)
 		c.streams[nid] = newStream(c, nid)
 	}
 	return c.streams[id], nil

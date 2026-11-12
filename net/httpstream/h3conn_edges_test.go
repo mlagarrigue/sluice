@@ -30,7 +30,7 @@ func padTo(t *testing.T, b []byte, n int) []byte {
 // wires one on windows large enough for manual credit.
 func streamingAssembler(cfg Config) *h3Assembler {
 	a := testAssembler(cfg)
-	a.CreditStream = func(uint64, uint64) {}
+	a.CreditStream = func(quic.StreamID, uint64) {}
 	a.CreditConn = func(uint64) {}
 	return a
 }
@@ -143,7 +143,7 @@ func TestH3AssemblerRefusalFollowsTheInterim(t *testing.T) {
 func TestH3AssemblerCancelAllowanceIsExact(t *testing.T) {
 	a := testAssembler(Config{MaxConcurrentStreams: 1})
 	for i := range 4 {
-		a.countCancel(uint64(4 * i))
+		a.countCancel(quic.StreamID(4 * i))
 	}
 	if a.excess != nil {
 		t.Fatalf("four cancellations against an allowance of four: %v", a.excess)
@@ -159,7 +159,7 @@ func TestH3AssemblerCancelAllowanceIsExact(t *testing.T) {
 func TestH3AssemblerDropReleasesWhatItHeld(t *testing.T) {
 	a := testAssembler(Config{BodyDelivery: BodyWhole})
 	released := 0
-	a.Credit = func(_, n uint64) { released += int(n) }                          //nolint:gosec // G115: a few bytes
+	a.Credit = func(_ quic.StreamID, n uint64) { released += int(n) }            //nolint:gosec // G115: a few bytes
 	delivered := append(append(h3Request("POST", "/x"), data("abcde")...), 0x00) // and one byte of a frame
 	if _, _, _, err := a.Frames([]quic.Frame{streamFrame(0, delivered, false)}); err != nil {
 		t.Fatal(err)
@@ -260,8 +260,8 @@ func TestH3AssemblerHeaderBoundsAtTheirEdges(t *testing.T) {
 // A streamed body's first wait sends the 100 its head asked for.
 func TestH3AssemblerStreamedBodyInvitesItsBody(t *testing.T) {
 	a := streamingAssembler(Config{MaxBodyBytes: 128, MaxStreamedBodyBytes: 1 << 12})
-	invited := make(chan uint64, 1)
-	a.Interim = func(id, _ uint64) { invited <- id }
+	invited := make(chan quic.StreamID, 1)
+	a.Interim = func(id quic.StreamID, _ uint64) { invited <- id }
 	head := h3Request("POST", "/x", [2]string{"expect", "100-continue"}, [2]string{"content-length", "40"})
 	batch, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, head, false)})
 	if err != nil || len(failed) != 0 || batch.Len() != 1 {
@@ -308,7 +308,7 @@ func TestH3AssemblerForgetsAClosedBody(t *testing.T) {
 func TestH3AssemblerReleasesAControlFrameCarriedOver(t *testing.T) {
 	a := testAssembler(Config{})
 	released := 0
-	a.Credit = func(_, n uint64) { released += int(n) } //nolint:gosec // G115: a few bytes
+	a.Credit = func(_ quic.StreamID, n uint64) { released += int(n) } //nolint:gosec // G115: a few bytes
 	payload := varint.Append(varint.Append(nil, h3SettingMaxFieldSection), 1<<10)
 	control := appendH3Frame(varint.Append(nil, h3StreamControl), h3Settings, payload)
 	cut := len(control) - 2

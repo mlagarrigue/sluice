@@ -89,7 +89,7 @@ func TestOneDatagramCarriesSeveralStreams(t *testing.T) {
 		t.Fatalf("parseFrames returned %v", err)
 	}
 
-	streams := map[uint64]string{}
+	streams := map[StreamID]string{}
 	for _, f := range frames {
 		if f.IsStream() {
 			streams[f.StreamID] = string(f.Data)
@@ -98,7 +98,7 @@ func TestOneDatagramCarriesSeveralStreams(t *testing.T) {
 	if len(streams) != 4 {
 		t.Fatalf("one datagram yielded %d streams, want 4: %v", len(streams), streams)
 	}
-	for i, id := range []uint64{0, 4, 8, 12} {
+	for i, id := range []StreamID{0, 4, 8, 12} {
 		if want := "stream " + string(rune('0'+i)); streams[id] != want {
 			t.Errorf("stream %d carried %q, want %q", id, streams[id], want)
 		}

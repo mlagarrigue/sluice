@@ -23,7 +23,7 @@ func TestH3AssemblerRetainedCapacity(t *testing.T) {
 	// The bound admits every stream's body: the gap is in what is held
 	// beside it, not in the bound refusing too early.
 	frame := 4*maxBody/streams - 1024
-	feed := func(id uint64, data []byte) {
+	feed := func(id quic.StreamID, data []byte) {
 		t.Helper()
 		for off := 0; off < len(data); off += 1400 {
 			end := min(off+1400, len(data))
@@ -34,7 +34,7 @@ func TestH3AssemblerRetainedCapacity(t *testing.T) {
 	}
 	for i := range streams {
 		stream := h3Request("POST", "/upload")
-		feed(uint64(i)*4, appendH3Frame(stream, h3Data, make([]byte, frame)))
+		feed(quic.StreamID(i)*4, appendH3Frame(stream, h3Data, make([]byte, frame)))
 	}
 	if len(a.streams) != streams {
 		t.Fatalf("%d streams assembling, want %d", len(a.streams), streams)
@@ -84,7 +84,7 @@ func TestH3FrameScratchKeepsNoStreamBufferPastItsLength(t *testing.T) {
 			buf = appendH3Frame(buf, h3Data, nil)
 		}
 		buf = appendH3Frame(buf, h3Data, big)
-		if _, _, _, err := a.Frames([]quic.Frame{streamFrame(uint64(i)*4, buf, true)}); err != nil {
+		if _, _, _, err := a.Frames([]quic.Frame{streamFrame(quic.StreamID(i)*4, buf, true)}); err != nil {
 			t.Fatalf("stream %d: %v", i*4, err)
 		}
 	}
@@ -167,7 +167,7 @@ func TestH3DenseSmallFramesCostAtMostFourBytesPerByte(t *testing.T) {
 	const deliveries, frames = 50, 1000
 	for _, tt := range []struct {
 		name   string
-		stream uint64
+		stream quic.StreamID
 		open   []byte
 		frame  []byte
 	}{

@@ -30,7 +30,7 @@ func newResetReplayConn(t *testing.T) *Conn {
 // framesOfStream counts, in the packets recorded from index from on, the
 // STREAM and STREAM_DATA_BLOCKED frames of stream id, and the RESET_STREAM
 // frames of it. Callers hold mu.
-func framesOfStream(t *testing.T, sp *space, from int, id uint64) (streams, blocked, resets int) {
+func framesOfStream(t *testing.T, sp *space, from int, id StreamID) (streams, blocked, resets int) {
 	t.Helper()
 	for _, p := range sp.sent.packets[from:] {
 		fs, err := parseFrames(nil, p.payload)

@@ -367,7 +367,7 @@ type Conn struct {
 	// closure forget the first, so that a late or forged frame on that
 	// stream reopened it, delivered an HTTP/3 request twice and credited
 	// MAX_STREAMS twice (see streamFor).
-	streams map[uint64]*Stream
+	streams map[StreamID]*Stream
 	// resetIDs holds the streams this end has reset and whose STREAM frames
 	// may still be in flight, by the application packet number the reset
 	// left at: a lost payload replayed after the reset drops their STREAM
@@ -379,7 +379,7 @@ type Conn struct {
 	// resetMinMark is at or below every mark the map holds, so that the
 	// prune skips its walk while the oldest packet in flight is below it;
 	// resetWalks counts the walks, which is how a test sees them skipped.
-	resetIDs     map[uint64]uint64
+	resetIDs     map[StreamID]uint64
 	resetMinMark uint64
 	resetWalks   int
 	// acceptQ holds the streams the peer opened that AcceptStream has not

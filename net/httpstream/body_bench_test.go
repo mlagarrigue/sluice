@@ -178,7 +178,7 @@ func BenchmarkH3AssembleBody(b *testing.B) {
 					stream := h3Request("POST", fmt.Sprintf("/orders/%d", i),
 						[2]string{"content-length", strconv.Itoa(len(body))})
 					stream = appendH3Frame(stream, h3Data, body)
-					frames[i] = streamFrame(uint64(4*i), stream, true) //nolint:gosec // G115: 4i for i < 8
+					frames[i] = streamFrame(quic.StreamID(4*i), stream, true) //nolint:gosec // G115: 4i for i < 8
 				}
 
 				a := testAssembler(Config{MaxStreamedBodyBytes: side.limit})

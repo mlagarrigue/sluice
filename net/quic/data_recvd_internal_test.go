@@ -23,7 +23,7 @@ func TestNoResetStreamOnceTheStreamIsAcknowledged(t *testing.T) {
 			// has read the FIN sends no STOP_SENDING (nothing is left to
 			// stop), so the late frame is one a peer sent before it read
 			// the FIN, or retransmitted after.
-			peerSends(t, server.conn, appendFrame(nil, FrameStopSending, client.id, 0x10c))
+			peerSends(t, server.conn, appendStreamFrame(nil, FrameStopSending, client.id, 0x10c))
 		}},
 		{"reset", func(t *testing.T, client, _ *Stream) {
 			t.Helper()

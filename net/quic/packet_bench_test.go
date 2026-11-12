@@ -210,7 +210,7 @@ func BenchmarkCreditGrantHerd(b *testing.B) {
 			// never granted. They wake per broadcast and re-sleep.
 			var wg sync.WaitGroup
 			for i := range parked {
-				id := uint64(4*(i+1) + 1)
+				id := StreamID(4*(i+1) + 1)
 				c.mu.Lock()
 				s := newStream(c, id)
 				c.streams[id] = s

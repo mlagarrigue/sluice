@@ -34,7 +34,7 @@ func fuzzFrameBatches(data []byte) [][]quic.Frame {
 		// A handful of stream ids, including both client-bidi (low two bits
 		// clear) and the unidirectional/server-initiated ones Frames must
 		// skip, so both paths get exercised.
-		id := uint64(idByte % 12)
+		id := quic.StreamID(idByte % 12)
 
 		n := min(int(lenByte), len(data))
 		chunk := data[:n]
@@ -115,7 +115,7 @@ func FuzzH3Assembler(f *testing.F) {
 		a := testAssembler(cfg)
 		var released, delivered, handedOff uint64
 		balanced := true
-		a.Credit = func(_, n uint64) { released += n }
+		a.Credit = func(_ quic.StreamID, n uint64) { released += n }
 
 		batches := fuzzFrameBatches(data)
 		for _, frames := range batches {

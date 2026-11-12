@@ -292,7 +292,7 @@ func TestHeldStreamSlotsAreGrantedWhenThePeerOpensToTheLimit(t *testing.T) {
 	if err := c.frames(spaceApplication, streamFrame(nil, 4*87, 0, "x", false), now); err != nil {
 		t.Fatal(err)
 	}
-	for n := range uint64(11) {
+	for n := range StreamID(11) {
 		id := 4 * n
 		s, err := c.Stream(id)
 		if err != nil {

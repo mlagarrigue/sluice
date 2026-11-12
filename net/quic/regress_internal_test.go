@@ -727,9 +727,9 @@ func TestAcceptEnforcesTheAmplificationLimit(t *testing.T) {
 }
 
 // streamFrameBytes encodes one STREAM frame on stream id at offset.
-func streamFrameBytes(id, offset uint64, data []byte) []byte {
+func streamFrameBytes(id StreamID, offset uint64, data []byte) []byte {
 	b := varint.Append(nil, FrameStream|streamOFF|streamLEN)
-	b = varint.Append(b, id)
+	b = appendStreamID(b, id)
 	b = varint.Append(b, offset)
 	b = varint.Append(b, uint64(len(data)))
 	return append(b, data...)
@@ -752,7 +752,7 @@ func TestEveryDeltaBeforeRegistrationIsReplayed(t *testing.T) {
 			data[j] = byte(i*size + j)
 		}
 		// Two streams interleaved, so the replay's order is tested too.
-		id := uint64(i%2) * 4
+		id := StreamID(i%2) * 4
 		off := uint64(i/2) * size
 		if err := c.frames(spaceApplication, streamFrameBytes(id, off, data), time.Now()); err != nil {
 			t.Fatal(err)

@@ -150,11 +150,11 @@ func TestStopSendingWithNothingLeftToStopGivesBackTheWindow(t *testing.T) {
 			[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
 		data := bytes.Repeat([]byte("x"), perBytes)
 		for i := range streams {
-			id := uint64(i) * 4
+			id := StreamID(i) * 4
 			b := streamFrameBytes(id, 0, data)
 			if ending == "FIN" {
 				b = varint.Append(nil, FrameStream|streamOFF|streamLEN|streamFIN)
-				b = varint.Append(b, id)
+				b = appendStreamID(b, id)
 				b = varint.Append(b, 0)
 				b = varint.Append(b, uint64(len(data)))
 				b = append(b, data...)
@@ -163,7 +163,7 @@ func TestStopSendingWithNothingLeftToStopGivesBackTheWindow(t *testing.T) {
 				t.Fatalf("%s, stream %d: %v", ending, id, err)
 			}
 			if ending == "RESET_STREAM" {
-				if err := c.frames(spaceApplication, appendFrame(nil, FrameResetStream, id, 0, perBytes), time.Now()); err != nil {
+				if err := c.frames(spaceApplication, appendStreamFrame(nil, FrameResetStream, id, 0, perBytes), time.Now()); err != nil {
 					t.Fatalf("%s, stream %d: %v", ending, id, err)
 				}
 			}
@@ -211,7 +211,7 @@ func TestStopSendingGivesBackTheConnectionWindow(t *testing.T) {
 
 	data := bytes.Repeat([]byte("x"), perBytes)
 	for i := range streams {
-		id := uint64(i) * 4 // the peer is the client: bidi ids 0, 4, 8, …
+		id := StreamID(i) * 4 // the peer is the client: bidi ids 0, 4, 8, …
 		if err := c.frames(spaceApplication, streamFrameBytes(id, 0, data), time.Now()); err != nil {
 			t.Fatalf("stream %d: delivering %d bytes: %v", id, perBytes, err)
 		}
@@ -228,7 +228,7 @@ func TestStopSendingGivesBackTheConnectionWindow(t *testing.T) {
 			t.Logf("stream %d: StopSending: %v (no keys on this bare conn)", id, err)
 		}
 		// The peer answers, as §3.5 requires, with the final size it sent.
-		if err := c.frames(spaceApplication, appendFrame(nil, FrameResetStream, id, 0, perBytes), time.Now()); err != nil {
+		if err := c.frames(spaceApplication, appendStreamFrame(nil, FrameResetStream, id, 0, perBytes), time.Now()); err != nil {
 			t.Fatalf("stream %d: RESET_STREAM: %v", id, err)
 		}
 	}
@@ -272,7 +272,7 @@ func TestBytesAfterStopSendingAreGivenBack(t *testing.T) {
 	const read = 16
 	const streams = 24
 	for i := range streams {
-		id := uint64(i) * 4
+		id := StreamID(i) * 4
 		if err := c.frames(spaceApplication, streamFrame(nil, id, 0, string(make([]byte, half)), false), time.Now()); err != nil {
 			t.Fatalf("stream %d first half: %v", id, err)
 		}
@@ -297,7 +297,7 @@ func TestBytesAfterStopSendingAreGivenBack(t *testing.T) {
 			t.Errorf("stream %d holds %d bytes in its read buffer after StopSending: nobody will read them", id, buffered)
 		}
 		// Then the peer's RESET_STREAM at the final size, §3.5's answer.
-		if err := c.frames(spaceApplication, appendFrame(nil, FrameResetStream, id, 0x10c, 2*half), time.Now()); err != nil {
+		if err := c.frames(spaceApplication, appendStreamFrame(nil, FrameResetStream, id, 0x10c, 2*half), time.Now()); err != nil {
 			t.Fatalf("stream %d reset: %v", id, err)
 		}
 	}

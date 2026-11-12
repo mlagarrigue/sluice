@@ -278,12 +278,12 @@ func h3Credit(c *quic.Conn, cfg Config, a *h3Assembler) quic.Credit {
 	if p := c.LocalParameters(); p.InitialMaxStreamDataBidiRemote < streamWindow || p.InitialMaxData < connWindow {
 		return quic.CreditOnDelivery
 	}
-	a.Credit = func(id, n uint64) { h3ReleaseStreamBytes(c, id, n) }
+	a.Credit = func(id quic.StreamID, n uint64) { h3ReleaseStreamBytes(c, id, n) }
 	if cfg.BodyDelivery == BodyStreamed {
 		a.CreditConn = c.ReleaseConnectionCredit
 		a.CreditStream = c.ReleaseStreamCredit
 		a.streamWindow = int(min(c.LocalParameters().InitialMaxStreamDataBidiRemote, math.MaxInt)) //nolint:gosec // G115: capped at MaxInt
-		a.Interim = func(id, fieldSection uint64) { writeH3Interim(c, id, fieldSection, writeBoundOf(cfg)) }
+		a.Interim = func(id quic.StreamID, fieldSection uint64) { writeH3Interim(c, id, fieldSection, writeBoundOf(cfg)) }
 	}
 	return quic.CreditOnRelease
 }
@@ -359,7 +359,7 @@ func armH3Drain(drain, forced context.Context, c *quic.Conn, control *quic.Strea
 			return
 		}
 		from, idle := a.beginDrain()
-		if err := wb.write(control.SetWriteDeadline, control.Write, appendH3Frame(nil, h3GoAway, varint.Append(nil, from))); err != nil {
+		if err := wb.write(control.SetWriteDeadline, control.Write, appendH3Frame(nil, h3GoAway, varint.Append(nil, uint64(from)))); err != nil {
 			_ = c.CloseWithError(h3GracefulCode())
 			return
 		}
@@ -430,11 +430,11 @@ type h3Serving struct {
 	// cancels maps each request stream handed to a handler to its batch's
 	// context: a RESET_STREAM or STOP_SENDING from the client takes the
 	// request out of it, the connection's end takes them all.
-	cancels streamCalls[uint64]
+	cancels streamCalls[quic.StreamID]
 	// cancelled is the request streams the delivery being handled cancels
 	// (onFrames), kept to take them out of the batch it registers as well.
 	// Under amu, reused from one delivery to the next.
-	cancelled []uint64
+	cancelled []quic.StreamID
 
 	// The assembler belongs to the delivery callback and to the expiry
 	// timer, which take amu in turn; without the timer the read timeout
@@ -502,7 +502,7 @@ func (s *h3Serving) idleTick() {
 	}
 	s.idleClosing.Store(true)
 	wb := writeBoundOf(s.cfg)
-	if err := wb.write(s.control.SetWriteDeadline, s.control.Write, appendH3Frame(nil, h3GoAway, varint.Append(nil, from))); err != nil {
+	if err := wb.write(s.control.SetWriteDeadline, s.control.Write, appendH3Frame(nil, h3GoAway, varint.Append(nil, uint64(from)))); err != nil {
 		_ = s.c.CloseWithError(h3GracefulCode())
 		return
 	}
@@ -668,7 +668,7 @@ func (s *h3Serving) onFrames(frames []quic.Frame) error {
 	// it was assembled from. Copying the slice — not the requests — is what
 	// makes the hand-off safe, and it is one small copy per datagram rather
 	// than one per request.
-	held := append([]uint64(nil), ids...)
+	held := append([]quic.StreamID(nil), ids...)
 	ctx := s.cancels.register(s.forced, held)
 	// A request this delivery both completed and cancelled: the FIN put it in
 	// the batch and retired its stream before the cancellation's Forget
@@ -870,7 +870,7 @@ func h3KnownCode(code uint64) bool {
 // through h3ReleaseHook to count what this layer gives back to the
 // transport; the hook is atomic because a connection of an earlier test may
 // still be releasing, on its read loop, while a later test swaps it.
-func h3ReleaseStreamBytes(c *quic.Conn, id, n uint64) {
+func h3ReleaseStreamBytes(c *quic.Conn, id quic.StreamID, n uint64) {
 	if f := h3ReleaseHook.Load(); f != nil {
 		(*f)(c, id, n)
 		return
@@ -880,7 +880,7 @@ func h3ReleaseStreamBytes(c *quic.Conn, id, n uint64) {
 
 // h3ReleaseHook is h3ReleaseStreamBytes's replacement in a test; nil
 // outside one.
-var h3ReleaseHook atomic.Pointer[func(*quic.Conn, uint64, uint64)]
+var h3ReleaseHook atomic.Pointer[func(*quic.Conn, quic.StreamID, uint64)]
 
 // h3Batch is what the read goroutine hands a handler call: the requests one
 // datagram completed, and the stream each arrived on. HTTP/3 correlates by
@@ -888,7 +888,7 @@ var h3ReleaseHook atomic.Pointer[func(*quic.Conn, uint64, uint64)]
 // from HTTP/1.1's pipelining.
 type h3Batch struct {
 	reqs []Request
-	ids  []uint64
+	ids  []quic.StreamID
 	// after runs parallel to ids: the gate behind the interim 100 each
 	// request's head was owed, nil for none. A response is written only
 	// once its gate is closed, so the final HEADERS follows the interim one
@@ -903,7 +903,7 @@ type h3Batch struct {
 	// transport credits on delivery. Releasing a body in that mode as well
 	// credited every byte twice, so MAX_DATA ran ahead of what this server
 	// had consumed without bound.
-	credit func(streamID, n uint64)
+	credit func(streamID quic.StreamID, n uint64)
 	// retire, when set, is called once per request when its response has
 	// left — or its writer has given up — which is how a draining connection
 	// learns it owes nothing more.
@@ -916,7 +916,7 @@ type h3Batch struct {
 	// ctx is the batch's context, released through calls once the last of
 	// its responses is written (see batchCtx).
 	ctx   *batchCtx
-	calls *streamCalls[uint64]
+	calls *streamCalls[quic.StreamID]
 }
 
 // QUICConfig returns a [quic.Config] whose transport parameters are sized to
@@ -1056,7 +1056,7 @@ func answerH3(ctx context.Context, c *quic.Conn, state *tls.ConnectionState, b h
 		if rb := b.reqs[i].body; rb != nil {
 			unread = rb.q.unread()
 		}
-		go func(id uint64, r Response, method []byte, after <-chan struct{}) {
+		go func(id quic.StreamID, r Response, method []byte, after <-chan struct{}) {
 			if after != nil {
 				<-after // the interim 100 the head was owed leaves first
 			}
@@ -1107,7 +1107,7 @@ var h3Interim100Fields = []Header{{Name: h3StatusName, Value: []byte("100")}}
 // and writeH3Response answers that case. A write that fails has nothing to
 // report: the stream is reset or gone, and the final response's writer
 // meets the same end.
-func writeH3Interim(c *quic.Conn, id, fieldSection uint64, wb writeBound) {
+func writeH3Interim(c *quic.Conn, id quic.StreamID, fieldSection uint64, wb writeBound) {
 	if checkH3FieldSection(h3Interim100Fields, fieldSection) != nil {
 		return
 	}
@@ -1141,7 +1141,7 @@ var h3ScratchPool = sync.Pool{New: func() any { return &h3Scratch{} }}
 // answered, in the rapid-reset allowance's terms. A stream the peer reset or
 // starved, a producer that stopped short and a response that could not be
 // framed are not.
-func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSection uint64, wb writeBound, date []byte, detach func()) bool {
+func writeH3Response(c *quic.Conn, id quic.StreamID, r Response, method []byte, fieldSection uint64, wb writeBound, date []byte, detach func()) bool {
 	s, err := c.Stream(id)
 	if err != nil {
 		return false // unreachable: the request arrived on it, within the limit

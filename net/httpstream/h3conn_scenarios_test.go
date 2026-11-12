@@ -12,7 +12,7 @@ import (
 
 // resetFrame is the RESET_STREAM frame the transport delivers when the peer
 // abandons a stream.
-func resetFrame(id uint64) quic.Frame {
+func resetFrame(id quic.StreamID) quic.Frame {
 	return quic.Frame{Type: quic.FrameResetStream, StreamID: id}
 }
 
@@ -89,7 +89,7 @@ func TestH3TheStreamOverTheLimitIsRefused(t *testing.T) {
 
 	var frames []quic.Frame
 	for i := range a.cfg.MaxConcurrentStreams {
-		id := uint64(4 * i) // client-initiated bidirectional
+		id := quic.StreamID(4 * i) // client-initiated bidirectional
 		// HEADERS with no FIN: every stream stays open, occupying a slot.
 		frames = append(frames, streamFrame(id, h3Request("GET", "/x"), false))
 	}
@@ -103,7 +103,7 @@ func TestH3TheStreamOverTheLimitIsRefused(t *testing.T) {
 	}
 
 	// The first stream past the limit.
-	idOver := uint64(4 * a.cfg.MaxConcurrentStreams)
+	idOver := quic.StreamID(4 * a.cfg.MaxConcurrentStreams)
 	_, _, failed, err = a.Frames([]quic.Frame{streamFrame(idOver, h3Request("GET", "/over"), false)})
 	if err != nil {
 		t.Fatalf("the stream over the limit failed the connection rather than being refused on its own: %v", err)
@@ -139,7 +139,7 @@ func TestH3The257thRefusalEvictsTheOldestTombstone(t *testing.T) {
 
 	a := testAssembler(Config{})
 	for i := range maxRefusedRemembered + 1 {
-		id := uint64(4 * i)
+		id := quic.StreamID(4 * i)
 		_, _, failed, err := a.Frames([]quic.Frame{streamFrame(id, badRequest, true)})
 		if err != nil {
 			t.Fatalf("stream %d (i=%d) failed the connection: %v", id, i, err)
@@ -156,7 +156,7 @@ func TestH3The257thRefusalEvictsTheOldestTombstone(t *testing.T) {
 	if _, gone := a.refused[0]; gone {
 		t.Error("the oldest tombstone (stream 0) is still remembered past the 256-entry bound")
 	}
-	lastID := uint64(4 * maxRefusedRemembered)
+	lastID := quic.StreamID(4 * maxRefusedRemembered)
 	if _, gone := a.refused[lastID]; !gone {
 		t.Errorf("the 257th refused stream (%d) was not remembered", lastID)
 	}
@@ -174,7 +174,7 @@ func TestH3ResetInPacketOrderFreesTheAdmissionSlot(t *testing.T) {
 	partial := h3Request("POST", "/cancelled")[:8] // mid-frame, never completable
 
 	for i := range a.cfg.MaxConcurrentStreams {
-		id := uint64(4 * i)
+		id := quic.StreamID(4 * i)
 		_, _, failed, err := a.Frames([]quic.Frame{
 			streamFrame(id, partial, false),
 			resetFrame(id),
@@ -191,7 +191,7 @@ func TestH3ResetInPacketOrderFreesTheAdmissionSlot(t *testing.T) {
 	}
 
 	// Every slot must be free again: a fresh request on the next stream.
-	id := uint64(4 * a.cfg.MaxConcurrentStreams)
+	id := quic.StreamID(4 * a.cfg.MaxConcurrentStreams)
 	batch, _, failed, err := a.Frames([]quic.Frame{streamFrame(id, h3Request("GET", "/after"), true)})
 	if err != nil {
 		t.Fatal(err)
@@ -493,7 +493,7 @@ func TestH3AStreamArrivingAfterTheDrainFinishedIsRejected(t *testing.T) {
 func TestH3AStreamedBodyMayArriveWithItsHead(t *testing.T) {
 	a := testAssembler(Config{BodyDelivery: BodyStreamed, MaxBodyBytes: 16 << 10, MaxStreamedBodyBytes: 8 << 20})
 	a.CreditConn = func(uint64) {}
-	a.CreditStream = func(uint64, uint64) {}
+	a.CreditStream = func(quic.StreamID, uint64) {}
 	req := h3Request("POST", "/up")
 	for len(req) <= a.rawStreamBound() {
 		req = appendH3Frame(req, h3Data, make([]byte, 16<<10))
@@ -884,7 +884,7 @@ func TestH3AggregateAssemblyBytesAreBounded(t *testing.T) {
 
 	refused := false
 	for i := range 8 {
-		id := uint64(4 * i)
+		id := quic.StreamID(4 * i)
 		stream := append(append([]byte(nil), head...), body...)
 		_, _, failed, err := a.Frames([]quic.Frame{streamFrame(id, stream, false)}) // no FIN: parked
 		if err != nil {

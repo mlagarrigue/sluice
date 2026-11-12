@@ -1705,7 +1705,7 @@ func (c *Conn) dispatchDeltas(batch []Frame) error {
 }
 
 // streamIfOpen looks a stream up by identifier, nil if it is gone.
-func (c *Conn) streamIfOpen(id uint64) *Stream {
+func (c *Conn) streamIfOpen(id StreamID) *Stream {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.streams[id]
@@ -2002,7 +2002,7 @@ func (c *Conn) peerMaxAckDelayLocked() time.Duration {
 // such a frame compounds it: a STOP_SENDING on the peer's own uni stream used
 // to make this end answer with a RESET_STREAM on a stream it never sends on,
 // which a conformant peer must kill the connection over.
-func (c *Conn) streamFor(id uint64, space int, sendSide bool) (*Stream, bool, error) {
+func (c *Conn) streamFor(id StreamID, space int, sendSide bool) (*Stream, bool, error) {
 	if space != spaceApplication {
 		return nil, false, &transportError{
 			code: transportProtocolViolation,
@@ -2042,7 +2042,7 @@ func (c *Conn) streamFor(id uint64, space int, sendSide bool) (*Stream, bool, er
 	// so that a peer cycling through streams costs it no memory; the
 	// check is given up with the state, and a frame past the final size of
 	// a closed stream is the peer's error that changes nothing here.
-	count := id/4 + 1
+	count := id.count()
 	uni := id&0x02 != 0
 	peerInitiated := (id&1 == 0) != c.isClient
 	if !peerInitiated {
@@ -2093,7 +2093,7 @@ func (c *Conn) streamFor(id uint64, space int, sendSide bool) (*Stream, bool, er
 	// every other stream's writer waits on.
 	var last *Stream
 	for n := *seen + 1; n <= count; n++ {
-		nid := (n-1)*4 + id&0x03
+		nid := nthStream(n, id)
 		s := c.streams[nid]
 		if s == nil {
 			s = newStream(c, nid)
@@ -2118,7 +2118,7 @@ func (c *Conn) streamFor(id uint64, space int, sendSide bool) (*Stream, bool, er
 // registered before the peer opened it: its first frame from the peer still
 // opens it — and the lower-numbered streams with it — as any other. Callers
 // hold c.mu.
-func (c *Conn) pickedAheadLocked(id uint64) bool {
+func (c *Conn) pickedAheadLocked(id StreamID) bool {
 	if (id&1 == 0) == c.isClient {
 		return false
 	}
@@ -2126,7 +2126,7 @@ func (c *Conn) pickedAheadLocked(id uint64) bool {
 	if id&0x02 != 0 {
 		seen = c.seenPeerUni
 	}
-	return id/4 >= seen // its count, id/4+1, past what the peer opened
+	return id.count() > seen // past what the peer opened
 }
 
 // settleBatchConsumption credits flow control — per stream and per
@@ -2193,7 +2193,7 @@ func (c *Conn) settleBatchConsumption(batch []Frame) {
 	c.mu.Lock()
 	for i := range settled {
 		if e := &settled[i]; e.grant > 0 {
-			c.grants = appendFrame(c.grants, frameMaxStreamData, e.s.id, e.grant)
+			c.grants = appendStreamFrame(c.grants, frameMaxStreamData, e.s.id, e.grant)
 		}
 	}
 	if connBytes > 0 && c.connRecv.consume(connBytes) {
@@ -2283,7 +2283,7 @@ func (c *Conn) armKeepAliveLocked(now time.Time) {
 // advances when the stream is still live; the connection-level window
 // advances regardless, because its debt survives the stream. Safe from any
 // goroutine.
-func (c *Conn) ReleaseStreamBytes(id, n uint64) {
+func (c *Conn) ReleaseStreamBytes(id StreamID, n uint64) {
 	c.release(id, n, n)
 }
 
@@ -2300,13 +2300,13 @@ func (c *Conn) ReleaseConnectionCredit(n uint64) {
 
 // ReleaseStreamCredit is the stream-level half of [Conn.ReleaseStreamBytes];
 // see [Conn.ReleaseConnectionCredit].
-func (c *Conn) ReleaseStreamCredit(id, n uint64) {
+func (c *Conn) ReleaseStreamCredit(id StreamID, n uint64) {
 	c.release(id, n, 0)
 }
 
 // release advances stream id's window by stream bytes, when the stream is
 // still live, and the connection's by conn bytes.
-func (c *Conn) release(id, stream, conn uint64) {
+func (c *Conn) release(id StreamID, stream, conn uint64) {
 	if stream == 0 && conn == 0 {
 		return
 	}
@@ -2325,7 +2325,7 @@ func (c *Conn) release(id, stream, conn uint64) {
 	}
 	c.mu.Lock()
 	if grant {
-		c.grants = appendFrame(c.grants, frameMaxStreamData, id, nextMax)
+		c.grants = appendStreamFrame(c.grants, frameMaxStreamData, id, nextMax)
 	}
 	if conn > 0 && c.connRecv.consume(conn) {
 		c.grants = appendFrame(c.grants, frameMaxData, c.connRecv.nextMax())

@@ -56,7 +56,7 @@ func TestInitialStreamLimitMapping(t *testing.T) {
 		InitialMaxStreamDataUni:        300,
 	}
 	tests := []struct {
-		id       uint64
+		id       StreamID
 		isClient bool
 		send     uint64
 	}{

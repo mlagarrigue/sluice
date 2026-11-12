@@ -19,7 +19,7 @@ func BenchmarkH3Assemble(b *testing.B) {
 		b.Run(fmt.Sprintf("depth=%d", depth), func(b *testing.B) {
 			frames := make([]quic.Frame, depth)
 			for i := range depth {
-				id := uint64(4 * i) // client-initiated bidirectional
+				id := quic.StreamID(4 * i) // client-initiated bidirectional
 				data := h3Request("GET", fmt.Sprintf("/orders/%d", i))
 				frames[i] = streamFrame(id, data, true)
 			}
@@ -62,7 +62,7 @@ func BenchmarkH3Expire(b *testing.B) {
 			head := h3Request("POST", "/u") // no FIN: the stream stays parked
 			frames := make([]quic.Frame, n)
 			for i := range n {
-				frames[i] = streamFrame(uint64(4*i), head, false)
+				frames[i] = streamFrame(quic.StreamID(4*i), head, false)
 			}
 			if _, _, failed, err := a.Frames(frames); err != nil || len(failed) != 0 {
 				b.Fatalf("Frames: err=%v failed=%v", err, failed)

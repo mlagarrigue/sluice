@@ -346,8 +346,8 @@ func TestH3AnswersAtTheirEdges(t *testing.T) {
 // A batch's context is released by its last writer, a batch of one's too.
 func TestH3BatchOfOneReleasesItsCalls(t *testing.T) {
 	c := serverConnWith(t, quic.DefaultConfig())
-	for _, ids := range [][]uint64{{400}, {404, 408}} {
-		var calls streamCalls[uint64]
+	for _, ids := range [][]quic.StreamID{{400}, {404, 408}} {
+		var calls streamCalls[quic.StreamID]
 		b := h3Batch{reqs: make([]Request, len(ids)), ids: ids, after: make([]<-chan struct{}, len(ids)), fieldSection: h3NoFieldSectionLimit}
 		for i := range b.reqs {
 			b.reqs[i].Method = []byte("GET")
@@ -377,7 +377,7 @@ func TestH3AssemblerTracksAtMostItsUniStreams(t *testing.T) {
 	a := testAssembler(Config{})
 	var frames []quic.Frame
 	for i := range maxUniStreams + 1 {
-		frames = append(frames, streamFrame(uint64(4*i+2), []byte{0x21}, false)) // a reserved stream type
+		frames = append(frames, streamFrame(quic.StreamID(4*i+2), []byte{0x21}, false)) // a reserved stream type
 	}
 	if _, _, _, err := a.Frames(frames); err != nil {
 		t.Fatal(err)

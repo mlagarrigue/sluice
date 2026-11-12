@@ -325,7 +325,7 @@ func BenchmarkPruneResetIDsBehindAnOldPacket(b *testing.B) {
 	sp := &c.spaces[spaceApplication]
 	sp.sent.packets = []sentPacket{{pn: 0, ackEliciting: true}}
 	sp.nextPN = 1
-	for id := range uint64(1000) {
+	for id := range StreamID(1000) {
 		c.noteResetLocked(4 * id)
 		sp.nextPN++
 	}

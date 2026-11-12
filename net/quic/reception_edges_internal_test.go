@@ -525,7 +525,7 @@ func TestTwoAcceptorsBothServed(t *testing.T) {
 	// Two streams queued behind one wake: the acceptor it wakes passes the
 	// next one on.
 	c.mu.Lock()
-	for _, id := range []uint64{0, 4} {
+	for _, id := range []StreamID{0, 4} {
 		s := newStream(c, id)
 		s.queued = true
 		c.acceptQ = append(c.acceptQ, s)

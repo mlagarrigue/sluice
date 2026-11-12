@@ -20,7 +20,7 @@ func TestTheLastStreamOfTheLimitDoesNotBlockReception(t *testing.T) {
 		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, params)
 	defer c.Close()
 
-	last := 4 * (params.InitialMaxStreamsBidi - 1)
+	last := StreamID(4 * (params.InitialMaxStreamsBidi - 1))
 	done := make(chan error, 1)
 	go func() { done <- c.frames(spaceApplication, streamFrame(nil, last, 0, "x", true), time.Now()) }()
 	select {
@@ -31,7 +31,7 @@ func TestTheLastStreamOfTheLimitDoesNotBlockReception(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("the frame on stream %d still not processed after 2 s", last)
 	}
-	for want := uint64(0); want <= last; want += 4 {
+	for want := StreamID(0); want <= last; want += 4 {
 		s, err := c.AcceptStream(t.Context())
 		if err != nil || s.id != want {
 			t.Fatalf("AcceptStream = %v, %v; want stream %d", s, err, want)
@@ -56,7 +56,7 @@ func TestAStreamPickedBeforeThePeerOpensItIsKept(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
-	for _, want := range []uint64{0, 4} {
+	for _, want := range []StreamID{0, 4} {
 		s, err := c.AcceptStream(ctx)
 		if err != nil || s.id != want {
 			t.Fatalf("AcceptStream = %v, %v; want stream %d", s, err, want)

@@ -1435,7 +1435,7 @@ func (c *Conn) streamDataRecvdLocked(s *Stream) bool {
 // carriesStream reports whether payload holds a STREAM frame of stream id.
 // A payload that does not parse, which cannot happen, is read as carrying
 // it: the safe answer keeps the stream out of "Data Recvd".
-func carriesStream(payload []byte, id uint64) bool {
+func carriesStream(payload []byte, id StreamID) bool {
 	for n := 0; n < len(payload); {
 		f, tail, err := parseFrame(payload[n:])
 		if err != nil {
@@ -1458,9 +1458,9 @@ func carriesStream(payload []byte, id uint64) bool {
 // parked writer queued waits there for the congestion window, which the
 // RESET_STREAM does not wait for, and would leave after it — §3.3 forbids
 // the frame in "Reset Sent". Callers hold mu.
-func (c *Conn) noteResetLocked(id uint64) {
+func (c *Conn) noteResetLocked(id StreamID) {
 	if c.resetIDs == nil {
-		c.resetIDs = make(map[uint64]uint64)
+		c.resetIDs = make(map[StreamID]uint64)
 	}
 	mark := c.spaces[spaceApplication].nextPN
 	if len(c.resetIDs) == 0 || mark < c.resetMinMark {
@@ -1635,7 +1635,7 @@ func splitDataFrame(f Frame, room int) (first, second []byte) {
 	}
 	header := 1 + varintBytes(f.offset) + varintBytes(uint64(max(room, 0))) //nolint:gosec // G115: non-negative
 	if stream {
-		header += varintBytes(f.StreamID)
+		header += varintBytes(uint64(f.StreamID))
 	}
 	k := room - header
 	if k <= 0 || k >= len(f.Data) {
@@ -1644,7 +1644,7 @@ func splitDataFrame(f Frame, room int) (first, second []byte) {
 	encode := func(dst []byte, off uint64, data []byte, fin bool) []byte {
 		if stream {
 			dst = varint.Append(dst, FrameStream|streamOFF|streamLEN|boolBit(fin, streamFIN))
-			dst = varint.Append(dst, f.StreamID)
+			dst = appendStreamID(dst, f.StreamID)
 		} else {
 			dst = varint.Append(dst, frameCrypto)
 		}
@@ -1866,7 +1866,7 @@ func (c *Conn) sendBlockedFramesLocked(s *Stream) {
 	}
 	if s.sendQ.avail() == 0 && !s.sendQ.blockedSent {
 		s.sendQ.blockedSent = true
-		c.control = appendFrame(c.control, frameStreamDataBlocked, s.id, s.sendQ.max)
+		c.control = appendStreamFrame(c.control, frameStreamDataBlocked, s.id, s.sendQ.max)
 	}
 	if c.blockedResend.IsZero() {
 		if ivl := c.blockedResendInterval(); ivl > 0 {
@@ -1918,7 +1918,7 @@ func (c *Conn) resendBlockedFramesLocked(now time.Time) {
 	// parses for B streams parked at their limit, which
 	// BenchmarkResendBlocked measures at 16, 256 and 4096 streams.
 	var held map[blockedKey]bool
-	queue := func(typ byte, id, limit uint64) {
+	queue := func(typ byte, id StreamID, limit uint64) {
 		blocked = true
 		if inFlight {
 			return
@@ -1931,7 +1931,7 @@ func (c *Conn) resendBlockedFramesLocked(now time.Time) {
 			if typ == frameDataBlocked {
 				c.control = appendFrame(c.control, frameDataBlocked, limit)
 			} else {
-				c.control = appendFrame(c.control, frameStreamDataBlocked, id, limit)
+				c.control = appendStreamFrame(c.control, frameStreamDataBlocked, id, limit)
 			}
 		}
 	}
@@ -1972,8 +1972,9 @@ func (c *Conn) elicitingInFlightLocked() bool {
 // DATA_BLOCKED) and the limit it announces. The queue holds this end's own
 // encoding, so equal keys are equal bytes.
 type blockedKey struct {
-	typ       byte
-	id, limit uint64
+	typ   byte
+	id    StreamID
+	limit uint64
 }
 
 // heldBlockedLocked is the set of *_BLOCKED frames waiting in the control
@@ -1997,11 +1998,11 @@ func (c *Conn) heldBlockedLocked() map[blockedKey]bool {
 // creditConsumed reports application-consumed stream bytes to flow control,
 // queueing the grants the consumption earned. Called by Stream.Read with no
 // locks held.
-func (c *Conn) creditConsumed(streamID, n uint64, streamGrant bool, nextStreamMax uint64) {
+func (c *Conn) creditConsumed(streamID StreamID, n uint64, streamGrant bool, nextStreamMax uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if streamGrant {
-		c.grants = appendFrame(c.grants, frameMaxStreamData, streamID, nextStreamMax)
+		c.grants = appendStreamFrame(c.grants, frameMaxStreamData, streamID, nextStreamMax)
 	}
 	if c.connRecv.consume(n) {
 		c.grants = appendFrame(c.grants, frameMaxData, c.connRecv.nextMax())

@@ -345,7 +345,7 @@ func assembleConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient 
 	c := &Conn{
 		pc: pc, peer: peer, dcid: dcid, scid: scid, isClient: isClient,
 		params:              params,
-		streams:             make(map[uint64]*Stream),
+		streams:             make(map[StreamID]*Stream),
 		acceptReady:         make(chan struct{}, 1),
 		closed:              make(chan struct{}),
 		gone:                make(chan struct{}),
