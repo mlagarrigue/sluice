@@ -46,7 +46,7 @@ const (
 // start from [DefaultConfig] and change what you need. They refuse too,
 // with an error naming the field, a count past 2^62-1 — the most a
 // transport parameter can carry (RFC 9000 §16, §18.2) — and a stream count
-// past 2^60 (§4.6).
+// past 65,536 (maxStreamsAnnounced).
 type TransportParameters struct {
 	// MaxIdleTimeout ends a connection nobody is using. Zero, which RFC 9000
 	// §10.1 reads as no timeout, is refused by [Dial], accept and
@@ -73,7 +73,7 @@ type TransportParameters struct {
 	// type below n at once (RFC 9000 §3.2), each a Stream, a channel and two
 	// table entries, so InitialMaxStreamsBidi and InitialMaxStreamsUni are
 	// what one connection may make this end hold, and a Listener holds that
-	// MaxConns times.
+	// MaxConns times. Each is refused past 65,536.
 	InitialMaxData                 uint64
 	InitialMaxStreamDataUni        uint64
 	InitialMaxStreamDataBidiLocal  uint64
@@ -343,6 +343,15 @@ func parsePreferredAddress(val []byte) (*preferredAddress, error) {
 	return p, nil
 }
 
+// maxStreamsAnnounced is the most streams of one type this end announces
+// (InitialMaxStreamsBidi, InitialMaxStreamsUni). RFC 9000 §4.6 allows 2^60,
+// and §3.2 has a STREAM frame on identifier n open every stream of its type
+// below n: a frame of a few bytes makes this end build them all, a Stream,
+// a channel and two table entries each. 65,536 is 650 times the default
+// and a few tens of megabytes at most — the budget an operator raising the
+// figure can still read — where 2^60 is no budget at all.
+const maxStreamsAnnounced = 1 << 16
+
 // maxActiveConnIDLimit is the most connection identifiers
 // [TransportParameters.ActiveConnIDLimit] may ask this end to keep.
 const maxActiveConnIDLimit = 1 << 10
@@ -380,7 +389,7 @@ func (p TransportParameters) check() error {
 	}
 	// Every count here travels as a variable-length integer (§18.2), which
 	// carries up to varint.Max; the stream counts stop lower, at
-	// maxStreamsLimit (§4.6). Past those, appendParameters would panic on
+	// maxStreamsAnnounced, below §4.6's 2^60. Past those, appendParameters would panic on
 	// the first handshake — on a Listener, on the socket's read goroutine,
 	// at the first valid Initial of any client — so the refusal is here,
 	// where the caller is.
@@ -398,11 +407,11 @@ func (p TransportParameters) check() error {
 			return fmt.Errorf("quic: %s %d is past 2^62-1, the most a transport parameter can carry", f.name, f.v)
 		}
 	}
-	if n := p.InitialMaxStreamsBidi; n > maxStreamsLimit {
-		return fmt.Errorf("quic: InitialMaxStreamsBidi %d is past 2^60, the most streams RFC 9000 §4.6 allows", n)
+	if n := p.InitialMaxStreamsBidi; n > maxStreamsAnnounced {
+		return fmt.Errorf("quic: InitialMaxStreamsBidi %d is past %d, the most this package announces", n, maxStreamsAnnounced)
 	}
-	if n := p.InitialMaxStreamsUni; n > maxStreamsLimit {
-		return fmt.Errorf("quic: InitialMaxStreamsUni %d is past 2^60, the most streams RFC 9000 §4.6 allows", n)
+	if n := p.InitialMaxStreamsUni; n > maxStreamsAnnounced {
+		return fmt.Errorf("quic: InitialMaxStreamsUni %d is past %d, the most this package announces", n, maxStreamsAnnounced)
 	}
 	// A negative idle timeout has no wire form: appendParameters would
 	// announce zero — no timeout — while this end kept the negative value

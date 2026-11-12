@@ -168,6 +168,12 @@ behavior that keep the signatures — a value now refused — come last.
   `DiscardedPackets` for a broken socket watches `ReadErrors` too.
 
 ## From v0.3.0 to v0.4.0
+- **A stream count past 65,536 is refused**
+  (`fix(quic): stream counts past 65,536 are refused`): `Dial`, `DialEarly`
+  and `NewListener` refuse `InitialMaxStreamsBidi` or `InitialMaxStreamsUni`
+  above 65,536, where they accepted up to 2^60. One STREAM frame on a high
+  identifier makes this end open every stream below it; a figure past
+  65,536 was memory no peer should be able to claim with a few bytes.
 
 ### Fan-out: `parallel`
 

@@ -397,6 +397,13 @@ func (c *Conn) armStreamDeadlineLocked(t time.Time) {
 // holds — the stream's Read, the writers parked on cond — and returns the
 // earliest deadline still to come, zero when none is set. Callers hold mu;
 // taking s.mu under it is the one order the two locks allow.
+//
+// Each matured deadline costs a pass over every open stream, under mu: one
+// lock per stream, bounded by InitialMaxStreamsBidi plus Uni (100 and 8 by
+// default, 65,536 each at most). Only the application sets a deadline, so
+// the number of passes is its own; a heap ordered by deadline would make
+// every SetDeadline pay a log n and a removal, for an application that
+// sets many distinct deadlines on many streams at once.
 func (c *Conn) expireStreamDeadlinesLocked(now time.Time) time.Time {
 	var next time.Time
 	earlier := func(t time.Time) {

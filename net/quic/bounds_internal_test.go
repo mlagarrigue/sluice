@@ -439,19 +439,24 @@ func TestCallerValuesPastTheVarintCeilingAreRefused(t *testing.T) {
 			{"InitialMaxStreamsBidi", func(p *TransportParameters, v uint64) { p.InitialMaxStreamsBidi = v }},
 			{"InitialMaxStreamsUni", func(p *TransportParameters, v uint64) { p.InitialMaxStreamsUni = v }},
 		} {
-			p := DefaultConfig()
-			tc.set(&p.TransportParameters, maxStreamsLimit+1)
-			if err := p.check(); err == nil || !strings.Contains(err.Error(), tc.name) {
-				t.Errorf("%s = 2^60+1: check returned %v, want an error naming the field (§4.6)", tc.name, err)
+			// Every count past maxStreamsAnnounced is refused, §4.6's 2^60
+			// among them: one STREAM frame opens every stream below it.
+			for _, v := range []uint64{maxStreamsAnnounced + 1, maxStreamsLimit, maxStreamsLimit + 1} {
+				p := DefaultConfig()
+				tc.set(&p.TransportParameters, v)
+				if err := p.check(); err == nil || !strings.Contains(err.Error(), tc.name) {
+					t.Errorf("%s = %d: check returned %v, want an error naming the field", tc.name, v, err)
+				}
 			}
-			tc.set(&p.TransportParameters, maxStreamsLimit)
+			p := DefaultConfig()
+			tc.set(&p.TransportParameters, maxStreamsAnnounced)
 			if err := p.check(); err != nil {
-				t.Errorf("%s = 2^60: check returned %v, want nil", tc.name, err)
+				t.Errorf("%s = %d: check returned %v, want nil", tc.name, maxStreamsAnnounced, err)
 			}
 		}
 		// What check accepts, appendParameters encodes without a panic.
 		p := DefaultConfig()
-		p.InitialMaxData, p.InitialMaxStreamsBidi = varint.Max, maxStreamsLimit
+		p.InitialMaxData, p.InitialMaxStreamsBidi = varint.Max, maxStreamsAnnounced
 		if err := p.check(); err != nil {
 			t.Fatal(err)
 		}
