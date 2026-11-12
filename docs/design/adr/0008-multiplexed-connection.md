@@ -206,7 +206,11 @@ path (`BenchmarkH2Consume`) is neutral
 
 An idle connection that has streamed keeps one streamer and its parked
 goroutine, whose stack the collector shrinks; the others are let go when
-it goes idle, and every one when it ends.
+it goes idle, and every one when it ends. Measured, that is one goroutine
+more and 2 to 4% more memory, heap and stacks, than an idle connection
+that streamed nothing (`TestH2IdleConnectionKeepsOneStreamer` holds the
+one goroutine): kept rather than started again on the next streamed
+response, which would cost it 88% more.
 
 ### The HTTP/3 tail, measured
 
