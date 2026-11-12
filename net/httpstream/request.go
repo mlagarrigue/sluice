@@ -817,7 +817,11 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 			return req, 0, out, cerr
 		}
 		out = trailers
-		req.Body = body
+		// Capped at its length, as Headers below: the body is a view of the
+		// read buffer, the requests pipelined behind it are views of the same
+		// buffer handed to the same call, and a handler appending to the body
+		// would otherwise write over them.
+		req.Body = body[:len(body):len(body)]
 		// The same views as Headers, after the same appends; capped, so a
 		// handler appending to Headers cannot write over the trailers.
 		req.Headers = out[start:headersEnd:headersEnd]
@@ -847,7 +851,7 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 	if progress != nil && progress.need != 0 {
 		*progress = chunkProgress{} // the body that was waited for is whole
 	}
-	req.Body = rest[:length]
+	req.Body = rest[:length:length] // capped, as the chunked body above
 	return req, consumed + length, out, nil
 }
 
