@@ -167,17 +167,8 @@ func Decode(r io.Reader, limit int64, dst any, code, tooLarge string) (diagnosti
 	dec := json.NewDecoder(r)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
-		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
-			return TooLarge(tooLarge, limit), false
-		}
-		// The server's read deadline ran out under the body: the client
-		// stopped sending, which is not a syntax error and must not read as
-		// one.
-		if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
-			return diagnostics.NewDiagnostic(diagnostics.Error, code, diagnostics.Path{}).
-				WithMessage("RequestBodyTimeout", nil).
-				WithOrigin(diagnostics.OriginProtocol).
-				WithCause(err), false
+		if d, read := readFailure(err, limit, code, tooLarge); read {
+			return d, false
 		}
 		return diagnostics.NewDiagnostic(diagnostics.Error, code, diagnostics.Path{}).
 			WithMessage("RequestBodyMalformed", MalformedArgs(err)).
@@ -196,12 +187,38 @@ func Decode(r io.Reader, limit int64, dst any, code, tooLarge string) (diagnosti
 	// token or a syntax error otherwise — a stray closing bracket included,
 	// which Decoder.More would have read as the end. Decoding the rest into a
 	// RawMessage said the same at one allocation a request.
+	//
+	// The read that looks for that second value may also be the one that
+	// meets the limit or the deadline — the value fits, the blanks after it
+	// do not — and is classed as the first read is: too large, or timed
+	// out, not trailing content.
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		if d, read := readFailure(err, limit, code, tooLarge); read {
+			return d, false
+		}
 		return diagnostics.NewDiagnostic(diagnostics.Error, code, diagnostics.Path{}).
 			WithMessage("RequestBodyTrailingContent", nil).
 			WithOrigin(diagnostics.OriginProtocol), false
 	}
 	return diagnostics.Diagnostic{}, true
+}
+
+// readFailure classes an error the body's reader returned rather than the
+// JSON it read: the limit (an *http.MaxBytesError), or the server's read
+// deadline running out under the body — the client stopped sending, which is
+// not a syntax error and must not read as one. It reports false for any
+// other error, which is the JSON's.
+func readFailure(err error, limit int64, code, tooLarge string) (diagnostics.Diagnostic, bool) {
+	if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
+		return TooLarge(tooLarge, limit), true
+	}
+	if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
+		return diagnostics.NewDiagnostic(diagnostics.Error, code, diagnostics.Path{}).
+			WithMessage("RequestBodyTimeout", nil).
+			WithOrigin(diagnostics.OriginProtocol).
+			WithCause(err), true
+	}
+	return diagnostics.Diagnostic{}, false
 }
 
 // TooLarge is the refusal of a body past limit bytes, under code.
