@@ -68,6 +68,7 @@ func TestGS2HeaderIsDeclinedChannelBinding(t *testing.T) {
 func TestParseServerFirstRefusals(t *testing.T) {
 	const clientNonce = "abcdefgh"
 	good := "r=" + clientNonce + "SERVER,s=" + rfcSalt + ",i=4096"
+	huge := strings.Repeat("Z", 8<<10)
 
 	tests := []struct {
 		name string
@@ -110,11 +111,19 @@ func TestParseServerFirstRefusals(t *testing.T) {
 		{"a salt that is not base64", "r=" + clientNonce + "S,s=!!!,i=4096", "not base64"},
 		{"an iteration count that is not a number", "r=" + clientNonce + "S,s=" + rfcSalt + ",i=many", "not a number"},
 		{"an attribute with no value", "r,s=" + rfcSalt + ",i=4096", "malformed attribute"},
+		// What a server not yet authenticated writes into an error is cut,
+		// as quoteShort cuts m=: the error may be kept for the Conn's life
+		// and logged by the caller.
+		{"a malformed attribute kilobytes long", "r=" + clientNonce + "S,s=" + rfcSalt + ",i=4096," + huge, "malformed attribute"},
+		{"an iteration count kilobytes long", "r=" + clientNonce + "S,s=" + rfcSalt + ",i=" + huge, "not a number"},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, _, err := parseServerFirst(tc.msg, clientNonce, Config{}.scramBounds())
+			if err != nil && strings.Contains(err.Error(), huge[:64]) {
+				t.Errorf("the error quotes %d bytes of the server's message whole", len(huge))
+			}
 			switch {
 			case tc.want == "" && err != nil:
 				t.Fatalf("parseServerFirst = %v, want it accepted", err)
@@ -304,6 +313,16 @@ func TestParseServerFinalRefusesMalformedAttributes(t *testing.T) {
 		if _, err := parseServerFinal(msg); err == nil {
 			t.Errorf("parseServerFinal(%q) accepted it", msg)
 		}
+	}
+	// A malformed attribute kilobytes long is cut in the error, as the
+	// server's first message's are.
+	huge := strings.Repeat("Z", 8<<10)
+	_, err := parseServerFinal(huge)
+	switch {
+	case err == nil:
+		t.Fatal("parseServerFinal accepted a malformed attribute")
+	case strings.Contains(err.Error(), huge[:64]):
+		t.Errorf("the error quotes %d bytes of the server's final message whole", len(huge))
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"hash"
 	"slices"
@@ -469,7 +470,7 @@ func parseServerFirst(msg, clientNonce string, b scramBounds) (nonce string, sal
 	for attr := range strings.SplitSeq(msg, ",") {
 		name, val, ok := splitAttr(attr)
 		if !ok {
-			return "", nil, 0, fmt.Errorf("%w: malformed attribute %q in the server's first message", ErrAuth, attr)
+			return "", nil, 0, fmt.Errorf("%w: malformed attribute %s in the server's first message", ErrAuth, quoteShort(attr))
 		}
 		switch name {
 		case 'r':
@@ -481,7 +482,9 @@ func parseServerFirst(msg, clientNonce string, b scramBounds) (nonce string, sal
 			haveSalt = true
 		case 'i':
 			if iter, err = strconv.Atoi(val); err != nil {
-				return "", nil, 0, fmt.Errorf("%w: the iteration count is not a number: %w", ErrAuth, err)
+				// strconv's error quotes the whole value; its reason alone
+				// is kept, beside the value cut as every other one is.
+				return "", nil, 0, fmt.Errorf("%w: the iteration count %s is not a number: %w", ErrAuth, quoteShort(val), errors.Unwrap(err))
 			}
 			haveIter = true
 		case 'm':
@@ -533,7 +536,7 @@ func parseServerFinal(msg string) ([]byte, error) {
 	for attr := range strings.SplitSeq(msg, ",") {
 		name, val, ok := splitAttr(attr)
 		if !ok {
-			return nil, fmt.Errorf("%w: malformed attribute %q in the server's final message", ErrAuth, attr)
+			return nil, fmt.Errorf("%w: malformed attribute %s in the server's final message", ErrAuth, quoteShort(attr))
 		}
 		switch name {
 		case 'v':
