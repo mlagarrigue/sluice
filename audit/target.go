@@ -117,6 +117,12 @@ type Spec struct {
 	// rolcanlogin columns.
 	PGSettings, PGHBA, PGLog, PGRoles string
 
+	// PGActivity is pg_stat_activity as psql prints it in CSV, read during
+	// a load, with the state column at least and backend_type when the
+	// server has it; several readings may follow one another, each with
+	// its header.
+	PGActivity string
+
 	// Firewall is a file holding the packet filter's rules as nft list
 	// ruleset or iptables-save prints them.
 	Firewall string
@@ -201,8 +207,8 @@ func Open(s Spec) (*Target, error) {
 		}
 		t.KernelLogPath, t.KernelLog = s.KernelLog, string(b)
 	}
-	if s.PGSettings != "" || s.PGHBA != "" || s.PGLog != "" || s.PGRoles != "" {
-		pg, err := openPostgres(s.PGSettings, s.PGHBA, s.PGLog, s.PGRoles)
+	if s.PGSettings != "" || s.PGHBA != "" || s.PGLog != "" || s.PGRoles != "" || s.PGActivity != "" {
+		pg, err := openPostgres(s.PGSettings, s.PGHBA, s.PGLog, s.PGRoles, s.PGActivity)
 		if err != nil {
 			return nil, err
 		}

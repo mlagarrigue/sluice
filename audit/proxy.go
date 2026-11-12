@@ -294,23 +294,7 @@ func init() {
 	register("upstream-keepalive", "performance",
 		"https://nginx.org/en/docs/http/ngx_http_upstream_module.html#keepalive",
 		func(p *Proxy) []Finding {
-			var bad []string
-			if p.Kind == "nginx" {
-				bad = nginxKeepalive(p)
-			}
-			for i, s := range p.HAProxy {
-				if s.Kind == "frontend" || s.Kind == "global" {
-					continue
-				}
-				for _, opt := range []string{"httpclose", "http-server-close"} {
-					if p.has(i, "option", opt) {
-						bad = append(bad, fmt.Sprintf("%s (line %d): option %s", s.label(), s.Line, opt))
-					}
-				}
-				if p.has(i, "http-reuse", "never") {
-					bad = append(bad, fmt.Sprintf("%s (line %d): http-reuse never", s.label(), s.Line))
-				}
-			}
+			bad := p.keepaliveGaps()
 			if len(bad) == 0 {
 				return nil
 			}
@@ -487,6 +471,29 @@ func nginxKeepalive(p *Proxy) []string {
 		}
 		if c, ok := l.Parent.header("Connection"); !ok || c != "" {
 			bad = append(bad, fmt.Sprintf("line %d: proxy_pass with Connection: close (proxy_set_header Connection \"\" absent)", l.Line))
+		}
+	}
+	return bad
+}
+
+// keepaliveGaps lists what closes the proxy's connections to the
+// application after each request, empty when nothing does.
+func (p *Proxy) keepaliveGaps() []string {
+	var bad []string
+	if p.Kind == "nginx" {
+		bad = nginxKeepalive(p)
+	}
+	for i, s := range p.HAProxy {
+		if s.Kind == "frontend" || s.Kind == "global" {
+			continue
+		}
+		for _, opt := range []string{"httpclose", "http-server-close"} {
+			if p.has(i, "option", opt) {
+				bad = append(bad, fmt.Sprintf("%s (line %d): option %s", s.label(), s.Line, opt))
+			}
+		}
+		if p.has(i, "http-reuse", "never") {
+			bad = append(bad, fmt.Sprintf("%s (line %d): http-reuse never", s.label(), s.Line))
 		}
 	}
 	return bad

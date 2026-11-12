@@ -27,6 +27,10 @@ type Postgres struct {
 	LogPath   string
 	Roles     []PGRole
 	RolesPath string
+	// Activity is pg_stat_activity read during a load, one entry per
+	// reading, each holding the sessions of that moment.
+	Activity     [][]PGSession
+	ActivityPath string
 }
 
 // A PGSetting is one row of pg_settings: the value, in the unit the
@@ -46,7 +50,7 @@ type HBALine struct {
 	Options []string // what follows the method: clientcert=verify-full, map=…
 }
 
-func openPostgres(settings, hba, log, roles string) (*Postgres, error) {
+func openPostgres(settings, hba, log, roles, activity string) (*Postgres, error) {
 	pg := &Postgres{}
 	if settings != "" {
 		b, err := os.ReadFile(settings) //nolint:gosec // G304: the path is the caller's
@@ -80,6 +84,16 @@ func openPostgres(settings, hba, log, roles string) (*Postgres, error) {
 			return nil, fmt.Errorf("%s: %w", roles, err)
 		}
 		pg.RolesPath = roles
+	}
+	if activity != "" {
+		b, err := os.ReadFile(activity) //nolint:gosec // G304: the path is the caller's
+		if err != nil {
+			return nil, err
+		}
+		if pg.Activity, err = parsePGActivity(string(b)); err != nil {
+			return nil, fmt.Errorf("%s: %w", activity, err)
+		}
+		pg.ActivityPath = activity
 	}
 	return pg, nil
 }

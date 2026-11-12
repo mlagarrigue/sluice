@@ -145,6 +145,7 @@ var Questions = []Question{
 	{Key: "role", Ask: "what does this machine do?", Default: "server", Choices: []string{"server", "workstation", "build"}},
 	{Key: "exposure", Ask: "is it reachable from the internet?", Default: "private", Choices: []string{"internet", "private"}},
 	{Key: "pools", Ask: "how many connections can every client's pool open at most, all processes together?", Default: "unknown"},
+	{Key: "requests", Ask: "how many requests did the load step serve, between the two counter readings?", Default: "unknown"},
 }
 
 // Answers holds what was answered; a key left out is the question's
