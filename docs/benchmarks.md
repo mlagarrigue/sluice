@@ -850,6 +850,27 @@ The four-byte types keep two appends: one made `int4` 13.9% and `float4`
 9.4% slower (0 rounds of 11). Writing in place after one reservation made
 `int8` 64% slower.
 
+**With NULLs.** The `…1000Nulls` benchmarks hold the same thousand values
+with one element in ten NULL. Against the `[]Null[T]` form they replaced
+(`56769bf`, the same benchmark written for it), the mask cost nothing past
+noise: medians of the paired after/before ratio 1.10 for decoding `int4`,
+1.04 `int8`, 1.06 `text`, and 0.77, 0.94, 1.06 for appending. But the type's
+loops stopped at the first NULL and left the rest to the general path, so a
+NULL in ten made decoding `int4` five times the array without. The loops
+now resume after each NULL, which `DecodeArray` and `AppendArray` handle
+themselves; paired by `ab.sh`, eleven rounds, 2026-11-12, mains power:
+
+| benchmark | before, ns per op | after, ns per op | ratio |
+|---|---|---|---|
+| `BenchmarkArrayDecodeInt41000Nulls` | 3804 | 1052 | 0.28 |
+| `BenchmarkArrayDecodeInt81000Nulls` | 3723 | 1093 | 0.29 |
+| `BenchmarkArrayDecodeText1000Nulls` | 15383 | 13894 | 0.90 |
+| `BenchmarkArrayAppendInt41000Nulls` | 1638 | 1126 | 0.69 |
+| `BenchmarkArrayAppendInt81000Nulls` | 1789 | 772 | 0.43 |
+| `BenchmarkArrayAppendText1000Nulls` | 3094 | 2200 | 0.71 |
+
+The arrays without NULL did not move (ratios 0.99 to 1.01).
+
 ## Two changes read as noise, paired
 
 Two changes to `net/httpstream` were first judged on unpaired runs: the

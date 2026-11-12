@@ -40,6 +40,24 @@ func fastMatchesGeneral[T any](t *testing.T, c Codec[T], values []T) {
 			nulls[at] = true
 			shapes["n="+strconv.Itoa(n)+",null@"+strconv.Itoa(at)] = Array[T]{Elems: withNull, Nulls: nulls}
 		}
+		// Several NULLs: the loops resume after each one, on both sides.
+		for name, isNull := range map[string]func(i int) bool{
+			"all":      func(int) bool { return true },
+			"odd":      func(i int) bool { return i%2 == 1 },
+			"1-2":      func(i int) bool { return i == 1 || i == 2 },
+			"1 in 10":  func(i int) bool { return i%10 == 3 },
+			"not last": func(i int) bool { return i != n-1 },
+		} {
+			withNulls := append([]T(nil), elems...)
+			nulls := make([]bool, n)
+			for i := range nulls {
+				if nulls[i] = isNull(i); nulls[i] {
+					var zero T
+					withNulls[i] = zero
+				}
+			}
+			shapes["n="+strconv.Itoa(n)+",nulls "+name] = Array[T]{Elems: withNulls, Nulls: nulls}
+		}
 	}
 	if len(values) >= 4 {
 		elems := append([]T(nil), values[:4]...)
@@ -55,6 +73,23 @@ func fastMatchesGeneral[T any](t *testing.T, c Codec[T], values []T) {
 		want, werr := DecodeArray(Array[T]{}, fast, general)
 		if (err == nil) != (werr == nil) || !reflect.DeepEqual(got, want) {
 			t.Errorf("OID %d, %s: the type's loop read %v, %v; the general path %v, %v", c.OID, name, got, err, want, werr)
+		}
+	}
+	// A dst that carried a mask, reused for an array with no NULL, comes
+	// back with none; and with one, with a mask of its own length.
+	if n := len(values); n >= 4 {
+		nulls := make([]bool, n)
+		nulls[1] = true
+		withNull := Array[T]{Elems: append([]T(nil), values...), Nulls: nulls}
+		var zero T
+		withNull.Elems[1] = zero
+		prev, err := DecodeArray(Array[T]{}, AppendArray(nil, withNull, c), c)
+		if err != nil || len(prev.Nulls) != n {
+			t.Fatalf("OID %d: decoding a NULL at 1: %v, mask of %d", c.OID, err, len(prev.Nulls))
+		}
+		got, err := DecodeArray(prev, AppendArray(nil, Array[T]{Elems: values}, c), c)
+		if err != nil || len(got.Nulls) != 0 || len(got.Elems) != n {
+			t.Errorf("OID %d: a reused dst kept a mask of %d for an array with no NULL (%v)", c.OID, len(got.Nulls), err)
 		}
 	}
 	// An element of a length the type does not have, after three that

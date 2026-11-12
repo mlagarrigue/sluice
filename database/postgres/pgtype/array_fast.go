@@ -20,10 +20,11 @@ import (
 // the per-element flag a []Null[T] carried cost the int4 encoding 17 to 24%
 // against such a loop, whatever the loop was made of. A decoding loop reads
 // the elements it expects — the type's width, or a length that fits — and
-// stops at the first it does not (a NULL, a wrong length), which the
-// general path (otherElements) takes from there, so its own loop carries no
-// slow path and the errors are the general path's. An encoding loop is only
-// run on an array with no NULL. The two- and eight-byte ones write each
+// stops at the first it does not: DecodeArray reads a NULL itself and
+// leaves any other element to the general path (otherElements), then runs
+// the loop again after it, so the loop carries no slow path and the errors
+// are the general path's. An encoding loop writes the runs of values
+// between two NULLs, AppendArray writing each NULL. The two- and eight-byte ones write each
 // element's length and value in one append rather than two: the int8 loop
 // of two appends read as noise against the named function it replaced on
 // one machine and 34% slower on the CI's, and one append is 29 to 43%

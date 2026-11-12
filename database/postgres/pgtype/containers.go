@@ -84,6 +84,23 @@ func AppendArray[T any](dst []byte, a Array[T], c Codec[T]) []byte {
 		dst = binary.BigEndian.AppendUint32(dst, uint32(d.Lower)) //nolint:gosec // G115: the protocol field is int32
 	}
 	switch {
+	case slices.Contains(a.Nulls, true) && c.appendElems != nil:
+		// The type's loop writes each run of values between two NULLs: one
+		// NULL in ten left to the general path cost int4 three times the
+		// array without (BenchmarkArrayAppendInt41000Nulls).
+		binary.BigEndian.PutUint32(dst[flags:], 1)
+		for i := 0; i < len(a.Elems); {
+			j := i
+			for j < len(a.Elems) && (j >= len(a.Nulls) || !a.Nulls[j]) {
+				j++
+			}
+			dst = c.appendElems(dst, a.Elems[i:j])
+			if j < len(a.Elems) {
+				dst = binary.BigEndian.AppendUint32(dst, nullElement)
+				j++
+			}
+			i = j
+		}
 	case slices.Contains(a.Nulls, true):
 		binary.BigEndian.PutUint32(dst[flags:], 1)
 		for i, v := range a.Elems {
@@ -174,9 +191,36 @@ func DecodeArray[T any](dst Array[T], b []byte, c Codec[T]) (Array[T], error) {
 	var err error
 	if c.decodeElems != nil {
 		// The type's loop reads what it expects; the general path takes the
-		// rest, from the first NULL or unexpected length on.
-		if dst.Elems, body, err = c.decodeElems(dst.Elems, body, n); err != nil {
-			return dst.reset(), err
+		// one element it stops at — a NULL, an unexpected length — and the
+		// loop resumes after it. Handing the general path everything from
+		// the first NULL on cost int4 five times the array without, at one
+		// NULL in ten (BenchmarkArrayDecodeInt41000Nulls).
+		for len(dst.Elems) < n {
+			start := len(dst.Elems)
+			if dst.Elems, body, err = c.decodeElems(dst.Elems, body, n-start); err != nil {
+				return dst.reset(), err
+			}
+			if m, k := len(dst.Nulls), len(dst.Elems)-start; m > 0 && k > 0 {
+				dst.Nulls = slices.Grow(dst.Nulls, k)[:m+k]
+				clear(dst.Nulls[m:])
+			}
+			if len(dst.Elems) == n {
+				break
+			}
+			if len(body) >= 4 && binary.BigEndian.Uint32(body) == nullElement {
+				if len(dst.Nulls) == 0 { // the first NULL: the mask, sized once
+					dst.Nulls = slices.Grow(dst.Nulls[:0], n)[:len(dst.Elems)]
+					clear(dst.Nulls)
+				}
+				var zero T
+				dst.Elems = append(dst.Elems, zero)
+				dst.Nulls = append(dst.Nulls, true)
+				body = body[4:]
+				continue
+			}
+			if dst, body, err = otherElements(dst, body, len(dst.Elems), len(dst.Elems)+1, c.Decode); err != nil {
+				return dst.reset(), err
+			}
 		}
 	}
 	if dst, body, err = otherElements(dst, body, len(dst.Elems), n, c.Decode); err != nil {
