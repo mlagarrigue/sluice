@@ -1,7 +1,7 @@
 # ADR 0026 — The three connectors after PostgreSQL: CSV and JSON Lines, Redis, NATS JetStream
 
 - **Created:** 2026-11-12
-- **Revised:** —
+- **Revised:** 2026-11-12 (each protocol fact read in its published text and cited)
 - **Theme:** core
 
 ## Problem
@@ -29,6 +29,18 @@ have been whichever was asked for last.
 3. **NATS JetStream**: a pull consumer that asks for one batch at a time,
    each message acknowledged by the consumer; publishing by batch.
 
+**What the protocols say**, read in their published texts. Valkey speaks
+RESP2 and RESP3 and pipelines commands sent in one write
+([Valkey, protocol](https://valkey.io/topics/protocol/)).
+`XREADGROUP … COUNT n` returns at most n entries per stream, each pending
+in the group's list until the consumer's `XACK`
+([Redis, XREADGROUP](https://redis.io/docs/latest/commands/xreadgroup/)).
+A JetStream fetch names a batch size and a timeout, and acknowledgement is
+explicit ([NATS, consumers](https://docs.nats.io/nats-concepts/jetstream/consumers));
+a batch published atomically, stored whole or not at all, needs a NATS
+server of version 2.12 or later
+([nats-io ADR-50](https://github.com/nats-io/nats-architecture-and-design/blob/main/adr/ADR-50.md)).
+
 **Where they live**, by [ADR 0001](0001-package-map.md) (the periphery by
 external system, like the standard library): `encoding/csvstream` and
 `encoding/jsonl`, `database/redis`, `messaging/nats`. The `stream` suffix
@@ -44,7 +56,9 @@ batch, never by the connector as it reads.
 
 **Kafka is not among the three.** A Kafka consumer reads the batches its
 producers compressed, and three of the protocol's codecs (Snappy, LZ4,
-Zstd) are not in the standard library. It comes in once a choice is made
+Zstd) are not in the standard library: a record batch's attributes name
+gzip, snappy, lz4 and zstd
+([Kafka, message format](https://kafka.apache.org/42/implementation/message-format/)). It comes in once a choice is made
 between a dependency ([ADR 0002](0002-dependency-graph.md)) and a consumer
 that refuses batches compressed with anything but gzip.
 
