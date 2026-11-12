@@ -197,6 +197,8 @@ This implies **reimplementing the connectors**: `database/sql` cannot batch
 The PostgreSQL connector's shape — one connection and no pool, the transport
 the caller's, binary only, batches asked for ahead, COPY at-least-once, and
 where its codec lives — is [ADR 0022](adr/0022-postgres-connector-shape.md).
+Which connectors come next, in what order and under which import paths, is
+[ADR 0026](adr/0026-three-connectors-next.md).
 
 | Domain | Reading it in stream terms |
 |---|---|

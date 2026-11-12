@@ -16,6 +16,8 @@ theme, the question each one settles beside its title.
   — how an iterator reports an error it has nowhere to return.
 - [ADR 0007 — `Map` and `Convert` stay two functions, on measurement](0007-map-and-convert.md)
   — why transforming in place and converting stay two functions.
+- [ADR 0026 — The three connectors after PostgreSQL: CSV and JSON Lines, Redis, NATS JetStream](0026-three-connectors-next.md)
+  — which connectors come next, in what order, and where they live.
 
 ## Joins (`join`)
 
