@@ -27,7 +27,10 @@
 // and never opens one; [github.com/mlagarrigue/sluice/net/quic/udp] opens
 // or configures one with the options QUIC asks of it. The callbacks of the
 // [tls.Config] run on the connection's receive goroutine, so a slow one
-// stalls that connection.
+// stalls that connection. Under GODEBUG=fips140=only, [Dial], [DialEarly]
+// and [NewListener] refuse with an error that wraps [errors.ErrUnsupported]:
+// that mode refuses the AES-GCM nonces and the Initial keys RFC 9001
+// prescribes.
 //
 // Where to read on:
 //   - docs/guide/experimental.md — what the package is for, and what

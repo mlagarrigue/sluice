@@ -3,11 +3,13 @@ package quic
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/fips140"
 	"crypto/hkdf"
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/subtle"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"hash"
 	"sync/atomic"
@@ -64,6 +66,23 @@ func initialSecrets(dcid []byte) (secrets, error) {
 		return secrets{}, err
 	}
 	return secrets{Client: client, Server: server}, nil
+}
+
+// checkFIPSOnly refuses to start a connection or a listener under
+// GODEBUG=fips140=only, which refuses what packet protection is made of:
+// AES-GCM under the nonces RFC 9001 §5.3 builds from the packet number
+// (cipher.NewGCM: "arbitrary IVs"), and the Initial secret extracted from
+// the client's connection identifier (§5.2), eight bytes and so a key under
+// the mode's 112 bits. Run anyway, a listener would drop every Initial it
+// cannot open and accept no one, without a word. Lifting the mode around
+// packet protection would empty it of its point; the refusal is stated
+// once, at the entry point, instead.
+func checkFIPSOnly() error {
+	if fips140.Enforced() {
+		return fmt.Errorf("%w: QUIC packet protection cannot run under GODEBUG=fips140=only, "+
+			"which refuses AES-GCM under explicit nonces and keys under 112 bits: %w", ErrQUIC, errors.ErrUnsupported)
+	}
+	return nil
 }
 
 // extractInitial is the first half of initialSecrets: the secret both

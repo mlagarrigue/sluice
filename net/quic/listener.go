@@ -579,6 +579,9 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 // protocol_version (RFC 9846 Appendix E.2). With a GetConfigForClient set,
 // the handshakes run on a copy of cfg taken here.
 func NewListener(pc net.PacketConn, cfg *tls.Config, params Config, lcfg ListenerConfig) (*Listener, error) {
+	if err := checkFIPSOnly(); err != nil {
+		return nil, err
+	}
 	if err := params.check(); err != nil {
 		return nil, err
 	}

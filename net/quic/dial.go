@@ -85,6 +85,9 @@ func Dial(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls.Config
 // events on, so that every ticket is stored with the server's parameters
 // and only DialEarly offers 0-RTT (handleTLSEvent).
 func newClientConn(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls.Config, params Config) (*Conn, error) {
+	if err := checkFIPSOnly(); err != nil {
+		return nil, err
+	}
 	if err := params.check(); err != nil {
 		return nil, err
 	}
