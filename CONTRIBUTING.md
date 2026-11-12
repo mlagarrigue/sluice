@@ -116,6 +116,14 @@ to one, so a suite run as `postgres` passes without proving anything. A
 failed start is loud: a suite that skips its tests reads exactly like one
 that passes.
 
+CI additionally runs `go vet` for Windows and macOS (`net/quic/udp` has
+per-OS files a Linux build never compiles) and runs the integration tests
+against PostgreSQL 15 to 19 (19 from its release candidate) with the same
+`init.sql` as the devcontainer. Test order is shuffled: a failure that
+depends on order prints its seed, and `-shuffle=<seed>` reproduces it.
+
+### Going further
+
 Verify commits one by one, not only the tip:
 
 ```bash
@@ -132,23 +140,21 @@ After any scripted edit (`sed`, `python`), run the suite again: a
 substitution "from this marker to the end of the file" takes everything after
 it along.
 
-CI additionally runs `go vet` for Windows and macOS (`net/quic/udp` has
-per-OS files a Linux build never compiles), runs the integration tests against
-PostgreSQL 15 to 19 (19 from its release candidate) with the same `init.sql` as the devcontainer, and runs every
-fuzz target each night, five minutes a target on Sundays; a failing input is
-uploaded as an artifact, and committing it under the package's
-`testdata/fuzz/` makes it a regression test. Test order is shuffled: a
-failure that depends on order prints its seed, and `-shuffle=<seed>`
-reproduces it.
+**Fuzzing and mutation testing.** A **fuzz target** is a test function,
+`FuzzXxx(f *testing.F)`, that Go calls with generated inputs
+(`go test -fuzz`) to find one that makes a parser crash or loop. CI runs
+every fuzz target each night, five minutes a target on Sundays; a failing
+input is uploaded as an artifact, and committing it under the package's
+`testdata/fuzz/` makes it a regression test.
 
-**Fuzzing and mutation testing.** Both are heavy, and each runs one way only,
-locally as in CI: `scripts/fuzz.sh` with `scripts/fuzz.yaml`, and
-`scripts/mutation.sh` with `scripts/mutation.yaml`. The scripts wait until
-nothing else builds or tests, run one at a time, use no more workers than the
-memory left can hold, and cap the memory of every process. Run them locally
-first, on a machine doing nothing else; CI repeats them (fuzzing each night,
-mutation on Saturdays). A test refuses a file of the repository that starts
-either any other way.
+Both are heavy, and each runs one way only, locally as in CI:
+`scripts/fuzz.sh` with `scripts/fuzz.yaml`, and `scripts/mutation.sh` with
+`scripts/mutation.yaml`. The scripts wait until nothing else builds or
+tests, run one at a time, use no more workers than the memory left can
+hold, and cap the memory of every process. Run them locally first, on a
+machine doing nothing else; CI repeats them (fuzzing each night, mutation
+on Saturdays). A test refuses any file of the repository that would start
+either of them another way.
 
 A mutation tool (gremlins) changes the code one small piece at a time — a
 comparison inverted, a `+` turned into a `-` — and runs the package's tests
@@ -303,7 +309,7 @@ taken *within* each round so drift cancels out; the rounds are judged by a
 sign test.
 
 ```bash
-internal/bench/scripts/compare.sh 'BenchmarkYourThing$' 12 HEAD
+internal/bench/scripts/compare.sh 'BenchmarkYourThing$' 12 HEAD # twelve rounds, the working tree against HEAD
 ```
 
 Three habits go with it:
@@ -314,7 +320,8 @@ Three habits go with it:
 - **Read a small verdict sceptically.** The sign test controls the error
   rate of *one* comparison; a suite of twenty produces a spurious verdict
   about two times in three. The CI gate therefore also requires a 3% effect
-  (`MINEFFECT`). Set it to 0 for an investigation, never for a gate.
+  (`MINEFFECT`, read from the environment): `MINEFFECT=0` lifts it for an
+  investigation, never for a gate.
 - **Measure before believing your own mechanism**, including the one that
   was right last time. And check the inliner before assuming a helper is
   free: `go build -gcflags=-m`, look for "can inline". A helper that cannot
@@ -373,7 +380,9 @@ Three places, depending on what the peer or the benchmark needs:
   documentation, commit messages. Discussion may happen in any language; the
   repository does not.
 - **A constructor panics on a programming error and returns an `error` on
-  an environment error.** The test is where the bad value comes from. A
+  an environment error — unless it can fail on its environment at all:
+  then every refusal is an `error`, programming errors included.** The test
+  is where the bad value comes from. A
   value written in the program — a nil function, a non-positive size, a
   route pattern — cannot be wrong in production without being wrong in the
   first test, so the constructor panics, naming the argument, as
@@ -384,10 +393,8 @@ Three places, depending on what the peer or the benchmark needs:
   constructor returns an `error` for the caller to report: `quic.NewListener`,
   `web.NewHMACVerifier` on a short secret.
 
-  A constructor that can fail on its environment returns an `error` for all
-  its refusals, programming errors included, so the caller has one path to
-  handle rather than two. The reason
-  is rule 4: an `error` a caller may ignore (`rt, _ :=`) on a value the
+  The exception gives the caller of `quic.NewListener` one path to handle
+  rather than two. The reason for the panic is rule 4: an `error` a caller may ignore (`rt, _ :=`) on a value the
   program itself wrote is a silent failure waiting for its first request,
   while a panic at startup is a crash with a name. A configuration the
   program reads at deployment is checked first with its type's `Validate`
