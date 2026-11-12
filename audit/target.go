@@ -70,6 +70,10 @@ type Target struct {
 
 	// Proxy is the reverse proxy's configuration, nil when none was given.
 	Proxy *Proxy
+
+	// App is the comparison study's server as started, nil when its start
+	// was not given.
+	App *App
 }
 
 // A Spec names what to read. Every field is optional, and a Target with
@@ -117,6 +121,11 @@ type Spec struct {
 	// haproxy.cfg; ProxyVersion what nginx -v or haproxy -v printed, which
 	// the advisories are judged on.
 	ProxyConfig, ProxyVersion string
+
+	// AppArgs is a file holding how the comparison study's server was
+	// started: its environment as env prints it, NAME=value lines, and its
+	// command line.
+	AppArgs string
 }
 
 // Open reads what a [Spec] names. Anything named must be readable: a path
@@ -209,6 +218,16 @@ func Open(s Spec) (*Target, error) {
 			return nil, fmt.Errorf("%s: %w", s.ProxyConfig, err)
 		}
 		t.Proxy.Path = s.ProxyConfig
+	}
+	if s.AppArgs != "" {
+		b, err := os.ReadFile(s.AppArgs) //nolint:gosec // G304: the path is the caller's
+		if err != nil {
+			return nil, err
+		}
+		if t.App, err = parseApp(string(b)); err != nil {
+			return nil, fmt.Errorf("%s: %w", s.AppArgs, err)
+		}
+		t.App.Path = s.AppArgs
 	}
 	return t, nil
 }

@@ -35,7 +35,8 @@ var hostSettings = []struct{ name, path string }{
 
 // System is the table of what a target was set to, as a comparison
 // publishes it: the host's kernel values under the root, the named
-// process's descriptor limit, the PostgreSQL server's settings, and the
+// process's descriptor limit, the PostgreSQL server's settings, the
+// comparison server's flags, and the
 // container's limits, network and log driver. A value the host does not have says "absent" — a kernel with no
 // connection tracking is a fact to publish, not a gap — and a part nobody
 // pointed at has no lines at all.
@@ -69,6 +70,9 @@ func System(t *Target) []Setting {
 			}
 			out = append(out, Setting{"postgres " + name, v})
 		}
+	}
+	if t.App != nil {
+		out = append(out, appSystem(t.App)...)
 	}
 	if c := t.Container; c != nil {
 		hc := c.HostConfig

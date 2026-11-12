@@ -23,6 +23,7 @@ go run -C audit ./cmd/audit -root / -kernel-log dmesg.txt -profile comparative
 go run -C audit ./cmd/audit -pg-settings settings.csv -pg-hba pg_hba.conf -pg-log postgresql.log -answer pools=60
 go run -C audit ./cmd/audit -pg-settings settings.csv -pg-roles roles.csv -firewall ruleset.txt -cve yes
 go run -C audit ./cmd/audit -proxy-config nginx.conf -proxy-version "$(nginx -v 2>&1)"
+go run -C audit ./cmd/audit -app-args start.txt -pg-settings settings.csv -profile comparative
 ```
 
 ## Axes, not modes
@@ -61,6 +62,7 @@ sets one.
 | `postgres/*` | `pg_settings` saved as CSV, `pg_hba.conf`, the server's log | connections against the clients' pools, `shared_buffers`, autovacuum, `password_encryption`, `ssl`, `trust`, `md5` and `password` rules; checkpoints forced by the WAL, clients refused for lack of slots |
 | `postgres/superusers`, `postgres/cve` | `pg_roles` saved as CSV; `server_version` and `pg_hba.conf` | more than one superuser that logs in; each PostgreSQL advisory the audit knows, judged on the release and on the configuration it needs |
 | `proxy/*` | `nginx.conf` or `haproxy.cfg`, saved; the release `nginx -v` printed | connections to the application not kept alive, nginx buffering a streamed response, HAProxy waits left infinite, TLS older than 1.2, `X-Forwarded-For` not set; nginx advisories judged on the release and the directive that reaches them |
+| `app/*` | how the comparison's Sluice.go server was started, saved: its `NAME=value` environment and its command line | a connection closed every few requests, a remote database reached in clear and unauthenticated, more connections than the database's slots, TLS off on the internet, session resumption in a comparison; the server's flags in the system table |
 | `firewall/postgres-exposed` | `nft list ruleset` or `iptables-save`, saved | PostgreSQL's port reachable from any address: accepted by an input chain or its policy, or published by a DNAT — Docker's `-p`, which never crosses INPUT |
 | `go/*` | the cgroup, the module's `go` directive, the environment | whether the runtime will read the CPU quota, or use every core of the machine; a `GODEBUG` that restores an older behaviour |
 | `-sbom` | the binary | the bill of materials: the main module, the toolchain, every dependency linked |
