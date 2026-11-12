@@ -369,29 +369,27 @@ jobs:
       # repository, which the image already takes the server from, carries
       # it; the extension needs its files before init.sql. Its version
       # follows that repository, as the server's minor follows the tag, so
-      # the step prints the one it tested. The package may want a newer
-      # server than the image's — pgvector 0.8.7 wanted 17.12 over 17.11 —
-      # and apt then upgrades the server's files under the running server,
-      # which loads the new plpgsql.so into the old binary and fails
-      # (undefined symbol): when the server's package moved, it restarts.
+      # the step prints the one it tested. The server is the image's and
+      # stays it: a build of pgvector may want a newer server — 0.8.7's
+      # +2 build wants more than 17.12 — and apt would upgrade the server's
+      # files under the running server, which then loads the new
+      # plpgsql.so into the old binary and fails (undefined symbol). So the
+      # server's packages are held, and the newest build that installs
+      # beside them is taken.
       - name: Install pgvector
         if: matrix.vector == '1'
         run: |
           c=${{ job.services.postgres.id }}
           server=postgresql-${{ matrix.postgres }}
           before=$(docker exec "$c" dpkg-query -W -f='${Version}' "$server")
+          docker exec "$c" apt-mark hold "$server" "postgresql-client-${{ matrix.postgres }}"
           docker exec "$c" apt-get update -qq
-          docker exec "$c" apt-get install -y -qq --no-install-recommends "$server-pgvector"
+          for v in $(docker exec "$c" apt-cache madison "$server-pgvector" | awk -F'|' '{gsub(/ /, "", $2); print $2}'); do
+            docker exec "$c" apt-get install -y -qq --no-install-recommends "$server-pgvector=$v" && break
+            echo "pgvector $v wants another server than $before"
+          done
           docker exec "$c" dpkg-query -W "$server" "$server-pgvector"
-          if [ "$(docker exec "$c" dpkg-query -W -f='${Version}' "$server")" != "$before" ]; then
-            docker restart "$c" >/dev/null
-            for _ in $(seq 30); do
-              docker exec "$c" pg_isready -q -U postgres -h 127.0.0.1 && exit 0
-              sleep 1
-            done
-            echo "the server did not come back after its upgrade" >&2
-            exit 1
-          fi
+          [ "$(docker exec "$c" dpkg-query -W -f='${Version}' "$server")" = "$before" ]
 
       # A non-superuser role, as pgdev.sh creates: row-level security does
       # not apply to a superuser, and the RLS suites skip rather than pass
