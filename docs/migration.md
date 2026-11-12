@@ -94,7 +94,7 @@ signatures — a value now refused — come last.
   same consistent snapshot. `conn.Migrations()` becomes
   `conn.Stats().Migrations`; the count is unchanged.
 - **`ActiveConnIDLimit` past 1024 is refused** (`2f3fe1b`):
-  `TransportParameters.Validate`, and so `Dial` and `NewListener`, refuse
+  `Config.Validate`, and so `Dial` and `NewListener`, refuse
   it, where the value was taken as given. A configuration that asked for
   more asks for 1024 or less.
 - **A Retry token binds the client's address by its digest**: a token a
@@ -102,7 +102,7 @@ signatures — a value now refused — come last.
   is sent a new Retry, within `RetryTokenTTL` of the restart.
 - **`MaxIdleTimeout` at zero is refused**
   ("fix(quic)!: MaxIdleTimeout zero is refused, ADR 0018"):
-  `TransportParameters.Validate`, and so `Dial`, accept and `NewListener`,
+  `Config.Validate`, and so `Dial`, accept and `NewListener`,
   refuse it as they refused a negative value. Zero announced no idle
   timeout, and against a peer announcing none a connection whose peer
   vanished was held until the application closed it. A configuration that

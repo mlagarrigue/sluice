@@ -131,7 +131,7 @@ type TransportParameters struct {
 	// endpoint issues for itself, whatever the peer's own limit invites:
 	// each is a routing entry a [Listener] holds, so a figure raised for
 	// the peer is one this end pays for too — which is why
-	// [TransportParameters.Validate] refuses more than 1024.
+	// [Config.Validate] refuses more than 1024.
 	ActiveConnIDLimit uint64
 
 	// DisableActiveMigration announces that this endpoint cannot follow a

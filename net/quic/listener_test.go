@@ -590,7 +590,7 @@ func TestALostFinishedOutlivesTheHandshakeTimeout(t *testing.T) {
 	}
 }
 
-// ListenerConfig.Validate and TransportParameters.Validate are NewListener's
+// ListenerConfig.Validate and Config.Validate are NewListener's
 // own checks, run without a socket: what NewListener refuses in either,
 // Validate refuses with the same error, and the defaults pass both.
 func TestValidateIsNewListenersCheck(t *testing.T) {
