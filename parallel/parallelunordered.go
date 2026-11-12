@@ -20,7 +20,8 @@ import (
 // constraint lets every worker's result leave as soon as it exists.
 //
 // Measured on work whose cost varies 8× between batches, four workers
-// (BenchmarkParallelSkewed and its pairs, docs/benchmarks.md): serial
+// (BenchmarkParallelSkewedSerial, BenchmarkParallelSkewed and
+// BenchmarkParallelUnorderedSkewed, docs/benchmarks.md): serial
 // 8.30 ms, [Ordered] 8.22 ms — ×1.01, the fan-out nearly cancelled by its own
 // ordering — against 3.47 ms here, ×2.40. Uniform work gains too, ×1.58
 // (1.36 ms against 2.15, BenchmarkParallelWorkSize): ordered

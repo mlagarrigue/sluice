@@ -23,10 +23,12 @@ import (
 //
 // The batch is what makes the operator affordable: the hand-off and the copy
 // of each batch (a batch is not kept past its call, S14 of the
-// architecture's security properties) together measured +0.31 ns/element at 1024-element batches — inside
+// architecture's security properties) together measured +0.31 ns/element at
+// 1024-element batches (BenchmarkAsyncPassThrough against
+// BenchmarkAsyncBaseline) — inside
 // the per-stage budget, where the same operator element-wise would be two
 // orders of magnitude out (the arithmetic that disqualified iter.Pull per
-// element at 53 ns). On equal producer and consumer work the overlap
+// element at 53 ns, BenchmarkPullPerElement). On equal producer and consumer work the overlap
 // measured ×1.84 against the serial chain, of an ideal ×2
 // (BenchmarkAsyncOverlap).
 //

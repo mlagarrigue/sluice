@@ -852,10 +852,10 @@ unpinned, the first dropped, 2026-10-28, go1.26.9, under WSL2.
 | `BenchmarkServeH1RoundTrip/serial/plain` | 15,486 | 98,410 | 0 of 15 | slower, +542% |
 | `BenchmarkServeH1RoundTrip/parallel/plain` | 2,822 | 2,985 | 4 of 15 | noise |
 
-One unpaired run of the per-batch watch beside it: `serial/watched`
-100,501 ns per op and `parallel/watched` 4,059. A kept reader makes every
-request pay, one at a time, what the watch costs only the handlers that
-ask.
+One unpaired run of the per-batch watch beside it:
+`BenchmarkServeH1RoundTrip/serial/watched` 100,501 ns per op and
+`parallel/watched` 4,059 ns per op. A kept reader makes every request pay,
+one at a time, what the watch costs only the handlers that ask.
 
 ## QUIC, on an emulated path
 

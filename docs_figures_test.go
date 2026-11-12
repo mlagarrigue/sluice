@@ -561,12 +561,20 @@ var unsourcedDurations = map[string]string{
 	"database/postgres/pipeline.go 24 µs":                  "the same A/B, the marginal cost of a principal",
 	"net/httpstream/h3conn.go 6.5 ns":                      "the walk of parked streams the deadline sweep replaced",
 	"net/httpstream/h3conn.go 6.7 µs":                      "the same walk at 1024 streams",
+	"net/httpstream/h2write.go 302 ns":                     "BenchmarkPark's dated A/B (2026-10-04), the AfterFunc per wakeup that Reset replaced",
+	"net/httpstream/h2write.go 185 ns":                     "the same A/B, Reset",
+	"net/httpstream/serve.go 1.2 µs":                       "the difference of parallel/watched and parallel/plain, 4,059 and 2,822 ns, both on the page",
 	"net/httpstream/serve.go 4 ms":                         "a row of TestTransportBatchingMatrix, a test's table, not a benchmark",
 	"net/httpstream/serve.go 24 µs":                        "the watch's wake-up measured on a GitHub runner, not on the page's machine",
 	"net/httpstream/serve.go 46 µs":                        "the same runner, a request watched one at a time",
 	"docs/design/adr/0008-multiplexed-connection.md 24 µs": "the watch's wake-up on a GitHub runner, as serve.go quotes it",
 	"net/quic/crypto.go 570ms":                             "a dated profile (2026-10-05) of BenchmarkConnReceivePacket, the copy's share",
+	"net/quic/crypto.go 750ms":                             "the same profile, the AEAD open's share",
+	"net/quic/recovery.go 868 ms":                          "the A/B of HyStart++ under Reno (gate-path.sh, 2026-10-16), Reno alone",
+	"net/quic/recovery.go 985 ms":                          "the same A/B, Reno with HyStart++, which kept NewReno's standard slow start",
 	"net/quic/recovery.go 1,000 ms":                        "BenchmarkTransferBottleneck on an emulated path, the A/B that set ssPace",
+	"parallel/async.go 0.31 ns":                            "BenchmarkAsyncPassThrough against BenchmarkAsyncBaseline, remeasured 2026-11-12: 0.549 and 0.233 ns/element, medians of six",
+	"probe/probe.go 1.5 ns":                                "the per-stage budget, not a measurement",
 	"net/quic/send.go 30 ms":                               "a path's round trip, a condition of the arithmetic",
 }
 
@@ -645,6 +653,34 @@ func TestDurationsAreReadInTheSectionTheyCite(t *testing.T) {
 	}
 }
 
+// A paragraph that names a benchmark without citing a section is held to
+// the paragraphs and rows of docs/benchmarks.md that name it: Async's
+// +0.31 ns per element passed against the whole page, inside the tolerance
+// of some other figure, where no line of the page measured it.
+func TestDurationsAreReadInTheRowsTheyName(t *testing.T) {
+	page, err := os.ReadFile("docs/benchmarks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := os.ReadFile("parallel/parallelunordered.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const quoted, wrong = "against 3.47 ms here", "against 445 µs here"
+	if !strings.Contains(string(src), quoted) {
+		t.Fatalf("parallel/parallelunordered.go no longer says %q: the witness needs another figure", quoted)
+	}
+	whole := measuredIn(string(page))
+	if !slices.ContainsFunc(whole, func(w float64) bool { return relative(445e3, w) <= figureTolerance }) {
+		t.Fatal("445 µs is no longer a figure of docs/benchmarks.md: the witness no longer shows the narrowing")
+	}
+	stale := strings.Replace(string(src), quoted, wrong, 1)
+	errs := unsourcedDurationsIn("parallel/parallelunordered.go", stale, string(page), whole)
+	if !slices.ContainsFunc(errs, func(e string) bool { return strings.Contains(e, "445 µs") }) {
+		t.Errorf("parallelunordered.go quoting 445 µs under BenchmarkParallelUnorderedSkewed, whose row says 3,465 µs, passed: %v", errs)
+	}
+}
+
 // citedSection is the section of docs/benchmarks.md a paragraph names, as
 // `docs/benchmarks.md, "Title"`, wrapped across lines or not; benchName is a
 // benchmark a paragraph names, which narrows it to that benchmark's rows.
@@ -670,31 +706,63 @@ func sectionTitled(bySection map[string]string, title string) (string, bool) {
 }
 
 // linesNaming is the part of page that states figures for the benchmarks
-// named: every line that names one, and the header of each table one of its
-// rows does, so that measuredIn still reads the row's bare figures in the
-// unit the header gives them.
+// named: every paragraph that names one, with the table that follows it, and
+// every table row that names one, with the header of its table, so that
+// measuredIn still reads the row's bare figures in the unit the header gives
+// them. A paragraph names its benchmark once and states its figures on the
+// lines after; a row states them beside the name.
 func linesNaming(page string, names []string) string {
 	quoted := make([]string, len(names))
 	for i, n := range names {
 		quoted[i] = regexp.QuoteMeta(n)
 	}
 	named := regexp.MustCompile(`\b(?:` + strings.Join(quoted, "|") + `)\b`)
-	lines := strings.Split(page, "\n")
+	// The page as blocks: a paragraph, a table, a heading, a fence — each
+	// ended by a blank line or by a change between table and prose.
+	var blocks [][]string
+	var cur []string
+	table := false
+	for _, line := range strings.Split(page, "\n") {
+		isRow := strings.HasPrefix(line, "|")
+		if strings.TrimSpace(line) == "" || (len(cur) > 0 && isRow != table) {
+			if len(cur) > 0 {
+				blocks = append(blocks, cur)
+			}
+			cur = nil
+		}
+		if strings.TrimSpace(line) != "" {
+			cur = append(cur, line)
+			table = isRow
+		}
+	}
+	if len(cur) > 0 {
+		blocks = append(blocks, cur)
+	}
 	var out []string
-	header := -1 // the first line of the table being read
-	for i, line := range lines {
-		if !strings.HasPrefix(line, "|") {
-			header = -1
-		} else if header < 0 {
-			header = i
+	followed := false // the block before named a benchmark in its prose
+	for _, b := range blocks {
+		isTable := strings.HasPrefix(b[0], "|")
+		switch {
+		case isTable && followed:
+			out = append(out, "")
+			out = append(out, b...)
+		case isTable:
+			var rows []string
+			for _, row := range b[min(2, len(b)):] {
+				if named.MatchString(row) {
+					rows = append(rows, row)
+				}
+			}
+			if len(rows) > 0 {
+				out = append(out, "")
+				out = append(out, b[:min(2, len(b))]...)
+				out = append(out, rows...)
+			}
+		case named.MatchString(strings.Join(b, " ")):
+			out = append(out, "")
+			out = append(out, b...)
 		}
-		if !named.MatchString(line) {
-			continue
-		}
-		if header >= 0 && header+1 < i {
-			out = append(out, "", lines[header], lines[header+1])
-		}
-		out = append(out, line)
+		followed = !isTable && named.MatchString(strings.Join(b, " "))
 	}
 	return strings.Join(out, "\n")
 }
@@ -732,6 +800,11 @@ func unsourcedDurationsIn(f, text, page string, whole []float64) []string {
 				pool = measuredIn(linesNaming(section, names))
 				where = fmt.Sprintf("in no row of %q naming %s, which its paragraph names", m[1], strings.Join(names, " or "))
 			}
+		} else if names := benchName.FindAllString(flat, -1); len(names) > 0 {
+			// A benchmark named without its section narrows the page the
+			// same way: the figure is that benchmark's, wherever it sits.
+			pool = measuredIn(linesNaming(page, names))
+			where = fmt.Sprintf("in no paragraph or row of docs/benchmarks.md naming %s, which its paragraph names", strings.Join(names, " or "))
 		}
 		for _, i := range para {
 			for _, m := range duration.FindAllStringSubmatch(lines[i], -1) {
