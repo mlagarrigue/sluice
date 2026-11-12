@@ -1551,14 +1551,24 @@ func (c *Conn) handleStopSending(f Frame, space int) (*Stream, error) {
 // handleLimitGrant raises the connection's send window (MAX_DATA) or the
 // number of streams this end may open (MAX_STREAMS), and wakes whoever
 // waits on either.
+//
+// A writer waits on the connection's credit only once it is spent (Write
+// takes the smaller of the stream's and the connection's), so a MAX_DATA
+// wakes the parked writers only when the window it raises was spent: every
+// writer shares the one cond, and a rising sequence of three-byte frames
+// against a window with room would otherwise buy a wake-up per parked
+// writer each. MAX_STREAM_DATA follows the same rule for its stream.
 func (c *Conn) handleLimitGrant(f Frame) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	switch f.Type {
 	case frameMaxData:
+		spent := c.connSend.avail() == 0
 		if c.connSend.grant(f.value) {
 			c.rxProgress = true
-			c.cond.Broadcast()
+			if spent {
+				c.cond.Broadcast()
+			}
 		}
 	// A MAX_STREAMS wakes the writers waiting for a stream only when it
 	// raises the limit, as MAX_DATA wakes them only when grant raises the
@@ -1593,9 +1603,12 @@ func (c *Conn) handleMaxStreamData(f Frame, space int) error {
 		return err
 	}
 	c.mu.Lock()
+	spent := s.sendQ.avail() == 0
 	if s.sendQ.grant(f.value) {
 		c.rxProgress = true
-		c.cond.Broadcast()
+		if spent {
+			c.cond.Broadcast() // see handleLimitGrant
+		}
 	}
 	c.mu.Unlock()
 	return nil
