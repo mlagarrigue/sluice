@@ -1,12 +1,45 @@
+// Command sluicegen generates hydration code: the loop that turns a batch of
+// decoded PostgreSQL rows into a slice of a Go struct.
+//
+// It exists because reflection costs on every field of every row, even
+// written carefully: the gap is measured by BenchmarkHydrateReflect against
+// BenchmarkHydrateRowMajor in database/postgres/hydrate_test.go, and the figure lives
+// in docs/design/architecture.md, "Hydration". Generated code is how a caller gets the
+// hand-written figure without writing it per entity and keeping it in step
+// with the schema.
+//
+// The same measurement decides what to generate. Columnar decoding — one pass
+// per column, then assemble — measures *slower* than the row-major loop, by
+// 11% at a thousand rows and 43% at one. So this generator emits row-major
+// code.
+//
+//	//go:generate go run github.com/mlagarrigue/sluice/cmd/sluicegen -type Order
+//
+// The flags:
+//
+//	-type  the struct type to generate a hydrator for (required)
+//	-in    the source file holding the type (default: $GOFILE, which go:generate sets)
+//	-out   the file to write (default: <type>_hydrate.go, lowercased)
+//
+// Two properties of the generated code are worth more than its speed.
+//
+// **Columns bind by name, never by position.** A SELECT whose columns are
+// reordered would otherwise write each value into a different field of the
+// same type — total into id, both bigint — with no error anywhere. The
+// generated binder resolves names against the RowDescription the server sent
+// and fails on a column it cannot find.
+//
+// **Types are checked against the schema at bind time.** A column altered from
+// int4 to bigint in a migration is caught when the result opens, not by
+// decoding eight bytes as four somewhere in the middle of a batch.
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
+
+	"github.com/mlagarrigue/sluice/cmd/sluicegen/internal/generator"
 )
 
 func main() {
@@ -15,42 +48,8 @@ func main() {
 	output := flag.String("out", "", "file to write (default: <type>_hydrate.go, lowercased)")
 	flag.Parse()
 
-	if err := run(*typeName, *input, *output); err != nil {
+	if err := generator.Run(*typeName, *input, *output); err != nil {
 		fmt.Fprintln(os.Stderr, "sluicegen:", err)
 		os.Exit(1)
 	}
-}
-
-func run(typeName, input, output string) error {
-	if typeName == "" {
-		return errors.New("-type is required")
-	}
-	if input == "" {
-		// go:generate sets GOFILE to the file holding the directive, which is
-		// where the type is in the overwhelming majority of cases.
-		input = os.Getenv("GOFILE")
-	}
-	if input == "" {
-		return errors.New("-in is required outside go:generate")
-	}
-	if output == "" {
-		output = filepath.Join(filepath.Dir(input), strings.ToLower(typeName)+"_hydrate.go")
-	}
-
-	// The path is the caller's, which is what a generator invoked from a
-	// go:generate line is for. There is no boundary here to cross.
-	src, err := os.ReadFile(input) //nolint:gosec // G304: reading the file named on the command line is the job
-	if err != nil {
-		return err
-	}
-	generated, err := generate(src, input, typeName)
-	if err != nil {
-		return err
-	}
-	// 0o644: generated source is source, and it is read by everyone who reads
-	// the rest of the package.
-	if err := os.WriteFile(output, generated, 0o644); err != nil { //nolint:gosec // G306: source files are world-readable
-		return err
-	}
-	return nil
 }

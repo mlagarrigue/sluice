@@ -1,4 +1,4 @@
-package main
+package generator
 
 import (
 	"bytes"
@@ -17,8 +17,8 @@ import (
 // and comparing makes a generator change that nobody re-ran fail the build.
 func TestCommittedOutputIsCurrent(t *testing.T) {
 	for _, tc := range []struct{ typ, src, out string }{
-		{"Order", "../../database/postgres/internal/entity/order.go", "../../database/postgres/internal/entity/order_hydrate.go"},
-		{"Product", "../../database/postgres/internal/entity/product.go", "../../database/postgres/internal/entity/product_hydrate.go"},
+		{"Order", "../../../../database/postgres/internal/entity/order.go", "../../../../database/postgres/internal/entity/order_hydrate.go"},
+		{"Product", "../../../../database/postgres/internal/entity/product.go", "../../../../database/postgres/internal/entity/product_hydrate.go"},
 	} {
 		in, err := os.ReadFile(tc.src)
 		if err != nil {
@@ -291,7 +291,7 @@ func TestRun(t *testing.T) {
 		if err := os.WriteFile(in, []byte(src), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := run("Thing", in, ""); err != nil {
+		if err := Run("Thing", in, ""); err != nil {
 			t.Fatalf("run returned %v", err)
 		}
 		out := filepath.Join(dir, "thing_hydrate.go")
@@ -312,7 +312,7 @@ func TestRun(t *testing.T) {
 		}
 		t.Setenv("GOFILE", in)
 		out := filepath.Join(dir, "custom.go")
-		if err := run("Thing", "", out); err != nil {
+		if err := Run("Thing", "", out); err != nil {
 			t.Fatalf("run returned %v", err)
 		}
 		if _, err := os.Stat(out); err != nil {
@@ -334,7 +334,7 @@ func TestRun(t *testing.T) {
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				err := run(tt.typ, tt.in, tt.out)
+				err := Run(tt.typ, tt.in, tt.out)
 				if err == nil {
 					t.Fatal("no error")
 				}
