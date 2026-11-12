@@ -44,6 +44,8 @@ var allowed = map[string][]string{
 	"internal/pgwire":          nil,
 	"database/postgres":        {"", "database/postgres/pgtype", "internal/pgwire", "pushdown"},
 	"database/postgres/pgtype": nil,
+	"encoding/csvstream":       {""},
+	"encoding/jsonl":           {""},
 }
 
 func TestImportLayers(t *testing.T) {

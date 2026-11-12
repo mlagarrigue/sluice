@@ -40,10 +40,12 @@ the requests going up. Nothing moves down until a request has come up.
 
 ## Installing
 
-This guide describes the latest release, v0.5.0:
+This guide describes the `main` branch, which carries the additions grouped
+for the next minor release; the last one published, v0.5.0, lacks some of
+the functions cited here. Until that release, install `main`:
 
 ```sh
-go get github.com/mlagarrigue/sluice
+go get github.com/mlagarrigue/sluice@main
 ```
 
 Go 1.26 or newer. That minimum — the *floor* — is the `go` line of the

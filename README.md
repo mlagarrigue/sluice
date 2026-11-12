@@ -20,10 +20,12 @@ and two of the Go project's own modules, explained below.
 > is tested and measured; but function names may still change before
 > version 1. See [Status and limits](#status-and-limits).
 
-The guides describe the latest release, v0.5.0:
+The guides describe the `main` branch, which carries the additions grouped
+for the next minor release; the last one published, v0.5.0, lacks some of
+the functions cited here. Until that release, install `main`:
 
 ```sh
-go get github.com/mlagarrigue/sluice
+go get github.com/mlagarrigue/sluice@main
 ```
 
 ```go
@@ -144,6 +146,13 @@ group's, which are experimental.
 | `sluice/gateway` | simultaneous calls grouped into one batch |
 | `sluice/probe` | counters between stages: how many elements each let through, and, across a `parallel.Async`, which side is the slower |
 | `sluice/pushdown` | the reader tells the source what it no longer needs; the PostgreSQL connector listens |
+
+#### Reading and writing files
+
+| Package | Role |
+|---|---|
+| `sluice/encoding/csvstream` | CSV in batches of records, over `encoding/csv`, each record bounded |
+| `sluice/encoding/jsonl` | JSON Lines in batches of values, over `encoding/json`, each line bounded |
 
 #### Talking to PostgreSQL and to HTTP clients
 

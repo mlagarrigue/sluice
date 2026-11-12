@@ -86,6 +86,14 @@ question for a CPU profile: no counter can answer it.
 | `postgres.ErrUnknownType` | A type name the database does not resolve: no such type on the search path, or an extension not created in this database. | Check the name and the `search_path`; `CREATE EXTENSION` in this database for an extension's type. |
 | `pgtype.ErrCodec` | A value's bytes do not match the type they were read as. The stream and its description disagree. | Check the column type against the decoder you used (`DecodeInt8` on an `int4` column, for one). |
 
+## Files: `encoding/csvstream`, `encoding/jsonl`
+
+| Error | When | What to do |
+|---|---|---|
+| `csvstream.ErrRecordTooLong` | A CSV record took more than `ReadConfig.MaxRecordBytes` of the input, quotes and line ends included — often a quote left open, which swallows the lines after it. The read stopped; the records before it were delivered. The message gives the record's number and byte offset. | Look at the input at that offset; if the record is legitimate, raise `MaxRecordBytes`. |
+| `jsonl.ErrRecordTooLong` | A JSON Lines line passed `ReadConfig.MaxRecordBytes`. The read stopped; the values before it were delivered. The message names the line. | Check that the file is JSON Lines and not one JSON document spread over lines; if the line is legitimate, raise `MaxRecordBytes`. |
+| `*csv.ParseError` (from `csvstream.Read`) | A record that `encoding/csv` cannot parse: a stray quote, or a field count that differs from `FieldsPerRecord`. It carries the line and the column. | Fix the input, or set `LazyQuotes` for stray quotes and `FieldsPerRecord` to a negative value for ragged rows. |
+
 ## Web and gateway: `web`, `gateway`
 
 | Error | When | What to do |
