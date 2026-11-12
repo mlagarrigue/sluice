@@ -197,8 +197,9 @@ Each streamed response has a streamer, kept with its buffers and its
 goroutine on a free list of the connection, the goroutine parked on a
 channel between two answers: one started per response cost 88% more on
 `BenchmarkH2StreamBody`, most of it the new goroutine's stack growing.
-Kept, the cost is two goroutine switches per streamed response, about
-350 ns on `BenchmarkH2StreamBody` and no allocation more; seen from a real
+Kept, the cost is two goroutine switches per streamed response: 59% more
+on `BenchmarkH2StreamBody` at chunks=1, where the write side is measured
+alone, 21% at chunks=64, and no allocation more; seen from a real
 client (`BenchmarkH2FromNetHTTP`) it is within the noise, and the buffered
 path (`BenchmarkH2Consume`) is neutral
 ([benchmarks](../../benchmarks.md#a-streamed-http2-response-on-a-goroutine-of-its-own)).

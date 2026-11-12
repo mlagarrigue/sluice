@@ -88,8 +88,9 @@ an order: two streamed responses of one batch no longer arrive one after
 the other. `scripts/interop-http.sh` checks the two-stream case against
 curl; the decision record on the multiplexed connection
 ([ADR 0008](../design/adr/0008-multiplexed-connection.md)) records what the
-goroutine costs: about 350 ns per streamed response without a socket,
-measured on 2026-11-12, and nothing measurable from a real client
+goroutine costs: 59% more on a streamed response's write side measured
+alone (no socket, one core, 2026-11-12), and nothing measurable from a
+real client
 ([benchmarks](../benchmarks.md#a-streamed-http2-response-on-a-goroutine-of-its-own)).
 
 The cost of a streamed batch over HTTP/2 is measured, not promised
