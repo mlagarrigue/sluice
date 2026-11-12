@@ -69,8 +69,8 @@ import (
 // ctx's deadline; a ctx without a deadline gives up after
 // [DefaultHandshakeTimeout]. Once Dial has returned, ctx no longer has any
 // hold on the connection.
-func Dial(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls.Config, params Config) (*Conn, error) {
-	c, err := newClientConn(ctx, pc, addr, cfg, params)
+func Dial(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls.Config, qcfg Config) (*Conn, error) {
+	c, err := newClientConn(ctx, pc, addr, cfg, qcfg)
 	if err != nil {
 		return nil, err
 	}

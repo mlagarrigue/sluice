@@ -202,8 +202,8 @@ func earlyTLSConfig(cfg *tls.Config) *tls.Config {
 // [DefaultHandshakeTimeout], or under ctx's deadline when that is later; a
 // handshake that fails then closes the connection, which [Conn.Done]
 // reports. cfg follows Dial's rules.
-func DialEarly(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls.Config, params Config) (*Conn, error) {
-	c, err := newClientConn(ctx, pc, addr, earlyTLSConfig(cfg), params)
+func DialEarly(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls.Config, qcfg Config) (*Conn, error) {
+	c, err := newClientConn(ctx, pc, addr, earlyTLSConfig(cfg), qcfg)
 	if err != nil {
 		return nil, err
 	}

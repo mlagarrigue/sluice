@@ -565,7 +565,7 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 	return c, nil
 }
 
-// NewListener starts demultiplexing pc. cfg and params are what every
+// NewListener starts demultiplexing pc. cfg and qcfg are what every
 // accepted connection's handshake uses. pc is any [net.PacketConn]; a [net.UDPConn] is
 // given the socket options RFC 9000 asks for ("The socket is the caller's"
 // in the package documentation). cfg's callbacks run on each connection's
@@ -584,11 +584,11 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 // rotated on cfg afterwards ([tls.Config.SetSessionTicketKeys]) do not reach
 // them — rotate them on the Configs GetConfigForClient returns instead.
 // Without one, cfg itself is used, and a rotation takes effect.
-func NewListener(pc net.PacketConn, cfg *tls.Config, params Config, lcfg ListenerConfig) (*Listener, error) {
+func NewListener(pc net.PacketConn, cfg *tls.Config, qcfg Config, lcfg ListenerConfig) (*Listener, error) {
 	if err := checkFIPSOnly(); err != nil {
 		return nil, err
 	}
-	if err := params.check(); err != nil {
+	if err := qcfg.check(); err != nil {
 		return nil, err
 	}
 	if err := checkTLSConfig(cfg); err != nil {
@@ -606,7 +606,7 @@ func NewListener(pc net.PacketConn, cfg *tls.Config, params Config, lcfg Listene
 			"crypto/tls would send no ticket", ErrQUIC)
 	}
 	if lcfg.EarlyData {
-		if err := params.earlyCredit(); err != nil {
+		if err := qcfg.earlyCredit(); err != nil {
 			return nil, err
 		}
 	}
@@ -624,7 +624,7 @@ func NewListener(pc net.PacketConn, cfg *tls.Config, params Config, lcfg Listene
 	}
 	l := &Listener{
 		pc: pc, sourced: packetInfoSocket(pc), preferred: lcfg.PreferredAddress, preferredV4: preferredV4, preferredV6: preferredV6,
-		cfg: serverTLSConfig(cfg), params: params, lcfg: lcfg,
+		cfg: serverTLSConfig(cfg), params: qcfg, lcfg: lcfg,
 		spent:           spentTokens{ttl: lcfg.RetryTokenTTL, max: lcfg.MaxSpentRetryTokens},
 		byDCID:          make(map[string]*Conn),
 		keysOf:          make(map[*Conn][]string),
