@@ -9,31 +9,6 @@ serve have [their own page](deployments.md).
 
 ## `net/httpstream` — supported
 
-net/httpstream is supported — outside the experimental label and
-under the compatibility promise — and fuzzed in CI without
-a public corpus; it has neither run in production nor had an outside
-security review.
-
-What it is held to, in continuous integration: HTTP/1.1 and /2 face curl,
-h2load (10,000 requests over ten connections) and h2spec
-(`scripts/interop-http.sh`), HTTP/3 quic-go's client (the `interop/`
-module), curl, aioquic's client and h3spec (`scripts/interop-http3.sh`,
-whose expected h3spec failures are listed with their reasons in
-`net/httpstream/testdata/h3spec-exclusions.txt`); every week it also
-faces nginx, HAProxy and Envoy in front of it (`scripts/interop-proxy.sh`);
-the parsers are fuzzed in CI; the limit on streamed HTTP/2
-responses is owned below, and their per-batch cost is measured from a real
-client.
-
-Two readings of the texts are chosen. In HTTP/2, the values of a SETTINGS
-frame are all checked in order, then only the last value of each parameter
-is applied (RFC 9113 §6.5.3 asks for them one at a time): the peer sees the
-same result, and a frame full of repetitions does not cost one operation
-per repetition. In HTTP/3, only `http` and `https` are taken as schemes
-with a mandatory authority: a request of another scheme that carries
-`:authority` is delivered as it is (RFC 9114 §4.3.1 forbids it to the
-sender; the server does not know the other schemes).
-
 HTTP exists in three versions. HTTP/1.1 sends requests one at a time over
 a connection (or several in a row, "pipelined"). HTTP/2 **multiplexes**:
 several requests travel interleaved over the same connection. HTTP/3 does
@@ -64,6 +39,25 @@ httpstream.ServeH3Conn(ctx, quicConn, httpstream.Config{}, handle)              
 > order". HTTP/2 and HTTP/3 number their streams, and the handler does not
 > need to know.
 
+The path of one batch, from the bytes a client sends to the bytes it gets
+back:
+
+```
+client ── bytes ──▶ reader: parses and bounds each request (Config)
+                        │
+                        ▼
+                    batch of requests   [r1 r2 r3]   (MaxRequestsPerBatch at most, on HTTP/1.1)
+                        │
+                        ▼
+                    handle(ctx, batch) — your code, once per batch
+                        │
+                        ▼
+                    batch of responses  [s1 s2 s3]   (one per request, in order)
+                        │
+                        ▼
+client ◀── bytes ── writer: frames each response for its version
+```
+
 `Config` bounds everything a client controls — length of the request line,
 of the headers, of the body, number of requests per batch and per
 connection, timeouts — and each field left at zero takes the default its
@@ -72,12 +66,14 @@ server. Two fields are the exception, `MaxConns` and `MaxConnsPerIP`, whose zero
 bound": they are the deployer's memory budget and one client's share of it,
 and a server facing the public sets them
 ([ADR 0018](../design/adr/0018-zero-values-and-mandatory-bounds.md)).
+
 A request body is **streamed** by default (`Config.BodyDelivery`): a body
 already whole in the read that brought the headers, under `MaxBodyBytes`,
 arrives in `Request.Body`; any other arrives through `Request.Stream`, at
 the pace the handler reads it, bounded by `MaxStreamedBodyBytes`.
-`BodyWhole` hands every body over whole. Responses can be **streamed**
-too: `Response.Stream` lets
+`BodyWhole` hands every body over whole.
+
+Responses can be **streamed** too: `Response.Stream` lets
 your code supply batches of bytes that the transport pulls at the client's
 pace; if the client leaves, your producer sees it (`yield` returns `false`)
 and stops.
@@ -111,6 +107,33 @@ the client side per DATA frame. Size your batches accordingly — a bigger
 batch divides that cost by as much — and remember that
 `Config.MaxWriteBufferBytes` bounds how far ahead of the socket a
 producer may be, per stream.
+
+### What it is held to
+
+net/httpstream is supported — outside the experimental label and
+under the compatibility promise — and fuzzed in CI without
+a public corpus; it has neither run in production nor had an outside
+security review.
+
+What it is held to, in continuous integration: HTTP/1.1 and /2 face curl,
+h2load (10,000 requests over ten connections) and h2spec
+(`scripts/interop-http.sh`), HTTP/3 quic-go's client (the `interop/`
+module), curl, aioquic's client and h3spec (`scripts/interop-http3.sh`,
+whose expected h3spec failures are listed with their reasons in
+`net/httpstream/testdata/h3spec-exclusions.txt`); every week it also
+faces nginx, HAProxy and Envoy in front of it (`scripts/interop-proxy.sh`);
+the parsers are fuzzed in CI; the limit on streamed HTTP/2
+responses is owned below, and their per-batch cost is measured from a real
+client.
+
+Two readings of the texts are chosen. In HTTP/2, the values of a SETTINGS
+frame are all checked in order, then only the last value of each parameter
+is applied (RFC 9113 §6.5.3 asks for them one at a time): the peer sees the
+same result, and a frame full of repetitions does not cost one operation
+per repetition. In HTTP/3, only `http` and `https` are taken as schemes
+with a mandatory authority: a request of another scheme that carries
+`:authority` is delivered as it is (RFC 9114 §4.3.1 forbids it to the
+sender; the server does not know the other schemes).
 
 ### `net/httpstream` settings
 
@@ -250,6 +273,11 @@ supported path is `example/orders`.
   stream a request body or a response at the client's pace;
 - push a limit and a key bound down to the PostgreSQL query that feeds a
   response.
+
+Try it: serve the handler above with `Serve` on `localhost:8080`, then ask
+`curl http://localhost:8080/a` and
+`curl --http2-prior-knowledge http://localhost:8080/a` — the same handler
+answers both versions, the connection's first bytes choosing the protocol.
 
 The examples of the three packages run as tests, their output checked:
 
