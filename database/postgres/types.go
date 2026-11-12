@@ -29,7 +29,10 @@ var ErrUnknownType = errors.New("postgres: the database has no type of that name
 // created again has new ones.
 func (c *Conn) LookupType(ctx context.Context, name string) (oid, arrayOID uint32, err error) {
 	src := c.Query(ctx, "SELECT t.oid, t.typarray FROM pg_catalog.pg_type t WHERE t.oid = pg_catalog.to_regtype($1)",
-		[]Param{{OID: pgtype.OIDText, Value: pgtype.AppendText(nil, name)}}, QueryConfig{BatchRows: 1})
+		// One row at most, so the whole result in one round trip: a batch of
+		// one row asked for under FetchAuto costs a second Execute to learn
+		// that nothing follows.
+		[]Param{{OID: pgtype.OIDText, Value: pgtype.AppendText(nil, name)}}, QueryConfig{BatchRows: 1, Fetch: FetchAll})
 	found := false
 	src.Stream()(func(b sluice.Batch[Row]) bool {
 		for _, row := range b.Items {

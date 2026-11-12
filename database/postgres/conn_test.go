@@ -1894,3 +1894,27 @@ func TestAnUnreadableParameterStatusFailsTheQuery(t *testing.T) {
 		t.Errorf("the connection is broken: %v", err)
 	}
 }
+
+// LookupType reads its one row in one round trip: one Execute, then the
+// Sync, never a second Execute to learn that nothing follows the row.
+func TestLookupTypeIsOneRoundTrip(t *testing.T) {
+	var script []byte
+	script = append(script, beSimple(pgwire.BackendParseComplete)...)
+	script = append(script, beSimple(pgwire.BackendBindComplete)...)
+	script = append(script, beRowDescription([]string{"oid", "typarray"}, []uint32{pgtype.OIDOID, pgtype.OIDOID})...)
+	script = append(script, beDataRow(pgtype.AppendOID(nil, 16385), pgtype.AppendOID(nil, 16390))...)
+	script = append(script, beCommandComplete("SELECT 1")...)
+	script = append(script, beReadyForQuery()...)
+
+	srv := &fakeServer{responses: [][]byte{script}}
+	conn := NewConn(srv, Config{})
+	oid, arrayOID, err := conn.LookupType(t.Context(), "hstore")
+	if err != nil || oid != 16385 || arrayOID != 16390 {
+		t.Fatalf("LookupType = %d, %d, %v; want 16385, 16390", oid, arrayOID, err)
+	}
+	sent := srv.clientMessages(t)
+	want := []byte{pgwire.FrontendParse, pgwire.FrontendBind, pgwire.FrontendDescribe, pgwire.FrontendExecute, pgwire.FrontendSync}
+	if !slices.Equal(sent, want) {
+		t.Errorf("client sent %q, want %q", sent, want)
+	}
+}
