@@ -83,6 +83,9 @@ func run(args []string, out *os.File) error {
 	netstatAfter := fs.String("netstat-after", "", "the same counters after the load")
 	pgActivity := fs.String("pg-activity", "", "pg_stat_activity read during a load, as CSV: psql -X --csv -c 'SELECT state, backend_type FROM pg_stat_activity', several readings appended")
 	vulndb := fs.String("vulndb", "", "a local copy of the Go vulnerability database (vuln.go.dev/vulndb.zip, unzipped): -cve yes then needs no network")
+	metricsBefore := fs.String("metrics-before", "", "the comparison server's GET /study/metrics at the start of a load, saved")
+	metricsAfter := fs.String("metrics-after", "", "the same at its end")
+	ss := fs.String("ss", "", "what ss -tan printed during a load")
 	statBefore := fs.String("stat-before", "", "a copy of /proc/stat taken before a load")
 	statAfter := fs.String("stat-after", "", "a copy of /proc/stat taken after it")
 	imds := fs.String("imds", "", "a file holding Azure's metadata: curl -H Metadata:true 'http://169.254.169.254/metadata/instance?api-version=2025-04-07'")
@@ -116,8 +119,9 @@ func run(args []string, out *os.File) error {
 		*container == "" && *containerJSON == "" && *kernelLog == "" &&
 		*pgSettings == "" && *pgHBA == "" && *pgLog == "" && *pgRoles == "" && *firewall == "" && *proxyConfig == "" && *appArgs == "" &&
 		*netstatBefore == "" && *netstatAfter == "" && *pgActivity == "" &&
-		*statBefore == "" && *statAfter == "" && *imds == "" {
-		return errors.New("name what to read: -binary, -module, -dockerfile, -root, -container, -container-json, -kernel-log, -pg-settings, -pg-hba, -pg-log, -pg-roles, -pg-activity, -firewall, -proxy-config, -app-args, -imds, or -netstat-before and -netstat-after, or -stat-before and -stat-after")
+		*statBefore == "" && *statAfter == "" && *imds == "" &&
+		*metricsBefore == "" && *metricsAfter == "" && *ss == "" {
+		return errors.New("name what to read: -binary, -module, -dockerfile, -root, -container, -container-json, -kernel-log, -pg-settings, -pg-hba, -pg-log, -pg-roles, -pg-activity, -firewall, -proxy-config, -app-args, -imds, -ss, -metrics-before and -metrics-after, or -netstat-before and -netstat-after, or -stat-before and -stat-after")
 	}
 
 	sel := audit.Selection{}
@@ -140,6 +144,7 @@ func run(args []string, out *os.File) error {
 		Firewall: *firewall, ProxyConfig: *proxyConfig, ProxyVersion: *proxyVersion,
 		AppArgs: *appArgs, NetstatBefore: *netstatBefore, NetstatAfter: *netstatAfter,
 		StatBefore: *statBefore, StatAfter: *statAfter, IMDS: *imds, VulnDB: *vulndb,
+		MetricsBefore: *metricsBefore, MetricsAfter: *metricsAfter, SS: *ss,
 	})
 	if err != nil {
 		return err

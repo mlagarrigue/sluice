@@ -24,6 +24,9 @@ import (
 type App struct {
 	Path  string
 	Flags map[string]string
+	// Env is the environment saved with the command line, the contract's
+	// variables and the runtime's (GOGC, GOMEMLIMIT, GOMAXPROCS) alike.
+	Env map[string]string
 }
 
 // appFlags are the server's flags and their defaults, R's, in the order
@@ -92,6 +95,7 @@ func parseApp(text string) (*App, error) {
 		bools[f.name] = f.bool
 	}
 	env := map[string]string{}
+	a.Env = env
 	var args []string
 	for line := range strings.SplitSeq(text, "\n") {
 		line = strings.TrimSpace(line)

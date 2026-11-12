@@ -84,6 +84,14 @@ type Target struct {
 	// load, nil when the two readings were not given.
 	Counters *Counters
 
+	// Study is what the comparison's server counted during a load, nil
+	// when its two metrics documents were not given.
+	Study *StudyMetrics
+
+	// TimeWait is the sockets in TIME-WAIT that ss listed, nil when its
+	// output was not given.
+	TimeWait *Sockets
+
 	// CPUTime is what the CPUs spent during a load, by kind, nil when the
 	// two readings of /proc/stat were not given.
 	CPUTime *CPUTime
@@ -159,6 +167,13 @@ type Spec struct {
 	// database (vuln.go.dev/vulndb.zip, unzipped): index/db.json and the
 	// rest, read with no network.
 	VulnDB string
+
+	// MetricsBefore and MetricsAfter are two answers of the comparison
+	// server's GET /study/metrics, at the start and the end of a load.
+	MetricsBefore, MetricsAfter string
+
+	// SS is a file holding what ss -tan printed during a load.
+	SS string
 
 	// StatBefore and StatAfter are two copies of /proc/stat, before and
 	// after a load.
@@ -283,6 +298,20 @@ func Open(s Spec) (*Target, error) {
 			return nil, err
 		}
 		t.VulnDB, t.VulnDBModified = dir, modified
+	}
+	if s.MetricsBefore != "" || s.MetricsAfter != "" {
+		m, err := openStudyMetrics(s.MetricsBefore, s.MetricsAfter)
+		if err != nil {
+			return nil, err
+		}
+		t.Study = m
+	}
+	if s.SS != "" {
+		ss, err := openSockets(s.SS)
+		if err != nil {
+			return nil, err
+		}
+		t.TimeWait = ss
 	}
 	if s.StatBefore != "" || s.StatAfter != "" {
 		c, err := openCPUTime(s.StatBefore, s.StatAfter)
