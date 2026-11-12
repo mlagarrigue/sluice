@@ -78,14 +78,17 @@ func closeBodies(reqs []Request) {
 // batch is answered while this one waits for credit, and the writer hands
 // the buffer back once it has finished with every byte of it.
 //
+// It runs in this order: a handler failure turned into a 500 per request;
+// each head framed into the batch's buffer, a refused one replaced by a 500
+// or a reset; the jobs built over the buffer, each streamed answer given a
+// streamer; the batch's context released, or left to the streamers; the
+// batch delivered to the writer; the streamers started.
+//
 // Every request of b is answered once: by the writer, for a buffered answer,
-// when its job leaves its hands; here for the others — a stream reset
-// because nothing could be framed, a streamed body once it has ended.
+// when its job leaves its hands; here for a stream reset because nothing
+// could be framed; by its streamer for a streamed body, once it has ended.
 func (s *h2Conn) answer(got *h2Applied) {
 	b, res, err := got.b, got.res, got.err
-	if b.ctx != nil {
-		defer s.calls.release(b.ctx, b.ids)
-	}
 	if err != nil {
 		// The handler panicked, or answered a number of requests that does
 		// not match what it was given. Neither is the peer's doing and
@@ -175,7 +178,11 @@ func (s *h2Conn) answer(got *h2Applied) {
 	}
 
 	// Two passes, because appending to sent.out may move it: the heads are
-	// sliced only once the buffer has stopped growing.
+	// sliced only once the buffer has stopped growing. A streamed answer
+	// takes its streamer here, and its head job tells the streamer what
+	// became of it: the jobs are read through sent only until deliver, from
+	// where the writer may finish them all and hand sent to the next batch.
+	pulls := s.pulls[:0]
 	for i := range s.answers {
 		a := &s.answers[i]
 		if a.skip {
@@ -186,7 +193,7 @@ func (s *h2Conn) answer(got *h2Applied) {
 		if a.mid < a.to {
 			tail = sent.out[a.mid:a.to]
 		}
-		sent.jobs = append(sent.jobs, h2Job{
+		j := h2Job{
 			id:   a.id,
 			head: sent.out[a.from:a.mid],
 			data: a.body,
@@ -196,26 +203,40 @@ func (s *h2Conn) answer(got *h2Applied) {
 			// on its head, so it closes the stream without a DATA frame.
 			closes:     a.stream == nil,
 			resetAfter: a.unread,
-		})
+		}
+		if a.stream != nil {
+			st := s.streamer()
+			st.id, st.stream, st.length, st.trailers, st.unread = a.id, a.stream, a.length, a.trailers, a.unread
+			j.notify = &st.head
+			pulls = append(pulls, st)
+		}
+		sent.jobs = append(sent.jobs, j)
 	}
-	// The jobs are read through sent only until deliver: from there the
-	// writer may finish them all and hand sent to the next batch. What a
-	// streamed answer needs of its head job is kept aside first.
-	heads := s.heads[:0]
-	for i := range s.answers {
-		if a := &s.answers[i]; a.stream != nil && a.job >= 0 {
-			heads = append(heads, &sent.jobs[a.job])
+	s.pulls = pulls
+	if b.ctx != nil {
+		if len(pulls) == 0 {
+			// Nothing of the batch is still being pulled: its context ends
+			// now, as its buffered answers go to the writer.
+			defer s.calls.release(b.ctx, b.ids)
+		} else {
+			// A producer may read the batch's context while it is pulled:
+			// the last streamer of the batch to finish ends it.
+			b.ctx.pulled.Store(int32(len(pulls))) //nolint:gosec // G115: at most MaxConcurrentStreams, 4096
+			for _, st := range pulls {
+				st.ctx, st.ids = b.ctx, b.ids
+			}
 		}
 	}
-	s.heads = heads
 	failed := s.w.deliver(sent) != nil
 
-	// The streamed ones follow, one at a time, each once its head is out —
-	// its DATA may not overtake its HEADERS. Each is pulled here, on this
-	// goroutine, so a producer never runs ahead of the socket and what is
-	// held is one batch rather than the whole answer — and, since the writer
-	// waits for credit instead of refusing, a streamed response may be any
-	// size the peer is willing to receive.
+	// The streamed ones leave the responder: each is pulled on a goroutine
+	// of its own (h2Streamer.loop), once its head is out — its DATA may not
+	// overtake its HEADERS — so a producer that takes its time holds no
+	// other answer of the connection, and the responder goes on to the next
+	// batch at once. A producer still never runs ahead of the socket: what
+	// is held is one batch per stream (see h2Writer.extend), and, since the
+	// writer waits for credit instead of refusing, a streamed response may
+	// be any size the peer is willing to receive.
 	k := 0
 	for i := range s.answers {
 		a := &s.answers[i]
@@ -223,13 +244,16 @@ func (s *h2Conn) answer(got *h2Applied) {
 		case a.skip:
 			s.answered()
 		case a.stream != nil:
-			if !failed && s.w.await(heads[k]) == nil {
-				s.streamBody(a.id, a.stream, a.length, a.trailers, a.unread)
-			}
+			st := pulls[k]
 			k++
-			s.answered()
+			if failed {
+				st.done()
+				continue
+			}
+			st.start()
 		}
 	}
+	clear(s.pulls) // the streamers are theirs now, or back on the free list
 }
 
 // answered counts one request as answered: its stream no longer counts
@@ -355,20 +379,28 @@ func (s *h2Conn) appendHead(dst []byte, id uint32, method []byte, r Response, ma
 // peer's SETTINGS_MAX_HEADER_LIST_SIZE as the head is. Its fields go on the
 // wire lowercase, from copies, as the head's do.
 func (s *h2Conn) appendTrailers(dst []byte, id uint32, r Response, maxFrame int) ([]byte, error) {
+	return s.appendTrailersWith(&s.h2Scratch, dst, id, r, maxFrame)
+}
+
+// appendTrailersWith is appendTrailers on scratch of the caller's: a
+// streamer frames its trailers on its own goroutine, beside the responder.
+// Nothing else it reads is the responder's — the encoder is stateless
+// (hpack_encode.go), and the peer's limit is an atomic.
+func (s *h2Conn) appendTrailersWith(sc *h2Scratch, dst []byte, id uint32, r Response, maxFrame int) ([]byte, error) {
 	fields, err := r.trailers()
 	if err != nil {
 		reportPanic(s.cfg.logger(), err)
 		return nil, err
 	}
-	block := s.block[:0]
+	block := sc.block[:0]
 	var listSize uint64
-	s.names = s.names[:0]
+	sc.names = sc.names[:0]
 	for _, h := range fields {
-		name := lowerName(h.Name, &s.names)
+		name := lowerName(h.Name, &sc.names)
 		block = appendHPACK(block, name, h.Value)
 		listSize += uint64(len(name)+len(h.Value)) + 32
 	}
-	s.block = block
+	sc.block = block
 	if limit := s.peerMaxHeaderList.Load(); limit > 0 && listSize > uint64(limit) {
 		return nil, fmt.Errorf("%w: a trailer list of %d bytes, over the peer's %d limit",
 			ErrH2Protocol, listSize, limit)
@@ -404,7 +436,144 @@ func appendHeaderFrames(dst []byte, id uint32, flags byte, block []byte, maxFram
 	return dst, nil
 }
 
-// streamBody pulls a streamed response and hands each producer batch to the
+// h2Streamer pulls one streamed response on a goroutine of its own, so that
+// a producer that takes its time holds no other answer of the connection —
+// a later one, buffered or streamed, or one of the same batch. Pulled on the
+// responder, as it was, a stream that kept yielding held every response
+// behind it for as long as it lasted, and WriteTimeout, which bounds the
+// time without progress, never stepped in: the stream was progressing. A
+// browser has one HTTP/2 connection per origin, so it held the page.
+//
+// What it costs is the hand-off to its goroutine: the copy of each batch
+// into the job was already paid (h2Writer.extend). How many run at once is
+// bounded by [Config.MaxConcurrentStreams], since each holds its stream's
+// slot until answered. A producer that never returns keeps its goroutine, as
+// it kept the responder before — and the end of the connection waits for
+// it, as it waited for the responder.
+//
+// A streamer is recycled through the connection's free list with its
+// buffers and its goroutine, which parks on wake between two answers: a
+// goroutine started per response cost +88% on BenchmarkH2StreamBody
+// (chunks=1, paired A/B), most of it the new goroutine's stack growing to
+// what the pull needs, every time. The list is bounded by the most streamed
+// answers ever pulled at once, trimmed to one when the connection goes idle
+// (trimStreamers), and emptied when it ends (stopStreamers).
+type h2Streamer struct {
+	s *h2Conn
+	// wake starts the parked goroutine on the answer just set; closed, it
+	// ends the goroutine.
+	wake chan struct{}
+
+	id       uint32
+	stream   sluice.Stream[[]byte]
+	length   int64
+	trailers func() []Header
+	unread   bool
+	// ctx and ids are the handler batch's: the last streamer of the batch
+	// to finish releases its context (batchCtx.pulled).
+	ctx *batchCtx
+	ids []uint32
+
+	// head is what became of the answer's head job; the body is pulled only
+	// once the head is out.
+	head h2HeadOutcome
+
+	// Two jobs, alternating — one may be queued or in flight while the
+	// other, done, is ready to be reused with its buffer (see
+	// h2Writer.extend for why two and never more) — the one the last batch
+	// went to, and the scratch a multi-chunk batch is flattened into.
+	jobs [2]h2Job
+	cur  *h2Job
+	buf  []byte
+	// tail is the framed trailer section, held until finish has seen it
+	// written; scratch is what framing it borrows.
+	tail    []byte
+	scratch h2Scratch
+}
+
+// streamer takes a streamer from the free list, or makes one.
+func (s *h2Conn) streamer() *h2Streamer {
+	s.streamersMu.Lock()
+	var st *h2Streamer
+	if n := len(s.streamers); n > 0 {
+		st = s.streamers[n-1]
+		s.streamers[n-1] = nil
+		s.streamers = s.streamers[:n-1]
+	}
+	s.streamersMu.Unlock()
+	if st == nil {
+		st = &h2Streamer{s: s, wake: make(chan struct{}, 1)}
+		go st.loop()
+	}
+	// Both jobs start free: done is what marks a job as reusable.
+	st.jobs[0].done, st.jobs[1].done = true, true
+	st.cur = nil
+	st.head = h2HeadOutcome{}
+	return st
+}
+
+// trimStreamers lets go of the streamers a burst left on the free list but
+// one, once the connection is idle: each holds its jobs' buffers.
+func (s *h2Conn) trimStreamers() {
+	s.streamersMu.Lock()
+	if len(s.streamers) > 1 {
+		for _, st := range s.streamers[1:] {
+			close(st.wake)
+		}
+		clear(s.streamers[1:])
+		s.streamers = s.streamers[:1]
+	}
+	s.streamersMu.Unlock()
+}
+
+// stopStreamers ends the goroutines of the streamers on the free list: the
+// connection is over, and every streamer is back on it (see pulling).
+func (s *h2Conn) stopStreamers() {
+	s.streamersMu.Lock()
+	for _, st := range s.streamers {
+		close(st.wake)
+	}
+	clear(s.streamers)
+	s.streamers = nil
+	s.streamersMu.Unlock()
+}
+
+// start hands the answer just set to the streamer's goroutine.
+func (st *h2Streamer) start() {
+	st.s.pulling.Add(1)
+	st.wake <- struct{}{} // never blocks: one wake per answer, taken before done
+}
+
+// loop is the streamer's goroutine: for each answer, the body once the head
+// is out, then the streamer's end.
+func (st *h2Streamer) loop() {
+	for range st.wake {
+		s := st.s
+		if s.w.awaitHead(&st.head) == nil {
+			st.body()
+		}
+		st.done()
+		s.pulling.Done()
+	}
+}
+
+// done ends the streamer's answer: its batch's context once it is the last
+// of the batch, its stream counted as answered, the streamer back on the
+// free list. Nothing of st is touched after that.
+func (st *h2Streamer) done() {
+	s := st.s
+	s.w.quiesce(&st.jobs)
+	if st.ctx != nil && st.ctx.pulled.Add(-1) == 0 {
+		s.calls.release(st.ctx, st.ids)
+	}
+	st.stream, st.trailers, st.ctx, st.ids = nil, nil, nil, nil
+	s.streamersMu.Lock()
+	s.streamers = append(s.streamers, st)
+	s.streamersMu.Unlock()
+	s.answered()
+}
+
+// body pulls a streamed response and hands each producer batch to the
 // writer, which frames what has accumulated as however many DATA frames the
 // credit and the round's budget allow.
 //
@@ -431,15 +600,13 @@ func appendHeaderFrames(dst []byte, id uint32, flags byte, block []byte, maxFram
 // connection's state first, since an empty one is never handed to the writer
 // and so could not be refused by it.
 //
-// unread is the request's streamed body left unread: the stream is reset
+// st.unread is the request's streamed body left unread: the stream is reset
 // with NO_ERROR once the response's end is written.
-func (s *h2Conn) streamBody(id uint32, stream sluice.Stream[[]byte], length int64, trailers func() []Header, unread bool) {
-	// Both jobs start free: done is what marks a job as reusable.
-	s.streamJobs[0].done, s.streamJobs[1].done = true, true
-	s.streamCur = nil
+func (st *h2Streamer) body() {
+	s, id, length := st.s, st.id, st.length
 	stopped, wrong := false, false
 	var sent int64
-	perr := pull(stream, func(b sluice.Batch[[]byte]) bool {
+	perr := pull(st.stream, func(b sluice.Batch[[]byte]) bool {
 		// Asked on every batch, empty ones included: an empty batch is never
 		// handed to the writer, so neither a reset stream nor a dead
 		// connection would otherwise reach a producer of cadence ticks.
@@ -469,14 +636,14 @@ func (s *h2Conn) streamBody(id uint32, stream sluice.Stream[[]byte], length int6
 			return true
 		}
 		if n > 1 {
-			s.streamBuf = s.streamBuf[:0]
+			st.buf = st.buf[:0]
 			for _, chunk := range b.Items {
-				s.streamBuf = append(s.streamBuf, chunk...)
+				st.buf = append(st.buf, chunk...)
 			}
-			data = s.streamBuf
+			data = st.buf
 		}
-		j, err := s.w.extend(id, s.streamCur, s.streamSpare(), data)
-		s.streamCur = j
+		j, err := s.w.extend(id, st.cur, st.spare(), data)
+		st.cur = j
 		if err != nil || j.err != nil {
 			stopped = true
 			return false
@@ -499,9 +666,9 @@ func (s *h2Conn) streamBody(id uint32, stream sluice.Stream[[]byte], length int6
 		return
 	}
 	var tail []byte
-	if trailers != nil {
+	if st.trailers != nil {
 		var err error
-		if tail, err = s.appendTrailers(s.streamTail[:0], id, Response{Trailers: trailers}, defaultMaxFrameSize); err != nil {
+		if tail, err = s.appendTrailersWith(&st.scratch, st.tail[:0], id, Response{Trailers: st.trailers}, defaultMaxFrameSize); err != nil {
 			// The body is out: a refused trailer resets the stream, as a
 			// producer that panicked does, so the client never reads the
 			// answer as whole.
@@ -509,20 +676,20 @@ func (s *h2Conn) streamBody(id uint32, stream sluice.Stream[[]byte], length int6
 			s.w.forget(id)
 			return
 		}
-		s.streamTail = tail
+		st.tail = tail
 	}
 	// The end: END_STREAM on the trailers, on the last DATA frame still
 	// queued, or on an empty one of its own — none costs credit, so the end
 	// always goes out.
-	_ = s.w.finish(id, s.streamCur, s.streamSpare(), tail, unread)
+	_ = s.w.finish(id, st.cur, st.spare(), tail, st.unread)
 }
 
-// streamSpare is the streamed-body job the last batch did not go to.
-func (s *h2Conn) streamSpare() *h2Job {
-	if s.streamCur == &s.streamJobs[0] {
-		return &s.streamJobs[1]
+// spare is the job of the pair the last batch did not go to.
+func (st *h2Streamer) spare() *h2Job {
+	if st.cur == &st.jobs[0] {
+		return &st.jobs[1]
 	}
-	return &s.streamJobs[0]
+	return &st.jobs[0]
 }
 
 // addWindow moves a flow-control window, refusing the overflow RFC 9113

@@ -125,6 +125,23 @@ type h2Job struct {
 
 	done bool
 	err  error
+
+	// notify, when set, is told the job's outcome as it leaves the writer's
+	// hands: the head of a streamed answer, whose goroutine waits on it
+	// after the batch holding the job may have gone back to the free list
+	// and been framed into again (see [h2HeadOutcome]).
+	notify *h2HeadOutcome
+}
+
+// h2HeadOutcome is what became of a streamed answer's head job, kept outside
+// the job. The job lives in its batch's h2Sent, which the writer hands back
+// for reuse once every job of it is done, and the responder no longer waits
+// for a streamed answer before framing its next batch: a goroutine still
+// waiting on the job itself could read a job rewritten for another stream.
+// Written by settle, read by awaitHead, both under the writer's lock.
+type h2HeadOutcome struct {
+	done bool
+	err  error
 }
 
 // h2Sent is one batch of buffered answers on its way out: the heads framed
@@ -580,18 +597,30 @@ func (w *h2Writer) deliver(b *h2Sent) error {
 	return nil
 }
 
-// await returns once j has left the writer's hands, with what became of it:
-// nil when it was written whole.
-func (w *h2Writer) await(j *h2Job) error {
+// awaitHead returns once the head job o watches has left the writer's hands,
+// with what became of it: nil when it was written whole.
+func (w *h2Writer) awaitHead(o *h2HeadOutcome) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	for !j.done {
+	for !o.done {
 		if w.err != nil {
 			return w.err
 		}
 		w.cond.Wait()
 	}
-	return j.err
+	return o.err
+}
+
+// quiesce returns once neither job of a streamed answer's pair is in the
+// writer's hands, or the write side has failed: the pair is then free to go
+// to another stream. A pull cut short — a reset stream, a refused batch —
+// returns without waiting for the job it last handed over.
+func (w *h2Writer) quiesce(jobs *[2]h2Job) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for (!jobs[0].done || !jobs[1].done) && w.err == nil {
+		w.cond.Wait()
+	}
 }
 
 // sent hands the responder a batch to frame its answers into: one the writer
@@ -624,6 +653,10 @@ func (w *h2Writer) settle(j *h2Job, err error) {
 		j.err = err
 	}
 	j.done, j.queued = true, false
+	if n := j.notify; n != nil {
+		n.done, n.err = true, j.err
+		j.notify = nil
+	}
 	b := j.batch
 	if b == nil {
 		return

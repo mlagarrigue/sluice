@@ -137,9 +137,10 @@ func blocks(t *testing.T, w *h2Writer, f func() error, release func()) bool {
 // control queue at its bound holds whoever adds to it.
 func TestH2WriterWaitsWhereItMust(t *testing.T) {
 	w := testWriter(1)
-	j := &h2Job{id: 1, queued: true}
-	if !blocks(t, w, func() error { return w.await(j) }, func() { w.settle(j, nil) }) {
-		t.Error("await returned before the job left the writer")
+	var head h2HeadOutcome
+	j := &h2Job{id: 1, queued: true, notify: &head}
+	if !blocks(t, w, func() error { return w.awaitHead(&head) }, func() { w.settle(j, nil) }) {
+		t.Error("awaitHead returned before the job left the writer")
 	}
 	j = &h2Job{id: 1, queued: true}
 	if !blocks(t, w, func() error { return w.finish(1, j, nil, nil, false) }, func() { w.settle(j, nil) }) {

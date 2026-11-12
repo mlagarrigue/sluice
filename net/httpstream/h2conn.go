@@ -409,28 +409,31 @@ type h2Conn struct {
 	// touched by the reader: the responder is the only goroutine in answer.
 	// The framed heads are not among it: they go out after answer returns,
 	// so each batch frames into an h2Sent the writer hands back when done.
-	block   []byte
-	names   []byte // lowercased copies of the response field names a handler spelled in HTTP/1.1 case
+	h2Scratch
 	answers []h2Answer
 	// date is the batch's Date value, read from the clock once in answer
 	// (time.Now is 35 ns here, a fifth of a head) and from here by
 	// appendHead, whose signature the tests and the benchmark call.
 	date []byte
-	// streamBody's state, kept here rather than in locals its pull closure
-	// would move to the heap on every call: two jobs, alternating — one may
-	// be queued or in flight while the other, done, is ready to be reused
-	// with its buffer (see h2Writer.extend for why two and never more) — the
-	// one the last batch went to, and the scratch a multi-chunk batch is
-	// flattened into.
-	// heads is the head job of each streamed answer of the batch answer is
-	// on, read once deliver has taken the batch.
-	heads      []*h2Job
-	streamJobs [2]h2Job
-	streamCur  *h2Job
-	streamBuf  []byte
-	// streamTail is the streamed response's framed trailer section, held
-	// until finish has seen it written.
-	streamTail []byte
+	// pulls is the streamer of each streamed answer of the batch answer is
+	// on, until it has started them.
+	pulls []*h2Streamer
+
+	// streamers is the free list of streamers (see h2Streamer), taken by
+	// the responder and given back by each streamer's goroutine, hence the
+	// lock; pulling counts the streamers' goroutines, which the responder
+	// waits for before it goes, as it waits for its own work.
+	streamersMu sync.Mutex
+	streamers   []*h2Streamer
+	pulling     sync.WaitGroup
+}
+
+// h2Scratch is what framing one header block borrows: the block, and the
+// lowercased copies of the field names a handler spelled in HTTP/1.1 case.
+// The responder has one for heads; each streamer has one for its trailers.
+type h2Scratch struct {
+	block []byte
+	names []byte
 }
 
 // maxWindow is the largest a flow-control window may be (RFC 9113 §6.9.1).
@@ -598,6 +601,10 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 			select {
 			case a, ok := <-in:
 				if !ok {
+					// The streamed answers still being pulled are answered
+					// before the responder goes, as the batches were.
+					s.pulling.Wait()
+					s.stopStreamers()
 					return
 				}
 				s.answer(a)
@@ -613,10 +620,14 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 			// Nothing open and nothing owed: idle, or a forced stop would
 			// count the connection as cut until its next frame arrived.
 			s.phaseMu.Lock()
-			if s.open.Load() == 0 && s.inFlight.Load() == 0 {
+			idle := s.open.Load() == 0 && s.inFlight.Load() == 0
+			if idle {
 				st.set(connIdle)
 			}
 			s.phaseMu.Unlock()
+			if idle {
+				s.trimStreamers()
+			}
 			// The last answer of a drained connection closes it, whether the
 			// responder or the writer finished it. open is read before
 			// inFlight because finish moves a stream the other way round,

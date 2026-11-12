@@ -155,7 +155,10 @@ func benchAnswered(w *h2Writer, id uint32) {
 
 // countingConn wraps memConn to count the write syscalls a benchmark would
 // otherwise have to infer from timing alone — the number candidate 3 of the
-// performance pass is measured against directly.
+// performance pass is measured against directly. The bytes are dropped: kept,
+// they grew one buffer for the whole run, whose copies were most of what a
+// large batch measured, and whose size put the run over the container's
+// memory at chunks=64.
 type countingConn struct {
 	memConn
 	writes int
@@ -163,11 +166,11 @@ type countingConn struct {
 
 func (c *countingConn) Write(p []byte) (int, error) {
 	c.writes++
-	return c.memConn.Write(p)
+	return len(p), nil
 }
 
 // chunkStream is a [sluice.Stream] over fixed chunks, replayed once — a
-// streamed response's body, the shape streamBody pulls from.
+// streamed response's body, the shape a streamer pulls from.
 func chunkStream(chunks [][]byte) sluice.Stream[[]byte] {
 	return func(yield func(sluice.Batch[[]byte]) bool) {
 		if !yield(sluice.Batch[[]byte]{Items: chunks}) {
@@ -176,9 +179,11 @@ func chunkStream(chunks [][]byte) sluice.Stream[[]byte] {
 	}
 }
 
-// BenchmarkH2StreamBody measures streamBody's write side: how many syscalls
-// (via countingConn) and how much it allocates to frame one streamed
-// response's chunks onto the wire. Candidate 3 of the performance pass claims
+// BenchmarkH2StreamBody measures a streamed response's write side as the
+// responder starts it: a streamer from the free list, its goroutine, the
+// pull, the end, and the answer counted — how many syscalls (via
+// countingConn) and how much it allocates to frame one streamed response's
+// chunks onto the wire. Candidate 3 of the performance pass claims
 // one write per DATA frame, and the END_STREAM that rides on the last of them
 // rather than on a write of its own; this is the harness those numbers are
 // checked against.
@@ -192,15 +197,20 @@ func BenchmarkH2StreamBody(b *testing.B) {
 			}
 
 			// One connection, writer and server for the whole loop, so the
-			// alloc signal is streamBody's own and not the setup's.
+			// alloc signal is the streamer's own and not the setup's.
 			conn := &countingConn{}
 			cfg := Config{}.mustResolve()
 			w := newH2Writer(conn, cfg)
 			w.connWind = 1 << 30
 			go w.run()
-			s := &h2Conn{cfg: cfg, w: w}
+			s := &h2Conn{cfg: cfg, w: w, settled: make(chan struct{}, 1)}
 
 			spent := int32(chunksPerBatch * len(payload)) //nolint:gosec // G115: a few KB
+			// One producer for the loop: a streamer keeps it on the heap, so
+			// one made per iteration would count the benchmark's own closure
+			// among the server's allocations. A handler's Stream is on the
+			// heap already.
+			stream := chunkStream(chunks)
 			b.ReportAllocs()
 			for b.Loop() {
 				// Each iteration closes stream 1, which drops its window, so
@@ -209,12 +219,19 @@ func BenchmarkH2StreamBody(b *testing.B) {
 				w.mu.Lock()
 				w.windows[1] = 1 << 30
 				w.mu.Unlock()
-				s.streamBody(1, chunkStream(chunks), 0, nil, false)
+				st := s.streamer()
+				st.id, st.stream = 1, stream
+				st.head.done = true // the head is out, as deliver's job would have it
+				s.inFlight.Add(1)
+				st.start()
+				<-s.settled
 				if err := w.creditConn(spent); err != nil {
 					b.Fatal(err)
 				}
 			}
 			b.StopTimer()
+			s.pulling.Wait()
+			s.stopStreamers()
 			w.stop()
 			<-w.done
 			b.ReportMetric(float64(conn.writes)/float64(b.N), "writes/op")

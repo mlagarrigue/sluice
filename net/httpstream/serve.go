@@ -983,6 +983,10 @@ type batchCtx struct {
 	err    error
 	unlink func() bool // ends the parent's hold on cancel
 	live   int
+	// pulled counts the batch's streamed answers still being pulled on
+	// HTTP/2, each on its own goroutine: the last one to finish releases
+	// the batch (h2Streamer.done).
+	pulled atomic.Int32
 }
 
 func (x *batchCtx) Done() <-chan struct{} {

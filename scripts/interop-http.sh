@@ -111,16 +111,26 @@ expect "HTTP/1.1 streamed body" "$stream" --http1.1 "http://$addr/stream"
 expect "HTTP/1.1 pipelined pair" "you asked for /ayou asked for /b" --http1.1 "http://$addr/a" "http://$addr/b"
 expect "HTTP/2 echo" "you asked for /hello" --http2-prior-knowledge "http://$addr/hello"
 expect "HTTP/2 streamed body" "$stream" --http2-prior-knowledge "http://$addr/stream"
-# Two streamed responses multiplexed on one connection: the server answers
-# them one after the other (see docs/guide/experimental.md), and both
+# Two streamed responses multiplexed on one connection: each is pulled on a
+# goroutine of its own and their frames interleave (ADR 0008), and both
 # must arrive whole. curl 7.x cannot start a second transfer on a
 # cleartext HTTP/2 connection it is still opening ("Error in the HTTP2
 # framing layer", also against x/net's h2c server), so the case needs 8.0.
 curl_major=$(curl --version | sed -n '1s/^curl \([0-9]*\)\..*/\1/p')
+# Each body goes to a file of its own: their frames interleave on the wire,
+# and curl writes each transfer's bytes as they arrive.
 if [ "${curl_major:-0}" -ge 8 ]; then
-  expect "HTTP/2 two streamed bodies in parallel" "$two_streams" \
-    --no-progress-meter --http2-prior-knowledge --parallel --parallel-max 2 \
-    "http://$addr/stream" "http://$addr/stream"
+  label="HTTP/2 two streamed bodies in parallel"
+  rm -f "$work/stream1" "$work/stream2"
+  curl -sS --max-time 10 --no-progress-meter --http2-prior-knowledge --parallel --parallel-max 2 \
+    -o "$work/stream1" "http://$addr/stream" -o "$work/stream2" "http://$addr/stream" ||
+    fail "$label: curl failed"
+  got=$(cat "$work/stream1" "$work/stream2")
+  if [ "$got" != "$two_streams" ]; then
+    printf 'interop-http: %s: got\n%s\nwant\n%s\n' "$label" "$got" "$two_streams" >&2
+    exit 1
+  fi
+  echo "ok  $label"
 else
   echo "--  HTTP/2 two streamed bodies in parallel: skipped, curl $curl_major cannot multiplex two transfers on a new h2c connection"
 fi

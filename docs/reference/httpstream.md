@@ -66,9 +66,9 @@ panics, a `Response.Stream` producer that panics partway through — each
 costs its own stream and nothing else. GOAWAY is kept for what cannot be
 resynchronised once in doubt: framing and HPACK state.
 
-HTTP/1.1 and HTTP/2 pull a producer on the goroutine that serves the
-connection, so `Serve` and `ServeH2Conn` wait for a producer blocked in its
-own code, however long it stays there — releasing one would take a context
+HTTP/1.1 pulls a producer on the goroutine that serves the connection,
+HTTP/2 on a goroutine of the response's own; `Serve` and `ServeH2Conn` both
+wait for a producer blocked in its own code, however long it stays there — releasing one would take a context
 the producer's signature does not carry. `ServeH3Conn` pulls each on its
 own stream's goroutine and returns once the connection has ended. A
 producer learns that the connection is gone, or its stream reset, by its

@@ -28,6 +28,7 @@ figure that differs, to the character, from the median of its row.
 - [Request bodies, whole or streamed](#request-bodies-whole-or-streamed)
 - [Authentication, in a request](#authentication-in-a-request)
 - [Two changes read as noise, paired](#two-changes-read-as-noise-paired)
+- [A streamed HTTP/2 response on a goroutine of its own](#a-streamed-http2-response-on-a-goroutine-of-its-own)
 - [HTTP/3 without a socket](#http3-without-a-socket)
 - [HTTP/1.1, watching for a client that leaves](#http11-watching-for-a-client-that-leaves)
 - [QUIC, on an emulated path](#quic-on-an-emulated-path)
@@ -808,6 +809,44 @@ Medians of the rounds. Neither change costs what its first reading said.
 wider than the 44% that was read into it: the benchmark hands each frame to
 the writer's goroutine, and the scheduler's timing is most of what it
 measures. It does not run the loop `bd2c9fd` changed at all.
+
+## A streamed HTTP/2 response on a goroutine of its own
+
+Since 2026-11-12 each streamed HTTP/2 response is pulled on a goroutine of
+its own rather than on the connection's responder, so that it holds no other
+response ([ADR 0008](design/adr/0008-multiplexed-connection.md)). Measured
+against its parent commit by `internal/bench/scripts/ab.sh`: fifteen rounds
+of `-benchtime 300ms` on one core under `GOMAXPROCS=1`, the first round
+dropped, the verdict from the sign test, which needs 12 rounds of 14 to call
+a side faster or slower. Medians of the rounds, 2026-11-12, go1.26.10.
+
+| benchmark | before, ns per op | after, ns per op | rounds won by after | verdict |
+|---|---|---|---|---|
+| `BenchmarkH2StreamBody/chunks=1` | 585 | 938 | 0 of 14 | slower, +59% |
+| `BenchmarkH2StreamBody/chunks=8` | 717 | 1,080 | 0 of 14 | slower, +52% |
+| `BenchmarkH2StreamBody/chunks=64` | 1,699 | 2,063 | 0 of 14 | slower, +21% |
+| `BenchmarkH2FromNetHTTP/plain` | 23,438 | 23,340 | 7 of 14 | noise |
+| `BenchmarkH2FromNetHTTP/stream` | 32,986 | 33,360 | 6 of 14 | noise |
+| `BenchmarkH2FromNetHTTP/bulk` | 117,210 | 116,855 | 6 of 14 | noise |
+| `BenchmarkH2FromNetHTTP/paced` | 17,157,228 | 17,156,202 | 7 of 14 | noise |
+| `BenchmarkH2Consume/depth=1` | 744 | 758 | 8 of 14 | noise |
+| `BenchmarkH2Consume/depth=8` | 5,916 | 5,997 | 7 of 14 | noise |
+| `BenchmarkH2Consume/depth=64` | 47,345 | 47,693 | 5 of 14 | noise |
+
+`BenchmarkH2StreamBody` measures one streamed response's write side
+without a socket, and it pays the hand-off in full: about 350 ns, two
+goroutine switches more per streamed response, and no allocation more (3
+per response on either side). Seen from the standard library's client over
+TLS (`BenchmarkH2FromNetHTTP`, in `interop/`), every route is within the
+noise, and the buffered path (`BenchmarkH2Consume`) is neutral.
+
+The goroutine is kept with its streamer between two answers, parked on a
+channel. A goroutine started per response read 1,418 ns before against
+2,686 after on `chunks=1`, +88%, most of the difference in the runtime
+growing each new goroutine's stack to what the pull needs. That run was
+taken while the benchmark's connection still kept every byte it was given;
+since this change it drops them, since the growing buffer was most of what
+`chunks=64` measured, and put that run over the container's memory.
 
 ## HTTP/3 without a socket
 

@@ -1,7 +1,7 @@
 # ADR 0008 — A multiplexed connection is a reader, a responder and a writer
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-11-12 (the diagram before the rules it draws; the rules listed); 11 earlier, from 2026-10-05, in its `git log`
+- **Revised:** 2026-11-12 (each streamed response pulled on a goroutine of its own; the diagram before the rules it draws; the rules listed); 11 earlier, from 2026-10-05, in its `git log`
 - **Theme:** httpstream
 
 ## Problem
@@ -27,12 +27,14 @@ hundred. A multiplexed protocol exists to make requests independent.
 
 Three goroutines per HTTP/2 connection, each owning one piece of state:
 a **reader** (frame parsing, stream states, receive windows, the HPACK
-decoder), a **responder** (response framing, pulling streamed bodies), a
-**writer** (the socket's write side, send windows, scheduling). The reader
-hands each batch to a `Handler` call on a goroutine of its own, which it
-never waits for, and the responder frames what the calls return: a batch
-that arrives while another is being answered does not wait for it. Each
-call holds stream slots, so the calls in flight are bounded by
+decoder), a **responder** (response framing), a **writer** (the socket's
+write side, send windows, scheduling). The reader hands each batch to a
+`Handler` call on a goroutine of its own, which it never waits for, and the
+responder frames what the calls return: a batch that arrives while another
+is being answered does not wait for it. Each streamed response is pulled
+on a goroutine of its own, a *streamer*, once its head is out, and the
+responder goes on to the next batch without waiting for it. Each call and
+each streamer holds stream slots, so both are bounded by
 `MaxConcurrentStreams`.
 
 HTTP/3 has no responder: its read callback hands each batch to a call on a
@@ -56,15 +58,17 @@ call.
 
 ### Every hand-off bounded
 
-The three goroutines of an HTTP/2 connection and the bound on each
-hand-off (HTTP/3 has no responder):
+The goroutines of an HTTP/2 connection and the bound on each hand-off
+(HTTP/3 has no responder):
 
 ```mermaid
 flowchart LR
     IN[(socket, read side)] --> R[reader<br/>frames, stream states,<br/>receive windows, HPACK]
     R -- "one batch,<br/>its own goroutine" --> H[Handler call]
-    R -- "≤ MaxConcurrentStreams batches,<br/>never blocks" --> P[responder<br/>response framing,<br/>streamed bodies]
+    R -- "≤ MaxConcurrentStreams batches,<br/>never blocks" --> P[responder<br/>response framing]
     H -- answers --> P
+    P -- "one goroutine per<br/>streamed response,<br/>≤ MaxConcurrentStreams" --> S[streamers<br/>streamed bodies]
+    S -- "one batch ahead per stream,<br/>MaxWriteBufferBytes" --> W
     R -- "control frames,<br/>≤ MaxPendingControlBytes,<br/>the reader blocks when full" --> W[writer<br/>send windows,<br/>scheduling]
     P -- "buffered bodies,<br/>bounded by the stream slots" --> W
     W --> OUT[(socket, write side)]
@@ -79,8 +83,9 @@ writer for buffered bodies is a queue bounded by the same stream slot — the
 responder queues a batch and moves on to the next, so a stream waiting for
 its window does not hold the others, and the writer hands the batch's
 buffer back once each of its answers is written, dropped or expired. A
-streamed body is still pulled by the responder, at the socket's pace, once
-its head is out.
+streamed body is pulled by its streamer, at the socket's pace, once its
+head is out, and the writer interleaves its frames with every other
+answer's, buffered or streamed, by the same byte-budget rounds.
 
 Six rules govern what crosses them:
 
@@ -154,7 +159,8 @@ map entry per stream, and nothing more until the handler asks `ctx.Done`.
 ### What it costs, measured
 
 The cost is three goroutines per connection plus one per call in
-flight, and their synchronisation, which
+flight and one per streamed response being pulled, and their
+synchronisation, which
 `TestH2ConnectionsLeaveNoGoroutines` keeps honest. Calls run in parallel
 because serialised ones make a stream wait twice: a handler that waits on
 something per call — a gateway's window, a round trip — holds a stream that
@@ -178,6 +184,28 @@ parallel calls and 1.48-2.32 serialised, its p50 1.07-1.18 against
 1.19-1.35. The goroutine costs 1.7% of a request answered alone
 (`BenchmarkH3FromQuicGo/plain`, median of twelve paired rounds, within the
 noise of a sign test).
+
+A streamed response pulled on the responder, as it was until 2026-11-12,
+held every other response of its connection for as long as its producer
+ran — a later one, buffered or streamed, and one of the same batch — and
+`WriteTimeout`, a time without progress, never stepped in, since the stream
+was progressing. A browser has one HTTP/2 connection per origin, so it held
+the page. What a client loses now is an order: two streamed responses of
+one batch no longer arrive one after the other.
+
+Each streamed response has a streamer, kept with its buffers and its
+goroutine on a free list of the connection, the goroutine parked on a
+channel between two answers: one started per response cost 88% more on
+`BenchmarkH2StreamBody`, most of it the new goroutine's stack growing.
+Kept, the cost is two goroutine switches per streamed response, about
+350 ns on `BenchmarkH2StreamBody` and no allocation more; seen from a real
+client (`BenchmarkH2FromNetHTTP`) it is within the noise, and the buffered
+path (`BenchmarkH2Consume`) is neutral
+([benchmarks](../../benchmarks.md#a-streamed-http2-response-on-a-goroutine-of-its-own)).
+
+An idle connection that has streamed keeps one streamer and its parked
+goroutine, whose stack the collector shrinks; the others are let go when
+it goes idle, and every one when it ends.
 
 ### The HTTP/3 tail, measured
 
@@ -241,15 +269,12 @@ rounds, eight for the grouped sends.
 
 Deliberately not built: stream priorities (RFC 9113 deprecated the scheme,
 and the extensible priorities of RFC 9218 that replace it are not read),
-server push (`ENABLE_PUSH` 0), and the interleaving of two streamed bodies
-on one HTTP/2 connection — while a producer is pulled, the responder frames
-no other answer, so other requests on that connection wait for theirs. Accepted because the
-alternative is a goroutine or a chunk copy per streamed response; a client
-with an event feed opens a second connection or uses HTTP/3. A consumer
-with an SSE workload on HTTP/2 is the signal to revisit, with per-stream
-writers as the known fix. A general write queue with its own memory bound
-was rejected: blocking hand-offs give exact back-pressure with no copy and
-no policy for a full queue.
+and server push (`ENABLE_PUSH` 0). A general write queue with its own
+memory bound was rejected: blocking hand-offs give exact back-pressure with
+no copy and no policy for a full queue. A producer that never returns keeps
+its streamer's goroutine, and the end of the connection waits for it, as it
+waited for the responder that pulled it before: the exposure is the one a
+producer always had, not widened.
 
 Three connection refusals carry PROTOCOL_ERROR where RFC 9113 names a more
 specific code: a PADDED HEADERS or DATA with no pad-length octet and a

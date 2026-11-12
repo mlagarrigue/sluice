@@ -78,22 +78,19 @@ your code supply batches of bytes that the transport pulls at the client's
 pace; if the client leaves, your producer sees it (`yield` returns `false`)
 and stops.
 
-One limit is owned rather than hidden, and it follows from the second
-architecture rule (the batch is the unit of transport). Over HTTP/2 the
-buffered responses of one batch are framed at once and interleave on the
-wire. A **streamed** response is different: its producer is pulled by the
-goroutine that answers the connection, one producer at a time. While a
-streamed response's producer runs, every other response of the connection
-waits behind it — a second streamed one and a buffered one alike, of the
-same batch or a later one — and goes out when that producer has finished.
-The client receives them all, whole and in request order; what it loses
-is simultaneity, and a slow reader of the first delays the rest.
-Where that matters, give long-lived streamed responses a connection of
-their own, or serve them over HTTP/3, where each stream has its own
-transport. `scripts/interop-http.sh` checks the two-stream case against
+Over HTTP/2 a streamed response holds no other response of its connection.
+The buffered responses of one batch are framed at once, and each streamed
+one is pulled on a goroutine of its own once its head is out: a producer
+that takes its time, or a client that reads it slowly, delays nobody else —
+a second streamed response or a buffered one, of the same batch or a later
+one. The writer interleaves their frames on the wire. What a client loses is
+an order: two streamed responses of one batch no longer arrive one after
+the other. `scripts/interop-http.sh` checks the two-stream case against
 curl; the decision record on the multiplexed connection
-([ADR 0008](../design/adr/0008-multiplexed-connection.md)) records the
-trade and what would reverse it.
+([ADR 0008](../design/adr/0008-multiplexed-connection.md)) records what the
+goroutine costs: about 350 ns per streamed response without a socket,
+measured on 2026-11-12, and nothing measurable from a real client
+([benchmarks](../benchmarks.md#a-streamed-http2-response-on-a-goroutine-of-its-own)).
 
 The cost of a streamed batch over HTTP/2 is measured, not promised
 (`docs/benchmarks.md`, "HTTP/2 and HTTP/3, from a real client"). The first
