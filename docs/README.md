@@ -54,6 +54,10 @@ place.
   front, QUIC behind a NAT, 0-RTT: what is supported and what to set.
 - [Limits](guide/limits.md) — what is not done, module by module, and the
   [conditions experimental packages leave under](reference/exit-conditions.md).
+- [Protocol positions](reference/protocol-positions.md) — where the library
+  departs from a specification, and how the longest limits were measured
+  or argued: platforms, authentication, the interop runner, the datagram
+  size, the QUIC transport and TLS.
 - [Measurements](benchmarks.md) — what each operator costs, and how it is
   measured.
 - [Troubleshooting](reference/troubleshooting.md) — every error the library

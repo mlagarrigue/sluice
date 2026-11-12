@@ -10,6 +10,40 @@ import (
 	"testing"
 )
 
+// docs/README.md is the index by use, and the one page the issue and pull
+// request templates cite: every page of docs/ is linked from it, the
+// decision records apart (their own index is docs/design/adr/README.md).
+// reference/protocol-positions.md was reachable only through the four
+// pages that link it.
+func TestDocsIndexLinksEveryPage(t *testing.T) {
+	index, err := os.ReadFile("docs/README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = filepath.WalkDir("docs", func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if p == filepath.Join("docs", "design", "adr") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(p, ".md") || p == filepath.Join("docs", "README.md") {
+			return nil
+		}
+		rel := filepath.ToSlash(strings.TrimPrefix(p, "docs"+string(filepath.Separator)))
+		if !bytes.Contains(index, []byte("("+rel+")")) && !bytes.Contains(index, []byte("("+rel+"#")) {
+			t.Errorf("docs/README.md does not link %s", rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 // The index of decisions (docs/design/adr/README.md) is how a reader finds the
 // record that answers their question: one line per record, under the section
 // of its theme, linked by its exact title. A record added without its line,
