@@ -138,9 +138,9 @@ jq --arg image "$image" '. + {sluice: {image: $image, url: "https://github.com/m
 peer_image=$(jq -r --arg p "$peer" '.[$p].image // empty' "$impls")
 [ -n "$peer_image" ] || fail "no implementation named $peer in the runner list at $RUNNER_REF"
 case " $UNPULLABLE " in
-*" $peer "*) fail "the image of $peer ($peer_image) is listed as not served (UNPULLABLE); its cases cannot run" ;;
+*" $peer "*) fail "the image of $peer, $peer_image, is listed as not served (UNPULLABLE); its cases cannot run" ;;
 esac
-docker pull -q "$peer_image" >/dev/null || fail "the image of $peer ($peer_image) cannot be pulled: the registry does not serve it, and every case would fail before reaching sluice; list it in UNPULLABLE"
+docker pull -q "$peer_image" >/dev/null || fail "the image of $peer, $peer_image, cannot be pulled: the registry does not serve it, and every case would fail before reaching sluice; list it in UNPULLABLE"
 
 # run <server> <client>: one direction, with the runner's debug output,
 # which is the only place each container's own output and the compliance
