@@ -16,6 +16,7 @@ Start with the index, which sorts every page by what the reader wants to do.
 - [Operators](docs/guide/operators.md): what each operator keeps in memory.
 - [PostgreSQL](docs/guide/postgres.md): connecting, reading as a stream, writing in batches, replication.
 - [Redis and Valkey](docs/guide/redis.md): one connection, a batch of commands in one round trip.
+- [NATS JetStream](docs/guide/nats.md): a pull consumer read in batches, acknowledged by your code.
 - [Files](docs/guide/files.md): CSV and JSON Lines in batches, each record bounded.
 - [Web](docs/guide/web.md): handlers, diagnostics, gateway, authentication, a clean stop.
 - [Native HTTP](docs/guide/httpstream.md): net/httpstream over HTTP/1.1, 2 and 3.

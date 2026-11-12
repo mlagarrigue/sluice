@@ -19,6 +19,7 @@ body:
         - postgres — database/postgres, database/postgres/pgtype, cmd/sluicegen
         - encoding — encoding/csvstream, encoding/jsonl
         - redis — database/redis
+        - nats — messaging/nats
         - quic — net/quic, net/quic/udp
         - httpstream — net/httpstream
         - web — web, web/stream

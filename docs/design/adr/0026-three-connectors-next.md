@@ -1,7 +1,7 @@
 # ADR 0026 — The three connectors after PostgreSQL: CSV and JSON Lines, Redis, NATS JetStream
 
 - **Created:** 2026-11-12
-- **Revised:** 2026-11-12 (each protocol fact read in its published text and cited; Redis written, the acknowledged shape confirmed)
+- **Revised:** 2026-11-12 (each protocol fact read in its published text and cited; Redis and NATS written, the acknowledged shape confirmed twice)
 - **Theme:** core
 
 ## Problem
@@ -29,6 +29,8 @@ have been whichever was asked for last.
 3. **NATS JetStream**: a pull consumer that asks for one batch at a time,
    each message acknowledged by the consumer; publishing by batch.
 
+### The protocols, and where the connectors live
+
 **What the protocols say**, read in their published texts. Valkey speaks
 RESP2 and RESP3 and pipelines commands sent in one write
 ([Valkey, protocol](https://valkey.io/topics/protocol/)).
@@ -54,6 +56,8 @@ for ahead where the protocol allows it. **From ADR 0023:** a source that
 cannot replay is acknowledged by its consumer, once it has finished a
 batch, never by the connector as it reads.
 
+### What Redis and NATS showed
+
 **Redis, written (`database/redis`).** RESP2 only, which every server
 accepts without negotiation; `Conn.Pipeline` sends a batch of commands in
 one write. The consumer group took ADR 0023's shape unchanged —
@@ -63,6 +67,19 @@ protocol makes: an XACK names entries, where PostgreSQL's acknowledgement is
 a position, so `Group.Ack` takes IDs and the acknowledgements ride the next
 read's round trip. The shape generalises: an acknowledged source outside
 PostgreSQL needed no new idea.
+
+**NATS JetStream, written (`messaging/nats`).** The pull consumer took the
+same shape a third time — `Conn.Consume`, `Consumer.Messages`,
+`Consumer.Ack` — with the acknowledgement a message's reply subject, sent
+with the next pull in one write. A pull asks for one batch and the server
+answers with what it has, up to the batch, within `Expires`
+([JetStream API, get next](https://docs.nats.io/reference/jetstream/api/consumer/get-next)):
+the batch is the protocol's own unit, as the ADR expected. Two things are
+left for later: TLS, since the server's first line comes in clear before
+the upgrade, which a dial recipe does not do; and publishing with the
+stream's acknowledgement, `Conn.Publish` being core NATS.
+
+### What is not among them
 
 **Kafka is not among the three.** A Kafka consumer reads the batches its
 producers compressed, and three of the protocol's codecs (Snappy, LZ4,

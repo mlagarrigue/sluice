@@ -350,6 +350,46 @@ jobs:
             fi
           done
 
+  # The NATS connector against a real server with JetStream on. The
+  # integration tests skip when SLUICE_NATS is unset, so this job refuses the
+  # skip. The image's entrypoint takes the server's flags, -js among them,
+  # which a service cannot pass: the server runs as a step instead.
+  nats:
+    runs-on: ubuntu-latest
+    env:
+      SLUICE_NATS: 127.0.0.1:4222
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_LATEST }}
+      - name: Start nats-server with JetStream
+        # A pinned minor: a new one arrives as a reviewed bump.
+        run: |
+          docker run -d --name nats -p 4222:4222 nats:2.12 -js
+          for i in $(seq 30); do
+            if (exec 3<>/dev/tcp/127.0.0.1/4222) 2>/dev/null; then exit 0; fi
+            sleep 1
+          done
+          docker logs nats
+          exit 1
+      - name: Integration tests
+        shell: bash
+        run: |
+          go test -race -count=1 -v ./messaging/nats/... | tee test.log
+          if grep -E 'SLUICE_NATS is not set' test.log; then
+            echo "::error::integration tests skipped: no server" >&2
+            exit 1
+          fi
+          for name in TestConsumerReadsInBatchesAndAcknowledgesOnlyWhatItIsTold TestConsumerRedeliversWhatWasNotAcknowledged; do
+            if ! grep -- "--- PASS: $name " test.log; then
+              echo "::error::$name did not pass against nats-server" >&2
+              exit 1
+            fi
+          done
+
   # The connector against a real server. Everything else in database/postgres/ talks
   # to a scripted server, which cannot disagree with the implementation about
   # what the protocol means. The integration tests skip when SLUICE_PG is

@@ -47,6 +47,7 @@ var allowed = map[string][]string{
 	"database/redis":           {""},
 	"encoding/csvstream":       {""},
 	"encoding/jsonl":           {""},
+	"messaging/nats":           {""},
 }
 
 func TestImportLayers(t *testing.T) {

@@ -47,6 +47,7 @@ question for a CPU profile: no counter can answer it.
 | A panic whose message holds another goroutine's stack | `sluice.PanicError`, in [The core](#the-core-sluice-parallel) |
 | A panic reading a PostgreSQL row | `postgres.ErrRowRetained`, in [PostgreSQL](#postgresql-databasepostgres-pgtype) |
 | A PostgreSQL connection that refuses every further query | `postgres.ErrConnBroken`, in [PostgreSQL](#postgresql-databasepostgres-pgtype) |
+| A 503 or a 409 status reading NATS JetStream | `nats.StatusError`: no such consumer, or no JetStream, in [NATS](#nats-messagingnats) |
 | A QUIC connection that ends on its own | `quic.ErrIdleTimeout`, `quic.ErrStatelessReset`, `quic.ConnectionError`, in [QUIC](#quic-netquic-experimental) |
 
 ## The core: `sluice`, `parallel`
@@ -94,6 +95,16 @@ question for a CPU profile: no counter can answer it.
 | `redis.ErrReplyTooLarge` | A reply passed `Config.MaxReplyBytes` (64 MiB by default). It breaks the connection. | Ask for less per command (`SCAN` rather than `KEYS`, a range rather than a whole list), or raise `MaxReplyBytes`. |
 | `redis.ErrProtocol` | The server sent bytes that are not RESP2 — a proxy speaking something else, or a server switched to RESP3. It breaks the connection. | Check what listens on the address. |
 | `*redis.Error` (a type) | The server refused one command: `Prefix` is its kind (`ERR`, `WRONGTYPE`, `NOAUTH`, `DENIED`…). From `Reply.Err`, the connection goes on; from `Connect`, the AUTH, SELECT or PING was refused. | Read the message: it is the server's. |
+
+## NATS: `messaging/nats`
+
+| Error | When | What to do |
+|---|---|---|
+| `nats.ErrConnBroken` | The connection lost its place in the protocol: the context ended mid-call, a write or a read failed, the server sent what this package cannot parse or will not hold, or an `-ERR` the server closes the connection after. | Close it and open another; the error wraps the cause. |
+| `nats.ErrTooLarge` | A received message passed `Config.MaxPayloadBytes` (8 MiB by default), or a control line passed 64 KiB. It breaks the connection. | Raise `MaxPayloadBytes` if the messages are meant to be that large. |
+| `nats.ErrProtocol` | The server sent bytes that are not a NATS operation — something else listens on the address. It breaks the connection. | Check what listens there. |
+| `*nats.Error` (a type) | The server's `-ERR`: an authorization violation at `Connect`, a permissions violation or an invalid subject later (those two leave the connection open). | Read the message: it is the server's. |
+| `*nats.StatusError` (a type) | A status the server sent instead of a message: 503 for a request no one answers (no JetStream, or no such consumer), 409 for a consumer deleted or push-based. | Create the stream and the durable pull consumer, with explicit acknowledgement, before reading. |
 
 ## Files: `encoding/csvstream`, `encoding/jsonl`
 
