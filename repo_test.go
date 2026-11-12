@@ -1514,6 +1514,30 @@ func exportedDocs(p *godoc.Package) []namedDoc {
 	funcs(p.Funcs)
 	for _, ty := range p.Types {
 		out = append(out, namedDoc{ty.Name, ty.Doc})
+		// The exported fields of a struct: they carry the default, the
+		// unit and the bound of a setting, and go doc renders their
+		// comments, links included (net/quic's ActiveConnIDLimit linked to
+		// a Validate method that had moved, under a green test).
+		for _, spec := range ty.Decl.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if !ok {
+				continue
+			}
+			st, ok := ts.Type.(*ast.StructType)
+			if !ok {
+				continue
+			}
+			for _, f := range st.Fields.List {
+				if f.Doc == nil {
+					continue
+				}
+				for _, n := range f.Names {
+					if n.IsExported() {
+						out = append(out, namedDoc{ty.Name + "." + n.Name, f.Doc.Text()})
+					}
+				}
+			}
+		}
 		values(ty.Consts)
 		values(ty.Vars)
 		funcs(ty.Funcs)

@@ -133,12 +133,13 @@ type Config struct {
 	// before returning, a call arriving during a long batch waits out the
 	// rest of that batch first, then Within. So the latency the gateway adds
 	// is Within on top of whatever the batch ahead still takes — a fan-out
-	// inside the pipeline ([parallel.Unordered]) is what returns the
-	// loop to gathering quickly. Pick Within against the round trip it
+	// inside the pipeline
+	// ([github.com/mlagarrigue/sluice/parallel.Unordered]) is what returns
+	// the loop to gathering quickly. Pick Within against the round trip it
 	// saves: 2 ms of waiting to turn 64 round trips into one is a bargain,
-	// 200 ms is not. The fan-out is [parallel.Unordered] rather than an
-	// ordered one, because nothing downstream of a request/reply gateway
-	// cares which batch finishes first — every call carries its own way back.
+	// 200 ms is not. The fan-out is unordered rather than an ordered one,
+	// because nothing downstream of a request/reply gateway cares which
+	// batch finishes first — every call carries its own way back.
 	//
 	// A client that pipelines gets the worst of the window. The batch is
 	// formed from calls that coincide, and over net/http two requests
@@ -169,8 +170,9 @@ type Config struct {
 	// PostgreSQL's group commit fills a flush.
 	//
 	// It batches only while the pipeline is busy: a pipeline that returns
-	// from its yield before serving the batch ([parallel.Unordered])
-	// batches once all its workers are busy, not before. Within must be
+	// from its yield before serving the batch
+	// ([github.com/mlagarrigue/sluice/parallel.Unordered]) batches once all
+	// its workers are busy, not before. Within must be
 	// zero under Eager: there is no window.
 	Eager bool
 
