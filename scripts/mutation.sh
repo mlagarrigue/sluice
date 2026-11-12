@@ -36,12 +36,16 @@
 #   - one heavy run at a time (a lock shared with fuzzing), and a cache: a
 #     file's result is reused while its package, the in-module packages its
 #     tests build, go.mod, go.sum, the configuration, the Go and gremlins
-#     versions are unchanged.
-#     MUTATION_CACHE names the directory (default ~/.cache/sluice-mutation).
+#     versions, and — for a package whose tests build database/postgres —
+#     whether SLUICE_PG names a server are unchanged.
+#     MUTATION_CACHE names the directory (default ~/.cache/sluice-mutation);
+#   - no package main: gremlins would run the module root's tests for it.
 #
-# DIR receives units/<file>.json and .log per file, summary.tsv (one line per
-# file: killed, lived, timed out, not covered, efficacy, cached) and
-# resultat.json (every file's mutants, merged). Exit status 1 if gremlins
+# DIR receives units/<file>.json and .log per file (and .pg, with or without a
+# PostgreSQL server, for a file whose tests build database/postgres),
+# summary.tsv (one line per file: killed, lived, timed out, not covered,
+# efficacy, cached) and resultat.json (every file's mutants, merged). The
+# summary on stderr says how many files ran with a server. Exit status 1 if gremlins
 # failed on a file (its coverage run failed, usually a red test).
 set -euo pipefail
 
@@ -65,7 +69,7 @@ while [ $# -gt 0 ]; do
     --list) list=1 ;;
     --merge) merge=1 ;;
     --print-version) echo "$GREMLINS_VERSION"; exit 0 ;;
-    -h | --help) sed -n '2,38p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,/^[^#]/{/^#/p}' "$0"; exit 0 ;;
     -*) die "unknown option $1" ;;
     *) paths+=("$1") ;;
   esac
@@ -124,6 +128,9 @@ summarize() { # $1 = output directory with units/
   awk -F'\t' 'NR > 1 { k += $2; l += $3; t += $4; n++ }
     END { printf "mutation: %d files, %d killed, %d lived, %d timed out, efficacy %s\n", n, k, l, t, (k + l ? sprintf("%.1f%%", 100 * k / (k + l)) : "-") }' \
     "$d/summary.tsv" >&2
+  cat "$d"/units/*.pg 2>/dev/null | awk '{ n[$1]++ } END {
+    if (n["with"] + n["without"])
+      printf "mutation: PostgreSQL server (SLUICE_PG): %d files with one, %d without (their integration tests skipped)\n", n["with"], n["without"] }' >&2
 }
 
 if [ "$merge" = 1 ]; then
@@ -153,11 +160,20 @@ for p in "${paths[@]}"; do
 done
 [ ${#pkgs[@]} -gt 0 ] || pkgs=(./...)
 
+# A package main is never mutated: gremlins finds the package of a mutant by
+# a directory ending in the package's name, finds none for main, and runs the
+# module root's tests instead — every mutant timed out, or lived on tests that
+# never build it (cmd/sluicegen, 2026-11-12). Such a package keeps its logic
+# in a package of its own (cmd/sluicegen/internal/generator), mutated there.
 units() {
-  (cd "$root" && go list -f '{{.Dir}}{{range .GoFiles}} {{.}}{{end}}' "${pkgs[@]}") |
-    while read -r dir names; do
+  (cd "$root" && go list -f '{{.Dir}} {{.Name}}{{range .GoFiles}} {{.}}{{end}}' "${pkgs[@]}") |
+    while read -r dir name names; do
       rel=${dir#"$root"}
       rel=${rel#/}
+      if [ "$name" = main ]; then
+        say "not mutated: ${rel:-.}, a package main"
+        continue
+      fi
       for n in $names; do
         f=${rel:+$rel/}$n
         [ -n "$skip_re" ] && [[ $f =~ $skip_re ]] && continue
@@ -283,14 +299,22 @@ rss_watch() { # $1 = gremlins' pid, $2 = file for the counts
 
 # --- Cache key ----------------------------------------------------------------
 pkgarg() { if [ "$1" = . ]; then echo .; else echo "./$1"; fi; }
-declare -A closure=()
+# A package whose tests build database/postgres runs its integration tests
+# only with a server (SLUICE_PG): the result depends on it, so the cache key
+# holds whether one was set, and the summary says it.
+pg_state=without
+[ -n "${SLUICE_PG:-}" ] && pg_state=with
+declare -A closure=() uses_pg=()
 closure_hash() { # $1 = package directory, "." for the root
   local d=$1 dirs g
   if [ -z "${closure[$d]:-}" ]; then
     dirs=$(cd "$wt" && go list -deps -test -f '{{if .Module}}{{if .Module.Main}}{{.Dir}}{{end}}{{end}}' "$(pkgarg "$d")" | sort -u)
+    uses_pg[$d]=no
+    grep -qx "$wt/database/postgres" <<<"$dirs" && uses_pg[$d]=yes
     closure[$d]=$(
       {
         printf '%s\n' "$CACHE_FORMAT" "$GREMLINS_VERSION" "$(go env GOVERSION)"
+        [ "${uses_pg[$d]}" = yes ] && printf 'postgres server: %s\n' "$pg_state"
         cat "$cfg" "$wt/go.mod" "$wt/go.sum"
         for g in $dirs; do
           for g in "$g"/*.go; do [ -f "$g" ] && printf '%s\n' "${g#"$wt"/}" && cat "$g"; done
@@ -319,8 +343,10 @@ done
 failed=0 done_files=0
 for d in "${order[@]}"; do
   need=()
+  closure_hash "$d" >/dev/null # in this shell, so that the tables keep it
   for f in ${pkgfiles[$d]}; do
     name=${f//\//__}
+    [ "${uses_pg[$d]}" = yes ] && echo "$pg_state" >"$out/units/$name.pg"
     key=$(file_key "$f")
     if [ ${#dry[@]} = 0 ] && [ -f "$cache/$key.json" ]; then
       cp "$cache/$key.json" "$out/units/$name.json"
