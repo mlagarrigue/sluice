@@ -859,6 +859,18 @@ one at a time, what the watch costs only the handlers that ask.
 
 ## QUIC, on an emulated path
 
+> **In plain words: what these benchmarks measure.** A **congestion
+> controller** is the part of a transport that decides how much to send
+> before an acknowledgement comes back; what is in flight is its **window**.
+> Every connection begins in **slow start**, doubling the window each round
+> trip until a loss or a rising delay ends it (**HyStart++** ends it early,
+> on the delay). Then **Reno** — **NewReno** in QUIC's text, the package's
+> default — grows the window by one datagram per round trip and halves it
+> on a loss; **CUBIC** cuts it less and grows it back along a curve; **BBR**
+> measures the path's rate and delay instead of waiting for losses. A router
+> practising **AQM** (active queue management) drops or marks packets before
+> its queue is full. The terms are also in the [glossary](glossary.md).
+
 `net/quic`'s path benchmarks (`net/quic/netem_bench_test.go`) move one
 stream — two, on the fairness profile — through an in-process middlebox
 that charges every datagram a one-way delay and, per profile, draws a loss
