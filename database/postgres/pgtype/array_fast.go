@@ -3,6 +3,7 @@ package pgtype
 import (
 	"encoding/binary"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -105,9 +106,7 @@ func appendInt4Elems(dst []byte, elems []Null[int32]) ([]byte, bool) {
 	i := 0
 	for ; i+4 <= len(elems); i += 4 {
 		e := elems[i : i+4 : i+4]
-		if !e[0].Valid || !e[1].Valid || !e[2].Valid || !e[3].Valid {
-			break
-		}
+		at := len(dst)
 		dst = binary.BigEndian.AppendUint32(dst, 4)
 		dst = AppendInt4(dst, e[0].Value)
 		dst = binary.BigEndian.AppendUint32(dst, 4)
@@ -116,6 +115,10 @@ func appendInt4Elems(dst []byte, elems []Null[int32]) ([]byte, bool) {
 		dst = AppendInt4(dst, e[2].Value)
 		dst = binary.BigEndian.AppendUint32(dst, 4)
 		dst = AppendInt4(dst, e[3].Value)
+		if !e[0].Valid || !e[1].Valid || !e[2].Valid || !e[3].Valid {
+			dst = dst[:at]
+			break
+		}
 	}
 	return appendRestElems(dst, elems[i:], AppendInt4)
 }
@@ -220,13 +223,16 @@ func appendFloat8Elems(dst []byte, elems []Null[float64]) ([]byte, bool) {
 
 // decodeUUIDElems reads n uuid elements of an array body.
 func decodeUUIDElems(dst []Null[[16]byte], body []byte, n int) ([]Null[[16]byte], []byte, error) {
+	dst = slices.Grow(dst, n)
 	i := 0
 	for ; i < n; i++ {
 		if len(body) < 20 || binary.BigEndian.Uint32(body) != 16 {
 			break
 		}
-		dst = append(dst, Null[[16]byte]{Valid: true})
-		dst[len(dst)-1].Value = [16]byte(body[4:20])
+		k := len(dst)
+		dst = dst[:k+1]
+		dst[k].Value = [16]byte(body[4:20])
+		dst[k].Valid = true
 		body = body[20:]
 	}
 	return otherElements(dst, body, i, n, DecodeUUID)
