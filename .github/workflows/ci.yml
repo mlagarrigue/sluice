@@ -58,6 +58,12 @@ jobs:
       - name: Test
         run: go test -race -shuffle=on ./...
 
+      # A 32-bit int: arithmetic sized for 64 bits overflows there, and the
+      # congestion controllers count bytes in int. The x86-64 runner runs
+      # 386 binaries; the race detector does not support them.
+      - name: Test the congestion controllers on 386
+        run: GOARCH=386 CGO_ENABLED=0 go test -run 'TestBBR|TestCubic|TestHystart' ./net/quic/
+
       # Two net/quic/udp tests skip on a host that lacks what they need, and
       # a skip reads like a pass: the udp6 case of the packet-information
       # test wants a second IPv6 address, the path MTU cache probe an

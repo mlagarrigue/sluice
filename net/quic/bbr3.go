@@ -810,10 +810,15 @@ func (b *bbr3) adaptLongTermModel(rs rateSample, ev ackEvent) bool {
 // the round's acknowledgements — probeUpCnt bytes acknowledged per
 // datagram added, a datagram at least (§5.3.3.9): past log2 of the window
 // in rounds, a one-byte floor would add a datagram per byte acknowledged.
+//
+// The draft's cwnd*maxDatagram/(maxDatagram<<rounds) is cwnd>>rounds,
+// exactly, in integers: written as the draft has it, the product passed
+// 2^31 on a 32-bit int from a two-megabyte window, and the shifted divisor
+// lost every bit by round 28 and divided by zero.
 func (b *bbr3) raiseInflightLongtermSlope() {
-	growth := b.maxDatagram << b.bwProbeUpRounds
+	rounds := b.bwProbeUpRounds
 	b.bwProbeUpRounds = min(b.bwProbeUpRounds+1, 30)
-	b.probeUpCnt = max(b.cwnd*b.maxDatagram/growth, b.maxDatagram)
+	b.probeUpCnt = max(b.cwnd>>rounds, b.maxDatagram)
 }
 
 // probeInflightLongtermUpward is BBRProbeInflightLongtermUpward: only
