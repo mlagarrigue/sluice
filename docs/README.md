@@ -20,6 +20,8 @@ place.
   between two batches, and what that costs.
 - [PostgreSQL](guide/postgres.md) — queries, binary parameters, `= ANY($1)`,
   COPY, transactions, generated hydrators.
+- [Redis and Valkey](guide/redis.md) — one connection, a batch of
+  commands in one round trip.
 - [Files](guide/files.md) — CSV and JSON Lines read and written in
   batches, each record bounded.
 - [Web](guide/web.md) — the supported path over `net/http`, the gateway,
@@ -42,6 +44,7 @@ place.
 | spread work over several goroutines | [Operators: `parallel`](guide/operators.md#parallel-retains-goroutines) |
 | connect to PostgreSQL | [PostgreSQL: Connecting](guide/postgres.md#connecting) |
 | write many rows at once | [PostgreSQL: In bulk, COPY](guide/postgres.md#in-bulk-copy) |
+| look up many keys in Redis at once | [Redis: A batch of commands](guide/redis.md#a-batch-of-commands) |
 | read a CSV or JSON Lines file in batches | [Files: Reading](guide/files.md#reading) |
 | follow the changes of a database | [PostgreSQL: Following changes](guide/postgres.md#following-changes-logical-replication) |
 | cancel a running query | [PostgreSQL: Cancelling](guide/postgres.md#cancelling-a-running-query) |

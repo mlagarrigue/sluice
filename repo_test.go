@@ -27,7 +27,7 @@ import (
 // component are drawn from. CONTRIBUTING.md and the issue template repeat it
 // for readers; TestScopeListIsRepeatedVerbatim keeps the copies honest.
 var scopes = []string{
-	"core", "join", "window", "parallel", "distinct", "postgres", "encoding", "quic",
+	"core", "join", "window", "parallel", "distinct", "postgres", "encoding", "redis", "quic",
 	"httpstream", "web", "gateway", "diagnostics", "bench", "docs", "ci",
 	"devcontainer", "audit",
 }

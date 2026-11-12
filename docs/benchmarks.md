@@ -36,6 +36,7 @@ figure that differs, to the character, from the median of its row.
 - [A QUIC socket in a burst](#a-quic-socket-in-a-burst)
 - [Stream deadlines that mature one by one](#stream-deadlines-that-mature-one-by-one)
 - [Credit a byte at a time](#credit-a-byte-at-a-time)
+- [Redis, a batch against one command at a time](#redis-a-batch-against-one-command-at-a-time)
 - [Joins and hydration, in isolation](#joins-and-hydration-in-isolation)
 - [Measured in one session](#measured-in-one-session)
   - [Conditions](#conditions)
@@ -1492,6 +1493,21 @@ same machine, mean per frame and rounds won by the change:
 
 The cost no longer grows with N: a peer no longer buys N wake-ups with
 three bytes.
+
+## Redis, a batch against one command at a time
+
+A thousand GETs of keys that exist, against Valkey 8.1 in a container on
+the same machine, reached over the container network
+(`BenchmarkGetPipelined` and `BenchmarkGetOneByOne`, `database/redis`,
+`SLUICE_REDIS` set). In one `Pipeline` call — one write, one round trip —
+559 ns per key; one `Pipeline` per key, a round trip each, 147,739 ns per
+key: the round trip is the cost, and the batch pays it once. Medians of
+three runs, 2026-11-12, one core, mains power; 18 allocations per thousand
+keys pipelined (the replies and their arena), 6 per key one by one.
+
+```
+SLUICE_REDIS=<host:port> go test -run '^$' -bench 'Get(Pipelined|OneByOne)' -count 3 -cpu 1 ./database/redis/
+```
 
 ## Joins and hydration, in isolation
 

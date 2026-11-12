@@ -184,9 +184,9 @@ scripts/mutation.sh --out /tmp/mutation net/quic/ack.go # a file
 - **Types**: `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`,
   `ci`, `chore`. A `!` after the scope marks an API break.
 - **Scopes**, a closed list checked by a test: `core`, `join`, `window`,
-  `parallel`, `distinct`, `postgres`, `encoding`, `quic`, `httpstream`,
-  `web`, `gateway`, `diagnostics`, `bench`, `docs`, `ci`, `devcontainer`,
-  `audit`.
+  `parallel`, `distinct`, `postgres`, `encoding`, `redis`, `quic`,
+  `httpstream`, `web`, `gateway`, `diagnostics`, `bench`, `docs`, `ci`,
+  `devcontainer`, `audit`.
   The scope is omitted when the change crosses all of them.
 - **Subject**: one line, imperative, no capital after the colon unless the
   word is a name (`README`, `PostgreSQL`), no trailing period, 50 characters

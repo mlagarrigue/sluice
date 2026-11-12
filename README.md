@@ -160,6 +160,7 @@ group's, which are experimental.
 |---|---|
 | `sluice/database/postgres` | PostgreSQL by speaking its protocol: `= ANY($1)` (one query for N keys), COPY |
 | `sluice/database/postgres/pgtype` | the binary codecs: a Go value to PostgreSQL's representation and back, no connection needed |
+| `sluice/database/redis` | Redis and Valkey over RESP2: a batch of commands in one round trip |
 | `cmd/sluicegen` | generates the code that turns rows into structs |
 | `sluice/net/httpstream` | HTTP/1.1, /2, /3 as stream stages |
 | `sluice/web/stream` | the request path for the native transport |

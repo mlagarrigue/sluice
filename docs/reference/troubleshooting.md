@@ -86,6 +86,15 @@ question for a CPU profile: no counter can answer it.
 | `postgres.ErrUnknownType` | A type name the database does not resolve: no such type on the search path, or an extension not created in this database. | Check the name and the `search_path`; `CREATE EXTENSION` in this database for an extension's type. |
 | `pgtype.ErrCodec` | A value's bytes do not match the type they were read as. The stream and its description disagree. | Check the column type against the decoder you used (`DecodeInt8` on an `int4` column, for one). |
 
+## Redis: `database/redis`
+
+| Error | When | What to do |
+|---|---|---|
+| `redis.ErrConnBroken` | The connection lost its place in the protocol: the context ended mid-call, a write or a read failed, a reply could not be parsed or was too large. The replies still owed are gone. | Close the connection and open another; the error wraps the cause. |
+| `redis.ErrReplyTooLarge` | A reply passed `Config.MaxReplyBytes` (64 MiB by default). It breaks the connection. | Ask for less per command (`SCAN` rather than `KEYS`, a range rather than a whole list), or raise `MaxReplyBytes`. |
+| `redis.ErrProtocol` | The server sent bytes that are not RESP2 — a proxy speaking something else, or a server switched to RESP3. It breaks the connection. | Check what listens on the address. |
+| `*redis.Error` (a type) | The server refused one command: `Prefix` is its kind (`ERR`, `WRONGTYPE`, `NOAUTH`, `DENIED`…). From `Reply.Err`, the connection goes on; from `Connect`, the AUTH, SELECT or PING was refused. | Read the message: it is the server's. |
+
 ## Files: `encoding/csvstream`, `encoding/jsonl`
 
 | Error | When | What to do |

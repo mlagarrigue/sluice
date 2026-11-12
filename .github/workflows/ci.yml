@@ -310,6 +310,44 @@ jobs:
         working-directory: audit
         run: go vet ./... && go mod tidy -diff && go test ./...
 
+  # The Redis connector against a real server: Valkey, which speaks the same
+  # RESP2 every Redis server accepts. The integration tests skip when
+  # SLUICE_REDIS is unset, so this job refuses the skip.
+  redis:
+    runs-on: ubuntu-latest
+    services:
+      valkey:
+        # A pinned minor: a new one arrives as a reviewed bump.
+        image: valkey/valkey:8.1
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      SLUICE_REDIS: 127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_LATEST }}
+      - name: Integration tests
+        shell: bash
+        run: |
+          go test -race -count=1 -v ./database/redis/... | tee test.log
+          if grep -E 'SLUICE_REDIS is not set' test.log; then
+            echo "::error::integration tests skipped: no server" >&2
+            exit 1
+          fi
+          if ! grep -- '--- PASS: TestPipelineAgainstAServer' test.log; then
+            echo "::error::the pipeline did not run against Valkey" >&2
+            exit 1
+          fi
+
   # The connector against a real server. Everything else in database/postgres/ talks
   # to a scripted server, which cannot disagree with the implementation about
   # what the protocol means. The integration tests skip when SLUICE_PG is
