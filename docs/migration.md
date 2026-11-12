@@ -114,6 +114,13 @@ behavior that keep the signatures — a value now refused — come last.
 
 ### QUIC: `net/quic`
 
+- **`AckDelayExponent` and `MaxAckDelay` are gone from `TransportParameters`**
+  (`fix(quic)!: drop the two ACK delay fields never announced`): this
+  end never announced them, so setting them on a `Config` changed nothing;
+  they were the peer's values, read during the handshake, and stay so
+  inside the package. Remove the assignments: this end writes its ACK
+  delays at the exponent 3 and sits on an acknowledgement 25 ms at most,
+  RFC 9000 §18.2's defaults, as it always did.
 - **A stream identifier is a `quic.StreamID`**
   (`8309ca3`):
   `Conn.Stream`, `Conn.ReleaseStreamBytes`, `Conn.ReleaseStreamCredit`,

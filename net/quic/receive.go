@@ -1974,7 +1974,7 @@ func (c *Conn) settleProbeLocked(out ackOutcome) {
 // sample. Callers hold mu.
 func (c *Conn) peerAckDelayExponentLocked() uint64 {
 	if c.hasPeerParams && c.peerParams.sawAckDelayExponent {
-		return c.peerParams.AckDelayExponent
+		return c.peerParams.ackDelayExponent
 	}
 	return 3
 }
@@ -1985,7 +1985,7 @@ func (c *Conn) peerAckDelayExponentLocked() uint64 {
 // probe timeout. Callers hold mu.
 func (c *Conn) peerMaxAckDelayLocked() time.Duration {
 	if c.hasPeerParams && c.peerParams.sawMaxAckDelay {
-		return c.peerParams.MaxAckDelay
+		return c.peerParams.maxAckDelay
 	}
 	return 25 * time.Millisecond
 }

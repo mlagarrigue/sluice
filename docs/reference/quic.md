@@ -42,10 +42,12 @@ are only read from the peer, and `quic.Config`'s own fields, beside the
 
 ### Read from the peer, never announced
 
-| Field | This end uses | Unit | What it bounds |
-|---|---|---|---|
-| `AckDelayExponent` | 3 | exponent | the scale of the peer's ACK delays |
-| `MaxAckDelay` | 25 ms | duration | how long the peer may sit on an acknowledgement |
+Two parameters are the peer's only, and have no field: `ack_delay_exponent`,
+the scale of the peer's ACK delays, and `max_ack_delay`, how long the peer
+may sit on an acknowledgement, which loss recovery adds to its probe
+timeout. This end announces neither, so it holds itself to RFC 9000 §18.2's
+defaults for a silent endpoint: it writes its ACK delays at the exponent 3
+and sits on an acknowledgement no longer than the default `max_ack_delay`.
 
 ### Local, never on the wire
 

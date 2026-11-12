@@ -490,7 +490,7 @@ func TestAckDelayClampWaitsForHandshakeConfirmation(t *testing.T) {
 		c.mu.Lock()
 		c.handshakeConfirmed = confirmed
 		c.hasPeerParams = true
-		c.peerParams.MaxAckDelay = 25
+		c.peerParams.maxAckDelay = 25
 		c.rtt.sample(10*time.Millisecond, 0) // the floor the subtraction is guarded by
 		sp := &c.spaces[spaceApplication]
 		sp.nextPN = 1

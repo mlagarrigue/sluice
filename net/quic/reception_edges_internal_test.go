@@ -323,7 +323,7 @@ func TestAckDelayOverflow(t *testing.T) {
 	now := time.Now()
 	c.mu.Lock()
 	c.hasPeerParams = true
-	c.peerParams.sawAckDelayExponent, c.peerParams.AckDelayExponent = true, 20
+	c.peerParams.sawAckDelayExponent, c.peerParams.ackDelayExponent = true, 20
 	c.rtt.sample(10*time.Millisecond, 0)
 	sp := &c.spaces[spaceApplication]
 	sp.sent.record(sentPacket{pn: 0, sentAt: now.Add(-2 * time.Second), size: 100, ackEliciting: true})

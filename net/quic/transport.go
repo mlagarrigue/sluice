@@ -81,23 +81,18 @@ type TransportParameters struct {
 	InitialMaxStreamsBidi          uint64
 	InitialMaxStreamsUni           uint64
 
-	// AckDelayExponent scales the peer's ACK delay fields. Read so a peer
-	// that announces another value does not skew this end's round-trip
-	// estimate. RFC 9000 §18.2 gives the default of 3 to a peer that is
-	// *silent*, not to one that announces 0: this package tells the
-	// two apart, and the field here is whatever the peer wrote.
-	AckDelayExponent uint64
-
-	// MaxAckDelay is how long the peer may sit on an acknowledgement,
-	// which loss recovery adds to its probe timeout. As above, the §18.2
-	// default of 25 ms is for an absent parameter, and an
-	// announced 0 is read as 0.
-	MaxAckDelay time.Duration
-
-	// sawAckDelayExponent and sawMaxAckDelay record that the peer announced
-	// the parameter at all, since 0 is a legal value of both and not the
-	// default (RFC 9000 §18.2). Neither is announced by this package, so
-	// appendParameters has no use for them.
+	// ackDelayExponent and maxAckDelay are the peer's, read and never
+	// announced: this end writes its ACK delays at the default exponent of
+	// 3 and holds an ACK 25 ms at most (localMaxAckDelay), the §18.2
+	// defaults a silent endpoint promises, so there is nothing to set.
+	// ackDelayExponent scales the peer's ACK delay fields, so that a peer
+	// announcing another value does not skew the round-trip estimate;
+	// maxAckDelay is how long the peer may sit on an acknowledgement, which
+	// loss recovery adds to its probe timeout. RFC 9000 §18.2 gives the
+	// defaults to a peer that is *silent*, not to one that announces 0:
+	// sawAckDelayExponent and sawMaxAckDelay tell the two apart.
+	ackDelayExponent    uint64
+	maxAckDelay         time.Duration
 	sawAckDelayExponent bool
 	sawMaxAckDelay      bool
 
@@ -737,10 +732,10 @@ func parseParameters(b []byte) (TransportParameters, error) {
 					p.InitialMaxStreamsUni = v
 				}
 			case paramAckDelayExponent:
-				p.AckDelayExponent = v
+				p.ackDelayExponent = v
 				p.sawAckDelayExponent = true
 			case paramMaxAckDelay:
-				p.MaxAckDelay = idleDuration(v)
+				p.maxAckDelay = idleDuration(v)
 				p.sawMaxAckDelay = true
 			}
 		}

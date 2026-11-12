@@ -304,7 +304,7 @@ func TestTheIdleFloorIsNotCapped(t *testing.T) {
 	c := boundsConn(t, false)
 	c.mu.Lock()
 	c.idleTimeout = time.Second
-	c.peerParams.MaxAckDelay = 5 * time.Second
+	c.peerParams.maxAckDelay = 5 * time.Second
 	c.peerParams.sawMaxAckDelay = true
 	c.hasPeerParams = true
 	// Last activity eleven seconds ago: past the old ten-second cap, short
@@ -337,7 +337,7 @@ func TestTheIdleFloorStillDefersTheTimeout(t *testing.T) {
 	c.mu.Lock()
 	// An idle timeout far under three PTOs, and a deadline already past it.
 	c.idleTimeout = 10 * time.Millisecond
-	c.peerParams.MaxAckDelay = 500 * time.Millisecond
+	c.peerParams.maxAckDelay = 500 * time.Millisecond
 	c.peerParams.sawMaxAckDelay = true
 	c.hasPeerParams = true
 	c.idleDeadline = time.Now().Add(-5 * time.Millisecond)
@@ -365,7 +365,7 @@ func TestIdleFloorDoesNotSpinTheLoops(t *testing.T) {
 	c := boundsConn(t, false)
 	c.mu.Lock()
 	c.idleTimeout = 10 * time.Millisecond
-	c.peerParams.MaxAckDelay = 500 * time.Millisecond
+	c.peerParams.maxAckDelay = 500 * time.Millisecond
 	c.peerParams.sawMaxAckDelay = true
 	c.hasPeerParams = true
 	c.idleDeadline = time.Now().Add(-5 * time.Millisecond)

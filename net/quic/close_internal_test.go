@@ -210,7 +210,7 @@ func TestClosingPeriodIsThreePTOsWithACeiling(t *testing.T) {
 	// and acknowledgements held back for seconds.
 	c.hasPeerParams = true
 	c.peerParams.sawMaxAckDelay = true
-	c.peerParams.MaxAckDelay = (1<<14 - 1) * time.Millisecond
+	c.peerParams.maxAckDelay = (1<<14 - 1) * time.Millisecond
 	for range 8 {
 		c.rtt.sample(20*time.Second, 0)
 	}

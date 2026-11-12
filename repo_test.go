@@ -2086,7 +2086,6 @@ var zeroIsTheProtocols = map[string]bool{
 	"TransportParameters.InitialMaxData": true, "TransportParameters.InitialMaxStreamDataUni": true,
 	"TransportParameters.InitialMaxStreamDataBidiLocal": true, "TransportParameters.InitialMaxStreamDataBidiRemote": true,
 	"TransportParameters.InitialMaxStreamsBidi": true, "TransportParameters.InitialMaxStreamsUni": true,
-	"TransportParameters.AckDelayExponent": true, "TransportParameters.MaxAckDelay": true,
 }
 
 // ADR 0018: a numeric field of a configuration whose zero is not refused

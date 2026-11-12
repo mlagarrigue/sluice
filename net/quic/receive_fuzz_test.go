@@ -58,7 +58,7 @@ func FuzzParseParameters(f *testing.F) {
 			again.InitialMaxStreamsBidi != p.InitialMaxStreamsBidi ||
 			again.InitialMaxStreamsUni != p.InitialMaxStreamsUni ||
 			again.ActiveConnIDLimit != p.ActiveConnIDLimit ||
-			// AckDelayExponent and MaxAckDelayMS are parse-only on purpose —
+			// ackDelayExponent and maxAckDelay are parse-only on purpose —
 			// read from a peer, never announced — so appendParameters drops
 			// them and the round trip cannot include them.
 			// bytes.Equal, not DeepEqual: an identifier absent from the wire
