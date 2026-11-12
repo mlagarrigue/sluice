@@ -63,6 +63,10 @@ type Target struct {
 	// Postgres is what was read of a PostgreSQL server, nil when nothing
 	// of one was named.
 	Postgres *Postgres
+
+	// Firewall is the host's packet filter as saved, nil when none was
+	// given.
+	Firewall *Firewall
 }
 
 // A Spec names what to read. Every field is optional, and a Target with
@@ -97,8 +101,14 @@ type Spec struct {
 
 	// PGSettings is a file holding pg_settings as psql prints it in CSV,
 	// with at least the name, setting and unit columns. PGHBA is the text
-	// of pg_hba.conf; PGLog is the server's log.
-	PGSettings, PGHBA, PGLog string
+	// of pg_hba.conf; PGLog is the server's log; PGRoles is pg_authid or
+	// pg_roles as psql prints it in CSV, with the rolname, rolsuper and
+	// rolcanlogin columns.
+	PGSettings, PGHBA, PGLog, PGRoles string
+
+	// Firewall is a file holding the packet filter's rules as nft list
+	// ruleset or iptables-save prints them.
+	Firewall string
 }
 
 // Open reads what a [Spec] names. Anything named must be readable: a path
@@ -165,12 +175,22 @@ func Open(s Spec) (*Target, error) {
 		}
 		t.KernelLogPath, t.KernelLog = s.KernelLog, string(b)
 	}
-	if s.PGSettings != "" || s.PGHBA != "" || s.PGLog != "" {
-		pg, err := openPostgres(s.PGSettings, s.PGHBA, s.PGLog)
+	if s.PGSettings != "" || s.PGHBA != "" || s.PGLog != "" || s.PGRoles != "" {
+		pg, err := openPostgres(s.PGSettings, s.PGHBA, s.PGLog, s.PGRoles)
 		if err != nil {
 			return nil, err
 		}
 		t.Postgres = pg
+	}
+	if s.Firewall != "" {
+		b, err := os.ReadFile(s.Firewall) //nolint:gosec // G304: the path is the caller's
+		if err != nil {
+			return nil, err
+		}
+		if t.Firewall, err = parseFirewall(string(b)); err != nil {
+			return nil, fmt.Errorf("%s: %w", s.Firewall, err)
+		}
+		t.Firewall.Path = s.Firewall
 	}
 	return t, nil
 }

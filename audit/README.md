@@ -21,6 +21,7 @@ go run -C audit ./cmd/audit -binary ./x -sbom -output json
 go run -C audit ./cmd/audit -container web -sources config,tools
 go run -C audit ./cmd/audit -root / -kernel-log dmesg.txt -profile comparative
 go run -C audit ./cmd/audit -pg-settings settings.csv -pg-hba pg_hba.conf -pg-log postgresql.log -answer pools=60
+go run -C audit ./cmd/audit -pg-settings settings.csv -pg-roles roles.csv -firewall ruleset.txt -cve yes
 ```
 
 ## Axes, not modes
@@ -57,6 +58,8 @@ sets one.
 | `container/*` | `docker inspect`, or its saved output | what a container was run with: `nofile`, pinned cores, a memory bound, the network, the log driver, capabilities, `no-new-privileges`, seccomp, AppArmor, a read-only root, the user, the Docker socket |
 | `linux/conntrack-full`, `linux/oom-kill` | the kernel's log, saved to a file | a connection tracking table that filled, a process the OOM killer took |
 | `postgres/*` | `pg_settings` saved as CSV, `pg_hba.conf`, the server's log | connections against the clients' pools, `shared_buffers`, autovacuum, `password_encryption`, `ssl`, `trust`, `md5` and `password` rules; checkpoints forced by the WAL, clients refused for lack of slots |
+| `postgres/superusers`, `postgres/cve` | `pg_roles` saved as CSV; `server_version` and `pg_hba.conf` | more than one superuser that logs in; each PostgreSQL advisory the audit knows, judged on the release and on the configuration it needs |
+| `firewall/postgres-exposed` | `nft list ruleset` or `iptables-save`, saved | PostgreSQL's port reachable from any address: accepted by an input chain or its policy, or published by a DNAT — Docker's `-p`, which never crosses INPUT |
 | `go/*` | the cgroup, the module's `go` directive, the environment | whether the runtime will read the CPU quota, or use every core of the machine; a `GODEBUG` that restores an older behaviour |
 | `-sbom` | the binary | the bill of materials: the main module, the toolchain, every dependency linked |
 
@@ -74,6 +77,23 @@ path was, **does not apply** when the module is only required — and each
 verdict says what decided it. A machine without the tool produces a
 finding that says so, because a report silent about vulnerabilities reads
 as a report that found none.
+
+**PostgreSQL's advisories are judged on the configuration, not on the
+release alone.** A flaw present in a release is not a flaw reachable: each
+advisory the audit knows is read from its page on postgresql.org, its
+affected configurations included, and is judged on what was saved —
+**applies** when the release is affected and the configuration reaches the
+flaw, **does not apply** when nothing in it does (the upgrade stays due),
+**undetermined** when the part it needs was not given. A fixed release
+says nothing. Today the list holds one, CVE-2021-23214, reached through
+`cert` authentication or `trust` with `clientcert`.
+
+**The firewall is asked one question, the kernel's way.** Would a new
+connection from anywhere reach the server's port: the first rule that
+decides, chain by chain, then the chain's policy. A rule matching on a
+connection state or a mark is taken as not deciding, and a jump to a chain
+of your own is not followed; a server whose `listen_addresses` is the
+loopback alone is not asked about.
 
 Every reason says where the value shows up under load, because that is
 what makes it actionable: a listen queue too short is `ListenOverflows` in

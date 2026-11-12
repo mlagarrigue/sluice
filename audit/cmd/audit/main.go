@@ -54,6 +54,8 @@ func run(args []string, out *os.File) error {
 	pgSettings := fs.String("pg-settings", "", "a file holding pg_settings as CSV: psql -X --csv -c 'SELECT name, setting, unit FROM pg_settings'")
 	pgHBA := fs.String("pg-hba", "", "a PostgreSQL server's pg_hba.conf")
 	pgLog := fs.String("pg-log", "", "a PostgreSQL server's log")
+	pgRoles := fs.String("pg-roles", "", "a file holding the roles as CSV: psql -X --csv -c 'SELECT rolname, rolsuper, rolcanlogin FROM pg_roles'")
+	firewall := fs.String("firewall", "", "a file holding the packet filter's rules: nft list ruleset, or iptables-save")
 	sbom := fs.Bool("sbom", false, "print the binary's bill of materials instead of the findings")
 	axesOnly := fs.Bool("axes", false, "print the axes and their values, and stop")
 	var answers answerFlag
@@ -78,8 +80,8 @@ func run(args []string, out *os.File) error {
 	}
 	if *binary == "" && *module == "" && *dockerfile == "" && *root == "" &&
 		*container == "" && *containerJSON == "" && *kernelLog == "" &&
-		*pgSettings == "" && *pgHBA == "" && *pgLog == "" {
-		return errors.New("name what to read: -binary, -module, -dockerfile, -root, -container, -container-json, -kernel-log, -pg-settings, -pg-hba or -pg-log")
+		*pgSettings == "" && *pgHBA == "" && *pgLog == "" && *pgRoles == "" && *firewall == "" {
+		return errors.New("name what to read: -binary, -module, -dockerfile, -root, -container, -container-json, -kernel-log, -pg-settings, -pg-hba, -pg-log, -pg-roles or -firewall")
 	}
 
 	sel := audit.Selection{}
@@ -98,7 +100,8 @@ func run(args []string, out *os.File) error {
 	target, err := audit.Open(audit.Spec{
 		Binary: *binary, Module: *module, Dockerfile: *dockerfile, Root: *root, PID: *pid,
 		Container: *container, ContainerJSON: *containerJSON, KernelLog: *kernelLog,
-		PGSettings: *pgSettings, PGHBA: *pgHBA, PGLog: *pgLog,
+		PGSettings: *pgSettings, PGHBA: *pgHBA, PGLog: *pgLog, PGRoles: *pgRoles,
+		Firewall: *firewall,
 	})
 	if err != nil {
 		return err

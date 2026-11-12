@@ -20,11 +20,13 @@ import (
 // Postgres is what was read of one server. A part not given is nil or
 // empty, and the rules that read it stay silent.
 type Postgres struct {
-	Settings map[string]PGSetting
-	HBA      []HBALine
-	HBAPath  string
-	Log      string
-	LogPath  string
+	Settings  map[string]PGSetting
+	HBA       []HBALine
+	HBAPath   string
+	Log       string
+	LogPath   string
+	Roles     []PGRole
+	RolesPath string
 }
 
 // A PGSetting is one row of pg_settings: the value, in the unit the
@@ -41,9 +43,10 @@ type HBALine struct {
 	Type    string // local, host, hostssl, hostnossl, hostgssenc, hostnogssenc
 	Address string // empty for local
 	Method  string
+	Options []string // what follows the method: clientcert=verify-full, map=…
 }
 
-func openPostgres(settings, hba, log string) (*Postgres, error) {
+func openPostgres(settings, hba, log, roles string) (*Postgres, error) {
 	pg := &Postgres{}
 	if settings != "" {
 		b, err := os.ReadFile(settings) //nolint:gosec // G304: the path is the caller's
@@ -67,6 +70,16 @@ func openPostgres(settings, hba, log string) (*Postgres, error) {
 			return nil, err
 		}
 		pg.Log, pg.LogPath = string(b), log
+	}
+	if roles != "" {
+		b, err := os.ReadFile(roles) //nolint:gosec // G304: the path is the caller's
+		if err != nil {
+			return nil, err
+		}
+		if pg.Roles, err = parsePGRoles(string(b)); err != nil {
+			return nil, fmt.Errorf("%s: %w", roles, err)
+		}
+		pg.RolesPath = roles
 	}
 	return pg, nil
 }
@@ -117,17 +130,18 @@ func parseHBA(text string) []HBALine {
 			continue
 		}
 		l := HBALine{Line: n, Type: f[0]}
+		method := 3
 		switch {
 		case f[0] == "local":
-			l.Method = f[3]
 		case len(f) >= 5:
-			l.Address, l.Method = f[3], f[4]
+			l.Address, method = f[3], 4
 			if len(f) >= 6 && !strings.Contains(f[3], "/") && looksLikeMask(f[4]) {
-				l.Method = f[5]
+				method = 5
 			}
 		default:
 			continue
 		}
+		l.Method, l.Options = f[method], f[method+1:]
 		out = append(out, l)
 	}
 	return out
