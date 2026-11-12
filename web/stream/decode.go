@@ -22,7 +22,7 @@ import (
 //
 // A body that arrives through [httpstream.Request.Stream] — the default, the
 // zero [httpstream.Config.BodyDelivery] being [httpstream.BodyStreamed] — is
-// assembled here, up to limit, by [httpstream.Request.ReadAll]: a stage
+// assembled here, up to maxBytes, by [httpstream.Request.ReadAll]: a stage
 // decoding one JSON value needs the value whole, and this is the step that
 // turns the streamed form back into it. Nothing about the refusals changes
 // with the form, which is the point: a body that rode along with the request's
@@ -34,13 +34,13 @@ import (
 // smuggling it is, and "too large" kept
 // distinct from "malformed" because they need different fixes. Here the
 // stage also picks the refusal's status — 415 for a label it does not read
-// (with Accept-Patch on a PATCH), 413 past the limit, 400 otherwise — where
+// (with Accept-Patch on a PATCH), 413 past maxBytes, 400 otherwise — where
 // web leaves that to its net/http caller. So are the three readings
 // web.DecodeJSON names as encoding/json's: a repeated name's last value
 // wins and names match fields without regard to case, invalid UTF-8 and a
 // lone surrogate become U+FFFD, a byte order mark is refused.
-func DecodeJSON(e *Exchange, limit int64, dst any) bool {
-	if limit <= 0 {
+func DecodeJSON(e *Exchange, maxBytes int64, dst any) bool {
+	if maxBytes <= 0 {
 		panic("stream: DecodeJSON needs a positive byte limit; an unbounded body is not a default")
 	}
 	if e.Refused() {
@@ -56,20 +56,20 @@ func DecodeJSON(e *Exchange, limit int64, dst any) bool {
 	body := e.Request.Body
 	if body == nil {
 		var err error
-		if body, err = e.Request.ReadAll(nil, bound(limit)); err != nil {
+		if body, err = e.Request.ReadAll(nil, bound(maxBytes)); err != nil {
 			if errors.Is(err, httpstream.ErrTooLarge) {
-				e.Refuse(413, reqbody.TooLarge(web.CodeBodyTooLarge, limit))
+				e.Refuse(413, reqbody.TooLarge(web.CodeBodyTooLarge, maxBytes))
 			} else {
 				e.Refuse(400, reqbody.Truncated(web.CodeMalformedBody))
 			}
 			return false
 		}
 	}
-	if int64(len(body)) > limit {
-		e.Refuse(413, reqbody.TooLarge(web.CodeBodyTooLarge, limit))
+	if int64(len(body)) > maxBytes {
+		e.Refuse(413, reqbody.TooLarge(web.CodeBodyTooLarge, maxBytes))
 		return false
 	}
-	if d, ok := reqbody.Decode(bytes.NewReader(body), limit, dst, web.CodeMalformedBody, web.CodeBodyTooLarge); !ok {
+	if d, ok := reqbody.Decode(bytes.NewReader(body), maxBytes, dst, web.CodeMalformedBody, web.CodeBodyTooLarge); !ok {
 		e.Refuse(400, d)
 		return false
 	}

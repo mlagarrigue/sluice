@@ -294,7 +294,11 @@ func (b *bodyStream) read() error {
 	b.pos = b.start
 	if free := len(r.buf) - r.n; free < minBodyRead && len(r.buf) < r.cfg.maxBuffer() {
 		// A new array rather than a resize in place: the request's fields
-		// borrow the head in the old one, which stays as it is.
+		// borrow the head in the old one, which stays as it is. The test is
+		// on the window, not on the array behind it, for the same reason:
+		// room before the window holds that head, so a body read after a
+		// large buffer may cost one allocation here, bounded by maxBuffer,
+		// where reusing the array would overwrite what the request borrows.
 		grown := make([]byte, min(max(2*len(r.buf), r.n+minBodyRead), r.cfg.maxBuffer()))
 		copy(grown, r.buf[:r.n])
 		r.buf, r.base = grown, grown
@@ -334,14 +338,14 @@ func (b *bodyStream) read() error {
 }
 
 // ReadAll returns the body whole: Body when it arrived whole, otherwise what
-// Stream yields appended to dst. A body past limit bytes is refused with
+// Stream yields appended to dst. A body past maxBytes bytes is refused with
 // ErrTooLarge, and so is a streamed one, which ReadAll stops reading there.
 // It is the step that turns a streamed body back into the whole-body
 // contract, for a handler that wants that and states how much it accepts.
-func (r Request) ReadAll(dst []byte, limit int) ([]byte, error) {
+func (r Request) ReadAll(dst []byte, maxBytes int) ([]byte, error) {
 	if r.body == nil {
-		if len(r.Body) > limit {
-			return dst, fmt.Errorf("%w: a body of %d bytes, over %d", ErrTooLarge, len(r.Body), limit)
+		if len(r.Body) > maxBytes {
+			return dst, fmt.Errorf("%w: a body of %d bytes, over %d", ErrTooLarge, len(r.Body), maxBytes)
 		}
 		return append(dst, r.Body...), nil
 	}
@@ -349,8 +353,8 @@ func (r Request) ReadAll(dst []byte, limit int) ([]byte, error) {
 	src := r.Stream()
 	for b := range src.Stream() {
 		for _, p := range b.Items {
-			if n += len(p); n > limit {
-				return dst, fmt.Errorf("%w: a streamed body over %d bytes", ErrTooLarge, limit)
+			if n += len(p); n > maxBytes {
+				return dst, fmt.Errorf("%w: a streamed body over %d bytes", ErrTooLarge, maxBytes)
 			}
 			dst = append(dst, p...)
 		}

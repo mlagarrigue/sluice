@@ -86,7 +86,7 @@ const (
 	CodeInvalidParam         = "Transport.Request.InvalidParameter"
 )
 
-// DecodeJSON reads a request body into dst, bounded to limit bytes.
+// DecodeJSON reads a request body into dst, bounded to maxBytes bytes.
 //
 // The bound is a required argument with no usable zero, for the reason
 // [diagnostics.NewCollector] takes one: a body limit that suits every endpoint
@@ -125,8 +125,8 @@ const (
 // document is refused as malformed (RFC 8259 §8.1 lets a parser ignore it).
 // Refusing the first two would take a second pass over the body, a second
 // reading of hostile input this package does not add.
-func DecodeJSON(r *http.Request, limit int64, dst any) (diagnostics.Diagnostic, bool) {
-	if limit <= 0 {
+func DecodeJSON(r *http.Request, maxBytes int64, dst any) (diagnostics.Diagnostic, bool) {
+	if maxBytes <= 0 {
 		panic("web: DecodeJSON needs a positive byte limit; an unbounded read from a socket is not a default")
 	}
 	if ct := r.Header["Content-Type"]; len(ct) != 1 || !reqbody.JSONMediaType(ct[0]) {
@@ -139,7 +139,7 @@ func DecodeJSON(r *http.Request, limit int64, dst any) (diagnostics.Diagnostic, 
 	// ResponseWriter it does not tell the server to stop reading or close the
 	// connection — net/http drains or abandons what is left of the body on
 	// its own terms once the handler returns.
-	return reqbody.Decode(http.MaxBytesReader(nil, r.Body, limit), limit, dst, CodeMalformedBody, CodeBodyTooLarge)
+	return reqbody.Decode(http.MaxBytesReader(nil, r.Body, maxBytes), maxBytes, dst, CodeMalformedBody, CodeBodyTooLarge)
 }
 
 // PathInt64 reads a [http.ServeMux] wildcard as an int64.

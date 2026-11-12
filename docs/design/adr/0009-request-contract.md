@@ -1,7 +1,7 @@
 # ADR 0009 — One request contract for three protocols
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-11-11 (the memory bound counts the read-ahead); 5 earlier, from 2026-10-15, in its `git log`
+- **Revised:** 2026-11-12 (`ReadAll`'s bound is named `maxBytes`); 6 earlier, from 2026-10-15, in its `git log`
 - **Theme:** httpstream
 
 ## Problem
@@ -70,7 +70,7 @@ enforces it:
      its headers, under `MaxBodyBytes`, arrives in `Body` as today, so
      small requests still batch. Any other body arrives through
      `Request.Stream`, a `sluice.Source[[]byte]`, with `Body` nil;
-     `Request.ReadAll(dst, limit)` returns either form whole.
+     `Request.ReadAll(dst, maxBytes)` returns either form whole.
 
    - **Consumed within the call.** The stream is valid while the handler
      runs. A body left unread when it returns closes the connection after
