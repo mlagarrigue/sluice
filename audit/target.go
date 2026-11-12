@@ -59,6 +59,10 @@ type Target struct {
 	// privilege the audit must not need, and a file can be seeded.
 	KernelLogPath string
 	KernelLog     string
+
+	// Postgres is what was read of a PostgreSQL server, nil when nothing
+	// of one was named.
+	Postgres *Postgres
 }
 
 // A Spec names what to read. Every field is optional, and a Target with
@@ -90,6 +94,11 @@ type Spec struct {
 
 	// KernelLog is a file holding the kernel's log.
 	KernelLog string
+
+	// PGSettings is a file holding pg_settings as psql prints it in CSV,
+	// with at least the name, setting and unit columns. PGHBA is the text
+	// of pg_hba.conf; PGLog is the server's log.
+	PGSettings, PGHBA, PGLog string
 }
 
 // Open reads what a [Spec] names. Anything named must be readable: a path
@@ -155,6 +164,13 @@ func Open(s Spec) (*Target, error) {
 			return nil, err
 		}
 		t.KernelLogPath, t.KernelLog = s.KernelLog, string(b)
+	}
+	if s.PGSettings != "" || s.PGHBA != "" || s.PGLog != "" {
+		pg, err := openPostgres(s.PGSettings, s.PGHBA, s.PGLog)
+		if err != nil {
+			return nil, err
+		}
+		t.Postgres = pg
 	}
 	return t, nil
 }

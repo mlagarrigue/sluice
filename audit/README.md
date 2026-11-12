@@ -20,6 +20,7 @@ go run -C audit ./cmd/audit -dockerfile ../interop/Dockerfile
 go run -C audit ./cmd/audit -binary ./x -sbom -output json
 go run -C audit ./cmd/audit -container web -sources config,tools
 go run -C audit ./cmd/audit -root / -kernel-log dmesg.txt -profile comparative
+go run -C audit ./cmd/audit -pg-settings settings.csv -pg-hba pg_hba.conf -pg-log postgresql.log -answer pools=60
 ```
 
 ## Axes, not modes
@@ -55,6 +56,7 @@ sets one.
 | `linux/*` | `/proc` and `/sys` under `-root` | the listen and device queues, the UDP buffers, the ephemeral ports, connection tracking, swap, hugepages, the CPU governor, and the process's own `nofile` under `-pid` |
 | `container/*` | `docker inspect`, or its saved output | what a container was run with: `nofile`, pinned cores, a memory bound, the network, the log driver, capabilities, `no-new-privileges`, seccomp, AppArmor, a read-only root, the user, the Docker socket |
 | `linux/conntrack-full`, `linux/oom-kill` | the kernel's log, saved to a file | a connection tracking table that filled, a process the OOM killer took |
+| `postgres/*` | `pg_settings` saved as CSV, `pg_hba.conf`, the server's log | connections against the clients' pools, `shared_buffers`, autovacuum, `password_encryption`, `ssl`, `trust`, `md5` and `password` rules; checkpoints forced by the WAL, clients refused for lack of slots |
 | `go/*` | the cgroup, the module's `go` directive, the environment | whether the runtime will read the CPU quota, or use every core of the machine; a `GODEBUG` that restores an older behaviour |
 | `-sbom` | the binary | the bill of materials: the main module, the toolchain, every dependency linked |
 
@@ -93,11 +95,19 @@ file (`docker inspect web > web.json`) is read by `-container-json` with no
 tool at all. The kernel's log is read from a file too — reading the ring
 buffer takes a privilege the audit must not need.
 
+**A PostgreSQL server is read from what it printed, never by connecting.**
+The audit cannot borrow the connector it would be auditing, so the
+settings come from `psql -X --csv -c 'SELECT name, setting, unit FROM
+pg_settings' > settings.csv`, with `pg_hba.conf` and the log as they are.
+What the clients' pools open together is read nowhere: `-answer pools=N`
+gives it, and until then the rule that compares it with `max_connections`
+stays silent.
+
 **The comparative profile publishes a table.** A comparison does not ask
 whether a value is good but whether every machine has the same one, so
 under `-profile comparative` the report opens with the values read — the
 kernel's queues, ports, buffers and huge pages, the process's `nofile`,
-the container's limits, network and log driver — and in JSON they are the
+the PostgreSQL server's settings, the container's limits, network and log driver — and in JSON they are the
 `system` part next to `findings`. Two machines of a comparison must print
 the same table.
 

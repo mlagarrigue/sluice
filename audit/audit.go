@@ -137,13 +137,14 @@ type Question struct {
 	Key     string
 	Ask     string
 	Default string
-	Choices []string
+	Choices []string // nil for a free answer, such as a number
 }
 
 // Questions are the ones the rules may read.
 var Questions = []Question{
 	{Key: "role", Ask: "what does this machine do?", Default: "server", Choices: []string{"server", "workstation", "build"}},
 	{Key: "exposure", Ask: "is it reachable from the internet?", Default: "private", Choices: []string{"internet", "private"}},
+	{Key: "pools", Ask: "how many connections can every client's pool open at most, all processes together?", Default: "unknown"},
 }
 
 // Answers holds what was answered; a key left out is the question's

@@ -35,8 +35,8 @@ var hostSettings = []struct{ name, path string }{
 
 // System is the table of what a target was set to, as a comparison
 // publishes it: the host's kernel values under the root, the named
-// process's descriptor limit, and the container's limits, network and log
-// driver. A value the host does not have says "absent" — a kernel with no
+// process's descriptor limit, the PostgreSQL server's settings, and the
+// container's limits, network and log driver. A value the host does not have says "absent" — a kernel with no
 // connection tracking is a fact to publish, not a gap — and a part nobody
 // pointed at has no lines at all.
 func System(t *Target) []Setting {
@@ -59,6 +59,15 @@ func System(t *Target) []Setting {
 				}
 			}
 			out = append(out, Setting{"process " + strconv.Itoa(t.PID) + " nofile", v})
+		}
+	}
+	if pg := t.Postgres; pg != nil && pg.Settings != nil {
+		for _, name := range postgresSettings {
+			v := "absent"
+			if s, ok := pg.setting(name); ok {
+				v = strings.TrimSpace(s.Value + " " + s.Unit)
+			}
+			out = append(out, Setting{"postgres " + name, v})
 		}
 	}
 	if c := t.Container; c != nil {

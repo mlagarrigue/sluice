@@ -51,6 +51,9 @@ func run(args []string, out *os.File) error {
 	container := fs.String("container", "", "a running container to read, by calling docker inspect (needs the tools source)")
 	containerJSON := fs.String("container-json", "", "a file holding docker inspect's output for one container")
 	kernelLog := fs.String("kernel-log", "", "a file holding the kernel's log (dmesg's output, or kern.log)")
+	pgSettings := fs.String("pg-settings", "", "a file holding pg_settings as CSV: psql -X --csv -c 'SELECT name, setting, unit FROM pg_settings'")
+	pgHBA := fs.String("pg-hba", "", "a PostgreSQL server's pg_hba.conf")
+	pgLog := fs.String("pg-log", "", "a PostgreSQL server's log")
 	sbom := fs.Bool("sbom", false, "print the binary's bill of materials instead of the findings")
 	axesOnly := fs.Bool("axes", false, "print the axes and their values, and stop")
 	var answers answerFlag
@@ -74,8 +77,9 @@ func run(args []string, out *os.File) error {
 		return nil
 	}
 	if *binary == "" && *module == "" && *dockerfile == "" && *root == "" &&
-		*container == "" && *containerJSON == "" && *kernelLog == "" {
-		return errors.New("name what to read: -binary, -module, -dockerfile, -root, -container, -container-json or -kernel-log")
+		*container == "" && *containerJSON == "" && *kernelLog == "" &&
+		*pgSettings == "" && *pgHBA == "" && *pgLog == "" {
+		return errors.New("name what to read: -binary, -module, -dockerfile, -root, -container, -container-json, -kernel-log, -pg-settings, -pg-hba or -pg-log")
 	}
 
 	sel := audit.Selection{}
@@ -94,6 +98,7 @@ func run(args []string, out *os.File) error {
 	target, err := audit.Open(audit.Spec{
 		Binary: *binary, Module: *module, Dockerfile: *dockerfile, Root: *root, PID: *pid,
 		Container: *container, ContainerJSON: *containerJSON, KernelLog: *kernelLog,
+		PGSettings: *pgSettings, PGHBA: *pgHBA, PGLog: *pgLog,
 	})
 	if err != nil {
 		return err
@@ -139,8 +144,12 @@ func run(args []string, out *os.File) error {
 	}
 	if len(system) > 0 {
 		_, _ = fmt.Fprintf(out, "system, as a comparison publishes it\n")
+		width := 0
 		for _, s := range system {
-			_, _ = fmt.Fprintf(out, "  %-34s %s\n", s.Name, s.Value)
+			width = max(width, len(s.Name))
+		}
+		for _, s := range system {
+			_, _ = fmt.Fprintf(out, "  %-*s  %s\n", width, s.Name, s.Value)
 		}
 		_, _ = fmt.Fprintln(out)
 	}
