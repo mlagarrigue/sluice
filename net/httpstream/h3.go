@@ -124,6 +124,15 @@ func parseH3Frames(dst []h3Frame, buf []byte, maxFrame int) (frames []h3Frame, r
 		if length > uint64(len(after)) {
 			return dst, buf, 0, nil // the payload has not all arrived
 		}
+		if typ == h3Data && length == 0 && len(dst) > 0 && dst[len(dst)-1].Type == h3Data {
+			// An empty DATA frame behind a DATA frame adds no byte, and no
+			// step the stream's state has not already taken for the one
+			// before it: it takes no entry. Two bytes a frame, a burst of
+			// them was 32 bytes of scratch per frame, regrown at every
+			// delivery past h3FramesKept.
+			buf = after
+			continue
+		}
 		dst = append(dst, h3Frame{Type: typ, Payload: after[:length]})
 		buf = after[length:]
 	}

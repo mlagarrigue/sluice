@@ -124,3 +124,35 @@ func TestH3FrameScratchKeepsNoStreamBufferPastItsLength(t *testing.T) {
 		t.Errorf("%d stream buffers of ~%d bytes were kept reachable only by stale frame-scratch entries", freed, maxBody)
 	}
 }
+
+// Empty DATA frames are two bytes each and legal; one delivery of them used
+// to cost an entry of the frame scratch apiece, 32 bytes, and a scratch past
+// h3FramesKept is let go after the parse, so every dense delivery grew it
+// again: sixteen bytes allocated per byte received. An empty DATA frame
+// behind a DATA frame adds neither bytes nor a step to the stream's state,
+// and takes no entry.
+func TestH3EmptyDataFramesCostNoScratchPerFrame(t *testing.T) {
+	a := testAssembler(Config{})
+	if _, _, _, err := a.Frames([]quic.Frame{streamFrame(0, h3Request("POST", "/upload"), false)}); err != nil {
+		t.Fatal(err)
+	}
+	var delivery []byte
+	for range 4000 {
+		delivery = appendH3Frame(delivery, h3Data, nil)
+	}
+	const deliveries = 50
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	for range deliveries {
+		if _, _, _, err := a.Frames([]quic.Frame{streamFrame(0, delivery, false)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runtime.ReadMemStats(&after)
+	received := deliveries * len(delivery)
+	perByte := float64(after.TotalAlloc-before.TotalAlloc) / float64(received)
+	t.Logf("%d bytes of empty DATA frames in %d deliveries: %.2f bytes allocated per byte received", received, deliveries, perByte)
+	if perByte > 4 {
+		t.Errorf("%.2f bytes allocated per byte of empty DATA frames received, want at most 4", perByte)
+	}
+}
