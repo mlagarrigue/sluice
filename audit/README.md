@@ -24,6 +24,7 @@ go run -C audit ./cmd/audit -pg-settings settings.csv -pg-hba pg_hba.conf -pg-lo
 go run -C audit ./cmd/audit -pg-settings settings.csv -pg-roles roles.csv -firewall ruleset.txt -cve yes
 go run -C audit ./cmd/audit -proxy-config nginx.conf -proxy-version "$(nginx -v 2>&1)"
 go run -C audit ./cmd/audit -app-args start.txt -pg-settings settings.csv -profile comparative
+go run -C audit ./cmd/audit -root / -netstat-before before.txt -netstat-after after.txt -sources logs,config
 ```
 
 ## Axes, not modes
@@ -58,6 +59,7 @@ sets one.
 | `docker/*` | the Dockerfile's text | stages, the bases and their digests, the runtime image, `USER`, secrets in layers, `.dockerignore` |
 | `linux/*` | `/proc` and `/sys` under `-root` | the listen and device queues, the UDP buffers, the ephemeral ports, connection tracking, swap, hugepages, the CPU governor, and the process's own `nofile` under `-pid` |
 | `container/*` | `docker inspect`, or its saved output | what a container was run with: `nofile`, pinned cores, a memory bound, the network, the log driver, capabilities, `no-new-privileges`, seccomp, AppArmor, a read-only root, the user, the Docker socket |
+| `linux/listen-overflows` | two copies of `/proc/net/netstat`, or of `nstat -az`, taken before and after a load | connections the kernel dropped because an accept queue was full, put on the queue and its `somaxconn` — and nothing put on it for the retransmissions and timeouts a load also moves |
 | `linux/conntrack-full`, `linux/oom-kill` | the kernel's log, saved to a file | a connection tracking table that filled, a process the OOM killer took |
 | `postgres/*` | `pg_settings` saved as CSV, `pg_hba.conf`, the server's log | connections against the clients' pools, `shared_buffers`, autovacuum, `password_encryption`, `ssl`, `trust`, `md5` and `password` rules; checkpoints forced by the WAL, clients refused for lack of slots |
 | `postgres/superusers`, `postgres/cve` | `pg_roles` saved as CSV; `server_version` and `pg_hba.conf` | more than one superuser that logs in; each PostgreSQL advisory the audit knows, judged on the release and on the configuration it needs |

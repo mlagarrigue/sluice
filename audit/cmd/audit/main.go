@@ -58,6 +58,8 @@ func run(args []string, out *os.File) error {
 	firewall := fs.String("firewall", "", "a file holding the packet filter's rules: nft list ruleset, or iptables-save")
 	proxyConfig := fs.String("proxy-config", "", "a reverse proxy's configuration: nginx.conf, or haproxy.cfg")
 	proxyVersion := fs.String("proxy-version", "", "what nginx -v or haproxy -v printed, for the advisories")
+	netstatBefore := fs.String("netstat-before", "", "the kernel's network counters before a load: a copy of /proc/net/netstat, or nstat -az")
+	netstatAfter := fs.String("netstat-after", "", "the same counters after the load")
 	appArgs := fs.String("app-args", "", "a file holding how the comparison's server was started: NAME=value lines (env), then its command line")
 	sbom := fs.Bool("sbom", false, "print the binary's bill of materials instead of the findings")
 	axesOnly := fs.Bool("axes", false, "print the axes and their values, and stop")
@@ -83,8 +85,9 @@ func run(args []string, out *os.File) error {
 	}
 	if *binary == "" && *module == "" && *dockerfile == "" && *root == "" &&
 		*container == "" && *containerJSON == "" && *kernelLog == "" &&
-		*pgSettings == "" && *pgHBA == "" && *pgLog == "" && *pgRoles == "" && *firewall == "" && *proxyConfig == "" && *appArgs == "" {
-		return errors.New("name what to read: -binary, -module, -dockerfile, -root, -container, -container-json, -kernel-log, -pg-settings, -pg-hba, -pg-log, -pg-roles, -firewall, -proxy-config or -app-args")
+		*pgSettings == "" && *pgHBA == "" && *pgLog == "" && *pgRoles == "" && *firewall == "" && *proxyConfig == "" && *appArgs == "" &&
+		*netstatBefore == "" && *netstatAfter == "" {
+		return errors.New("name what to read: -binary, -module, -dockerfile, -root, -container, -container-json, -kernel-log, -pg-settings, -pg-hba, -pg-log, -pg-roles, -firewall, -proxy-config, -app-args or -netstat-before and -netstat-after")
 	}
 
 	sel := audit.Selection{}
@@ -105,7 +108,7 @@ func run(args []string, out *os.File) error {
 		Container: *container, ContainerJSON: *containerJSON, KernelLog: *kernelLog,
 		PGSettings: *pgSettings, PGHBA: *pgHBA, PGLog: *pgLog, PGRoles: *pgRoles,
 		Firewall: *firewall, ProxyConfig: *proxyConfig, ProxyVersion: *proxyVersion,
-		AppArgs: *appArgs,
+		AppArgs: *appArgs, NetstatBefore: *netstatBefore, NetstatAfter: *netstatAfter,
 	})
 	if err != nil {
 		return err

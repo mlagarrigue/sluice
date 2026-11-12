@@ -74,6 +74,10 @@ type Target struct {
 	// App is the comparison study's server as started, nil when its start
 	// was not given.
 	App *App
+
+	// Counters is what the kernel's network counters moved by during a
+	// load, nil when the two readings were not given.
+	Counters *Counters
 }
 
 // A Spec names what to read. Every field is optional, and a Target with
@@ -126,6 +130,11 @@ type Spec struct {
 	// started: its environment as env prints it, NAME=value lines, and its
 	// command line.
 	AppArgs string
+
+	// NetstatBefore and NetstatAfter are two readings of the kernel's
+	// network counters, before and after a load: /proc/net/netstat (with
+	// /proc/net/snmp appended or not), or nstat -az's output.
+	NetstatBefore, NetstatAfter string
 }
 
 // Open reads what a [Spec] names. Anything named must be readable: a path
@@ -228,6 +237,13 @@ func Open(s Spec) (*Target, error) {
 			return nil, fmt.Errorf("%s: %w", s.AppArgs, err)
 		}
 		t.App.Path = s.AppArgs
+	}
+	if s.NetstatBefore != "" || s.NetstatAfter != "" {
+		c, err := openCounters(s.NetstatBefore, s.NetstatAfter)
+		if err != nil {
+			return nil, err
+		}
+		t.Counters = c
 	}
 	return t, nil
 }
