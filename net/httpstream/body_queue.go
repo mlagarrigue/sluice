@@ -199,6 +199,11 @@ func (b *bodyQueue) addLocked(data []byte) (dropped int) {
 // do not fit. The piece the handler holds may sit in the old array: a grown
 // ring is a new one, and the old one stays as it is for as long as the
 // handler's slice keeps it.
+//
+// The ring doubles, and over HTTP/2 stops at what the stream's window lets
+// the peer have in hand, InitialWindowSize and its grace: held bytes never
+// pass it (grantLocked tops the window up to it, no further), and a ring
+// doubled past it would allocate up to twice the window limits.md counts.
 func (b *bodyQueue) push(data []byte) {
 	if len(data) == 0 {
 		return
@@ -207,6 +212,9 @@ func (b *bodyQueue) push(data []byte) {
 		size := max(len(b.buf), bodyMinRing)
 		for size < b.n+len(data) {
 			size *= 2
+		}
+		if b.h2 != nil {
+			size = max(min(size, int(b.initial)+int(b.grace)), b.n+len(data))
 		}
 		grown := make([]byte, size)
 		k := copy(grown, b.buf[b.head:min(b.head+b.n, len(b.buf))])
