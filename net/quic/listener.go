@@ -427,6 +427,9 @@ type Listener struct {
 	early     *earlyGate
 	closed    bool
 	discarded uint64
+	// readErrors counts failed socket reads, apart from discarded: see
+	// ReadErrors.
+	readErrors uint64
 	// resetWindow and resetsSent are the one-second budget maybeSendStatelessReset
 	// spends, and resetsTo its per-source share of it. resetsTo only gains
 	// an entry when a reset is sent, so the global budget bounds it too.
@@ -770,19 +773,37 @@ func (l *Listener) Addr() net.Addr { return l.pc.LocalAddr() }
 
 // DiscardedPackets reports how many datagrams this listener's own front
 // door refused to route — unroutable or malformed, or addressed to a
-// connection too far behind to take them — and failed socket reads, which
-// on Windows include the unauthenticated ICMP port-unreachable; never a
-// reason to stop serving everyone else. The same accounting
-// [Conn.Stats] keeps for what gets past it.
+// connection too far behind to take them; never a reason to stop serving
+// everyone else. The same accounting [Conn.Stats] keeps for what gets past
+// it. A failed socket read is not a datagram and is counted apart, by
+// [Listener.ReadErrors].
 func (l *Listener) DiscardedPackets() uint64 {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.discarded
 }
 
+// ReadErrors reports how many reads of the listener's sockets failed. A
+// failed read is read past, never a reason to stop serving: on Windows the
+// unauthenticated ICMP port-unreachable surfaces as one, and anyone can
+// forge that. Repeated failures are backed off, 1 ms doubling to one
+// second, so a count that climbs by about one a second is a socket failing
+// every read — the thing to look at, since nothing else will say so.
+func (l *Listener) ReadErrors() uint64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.readErrors
+}
+
 func (l *Listener) noteDiscard() {
 	l.mu.Lock()
 	l.discarded++
+	l.mu.Unlock()
+}
+
+func (l *Listener) noteReadError() {
+	l.mu.Lock()
+	l.readErrors++
 	l.mu.Unlock()
 }
 
@@ -825,10 +846,10 @@ func (l *Listener) readLoop(pc net.PacketConn) {
 			}
 			// A transient read error is the socket's problem, not any one
 			// connection's; try again rather than taking everyone down
-			// over it. Counted, and backed off when it repeats: a socket
-			// that fails every read would otherwise spin this loop at
-			// full CPU for as long as it stays broken.
-			l.noteDiscard()
+			// over it. Counted (ReadErrors), and backed off when it
+			// repeats: a socket that fails every read would otherwise spin
+			// this loop at full CPU for as long as it stays broken.
+			l.noteReadError()
 			readFails++
 			if readFails > 1 && !readBackoff(readFails, l.stop) {
 				return

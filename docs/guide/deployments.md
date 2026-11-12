@@ -253,7 +253,8 @@ counters your program reads when it likes
   SQL text that changes with every query.
 - **The QUIC transport** (`quic.Conn.Stats`): round trip, congestion
   window, losses, retransmissions, the datagram size reached; and
-  `Listener.DiscardedPackets` for what never reached a connection.
+  `Listener.DiscardedPackets` for what never reached a connection, and
+  `Listener.ReadErrors` for a socket that fails its reads.
 - **A pipeline's flow** (`probe`): two counts per point; the difference
   between two probes says where elements stop.
 

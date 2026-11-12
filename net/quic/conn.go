@@ -403,6 +403,9 @@ type Conn struct {
 	gone    chan struct{}
 
 	discarded uint64 // datagrams or packets dropped without processing
+	// readErrors counts the failed reads of a socket of the connection's
+	// own (Dial), which are not packets: see Stats.ReadErrors.
+	readErrors uint64
 	// failedOpens counts the packets that failed authentication over the
 	// connection's lifetime, every key and level together (RFC 9001 §6.6).
 	failedOpens uint64

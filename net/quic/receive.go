@@ -114,7 +114,7 @@ func (c *Conn) readLoop() {
 			// past; a socket that keeps failing is backed off rather than
 			// spun on, and the idle timeout ends the connection if nothing
 			// gets through.
-			c.noteDiscard()
+			c.noteReadError()
 			readFails++
 			if readFails > 1 && !c.readBackoff(readFails) {
 				return
@@ -2368,6 +2368,14 @@ func (c *Conn) handlePeerClose(f Frame) {
 func (c *Conn) noteDiscard() {
 	c.mu.Lock()
 	c.discarded++
+	c.mu.Unlock()
+}
+
+// noteReadError counts a failed read of the connection's own socket
+// (Stats.ReadErrors).
+func (c *Conn) noteReadError() {
+	c.mu.Lock()
+	c.readErrors++
 	c.mu.Unlock()
 }
 

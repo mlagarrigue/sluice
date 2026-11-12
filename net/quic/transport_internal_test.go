@@ -219,7 +219,8 @@ func (p *scriptedPC) SetWriteDeadline(time.Time) error { return nil }
 
 // A ReadFrom error that is not the socket closing — WSAECONNRESET from a
 // forged ICMP, on Windows — used to end an established connection. It is
-// now counted and read past: the datagram after it is still processed.
+// now counted, apart from the discarded datagrams, and read past: the
+// datagram after it is still processed.
 func TestReadLoopSurvivesATransientReadError(t *testing.T) {
 	peer := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 2}
 	pc := newScriptedPC(
@@ -233,14 +234,14 @@ func TestReadLoopSurvivesATransientReadError(t *testing.T) {
 	go func() { c.readLoop(); close(loopDone) }()
 
 	deadline := time.Now().Add(5 * time.Second)
-	for c.Stats().DiscardedPackets < 2 {
+	for st := c.Stats(); st.DiscardedPackets < 1 || st.ReadErrors < 1; st = c.Stats() {
 		select {
 		case <-c.Done():
 			t.Fatalf("a transient read error closed the connection: %v", c.Err())
 		default:
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the loop never read past the error (discarded %d)", c.Stats().DiscardedPackets)
+			t.Fatalf("the loop never read past the error (%+v)", c.Stats())
 		}
 		runtime.Gosched()
 	}
@@ -248,6 +249,10 @@ func TestReadLoopSurvivesATransientReadError(t *testing.T) {
 	case <-c.Done():
 		t.Fatalf("a transient read error closed the connection: %v", c.Err())
 	default:
+	}
+	// One failed read, one undecryptable datagram: each in its own count.
+	if st := c.Stats(); st.ReadErrors != 1 || st.DiscardedPackets != 1 {
+		t.Errorf("ReadErrors = %d, DiscardedPackets = %d; want 1 and 1", st.ReadErrors, st.DiscardedPackets)
 	}
 
 	_ = c.Close()

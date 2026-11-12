@@ -114,6 +114,12 @@ behavior that keep the signatures — a value now refused — come last.
   timeout, and against a peer announcing none a connection whose peer
   vanished was held until the application closed it. A configuration that
   wanted connections to live long sets a long duration (`24 * time.Hour`).
+- **`DiscardedPackets` no longer counts failed socket reads**
+  (`feat(quic): socket read failures counted apart`):
+  `Listener.DiscardedPackets` and `Stats.DiscardedPackets` count datagrams
+  and packets only; a failed read of the socket goes to the new
+  `Listener.ReadErrors` and `Stats.ReadErrors`. A monitor that watched
+  `DiscardedPackets` for a broken socket watches `ReadErrors` too.
 
 ## From v0.3.0 to v0.4.0
 

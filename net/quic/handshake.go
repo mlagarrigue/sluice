@@ -267,7 +267,7 @@ func (c *Conn) driveHandshake(ctx context.Context) error {
 			// handshakeRefusalLimit of them arrived with no datagram ever
 			// read; once something has been heard, only the deadline ends
 			// the handshake.
-			c.noteDiscard()
+			c.noteReadError()
 			sockErr = err
 			sockErrs++
 			readFails++

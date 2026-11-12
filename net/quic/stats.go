@@ -12,10 +12,19 @@ import (
 type Stats struct {
 	// DiscardedPackets is how many incoming datagrams or packets were dropped
 	// without being processed: wrong sender, failed parse, failed
-	// authentication — and transient socket read errors, which on Windows
-	// include the unauthenticated ICMP port-unreachable. A rising count under
-	// load is an attacker probing, or a path corrupting datagrams.
+	// authentication. A rising count under load is an attacker probing, or
+	// a path corrupting datagrams.
 	DiscardedPackets uint64
+
+	// ReadErrors is how many reads of the connection's own socket failed —
+	// a connection from Dial; one a [Listener] accepted reads through it,
+	// and [Listener.ReadErrors] counts there. A failed read is read past: an
+	// ICMP port-unreachable surfaces as one (ECONNREFUSED, or WSAECONNRESET
+	// on Windows), and it is unauthenticated. Repeated failures are backed
+	// off, 1 ms doubling to one second, so a count that climbs by about one
+	// a second is a socket failing every read, which the idle timeout then
+	// ends the connection over.
+	ReadErrors uint64
 
 	// NonProductivePackets is how many authenticated, ack-eliciting packets
 	// carried no frame that moved this end's state: PING alone, a
@@ -189,6 +198,7 @@ func (c *Conn) Stats() Stats {
 	defer c.mu.Unlock()
 	return Stats{
 		DiscardedPackets:      c.discarded,
+		ReadErrors:            c.readErrors,
 		NonProductivePackets:  c.nonProductive,
 		ECT0Received:          c.ecnReceived[ecnECT0],
 		ECT1Received:          c.ecnReceived[ecnECT1],

@@ -833,8 +833,13 @@ func TestListenerReadLoopBacksOffAPersistentError(t *testing.T) {
 	if n := pc.reads.Load() - before; n > 50 {
 		t.Errorf("%d reads in %v of a persistently failing socket; the loop is spinning", n, window)
 	}
-	if got := l.DiscardedPackets(); got < 5 {
-		t.Errorf("DiscardedPackets = %d; the failed reads were not counted", got)
+	if got := l.ReadErrors(); got < 5 {
+		t.Errorf("ReadErrors = %d; the failed reads were not counted", got)
+	}
+	// A failed read is not a datagram: counted among the discarded, a
+	// socket failing every read hid in the count of malformed packets.
+	if got := l.DiscardedPackets(); got != 0 {
+		t.Errorf("DiscardedPackets = %d; the failed reads were counted as datagrams", got)
 	}
 	closed := make(chan struct{})
 	go func() { _ = l.Close(); close(closed) }()

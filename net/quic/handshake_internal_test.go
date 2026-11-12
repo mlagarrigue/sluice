@@ -51,8 +51,8 @@ func TestHandshakeSurvivesATransientReadError(t *testing.T) {
 	if !pc.failed.Load() {
 		t.Fatal("precondition: the injected read error was never returned")
 	}
-	if got := c.Stats().DiscardedPackets; got < 1 {
-		t.Errorf("DiscardedPackets = %d; the read error was not counted", got)
+	if got := c.Stats().ReadErrors; got < 1 {
+		t.Errorf("ReadErrors = %d; the read error was not counted", got)
 	}
 }
 
