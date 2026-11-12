@@ -123,11 +123,9 @@ func (a *ackTracker) insert(pn uint64, now time.Time) bool {
 		case pn >= r.lo && pn <= r.hi:
 			return false
 		case pn == r.hi+1:
+			// No merge with the range above: one starting at pn+1 would
+			// have taken pn at its own turn, as its lo-1, before this one.
 			r.hi++
-			if i > 0 && a.ranges[i-1].lo == r.hi+1 {
-				a.ranges[i-1].lo = r.lo
-				a.ranges = append(a.ranges[:i], a.ranges[i+1:]...)
-			}
 			return true
 		case pn == r.lo-1:
 			r.lo--

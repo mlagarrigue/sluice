@@ -1,6 +1,8 @@
 package quic
 
 import (
+	"math/rand/v2"
+	"slices"
 	"testing"
 	"time"
 )
@@ -191,5 +193,39 @@ func TestAckTrackerAnswersACEMarkedPacketAtOnce(t *testing.T) {
 	marked.onAckEliciting(spaceApplication, now, true)
 	if !marked.owes(now) {
 		t.Error("a first CE-marked packet was not owed an ACK at once (§13.2.1)")
+	}
+}
+
+// The ranges hold exactly the numbers recorded, highest first, disjoint and
+// not touching, whatever the order the numbers arrive in: every order of
+// filling a gap, from either side or the middle, over forty numbers. The
+// model is a set; the ranges are compared with the ones it implies.
+func TestAckTrackerRangesMatchASet(t *testing.T) {
+	now := time.Now()
+	for seed := range uint64(2000) {
+		rng := rand.New(rand.NewPCG(seed, 0)) //nolint:gosec // G404: seeded, so a failure replays
+		var a ackTracker
+		seen := map[uint64]bool{}
+		for range 60 {
+			pn := rng.Uint64N(40)
+			if a.record(pn, now) == seen[pn] {
+				t.Fatalf("seed %d: record(%d) = %v with the number seen %v", seed, pn, !seen[pn], seen[pn])
+			}
+			seen[pn] = true
+		}
+		var want []pnRange
+		for pn := uint64(40); pn > 0; pn-- {
+			n := pn - 1
+			switch {
+			case !seen[n]:
+			case len(want) > 0 && want[len(want)-1].lo == n+1:
+				want[len(want)-1].lo = n
+			default:
+				want = append(want, pnRange{lo: n, hi: n})
+			}
+		}
+		if !slices.Equal(a.ranges, want) {
+			t.Fatalf("seed %d: ranges %v, want %v", seed, a.ranges, want)
+		}
 	}
 }
