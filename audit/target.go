@@ -67,6 +67,9 @@ type Target struct {
 	// Firewall is the host's packet filter as saved, nil when none was
 	// given.
 	Firewall *Firewall
+
+	// Proxy is the reverse proxy's configuration, nil when none was given.
+	Proxy *Proxy
 }
 
 // A Spec names what to read. Every field is optional, and a Target with
@@ -109,6 +112,11 @@ type Spec struct {
 	// Firewall is a file holding the packet filter's rules as nft list
 	// ruleset or iptables-save prints them.
 	Firewall string
+
+	// ProxyConfig is a reverse proxy's configuration file, nginx.conf or
+	// haproxy.cfg; ProxyVersion what nginx -v or haproxy -v printed, which
+	// the advisories are judged on.
+	ProxyConfig, ProxyVersion string
 }
 
 // Open reads what a [Spec] names. Anything named must be readable: a path
@@ -191,6 +199,16 @@ func Open(s Spec) (*Target, error) {
 			return nil, fmt.Errorf("%s: %w", s.Firewall, err)
 		}
 		t.Firewall.Path = s.Firewall
+	}
+	if s.ProxyConfig != "" {
+		b, err := os.ReadFile(s.ProxyConfig) //nolint:gosec // G304: the path is the caller's
+		if err != nil {
+			return nil, err
+		}
+		if t.Proxy, err = parseProxy(string(b), s.ProxyVersion); err != nil {
+			return nil, fmt.Errorf("%s: %w", s.ProxyConfig, err)
+		}
+		t.Proxy.Path = s.ProxyConfig
 	}
 	return t, nil
 }

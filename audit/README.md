@@ -22,6 +22,7 @@ go run -C audit ./cmd/audit -container web -sources config,tools
 go run -C audit ./cmd/audit -root / -kernel-log dmesg.txt -profile comparative
 go run -C audit ./cmd/audit -pg-settings settings.csv -pg-hba pg_hba.conf -pg-log postgresql.log -answer pools=60
 go run -C audit ./cmd/audit -pg-settings settings.csv -pg-roles roles.csv -firewall ruleset.txt -cve yes
+go run -C audit ./cmd/audit -proxy-config nginx.conf -proxy-version "$(nginx -v 2>&1)"
 ```
 
 ## Axes, not modes
@@ -59,6 +60,7 @@ sets one.
 | `linux/conntrack-full`, `linux/oom-kill` | the kernel's log, saved to a file | a connection tracking table that filled, a process the OOM killer took |
 | `postgres/*` | `pg_settings` saved as CSV, `pg_hba.conf`, the server's log | connections against the clients' pools, `shared_buffers`, autovacuum, `password_encryption`, `ssl`, `trust`, `md5` and `password` rules; checkpoints forced by the WAL, clients refused for lack of slots |
 | `postgres/superusers`, `postgres/cve` | `pg_roles` saved as CSV; `server_version` and `pg_hba.conf` | more than one superuser that logs in; each PostgreSQL advisory the audit knows, judged on the release and on the configuration it needs |
+| `proxy/*` | `nginx.conf` or `haproxy.cfg`, saved; the release `nginx -v` printed | connections to the application not kept alive, nginx buffering a streamed response, HAProxy waits left infinite, TLS older than 1.2, `X-Forwarded-For` not set; nginx advisories judged on the release and the directive that reaches them |
 | `firewall/postgres-exposed` | `nft list ruleset` or `iptables-save`, saved | PostgreSQL's port reachable from any address: accepted by an input chain or its policy, or published by a DNAT — Docker's `-p`, which never crosses INPUT |
 | `go/*` | the cgroup, the module's `go` directive, the environment | whether the runtime will read the CPU quota, or use every core of the machine; a `GODEBUG` that restores an older behaviour |
 | `-sbom` | the binary | the bill of materials: the main module, the toolchain, every dependency linked |
@@ -86,7 +88,9 @@ affected configurations included, and is judged on what was saved —
 flaw, **does not apply** when nothing in it does (the upgrade stays due),
 **undetermined** when the part it needs was not given. A fixed release
 says nothing. Today the list holds one, CVE-2021-23214, reached through
-`cert` authentication or `trust` with `clientcert`.
+`cert` authentication or `trust` with `clientcert`. nginx's are judged the
+same way, on the release `-proxy-version` gives and the directive whose
+module the flaw is in: CVE-2024-7347 needs `mp4`.
 
 **The firewall is asked one question, the kernel's way.** Would a new
 connection from anywhere reach the server's port: the first rule that
