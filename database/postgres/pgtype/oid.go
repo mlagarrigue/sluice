@@ -55,10 +55,10 @@ const (
 	OIDUUID          uint32 = 2950
 	OIDTxidSnapshot  uint32 = 2970 // the pg_snapshot layout
 	OIDPGLSN         uint32 = 3220
-	OIDRegconfig     uint32 = 3734
-	OIDRegdictionary uint32 = 3769
 	OIDTSVector      uint32 = 3614
 	OIDTSQuery       uint32 = 3615
+	OIDRegconfig     uint32 = 3734
+	OIDRegdictionary uint32 = 3769
 	OIDJSONB         uint32 = 3802
 	OIDJSONPath      uint32 = 4072
 	OIDRegnamespace  uint32 = 4089
