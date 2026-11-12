@@ -75,6 +75,11 @@ type Target struct {
 	// was not given.
 	App *App
 
+	// VulnDB is a local copy of the Go vulnerability database, absolute,
+	// empty for govulncheck's default; VulnDBModified is the date its
+	// index/db.json gives.
+	VulnDB, VulnDBModified string
+
 	// Counters is what the kernel's network counters moved by during a
 	// load, nil when the two readings were not given.
 	Counters *Counters
@@ -149,6 +154,11 @@ type Spec struct {
 	// network counters, before and after a load: /proc/net/netstat (with
 	// /proc/net/snmp appended or not), or nstat -az's output.
 	NetstatBefore, NetstatAfter string
+
+	// VulnDB is a directory holding a copy of the Go vulnerability
+	// database (vuln.go.dev/vulndb.zip, unzipped): index/db.json and the
+	// rest, read with no network.
+	VulnDB string
 
 	// StatBefore and StatAfter are two copies of /proc/stat, before and
 	// after a load.
@@ -266,6 +276,13 @@ func Open(s Spec) (*Target, error) {
 			return nil, err
 		}
 		t.Counters = c
+	}
+	if s.VulnDB != "" {
+		dir, modified, err := openVulnDB(s.VulnDB)
+		if err != nil {
+			return nil, err
+		}
+		t.VulnDB, t.VulnDBModified = dir, modified
 	}
 	if s.StatBefore != "" || s.StatAfter != "" {
 		c, err := openCPUTime(s.StatBefore, s.StatAfter)

@@ -83,12 +83,20 @@ type govulncheckJSON struct {
 // vulnerabilities runs govulncheck on a module and judges what it found.
 // A missing govulncheck is not a failure of the audit: it is a source the
 // machine does not have, and it says so.
-func vulnerabilities(dir string) ([]vulnFinding, error) {
+//
+// db is a local copy of the vulnerability database, empty for govulncheck's
+// own default: the copy is read through file://, so the verdicts need no
+// network.
+func vulnerabilities(dir, db string) ([]vulnFinding, error) {
 	bin, err := exec.LookPath("govulncheck")
 	if err != nil {
 		return nil, fmt.Errorf("govulncheck is not installed (go install golang.org/x/vuln/cmd/govulncheck@latest): %w", err)
 	}
-	cmd := exec.Command(bin, "-json", "./...") //nolint:gosec // G204: the binary is looked up, the arguments are fixed
+	args := []string{"-json"}
+	if db != "" {
+		args = append(args, "-db", "file://"+filepath.ToSlash(db))
+	}
+	cmd := exec.Command(bin, append(args, "./...")...) //nolint:gosec // G204: the binary is looked up, the arguments are the audit's own
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOWORK=off")
 	out, err := cmd.Output()
@@ -219,7 +227,7 @@ func init() {
 			if t.ModuleDir == "" {
 				return nil
 			}
-			found, err := vulnerabilities(t.ModuleDir)
+			found, err := vulnerabilities(t.ModuleDir, t.VulnDB)
 			if err != nil {
 				return []Finding{{
 					Current:  "the advisories were not read: " + err.Error(),
@@ -286,4 +294,28 @@ func init() {
 			}}
 		},
 	})
+}
+
+// openVulnDB checks that dir holds a copy of the vulnerability database —
+// index/db.json with its modified date — and returns it absolute, for a
+// file:// URL. A directory that is not one is refused here, where the
+// error can name it, rather than in govulncheck's output.
+func openVulnDB(dir string) (abs, modified string, err error) {
+	if abs, err = filepath.Abs(dir); err != nil {
+		return "", "", err
+	}
+	b, err := os.ReadFile(filepath.Join(abs, "index", "db.json")) //nolint:gosec // G304: under the directory the caller named
+	if err != nil {
+		return "", "", fmt.Errorf("%s is not a copy of the vulnerability database (vuln.go.dev/vulndb.zip, unzipped): %w", dir, err)
+	}
+	var meta struct {
+		Modified string `json:"modified"`
+	}
+	if err := json.Unmarshal(b, &meta); err != nil {
+		return "", "", fmt.Errorf("%s/index/db.json: %w", dir, err)
+	}
+	if meta.Modified == "" {
+		return "", "", fmt.Errorf("%s/index/db.json gives no modified date", dir)
+	}
+	return abs, meta.Modified, nil
 }

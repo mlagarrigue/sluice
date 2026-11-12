@@ -88,6 +88,13 @@ verdict says what decided it. A machine without the tool produces a
 finding that says so, because a report silent about vulnerabilities reads
 as a report that found none.
 
+**With no network, from a copy.** `-vulndb <directory>` names a copy of
+the Go vulnerability database — `vuln.go.dev/vulndb.zip`, unzipped — and
+`govulncheck` reads it through `file://`: the verdicts then need no
+network, and the system table gives the copy and the date its
+`index/db.json` records, so a reader knows how old the judgment is. The
+audit never fetches or refreshes the copy.
+
 **PostgreSQL's advisories are judged on the configuration, not on the
 release alone.** A flaw present in a release is not a flaw reachable: each
 advisory the audit knows is read from its page on postgresql.org, its

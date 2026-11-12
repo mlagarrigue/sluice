@@ -82,6 +82,7 @@ func run(args []string, out *os.File) error {
 	netstatBefore := fs.String("netstat-before", "", "the kernel's network counters before a load: a copy of /proc/net/netstat, or nstat -az")
 	netstatAfter := fs.String("netstat-after", "", "the same counters after the load")
 	pgActivity := fs.String("pg-activity", "", "pg_stat_activity read during a load, as CSV: psql -X --csv -c 'SELECT state, backend_type FROM pg_stat_activity', several readings appended")
+	vulndb := fs.String("vulndb", "", "a local copy of the Go vulnerability database (vuln.go.dev/vulndb.zip, unzipped): -cve yes then needs no network")
 	statBefore := fs.String("stat-before", "", "a copy of /proc/stat taken before a load")
 	statAfter := fs.String("stat-after", "", "a copy of /proc/stat taken after it")
 	imds := fs.String("imds", "", "a file holding Azure's metadata: curl -H Metadata:true 'http://169.254.169.254/metadata/instance?api-version=2025-04-07'")
@@ -138,7 +139,7 @@ func run(args []string, out *os.File) error {
 		PGSettings: *pgSettings, PGHBA: *pgHBA, PGLog: *pgLog, PGRoles: *pgRoles, PGActivity: *pgActivity,
 		Firewall: *firewall, ProxyConfig: *proxyConfig, ProxyVersion: *proxyVersion,
 		AppArgs: *appArgs, NetstatBefore: *netstatBefore, NetstatAfter: *netstatAfter,
-		StatBefore: *statBefore, StatAfter: *statAfter, IMDS: *imds,
+		StatBefore: *statBefore, StatAfter: *statAfter, IMDS: *imds, VulnDB: *vulndb,
 	})
 	if err != nil {
 		return err

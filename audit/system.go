@@ -75,6 +75,9 @@ func System(t *Target) []Setting {
 		out = append(out, appSystem(t.App)...)
 	}
 	out = append(out, hostSystem(t)...)
+	if t.VulnDB != "" {
+		out = append(out, Setting{"go vulndb", t.VulnDB}, Setting{"go vulndb modified", t.VulnDBModified})
+	}
 	if c := t.Container; c != nil {
 		hc := c.HostConfig
 		nofile := "daemon default"
