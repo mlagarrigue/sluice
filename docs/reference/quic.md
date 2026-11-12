@@ -203,6 +203,14 @@ A section number with no RFC named is RFC 9000's.
   is skipped as any unknown parameter is (§7.4.2). Version 2 differs from
   1 in constants only and exists against middlebox ossification, which no
   peer of this package has shown; it is to be added the day one does.
+- **Strict FIPS 140 mode.** Under `GODEBUG=fips140=only`, `Dial`,
+  `DialEarly` and `NewListener` refuse at once, with an error that wraps
+  `errors.ErrUnsupported` (and `ErrQUIC`): the mode refuses AES-GCM under
+  the nonces RFC 9001 §5.3 derives from the packet number, and Initial
+  keys extracted from an eight-byte connection identifier (§5.2), under
+  its 112 bits. Lifting the mode around packet protection would empty it
+  of its point. `GODEBUG=fips140=on`, which refuses nothing, is not
+  affected.
 - **The latency spin bit** (§17.4), an optional signal that lets an
   observer on the path measure the round trip. The bit is drawn at random
   per connection and per connection identifier, as the section asks of an
