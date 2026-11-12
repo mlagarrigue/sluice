@@ -21,7 +21,7 @@ anything is read. The "Protocols" column says where the field acts.
 | `BodyDelivery` | `BodyStreamed` | form | all | whether a body streams or is held whole (`BodyWhole`) |
 | `MaxStreamedBodyBytes` | `MaxBodyBytes` | bytes | all | a streamed body; the bound alone, never the switch |
 | `MaxRequestsPerBatch` | 64 | requests | 1.1 | the pipelined requests of one batch |
-| `MaxConcurrentStreams` | 100 | streams; at most 4096 on 3 | 2, 3 | the requests open at once on one connection |
+| `MaxConcurrentStreams` | 100 | streams; at most 4096 | 2, 3 | the requests open at once on one connection |
 | `MaxRequestsPerConn` | 1024 | requests | 1.1 | the requests of one connection before it closes |
 | `IdleTimeout` | 2 min | duration | all | the time between two requests, pings not counted; on 3, also the transport's max_idle_timeout |
 | `ReadTimeout` | 10 s | duration | all | the arrival of a whole request, and of the first byte; each `ReadProgressBytes` of a streamed body |

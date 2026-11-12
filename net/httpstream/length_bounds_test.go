@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"math"
@@ -174,6 +175,41 @@ func TestValidateRefusesBoundsTheBufferOrTheWireCannotHold(t *testing.T) {
 		err := tc.cfg.Validate()
 		if err == nil || !strings.Contains(err.Error(), tc.field) {
 			t.Errorf("Validate(%s past its ceiling) = %v, want an error naming the field", tc.field, err)
+		}
+	}
+}
+
+// MaxConcurrentStreams is held to what one connection may cost: past 4096
+// it is refused at start, where 2^32 used to be announced as
+// SETTINGS_MAX_CONCURRENT_STREAMS 0 — no stream at all for a conformant
+// client — 2^32+1 as 1, and any large value sized the request queue every
+// accepted HTTP/2 connection allocates. 4096 itself and the default are
+// announced as they are.
+func TestMaxConcurrentStreamsIsHeldToWhatAConnectionMayCost(t *testing.T) {
+	for _, v := range []int{maxConcurrentStreams + 1, 1 << 32, 1<<32 + 1} {
+		if err := (Config{MaxConcurrentStreams: v}).Validate(); err == nil || !strings.Contains(err.Error(), "Config.MaxConcurrentStreams") {
+			t.Errorf("Validate(MaxConcurrentStreams %d) = %v, want it refused", v, err)
+		}
+	}
+	for _, tc := range []struct{ set, want int }{{0, 100}, {100, 100}, {maxConcurrentStreams, maxConcurrentStreams}} {
+		cfg, err := Config{MaxConcurrentStreams: tc.set}.resolve()
+		if err != nil {
+			t.Fatalf("resolve(MaxConcurrentStreams %d): %v", tc.set, err)
+		}
+		s := newBenchH2Server(cfg)
+		if err := s.hello(); err != nil {
+			t.Fatal(err)
+		}
+		got := -1
+		for _, f := range queued(t, s) {
+			for p := f.Payload; f.Type == frameSettings && len(p) >= 6; p = p[6:] {
+				if binary.BigEndian.Uint16(p) == settingMaxConcurrent {
+					got = int(binary.BigEndian.Uint32(p[2:]))
+				}
+			}
+		}
+		if got != tc.want {
+			t.Errorf("MaxConcurrentStreams %d announced as %d, want %d", tc.set, got, tc.want)
 		}
 	}
 }

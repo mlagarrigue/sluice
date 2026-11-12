@@ -1,7 +1,7 @@
 # ADR 0018 — Zero is the safe default, the bound is mandatory
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-11-10 (`postgres.Config.MaxMessage` named `MaxMessageBytes`); 7 earlier, from 2026-10-21, in its `git log`
+- **Revised:** 2026-11-12 (`MaxConcurrentStreams` at most 4096 for HTTP/2 as well); 8 earlier, from 2026-10-21, in its `git log`
 - **Theme:** httpstream
 
 ## Problem
@@ -43,8 +43,9 @@ never removed.**
    stands for another: a negative value, or one outside the range the
    protocol allows (`MaxFrameSize` in 16384..2^24−1,
    `InitialWindowSize` at most 2^31−1, RFC 9113 §6.5.2;
-   `MaxConcurrentStreams` at most 4096 for `Config.QUICConfig`,
-   the streams `ServeH3Conn` serves on one connection), is refused before the
+   `MaxConcurrentStreams` at most 4096, the request queue an HTTP/2
+   connection allocates when it is accepted and the streams `ServeH3Conn`
+   serves on one connection), is refused before the
    first byte: `Serve`, `Server`, `ServeH2Conn`, `ServeH3Conn` and `TransportParameters`
    return an error naming the field, the value and what zero would have
    meant, all errors joined (`errors.Join`).

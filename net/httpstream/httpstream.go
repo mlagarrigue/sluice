@@ -290,7 +290,10 @@ type Config struct {
 	// things — one is how many requests ride one hand-off, the other how
 	// much assembly state a peer may park — and tuning the batch size must
 	// not change who is admitted. HTTP/2 and HTTP/3 only: HTTP/1.1, being
-	// sequential, has no use for it.
+	// sequential, has no use for it. At most 4096: an HTTP/2 connection
+	// allocates its request queue at this size when it is accepted, and an
+	// HTTP/3 connection runs up to a handler call and a writer per stream
+	// it admits; a larger value is refused by [Config.Validate].
 	MaxConcurrentStreams int
 
 	// MaxRequestsPerConn bounds how many requests one HTTP/1.1 connection
@@ -676,6 +679,10 @@ func (c Config) resolve() (Config, error) {
 			c.InitialWindowSize, maxWindow, defaultInitialWindow))
 	}
 	err = errors.Join(err, ceilings(c))
+	if c.MaxConcurrentStreams > maxConcurrentStreams {
+		err = errors.Join(err, fmt.Errorf("httpstream: Config.MaxConcurrentStreams %d is over %d: an HTTP/2 connection allocates its request queue at this size when it is accepted, and ServeH3Conn serves no more streams on one connection",
+			c.MaxConcurrentStreams, maxConcurrentStreams))
+	}
 	if c.MaxStreamedBodyBytes < 0 {
 		err = errors.Join(err, fmt.Errorf("httpstream: Config.MaxStreamedBodyBytes %d is negative — zero means Config.MaxBodyBytes", c.MaxStreamedBodyBytes))
 	}
@@ -750,7 +757,6 @@ func ceilings(c Config) error {
 		v    int
 	}{
 		{"Config.MaxHeaderBytes", c.MaxHeaderBytes},
-		{"Config.MaxConcurrentStreams", c.MaxConcurrentStreams},
 	} {
 		if f.v > math.MaxUint32 {
 			err = errors.Join(err, fmt.Errorf("httpstream: %s %d is over %d: HTTP/2 announces it in a 32-bit SETTINGS value (RFC 9113 §6.5.1)",

@@ -565,3 +565,11 @@ func appendH2Frame(dst []byte, f h2Frame) ([]byte, error) {
 	dst = binary.BigEndian.AppendUint32(dst, f.StreamID&0x7fffffff)
 	return append(dst, f.Payload...), nil
 }
+
+// maxConcurrentStreams is the most Config.MaxConcurrentStreams may say. An
+// HTTP/2 connection allocates its request queue at that size when it is
+// accepted (serveH2Conn), one pointer a slot, so the bound is memory per
+// connection the operator sets once; an HTTP/3 connection runs up to a
+// handler call and a writer goroutine per stream it admits, and serves no
+// more on one connection (h3MaxServeStreams).
+const maxConcurrentStreams = 4096

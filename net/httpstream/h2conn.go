@@ -812,7 +812,7 @@ func (s *h2Conn) hello() error {
 	var payload []byte
 	settings := [][2]uint32{
 		{settingEnablePush, 0}, // a server does not push here
-		{settingMaxConcurrent, uint32(s.cfg.MaxConcurrentStreams)},  //nolint:gosec // G115: bounded by Config.resolve
+		{settingMaxConcurrent, uint32(s.cfg.MaxConcurrentStreams)},  //nolint:gosec // G115: at most maxConcurrentStreams (Config.resolve)
 		{settingInitialWindowSize, uint32(s.cfg.InitialWindowSize)}, //nolint:gosec // G115: same
 		{settingMaxFrameSize, uint32(s.cfg.MaxFrameSize)},           //nolint:gosec // G115: same
 		{settingMaxHeaderListSize, uint32(s.cfg.MaxHeaderBytes)},    //nolint:gosec // G115: same

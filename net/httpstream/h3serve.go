@@ -956,7 +956,7 @@ func (c Config) QUICConfig() (quic.Config, error) {
 // runs up to a handler call and a writer goroutine per admitted stream (see
 // the hand-off comment in ServeH3Conn); past this cap ServeH3Conn refuses the
 // connection rather than let one stream limit pin that many goroutines.
-const h3MaxServeStreams = 4096
+const h3MaxServeStreams = maxConcurrentStreams
 
 // h3GracefulCode is H3_NO_ERROR — except, one close in eight, a code from the
 // reserved 0x1f*N+0x21 space: RFC 9114 §8.1 says implementations SHOULD
