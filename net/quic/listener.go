@@ -577,7 +577,10 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 // Config GetConfigForClient returns with a lower MinVersion is used on a
 // copy raised to it, so a client offering nothing newer is answered
 // protocol_version (RFC 9846 Appendix E.2). With a GetConfigForClient set,
-// the handshakes run on a copy of cfg taken here.
+// the handshakes run on a copy of cfg taken here: session ticket keys
+// rotated on cfg afterwards ([tls.Config.SetSessionTicketKeys]) do not reach
+// them — rotate them on the Configs GetConfigForClient returns instead.
+// Without one, cfg itself is used, and a rotation takes effect.
 func NewListener(pc net.PacketConn, cfg *tls.Config, params Config, lcfg ListenerConfig) (*Listener, error) {
 	if err := checkFIPSOnly(); err != nil {
 		return nil, err

@@ -184,9 +184,9 @@ func requireTLS13(cfg *tls.Config) error {
 // handshake, and refusing it would end the handshake for a client that
 // does offer TLS 1.3.
 //
-// The copy is taken once, by NewListener. Session ticket keys set on cfg
-// after that reach only the handshakes GetConfigForClient leaves to cfg
-// when they were set by [tls.Config.SetSessionTicketKeys] before.
+// The copy is taken once, by NewListener, with the session ticket keys cfg
+// holds then: keys rotated on cfg afterwards do not reach it, which
+// NewListener's documentation says.
 func serverTLSConfig(cfg *tls.Config) *tls.Config {
 	inner := cfg.GetConfigForClient
 	if inner == nil {
