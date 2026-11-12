@@ -18,6 +18,8 @@ go run -C audit ./cmd/audit -binary ./interop-endpoint
 go run -C audit ./cmd/audit -module . -goals security -cve yes -sources tools
 go run -C audit ./cmd/audit -dockerfile ../interop/Dockerfile
 go run -C audit ./cmd/audit -binary ./x -sbom -output json
+go run -C audit ./cmd/audit -container web -sources config,tools
+go run -C audit ./cmd/audit -root / -kernel-log dmesg.txt -profile comparative
 ```
 
 ## Axes, not modes
@@ -51,7 +53,9 @@ sets one.
 | `deps/*` | the module, and `govulncheck` | the requirements, their sums, and every advisory with its verdict |
 | `docker/*` | the Dockerfile's text | stages, the bases and their digests, the runtime image, `USER`, secrets in layers, `.dockerignore` |
 | `linux/*` | `/proc` and `/sys` under `-root` | the listen and device queues, the UDP buffers, the ephemeral ports, connection tracking, swap, hugepages, the CPU governor, and the process's own `nofile` under `-pid` |
-| `go/*` | the cgroup and the module's `go` directive | whether the runtime will read the CPU quota, or use every core of the machine |
+| `container/*` | `docker inspect`, or its saved output | what a container was run with: `nofile`, pinned cores, a memory bound, the network, the log driver, capabilities, `no-new-privileges`, seccomp, AppArmor, a read-only root, the user, the Docker socket |
+| `linux/conntrack-full`, `linux/oom-kill` | the kernel's log, saved to a file | a connection tracking table that filled, a process the OOM killer took |
+| `go/*` | the cgroup, the module's `go` directive, the environment | whether the runtime will read the CPU quota, or use every core of the machine; a `GODEBUG` that restores an older behaviour |
 | `-sbom` | the binary | the bill of materials: the main module, the toolchain, every dependency linked |
 
 **The build is read in the binary, not in the files that built it.** A
@@ -80,6 +84,22 @@ The host is read under `-root`, which is `/` on the machine itself and a
 seeded directory in the tests. That is deliberate: the settings worth
 reporting are the ones nobody would apply to their own machine to see the
 report, so they are tried against a root written for the purpose.
+
+**A container is read through `docker inspect`, never through the daemon's
+socket.** The client follows `DOCKER_HOST`, contexts, a rootless daemon and
+TLS; a second client here would be a second thing to get wrong. It is a
+tool, so `-container` needs the `tools` source; the same record saved to a
+file (`docker inspect web > web.json`) is read by `-container-json` with no
+tool at all. The kernel's log is read from a file too — reading the ring
+buffer takes a privilege the audit must not need.
+
+**The comparative profile publishes a table.** A comparison does not ask
+whether a value is good but whether every machine has the same one, so
+under `-profile comparative` the report opens with the values read — the
+kernel's queues, ports, buffers and huge pages, the process's `nofile`,
+the container's limits, network and log driver — and in JSON they are the
+`system` part next to `findings`. Two machines of a comparison must print
+the same table.
 
 ## What it does not do
 

@@ -8,6 +8,7 @@
 //	go run -C audit ./cmd/audit -binary ./sluice-interop
 //	go run -C audit ./cmd/audit -root / -pid 1234 -goals performance
 //	go run -C audit ./cmd/audit -binary ./x -goals security -output json
+//	go run -C audit ./cmd/audit -container web -kernel-log dmesg.txt -root / -profile comparative
 //
 // Every parameter is an axis, and every combination of them is valid. An
 // axis left out means all of its values, so the line above with no -goals
@@ -47,6 +48,9 @@ func run(args []string, out *os.File) error {
 	dockerfile := fs.String("dockerfile", "", "a Dockerfile to read as text")
 	root := fs.String("root", "", `the host's filesystem root to read, "/" for this machine`)
 	pid := fs.Int("pid", 0, "a process whose own limits to read, under -root")
+	container := fs.String("container", "", "a running container to read, by calling docker inspect (needs the tools source)")
+	containerJSON := fs.String("container-json", "", "a file holding docker inspect's output for one container")
+	kernelLog := fs.String("kernel-log", "", "a file holding the kernel's log (dmesg's output, or kern.log)")
 	sbom := fs.Bool("sbom", false, "print the binary's bill of materials instead of the findings")
 	axesOnly := fs.Bool("axes", false, "print the axes and their values, and stop")
 	var answers answerFlag
@@ -69,8 +73,9 @@ func run(args []string, out *os.File) error {
 		}
 		return nil
 	}
-	if *binary == "" && *module == "" && *dockerfile == "" && *root == "" {
-		return errors.New("name what to read: -binary, -module, -dockerfile or -root")
+	if *binary == "" && *module == "" && *dockerfile == "" && *root == "" &&
+		*container == "" && *containerJSON == "" && *kernelLog == "" {
+		return errors.New("name what to read: -binary, -module, -dockerfile, -root, -container, -container-json or -kernel-log")
 	}
 
 	sel := audit.Selection{}
@@ -79,8 +84,16 @@ func run(args []string, out *os.File) error {
 			sel[a] = strings.Split(*v, ",")
 		}
 	}
+	if err := sel.Validate(); err != nil {
+		return err
+	}
+	if *container != "" && !sel.Has(audit.Sources, "tools") {
+		return errors.New("-container calls docker inspect, and the selected sources do not allow tools: " +
+			"add tools to -sources, or save docker inspect's output and name it with -container-json")
+	}
 	target, err := audit.Open(audit.Spec{
 		Binary: *binary, Module: *module, Dockerfile: *dockerfile, Root: *root, PID: *pid,
+		Container: *container, ContainerJSON: *containerJSON, KernelLog: *kernelLog,
 	})
 	if err != nil {
 		return err
@@ -109,10 +122,27 @@ func run(args []string, out *os.File) error {
 	if err != nil {
 		return err
 	}
+	// Under the comparative profile the report is also the table the
+	// study publishes for each machine: values read, which every machine
+	// of the comparison must share.
+	var system []audit.Setting
+	if sel.Has(audit.Profile, "comparative") {
+		system = audit.System(target)
+	}
 	if asJSON {
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
-		return enc.Encode(findings)
+		if findings == nil {
+			findings = []audit.Finding{} // "findings": [] says nothing was found; null would say nothing was asked
+		}
+		return enc.Encode(report{Findings: findings, System: system})
+	}
+	if len(system) > 0 {
+		_, _ = fmt.Fprintf(out, "system, as a comparison publishes it\n")
+		for _, s := range system {
+			_, _ = fmt.Fprintf(out, "  %-34s %s\n", s.Name, s.Value)
+		}
+		_, _ = fmt.Fprintln(out)
 	}
 	if len(findings) == 0 {
 		_, _ = fmt.Fprintf(out, "nothing to propose under this selection\n")
@@ -127,6 +157,14 @@ func run(args []string, out *os.File) error {
 			head, f.Current, f.Proposed, wrap(f.Why, 72, "            "), f.Doc)
 	}
 	return nil
+}
+
+// report is the JSON form: the findings always, and the system table when
+// the comparative profile asked for it. One object rather than a bare
+// array, so that a reader of either part parses the same document.
+type report struct {
+	Findings []audit.Finding `json:"findings"`
+	System   []audit.Setting `json:"system,omitempty"`
 }
 
 // answerFlag collects -answer key=value.

@@ -2,6 +2,7 @@ package audit
 
 import (
 	"debug/buildinfo"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -45,6 +46,19 @@ type Target struct {
 	// when none was named. Its limits are not the host's: a server started
 	// by a unit file with its own LimitNOFILE answers for itself.
 	PID int
+
+	// Container is a running container as docker inspect reports it, nil
+	// when none was named. ContainerName is what the caller named it by,
+	// or the file its record was read from.
+	Container     *Container
+	ContainerName string
+
+	// KernelLog is the kernel's log as text — what dmesg printed, or a
+	// kern.log — empty when none was given. It is read from a file the
+	// caller saved rather than from the ring buffer: reading that takes a
+	// privilege the audit must not need, and a file can be seeded.
+	KernelLogPath string
+	KernelLog     string
 }
 
 // A Spec names what to read. Every field is optional, and a Target with
@@ -63,6 +77,19 @@ type Spec struct {
 	// PID names a process whose limits and environment to read. Zero means
 	// none.
 	PID int
+
+	// Container names a running container, read by calling docker inspect:
+	// the client follows DOCKER_HOST, contexts, a rootless daemon and TLS,
+	// which a second client written here would have to get right too. The
+	// caller allows the tools source before naming one.
+	Container string
+
+	// ContainerJSON is a file holding what docker inspect printed for one
+	// container: the same reading, with no tool and no daemon.
+	ContainerJSON string
+
+	// KernelLog is a file holding the kernel's log.
+	KernelLog string
 }
 
 // Open reads what a [Spec] names. Anything named must be readable: a path
@@ -100,6 +127,35 @@ func Open(s Spec) (*Target, error) {
 		t.Root = s.Root
 	}
 	t.PID = s.PID
+	switch {
+	case s.Container != "" && s.ContainerJSON != "":
+		return nil, errors.New("name a container or the file its record was saved to, not both")
+	case s.Container != "":
+		out, err := dockerInspect(s.Container)
+		if err != nil {
+			return nil, err
+		}
+		if t.Container, err = parseContainer(out); err != nil {
+			return nil, fmt.Errorf("docker inspect %s: %w", s.Container, err)
+		}
+		t.ContainerName = s.Container
+	case s.ContainerJSON != "":
+		b, err := os.ReadFile(s.ContainerJSON) //nolint:gosec // G304: the path is the caller's
+		if err != nil {
+			return nil, err
+		}
+		if t.Container, err = parseContainer(b); err != nil {
+			return nil, fmt.Errorf("%s: %w", s.ContainerJSON, err)
+		}
+		t.ContainerName = s.ContainerJSON
+	}
+	if s.KernelLog != "" {
+		b, err := os.ReadFile(s.KernelLog) //nolint:gosec // G304: the path is the caller's
+		if err != nil {
+			return nil, err
+		}
+		t.KernelLogPath, t.KernelLog = s.KernelLog, string(b)
+	}
 	return t, nil
 }
 
