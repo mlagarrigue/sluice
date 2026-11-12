@@ -62,8 +62,16 @@ func TestRefusedZeroRTTLeavesCreditForNewStreams(t *testing.T) {
 		t.Fatal("no ticket in the cache")
 	}
 
+	// From here every dial reads this one ticket from a cache nothing
+	// writes to. A shared cache could take the NewSessionTicket the
+	// spending connection receives after its handshake — late enough, on a
+	// slow runner, to land after the ticket was put back — and the replay
+	// would then offer a fresh ticket, whose 0-RTT the server rightly
+	// accepts: the parked write ended with nil, twice in CI.
+	clientCfg = clientCfg.Clone()
+	clientCfg.ClientSessionCache = frozenTicket{key: clientCfg.ServerName, cs: ticket}
+
 	// Spend the ticket's 0-RTT once: accepted.
-	lru.Put(clientCfg.ServerName, ticket)
 	spend, err := DialEarly(ctx, listen(), l.Addr(), clientCfg, DefaultConfig())
 	if err != nil {
 		t.Fatalf("spending DialEarly: %v", err)
@@ -82,7 +90,6 @@ func TestRefusedZeroRTTLeavesCreditForNewStreams(t *testing.T) {
 	}
 
 	// The same ticket again: the server refuses its 0-RTT.
-	lru.Put(clientCfg.ServerName, ticket)
 	held := &heldReads{PacketConn: listen(), release: make(chan struct{})}
 	c, err := DialEarly(ctx, held, l.Addr(), clientCfg, DefaultConfig())
 	if err != nil {
@@ -249,3 +256,17 @@ func TestRefusedZeroRTTGatheredPacketDoesNotLeaveInOneRTT(t *testing.T) {
 			sent, queued, b.ID(), oldID)
 	}
 }
+
+// frozenTicket is a session cache that holds one ticket and ignores every
+// Put: a dial that resumes from it offers that ticket whatever tickets the
+// server hands out meanwhile.
+type frozenTicket struct {
+	key string
+	cs  *tls.ClientSessionState
+}
+
+func (f frozenTicket) Get(key string) (*tls.ClientSessionState, bool) {
+	return f.cs, key == f.key
+}
+
+func (frozenTicket) Put(string, *tls.ClientSessionState) {}
