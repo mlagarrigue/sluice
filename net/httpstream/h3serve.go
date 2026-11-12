@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -428,6 +429,10 @@ type h3Serving struct {
 	// context: a RESET_STREAM or STOP_SENDING from the client takes the
 	// request out of it, the connection's end takes them all.
 	cancels streamCalls[uint64]
+	// cancelled is the request streams the delivery being handled cancels
+	// (onFrames), kept to take them out of the batch it registers as well.
+	// Under amu, reused from one delivery to the next.
+	cancelled []uint64
 
 	// The assembler belongs to the delivery callback and to the expiry
 	// timer, which take amu in turn; without the timer the read timeout
@@ -593,6 +598,7 @@ func (s *h3Serving) onFrames(frames []quic.Frame) error {
 	// assembler's: the transport abandoned the response, whose writer fails
 	// on its next write, and Frames charges the cancellation against the
 	// rapid-reset allowance.
+	s.cancelled = s.cancelled[:0]
 	for _, f := range frames {
 		if f.Type == quic.FrameStopSending && f.StreamID == s.control.ID() {
 			_ = c.CloseWithError(h3ClosedCriticalStream)
@@ -601,9 +607,11 @@ func (s *h3Serving) onFrames(frames []quic.Frame) error {
 		// A client that resets a request stream, or asks this end to stop
 		// sending on it, has given the request up (RFC 9114 §4.1.1): it
 		// leaves its batch, whose context is cancelled once none is left. A
-		// stream not yet handed over is not in cancels.
+		// stream not yet handed over is not in cancels: one this delivery
+		// completes leaves the batch registered below, once it is.
 		if f.Type == quic.FrameResetStream || f.Type == quic.FrameStopSending {
 			s.cancels.leave(f.StreamID)
+			s.cancelled = append(s.cancelled, f.StreamID)
 		}
 	}
 	// RESET_STREAM is the assembler's to fold in, inside Frames' own loop: a
@@ -659,8 +667,17 @@ func (s *h3Serving) onFrames(frames []quic.Frame) error {
 	// makes the hand-off safe, and it is one small copy per datagram rather
 	// than one per request.
 	held := append([]uint64(nil), ids...)
+	ctx := s.cancels.register(s.forced, held)
+	// A request this delivery both completed and cancelled: the FIN put it in
+	// the batch and retired its stream before the cancellation's Forget
+	// could take it out, and the leave above found no batch to take it from.
+	for _, id := range s.cancelled {
+		if slices.Contains(held, id) {
+			s.cancels.leave(id)
+		}
+	}
 	b := h3Batch{
-		ctx:   s.cancels.register(s.forced, held),
+		ctx:   ctx,
 		calls: &s.cancels,
 		reqs:  append([]Request(nil), batch.Items...),
 		ids:   held,

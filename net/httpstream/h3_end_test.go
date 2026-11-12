@@ -98,3 +98,74 @@ func TestH3BatchHandedOverAfterTheEndIsCancelled(t *testing.T) {
 		})
 	}
 }
+
+// A request completed by its FIN and cancelled in the same delivery reaches
+// the handler with a cancelled context, as it does when the cancellation
+// comes one delivery later (the witness). The cancellations of a delivery
+// used to be applied before its requests were assembled and their batch
+// registered: leave found nothing, the FIN had already put the request in
+// the batch and retired its stream, and the request ran with a context only
+// the forced stop would cancel. Each variant is one delivery the transport
+// can hand up: frames in packet order, STOP_SENDING alone, RESET_STREAM
+// alone, or the cancellation ahead of the STREAM frame.
+func TestH3CancelInTheDeliveryThatCompletesTheRequest(t *testing.T) {
+	stop := quic.Frame{Type: quic.FrameStopSending, StreamID: 0}
+	reset := quic.Frame{Type: quic.FrameResetStream, StreamID: 0}
+	req := streamFrame(0, h3Request("GET", "/"), true)
+	for _, tc := range []struct {
+		name    string
+		packets [][]quic.Frame
+	}{
+		{"witness next delivery", [][]quic.Frame{{req}, {stop}}},
+		{"stop_sending alone after fin", [][]quic.Frame{{req, stop}}},
+		{"reset_stream alone after fin", [][]quic.Frame{{req, reset}}},
+		{"stop_sending ahead of the stream frame", [][]quic.Frame{{stop, req}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, _ := connPair(t, quic.DefaultConfig())
+			control, err := server.Stream(3)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := Config{BodyDelivery: BodyWhole}.mustResolve()
+			forced, cancelForced := context.WithCancel(context.Background())
+			defer cancelForced()
+			started, cancelled := make(chan struct{}), make(chan bool, 1)
+			s := &h3Serving{
+				c: server, cfg: cfg, forced: forced, control: control, a: newH3Assembler(cfg),
+				handle: func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+					close(started)
+					select {
+					case <-ctx.Done():
+						cancelled <- true
+					case <-time.After(3 * time.Second):
+						cancelled <- false
+					}
+					return sluice.Batch[Response]{Items: make([]Response, b.Len())}
+				},
+			}
+			for i, p := range tc.packets {
+				if i > 0 {
+					<-started
+				}
+				s.amu.Lock()
+				err := s.onFrames(p)
+				s.amu.Unlock()
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			select {
+			case <-started:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the request never reached the handler")
+			}
+			if !<-cancelled {
+				t.Error("cancelled in the delivery that completed it, the request ran with a live context")
+			}
+			cancelForced()
+			s.calls.Wait()
+			s.writers.Wait()
+		})
+	}
+}
