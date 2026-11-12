@@ -599,3 +599,42 @@ func TestWriteJSONSendsTheDefensiveHeaders(t *testing.T) {
 		})
 	}
 }
+
+// WriteJSON's header values share one backing array per response, each cut
+// at capacity one: a handler that rewrites or appends to one of them after
+// the call touches that header of that response alone — not its neighbours,
+// and not the next response's.
+func TestWriteJSONHeaderValuesAreTheResponsesOwn(t *testing.T) {
+	first, second := httptest.NewRecorder(), httptest.NewRecorder()
+	if err := web.WriteJSON(first, http.StatusBadRequest, map[string]int{"a": 1}); err != nil {
+		t.Fatal(err)
+	}
+	h, length := first.Header(), first.Header().Get("Content-Length")
+	if err := web.WriteJSON(second, http.StatusBadRequest, map[string]string{"long": "enough to change the length"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := second.Header().Get("Content-Length"); got == length {
+		t.Fatalf("precondition lost: both documents are %s bytes", got)
+	}
+	if got := h.Get("Content-Length"); got != length {
+		t.Fatalf("writing the second response changed the first one's Content-Length from %q to %q", length, got)
+	}
+	h["Content-Type"] = append(h["Content-Type"], "text/html")
+	h["X-Content-Type-Options"][0] = "sniff"
+	h["Cache-Control"][0] = "public"
+	if got := h.Get("Content-Length"); got != length {
+		t.Errorf("the first response's Content-Length went from %q to %q", length, got)
+	}
+	if got := h["Content-Type"]; len(got) != 2 || got[0] != "application/json" {
+		t.Errorf("Content-Type after an append: %q", got)
+	}
+	for k, want := range map[string]string{
+		"Content-Type":           "application/json",
+		"X-Content-Type-Options": "nosniff",
+		"Cache-Control":          "no-store",
+	} {
+		if got := second.Header()[k]; len(got) != 1 || got[0] != want {
+			t.Errorf("the second response's %s is %q after the first one's was rewritten, want %q", k, got, want)
+		}
+	}
+}

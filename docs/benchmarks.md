@@ -1729,15 +1729,17 @@ Measured apart from the session above, by the same method: 2026-11-12 09:43 UTC,
 | `BenchmarkSocketSluice` | 198264 ns | ±3% | 10325 B | 117 |
 <!-- /consolidate -->
 
-**What `nosniff` costs (2026-11-12).** `BenchmarkSocketSluice` allocates
-117 times per request, `BenchmarkSocketNetHTTP` 111. Two of the gap are the
-price of `aa573c2`, which sends `X-Content-Type-Options: nosniff` with
-every JSON document (`web.WriteJSON`): on the server, the header is one
-more slice in the header map; on the benchmark's client, `net/textproto`
-allocates its key, which is not in its table of common headers. The other
-contenders do not send the header. The 112 this page showed before does
-not reproduce: the commit that published it measures 115, under Go 1.26.0
-as under 1.26.10.
+**What `nosniff` costs (2026-11-12).** The table above gives
+`BenchmarkSocketSluice` 117 allocations per request, `BenchmarkSocketNetHTTP`
+111. `aa573c2` sends `X-Content-Type-Options: nosniff` with every JSON
+document (`web.WriteJSON`); on the benchmark's client, `net/textproto`
+allocates that header's key, which is not in its table of common headers,
+and the other contenders do not send it. On the server, `WriteJSON` now
+sets its three or four header values in one slice per response rather than
+one per `Header.Set`: 115 instead of 117 (`BenchmarkWebSluice` 23 instead
+of 25), time at noise (paired A/B, 7 rounds of 11). The 112 this page
+showed before does not reproduce: the commit that published it measures
+115, under Go 1.26.0 as under 1.26.10.
 
 #### The connection budget and the batch bound (2026-10-14)
 

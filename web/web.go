@@ -411,10 +411,7 @@ func WriteJSON(w http.ResponseWriter, status int, body any) error {
 		w.WriteHeader(status)
 		return fmt.Errorf("web: encoding the response body for status %d: %w", status, err)
 	}
-	h := w.Header()
-	h.Set("Content-Type", "application/json")
-	h.Set("Content-Length", strconv.Itoa(len(buf)+1))
-	defend(h, status)
+	jsonHeaders(w.Header(), status, len(buf)+1)
 	w.WriteHeader(status)
 	if _, err := w.Write(buf); err != nil {
 		return fmt.Errorf("web: writing the response body after status %d: %w", status, err)
@@ -429,17 +426,27 @@ func WriteJSON(w http.ResponseWriter, status int, body any) error {
 	return nil
 }
 
-// defend sets the two headers every JSON document goes out with. nosniff,
-// because a browser that guesses the type of a document it was told is JSON
-// may run it as a script or render it as a page, and the document may carry
-// what the client sent. no-store on an error, because an error is the answer
-// that quotes the request — the field that did not parse, the value out of
-// range — and a shared cache must not hand it to the next client. The
-// caller's own Cache-Control wins: a 404 it wants cached is its decision.
-func defend(h http.Header, status int) {
-	h.Set("X-Content-Type-Options", "nosniff")
+// jsonHeaders sets the headers every JSON document goes out with: its type
+// and length, and two defensive ones. nosniff, because a browser that
+// guesses the type of a document it was told is JSON may run it as a script
+// or render it as a page, and the document may carry what the client sent.
+// no-store on an error, because an error is the answer that quotes the
+// request — the field that did not parse, the value out of range — and a
+// shared cache must not hand it to the next client. The caller's own
+// Cache-Control wins: a 404 it wants cached is its decision.
+//
+// The values share one array, allocated per response, each cut at capacity
+// one: a handler that rewrites or appends to one touches that header of its
+// own response alone, and the three or four values cost one allocation
+// where Header.Set costs one each. The keys are written already canonical.
+func jsonHeaders(h http.Header, status, length int) {
+	v := make([]string, 4)
+	v[0], v[1], v[2], v[3] = "application/json", strconv.Itoa(length), "nosniff", "no-store"
+	h["Content-Type"] = v[0:1:1]
+	h["Content-Length"] = v[1:2:2]
+	h["X-Content-Type-Options"] = v[2:3:3]
 	if status >= 400 && len(h.Values("Cache-Control")) == 0 {
-		h.Set("Cache-Control", "no-store")
+		h["Cache-Control"] = v[3:4:4]
 	}
 }
 
