@@ -48,3 +48,26 @@ func BenchmarkDecodeInt4Array1000(b *testing.B) {
 		b.Fatal(err)
 	}
 }
+
+// BenchmarkDecodePointArray1000 is a point[] of a thousand elements through
+// DecodeArray: the fixed-size geometric decoders allocate nothing per
+// element.
+func BenchmarkDecodePointArray1000(b *testing.B) {
+	elems := make([]Null[Point], 1000)
+	for i := range elems {
+		elems[i] = Null[Point]{Value: Point{X: float64(i), Y: -float64(i) / 3}, Valid: true}
+	}
+	raw := AppendArray(nil, Array[Point]{Elems: elems}, PointCodec())
+	arr := Array[Point]{Dims: make([]ArrayDim, 0, 1), Elems: make([]Null[Point], 0, len(elems))}
+	var err error
+	b.ReportAllocs()
+	for b.Loop() {
+		arr, err = DecodeArray(arr, raw, PointCodec())
+	}
+	if err != nil {
+		b.Fatal(err)
+	}
+	if len(arr.Elems) != len(elems) || arr.Elems[999].Value != elems[999].Value {
+		b.Fatalf("decoded %d points, the last %v", len(arr.Elems), arr.Elems[len(arr.Elems)-1].Value)
+	}
+}

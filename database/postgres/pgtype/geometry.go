@@ -53,13 +53,15 @@ func appendPoint(dst []byte, p Point) []byte {
 }
 
 // decodeFloats reads n float8 values from b, which must hold exactly that
-// many.
-func decodeFloats(b []byte, n int, name string) ([]float64, error) {
+// many, n at most four. They come back in an array, by value: a slice
+// escaped to the heap, an allocation per point, line, segment, box or circle
+// decoded — one per element of a point[].
+func decodeFloats(b []byte, n int, name string) ([4]float64, error) {
+	var out [4]float64
 	if len(b) != 8*n {
-		return nil, fmt.Errorf("%w: %s is %d bytes, want %d", ErrCodec, name, len(b), 8*n)
+		return out, fmt.Errorf("%w: %s is %d bytes, want %d", ErrCodec, name, len(b), 8*n)
 	}
-	out := make([]float64, n)
-	for i := range out {
+	for i := range n {
 		out[i] = math.Float64frombits(binary.BigEndian.Uint64(b[8*i:]))
 	}
 	return out, nil
