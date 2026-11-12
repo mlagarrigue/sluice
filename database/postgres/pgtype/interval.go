@@ -65,10 +65,9 @@ func (iv Interval) AddTo(t time.Time) time.Time {
 	if iv.Months != 0 {
 		y, m, d := t.Date()
 		months := y*12 + int(m) - 1 + int(iv.Months)
+		// A negative remainder is left as it is: time.Date normalises a
+		// month out of 1..12 into the year before, here and below.
 		y, m = months/12, time.Month(months%12)
-		if m < 0 {
-			y, m = y-1, m+12
-		}
 		m++
 		// Day 0 of the next month is the last day of this one.
 		d = min(d, time.Date(y, m+1, 0, 0, 0, 0, 0, time.UTC).Day())
