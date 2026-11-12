@@ -32,6 +32,13 @@ question for a CPU profile: no counter can answer it.
 |---|---|
 | A 401, with `WWW-Authenticate: Bearer` | `web.ErrCredentialsMissing` and the token errors that follow it, in [Web and gateway](#web-and-gateway-web-gateway) |
 | A 403 | `web.ErrForbidden`, in [Web and gateway](#web-and-gateway-web-gateway) |
+| A 400, 413 or 415 from a `web` handler decoding a body | `web.TransportStatus`: a document that does not parse (400), one too large (413), or one under the wrong `Content-Type` (415), in the [Web guide](../guide/web.md#diagnostics-and-remedies-refusing-cleanly) |
+| A 421 | Never from the transport: a handler refusing a host its certificate does not cover, in [Limits](../guide/limits.md#what-the-http-layer-leaves-out) |
+| A 422 | `web.Status`: the request was understood and at least one diagnostic is an error; the body lists them, in the [Web guide](../guide/web.md#diagnostics-and-remedies-refusing-cleanly) |
+| A 425 Too Early | `web.EarlyData`: a request received in early data that its predicate does not accept; the client sends it again once its handshake is through, in the [Web guide](../guide/web.md#over-tls-http2-and-early-data) |
+| A 500 from a `web` handler | `web.Recover` caught a panic in the handler; the value went to the `observe` function it was given, in the [Web guide](../guide/web.md#starting-and-stopping-cleanly) |
+| A 501 from the native server | A CONNECT request: this is an origin server, not a proxy, in [Limits](../guide/limits.md#what-the-http-layer-leaves-out) |
+| A 502 from nginx or Envoy in front | The proxy reused a connection this server was closing: its upstream idle timeout must be shorter than `IdleTimeout`, in [Deployments](../guide/deployments.md#behind-nginx-or-envoy) |
 | A 413, 414 or 431 from the native server | `httpstream.ErrTooLarge`, in [HTTP](#http-nethttpstream) |
 | An error status, then the connection closed, from the native server | `httpstream.ErrMalformed`, in [HTTP](#http-nethttpstream) |
 | Gateway calls refused while the service stops | `gateway.ErrClosed`, in [Web and gateway](#web-and-gateway-web-gateway) |

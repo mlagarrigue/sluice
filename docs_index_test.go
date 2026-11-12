@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"unicode"
+	"unicode/utf8"
 )
 
 // docs/README.md is the index by use, and the one page the issue and pull
@@ -247,5 +249,73 @@ func TestNestedReadmesPinWhatTheirGoModRequires(t *testing.T) {
 	}
 	if rows == 0 {
 		t.Fatal("no pinned version found in a nested module's README; update this test with the table's shape")
+	}
+}
+
+// notAStatus are the three-digit numbers of the guides, between 400 and 599,
+// that are not a status a reader may see, keyed by file and number.
+var notAStatus = map[string]string{
+	"docs/guide/postgres.md 512": "the statement cache's size",
+	"docs/guide/limits.md 417":   "the status the transport never sends, as the sentence says",
+}
+
+// statusesIn are the numbers of text that may be a status: three digits
+// from 400 to 599 that are the whole of a number — not part of 65,536, 1.11
+// or x509 — and not a duration (500 µs).
+func statusesIn(text string) []string {
+	number := regexp.MustCompile(`\d+(?:[.,]\d+)*`)
+	duration := regexp.MustCompile(`^\s?(?:µs|ms|ns)\b`)
+	var out []string
+	for _, ix := range number.FindAllStringIndex(text, -1) {
+		n := text[ix[0]:ix[1]]
+		if len(n) != 3 || strings.ContainsAny(n, ".,") || (n[0] != '4' && n[0] != '5') {
+			continue
+		}
+		before, _ := utf8.DecodeLastRuneInString(text[:ix[0]])
+		after, _ := utf8.DecodeRuneInString(text[ix[1]:])
+		if unicode.IsLetter(before) || before == '_' || unicode.IsLetter(after) || duration.MatchString(text[ix[1]:]) {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// troubleshooting.md starts from what a reader sees, a status code among
+// them: every 4xx or 5xx a guide cites has its row in "By what you see".
+// The table held five codes where the guides cited thirteen.
+func TestEveryStatusOfTheGuidesIsInTroubleshooting(t *testing.T) {
+	page, err := os.ReadFile("docs/reference/troubleshooting.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, table, ok := strings.Cut(string(page), "\n## By what you see\n")
+	if !ok {
+		t.Fatal(`troubleshooting.md has no "By what you see" section; update this test`)
+	}
+	table, _, _ = strings.Cut(table, "\n## ")
+	seen := map[string]bool{}
+	for _, code := range statusesIn(table) {
+		seen[code] = true
+	}
+	guides, err := filepath.Glob("docs/guide/*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range guides {
+		b, err := os.ReadFile(g) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(b), "\n") {
+			for _, code := range statusesIn(line) {
+				if _, ok := notAStatus[filepath.ToSlash(g)+" "+code]; ok {
+					continue
+				}
+				if !seen[code] {
+					t.Errorf("%s:%d cites a %s, which troubleshooting.md's \"By what you see\" does not name", g, i+1, code)
+				}
+			}
+		}
 	}
 }
