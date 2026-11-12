@@ -74,7 +74,7 @@ place.
 - [CHANGELOG](../CHANGELOG.md) — each release: what it adds, fixes or
   breaks.
 - [Migrating between versions](migration.md) — what to change in code
-  written against v0.3.0 or v0.2.2.
+  written against v0.4.0, v0.3.0 or v0.2.2.
 
 ## I am looking up a setting or an API
 

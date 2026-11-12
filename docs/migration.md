@@ -1,7 +1,7 @@
 # Migrating between versions
 
 In v0, a minor version may break what the previous one offered; `main`
-groups the breaking changes for the next one, in a "Since v0.4.0" section
+groups the breaking changes for the next one, in a "Since v0.5.0" section
 once there are any. The page goes from the newest version to the oldest.
 Code written against v0.4.0 reads the first section; code written against
 an older version starts at the section that leaves its own version and
@@ -16,7 +16,7 @@ quotes the commit's subject until the hash replaces it. The packages come
 in the order a reader meets them; within a package, the changes of
 behavior that keep the signatures — a value now refused — come last.
 
-## Since v0.4.0
+## From v0.4.0 to v0.5.0
 
 ### Joins: `join`
 
