@@ -6,7 +6,7 @@ import (
 )
 
 // Interval reassembly for one byte stream. STREAM frames arrive with
-// offsets (CRYPTO frames too, and park in cryptoBuffer), and real peers
+// offsets (CRYPTO frames too), and real peers
 // overlap them as a matter of course: a retransmission covers what an ACK
 // had not confirmed, which the original delivery may since have made partly
 // stale. A reassembler that only accepts exact-offset chunks parks such a
@@ -81,16 +81,48 @@ func (c *rchunk) prepend(p []byte) {
 
 // reassembly holds out-of-order bytes until the gap before them fills.
 // The zero value is ready to use.
+//
+// It is the one reassembler of this package, with one set of rules (fresh)
+// and two ways to park what arrives ahead of the gap, chosen by the entry
+// point: a stream's bytes (addThenTake) park in a table of chunks, which
+// costs what is parked and needs the fragment bound above; CRYPTO bytes
+// (addThenTakeWithin) park in a ring the size of the window still to
+// fill, which costs the window and needs no fragment bound (cryptobuf.go).
+// Flow control bounds a stream's window but not what one byte at its far
+// end would make a ring allocate — a window per stream, past MaxData — and
+// CRYPTO has no flow control but a small window, which a table cut a byte
+// per frame would cost quadratically. A reassembly uses one of the two.
 type reassembly struct {
 	consumed uint64 // how far the delivered prefix reaches
+	held     int    // bytes parked, kept so callers can observe the cost
 	chunks   []rchunk
-	held     int // bytes parked, kept so callers can observe the cost
+	// ring and have are the CRYPTO storage: ring is a power of two long,
+	// offset o lives in ring[o&(len(ring)-1)], and bit i of have says
+	// ring[i] holds a parked byte.
+	ring []byte
+	have []uint64
 }
 
-// release drops every parked chunk, keeping where the delivered prefix
-// ends: the stream they belonged to was reset, and none will be delivered.
+// release drops everything parked, keeping where the delivered prefix
+// ends: the stream was reset, or the space's keys are gone, and nothing
+// parked will be delivered.
 func (r *reassembly) release() {
-	r.chunks, r.held = nil, 0
+	r.chunks, r.ring, r.have, r.held = nil, nil, nil, 0
+}
+
+// fresh is the rule every arrival meets first, in either storage: bytes at
+// or below the delivered prefix are dropped, and what is left starts at
+// the prefix at the earliest. ok is false when nothing is left.
+func (r *reassembly) fresh(off uint64, data []byte) (at uint64, rest []byte, ok bool) {
+	end := off + uint64(len(data)) // offsets are below 2^62 (frame.go)
+	if end <= r.consumed || len(data) == 0 {
+		return off, nil, false // entirely stale, or nothing
+	}
+	if off < r.consumed {
+		data = data[r.consumed-off:]
+		off = r.consumed
+	}
+	return off, data, true
 }
 
 // chunkLimit is how many chunks r may hold at its current size.
@@ -103,13 +135,13 @@ func (r *reassembly) chunkLimit() int {
 // arriving in order, nothing parked — the parked copy is skipped entirely
 // and the delta comes straight off the frame.
 func (r *reassembly) addThenTake(off uint64, data, dst []byte) ([]byte, error) {
-	end := off + uint64(len(data))
-	if end <= r.consumed || len(data) == 0 {
-		return dst, nil // entirely stale, or nothing
+	off, data, ok := r.fresh(off, data)
+	if !ok {
+		return dst, nil
 	}
-	if off <= r.consumed && (len(r.chunks) == 0 || r.chunks[0].off >= end) {
-		delta := data[r.consumed-off:]
-		dst = append(dst, delta...)
+	end := off + uint64(len(data))
+	if off == r.consumed && (len(r.chunks) == 0 || r.chunks[0].off >= end) {
+		dst = append(dst, data...)
 		r.consumed = end
 		// The bytes may have landed flush against a parked chunk, which is
 		// now contiguous too.
@@ -124,14 +156,11 @@ func (r *reassembly) addThenTake(off uint64, data, dst []byte) ([]byte, error) {
 // add files bytes at an offset, copying what it keeps — frames borrow their
 // packet's buffer, and parked bytes outlive the packet.
 func (r *reassembly) add(off uint64, data []byte) error {
-	end := off + uint64(len(data))
-	if end <= r.consumed || len(data) == 0 {
+	off, data, ok := r.fresh(off, data)
+	if !ok {
 		return nil
 	}
-	if off < r.consumed {
-		data = data[r.consumed-off:]
-		off = r.consumed
-	}
+	end := off + uint64(len(data))
 
 	// The window [i, j) of chunks the new bytes touch or overlap. Touching
 	// counts: adjacent runs merge, which is what keeps the chunk count a
@@ -170,8 +199,8 @@ func (r *reassembly) add(off uint64, data []byte) error {
 		// not a violation on the peer's part — fragmenting is legal — and
 		// RFC 9000 §20.1 offers no other code for "cannot continue". The
 		// reason travels with it, for the peer's log. Written up in
-		// docs/reference/quic.md and ADR 0015. CRYPTO data parks in
-		// cryptoBuffer instead, which has no fragment bound.
+		// docs/reference/quic.md and ADR 0015. CRYPTO data parks in the
+		// ring instead (addThenTakeWithin), which has no fragment bound.
 		return &transportError{
 			code: transportInternalError,
 			err:  fmt.Errorf("%w: stream bytes parked in over %d fragments", ErrQUIC, limit),

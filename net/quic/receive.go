@@ -1755,7 +1755,7 @@ func (c *Conn) handleCrypto(space int, f Frame) error {
 		c.rxStaleCrypto = true
 	}
 	atStart := sp.crypto.consumed == 0
-	delta, err := sp.crypto.addThenTake(f.offset, f.Data, nil)
+	delta, err := sp.crypto.addThenTakeWithin(maxCryptoBuffer, f.offset, f.Data, nil)
 	if space == spaceInitial && atStart && c.isClient && c.earlyOffered && isHelloRetryRequest(delta) {
 		c.earlyHRR = true
 	}

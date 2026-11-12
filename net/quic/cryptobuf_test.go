@@ -73,7 +73,7 @@ func TestCryptoBufferReassemblesAnyCut(t *testing.T) {
 		for i := range src {
 			src[i] = byte(rng.Uint32())
 		}
-		var b cryptoBuffer
+		var b reassembly
 		var out []byte
 		for burst := 0; b.consumed < uint64(len(src)); burst++ {
 			// A burst inside the open window, some of it reaching back over
@@ -89,7 +89,7 @@ func TestCryptoBufferReassemblesAnyCut(t *testing.T) {
 			rng.Shuffle(len(frames), func(i, j int) { frames[i], frames[j] = frames[j], frames[i] })
 			for _, f := range frames {
 				var err error
-				if out, err = b.addThenTake(f.offset, f.Data, out); err != nil {
+				if out, err = b.addThenTakeWithin(maxCryptoBuffer, f.offset, f.Data, out); err != nil {
 					t.Fatalf("round %d: frame at %d, %d bytes: %v", round, f.offset, len(f.Data), err)
 				}
 			}
@@ -103,9 +103,9 @@ func TestCryptoBufferReassemblesAnyCut(t *testing.T) {
 // The first bytes seen for an offset win, as on streams: a retransmission
 // that disagrees with what is parked does not overwrite it.
 func TestCryptoBufferKeepsTheFirstBytes(t *testing.T) {
-	var b cryptoBuffer
-	out, _ := b.addThenTake(4, []byte("held"), nil)
-	out, _ = b.addThenTake(0, []byte("0123XXXX89"), out)
+	var b reassembly
+	out, _ := b.addThenTakeWithin(maxCryptoBuffer, 4, []byte("held"), nil)
+	out, _ = b.addThenTakeWithin(maxCryptoBuffer, 0, []byte("0123XXXX89"), out)
 	if string(out) != "0123held89" {
 		t.Fatalf("delivered %q, want %q", out, "0123held89")
 	}
@@ -120,9 +120,9 @@ func TestCryptoBufferKeepsTheFirstBytes(t *testing.T) {
 func TestDescendingCryptoFragmentsParkInPlace(t *testing.T) {
 	const n = 4096
 	allocs := testing.AllocsPerRun(10, func() {
-		var b cryptoBuffer
+		var b reassembly
 		for k := range n {
-			if _, err := b.addThenTake(uint64(2*(n-k)-1), []byte{0x5a}, nil); err != nil {
+			if _, err := b.addThenTakeWithin(maxCryptoBuffer, uint64(2*(n-k)-1), []byte{0x5a}, nil); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -145,10 +145,10 @@ func TestCryptoBufferGrowsAroundASharedWord(t *testing.T) {
 	for i := range src {
 		src[i] = byte(i*7 + i>>8)
 	}
-	var b cryptoBuffer
+	var b reassembly
 	feed := func(out []byte, off, end int) []byte {
 		t.Helper()
-		out, err := b.addThenTake(uint64(off), src[off:end], out)
+		out, err := b.addThenTakeWithin(maxCryptoBuffer, uint64(off), src[off:end], out)
 		if err != nil {
 			t.Fatalf("[%d, %d): %v", off, end, err)
 		}

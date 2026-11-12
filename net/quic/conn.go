@@ -704,8 +704,8 @@ type keyUpdateState struct {
 type space struct {
 	sealer     *packetSealer
 	opener     *packetOpener
-	crypto     cryptoBuffer // the peer's handshake bytes, reordered
-	cryptoOff  uint64       // this end's send offset
+	crypto     reassembly // the peer's handshake bytes, reordered
+	cryptoOff  uint64     // this end's send offset
 	nextPN     uint64
 	largest    uint64 // largest received, for packet-number decoding
 	ack        ackTracker

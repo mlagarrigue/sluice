@@ -391,3 +391,72 @@ func TestReassemblyFirstBytesWinAcrossRuns(t *testing.T) {
 		}
 	}
 }
+
+// One reassembler, two storages: whatever the order, overlap and
+// repetition of the fragments, a stream's table (addThenTake) and CRYPTO's
+// ring (addThenTakeWithin) deliver the same bytes — the payload, once, in
+// order — and keep the first bytes seen for an offset when retransmissions
+// disagree.
+func TestReassemblyStoragesDeliverTheSameBytes(t *testing.T) {
+	rng := rand.New(rand.NewPCG(7, 11)) //nolint:gosec // G404: a reproducible test sequence, not a secret
+	for round := range 300 {
+		payload := make([]byte, 1+rng.IntN(3000))
+		for i := range payload {
+			payload[i] = byte(rng.IntN(256))
+		}
+		type frag struct {
+			off  uint64
+			data []byte
+		}
+		var frags []frag
+		for len(frags) < 4 || rng.IntN(4) != 0 {
+			a := rng.IntN(len(payload))
+			b := a + 1 + rng.IntN(min(400, len(payload)-a))
+			data := append([]byte(nil), payload[a:b]...)
+			frags = append(frags, frag{uint64(a), data})
+			if rng.IntN(5) == 0 { // a retransmission that disagrees, sent after
+				bad := append([]byte(nil), data...)
+				bad[0] ^= 0xff
+				frags = append(frags, frag{uint64(a), bad})
+			}
+		}
+		frags = append(frags, frag{0, append([]byte(nil), payload...)}) // the whole, last, so it ends
+		order := rng.Perm(len(frags) - 1)
+		var table, ring reassembly
+		var fromTable, fromRing []byte
+		var err error
+		for _, k := range append(order, len(frags)-1) {
+			f := frags[k]
+			if fromTable, err = table.addThenTake(f.off, f.data, fromTable); err != nil {
+				t.Fatalf("round %d: the table refused a fragment: %v", round, err)
+			}
+			if fromRing, err = ring.addThenTakeWithin(maxCryptoBuffer, f.off, f.data, fromRing); err != nil {
+				t.Fatalf("round %d: the ring refused a fragment: %v", round, err)
+			}
+		}
+		if !bytes.Equal(fromTable, fromRing) {
+			t.Fatalf("round %d: the table delivered %d bytes, the ring %d, and they differ", round, len(fromTable), len(fromRing))
+		}
+		if len(fromRing) != len(payload) || table.held != 0 || ring.held != 0 {
+			t.Fatalf("round %d: delivered %d of %d bytes, %d and %d left parked", round, len(fromRing), len(payload), table.held, ring.held)
+		}
+	}
+}
+
+// The ring is let go once nothing is parked in it: the Application space's
+// is never released with its keys, and a reordering long resolved kept up
+// to 72 KiB per connection.
+func TestReassemblyRingIsLetGoWhenEmpty(t *testing.T) {
+	var r reassembly
+	out, err := r.addThenTakeWithin(maxCryptoBuffer, 4, []byte("tail"), nil)
+	if err != nil || len(out) != 0 || r.ring == nil {
+		t.Fatalf("precondition lost: out %q, err %v, ring %d bytes", out, err, len(r.ring))
+	}
+	out, err = r.addThenTakeWithin(maxCryptoBuffer, 0, []byte("head"), out)
+	if err != nil || string(out) != "headtail" {
+		t.Fatalf("delivered %q, %v; want headtail", out, err)
+	}
+	if r.ring != nil || r.have != nil || r.held != 0 {
+		t.Errorf("nothing parked, and the ring is still %d bytes, the bitmap %d words", len(r.ring), len(r.have))
+	}
+}
