@@ -831,6 +831,24 @@ Medians of the rounds. No benchmark is slower; 17 are faster, up to 71%;
 9 read as noise, among them the decoding of the two timestamps (+2.5%,
 won in 3 rounds of 11), where both sides run the same loop.
 
+On the CI runner the regression gate read the same change otherwise:
+`BenchmarkPGEncodeInt8Array`, now `AppendArray` over `Int8Codec()`, 34%
+slower than `AppendInt8Array` under two code layouts, although both run
+the same loop — two appends per element, each checking the capacity. The
+loops of the two- and eight-byte types now write each element's length
+and value in one append. Against the commit before, same protocol,
+2026-11-12:
+
+| benchmark | two appends, ns per op | one append, ns per op | rounds won by one append | verdict |
+|---|---|---|---|---|
+| `BenchmarkArrayAppendInt21000` | 503 | 365 | 11 of 11 | faster −28.2% |
+| `BenchmarkArrayAppendInt81000` | 521 | 329 | 11 of 11 | faster −37.2% |
+| `BenchmarkArrayAppendFloat81000` | 675 | 385 | 11 of 11 | faster −43.0% |
+
+The four-byte types keep two appends: one made `int4` 13.9% and `float4`
+9.4% slower (0 rounds of 11). Writing in place after one reservation made
+`int8` 64% slower.
+
 ## Two changes read as noise, paired
 
 Two changes to `net/httpstream` were first judged on unpaired runs: the
