@@ -2,13 +2,19 @@
 
 In v0, a minor version may break what the previous one offered; `main`
 groups the breaking changes for the next one, in a "Since v0.4.0" section
-once there are any. Code written against v0.4.0 reads the first section;
-code written against an older version reads every section down to its
-own, the oldest first. The guide starts at v0.2.2; the breaks of the
-versions before it are listed in the CHANGELOG only. Each entry names the commit that made the change, says what
-changed, and what to write instead. The packages come in the order a reader
-meets them; within a package, the changes of behavior that keep the
-signatures — a value now refused — come last.
+once there are any. The page goes from the newest version to the oldest.
+Code written against v0.4.0 reads the first section; code written against
+an older version starts at the section that leaves its own version and
+reads up the page from there to the first, in the order the changes were
+made. The guide starts at v0.2.2; the breaks of the versions before it are
+listed in the CHANGELOG only.
+
+Each entry names the commit that made the change by its short hash
+(`c54b341`), says what changed, and what to write instead. An entry
+written in the breaking commit itself, which cannot know its own hash,
+quotes the commit's subject until the hash replaces it. The packages come
+in the order a reader meets them; within a package, the changes of
+behavior that keep the signatures — a value now refused — come last.
 
 ## Since v0.4.0
 
@@ -21,7 +27,7 @@ signatures — a value now refused — come last.
 ### Database: `postgres`
 
 - **`Copier.Close` takes a context**
-  ("fix(postgres)!: bound the end of a COPY like a Tx"): `cp.Close(ctx)`.
+  (`a534fe5`): `cp.Close(ctx)`.
   It bounds the commit of the last
   batch as `Tx.Commit(ctx)` bounds a transaction's — a server that stops
   answering is sent a cancellation when ctx ends, and the transaction is
@@ -33,11 +39,11 @@ signatures — a value now refused — come last.
   `Config.CancelTimeout`, as `Tx.Rollback` is: `defer cp.Abort(reason)`
   beside the `Close` is the copy's `defer tx.Rollback()`.
 - **`IndexOutOfRange` is `IndexError`**
-  ("feat(postgres)!: IndexOutOfRange becomes IndexError"): the value
+  (`ca713ec`): the value
   `Rows.Value` panics with, named as Go names an error type; its fields and
   its message are unchanged. Rename it where a recovered value is asserted.
 - **`TxConfig.Timeout` is `StatementTimeout`, `Tx.SetLocalTimeout` is `SetLocalStatementTimeout`**
-  ("feat(postgres)!: TxConfig.Timeout becomes StatementTimeout"): the old
+  (`61d6cf4`): the old
   names promised a bound on the transaction, and the code sets
   statement_timeout, which bounds each statement — ten statements of 4s
   each ran to the end under a five-second timeout. Behaviour and values
@@ -46,14 +52,14 @@ signatures — a value now refused — come last.
   The whole transaction is bounded,
   on this side, by the context its calls are given.
 - **`Config.MaxMessage` is `MaxMessageBytes`**
-  ("feat(postgres)!: MaxMessage becomes MaxMessageBytes (ADR 0018)"): the
+  (`a69e05f`, ADR 0018): the
   field is a size in bytes, read beside counts (`BatchRows`,
   `StatementCacheSize`), and now says so as `QueryConfig.BatchBytes` and
   `CopyConfig.ChunkBytes` do. Default, range and refusals are unchanged;
   rename it where a `Config` is written, and where an error message is
   matched on the field's name.
 - **`Rows.Fields` is `NumFields`**
-  ("feat(postgres)!: Rows.Fields becomes NumFields"): it returns the
+  (`fed953a`): it returns the
   number of columns, while `Row.Fields` returns the columns themselves, and
   `for i := range rows.Fields()` compiled with either. `rows.Fields()` is
   renamed `rows.NumFields()`; the value is unchanged.
@@ -61,7 +67,7 @@ signatures — a value now refused — come last.
 ### Web: `web` and `web/stream`
 
 - **A body refused for its `Content-Type` carries a code of its own and is
-  answered 415** ("fix(web)!: answer a body's wrong label with 415"): the
+  answered 415** (`62d3712`): the
   diagnostic `DecodeJSON` (`web` and `web/stream`) returns for a type that
   is not JSON, or for none, now has the code `web.CodeUnsupportedMediaType`
   (`Transport.Request.UnsupportedMediaType`) instead of
@@ -78,7 +84,7 @@ signatures — a value now refused — come last.
 ### QUIC: `net/quic`
 
 - **`Dial`, `DialEarly` and `NewListener` take a `quic.Config`**
-  ("feat(quic)!: Config holds what never goes on the wire"): it embeds
+  (`fbea267`): it embeds
   `TransportParameters`, what is announced to the peer, beside the three
   settings that stay on this side — `Congestion`, `HoldClosing` and
   `MaxDatagramSize`, which leave `TransportParameters`. Replace
@@ -89,7 +95,7 @@ signatures — a value now refused — come last.
   In `net/httpstream`, `Config.TransportParameters()` becomes
   `Config.QUICConfig()` and returns a `quic.Config`.
 - **`Conn.Migrations` is `Stats.Migrations`**
-  ("feat(quic)!: the migration count moves into Stats"): the number of
+  (`a884f05`): the number of
   path changes is read beside the connection's other counters, in the
   same consistent snapshot. `conn.Migrations()` becomes
   `conn.Stats().Migrations`; the count is unchanged.
@@ -97,11 +103,12 @@ signatures — a value now refused — come last.
   `Config.Validate`, and so `Dial` and `NewListener`, refuse
   it, where the value was taken as given. A configuration that asked for
   more asks for 1024 or less.
-- **A Retry token binds the client's address by its digest**: a token a
+- **A Retry token binds the client's address by its digest** (`2f3fe1b`):
+  a token a
   server issued before the upgrade does not verify after it, and its client
   is sent a new Retry, within `RetryTokenTTL` of the restart.
 - **`MaxIdleTimeout` at zero is refused**
-  ("fix(quic)!: MaxIdleTimeout zero is refused, ADR 0018"):
+  (`d67546b`, ADR 0018):
   `Config.Validate`, and so `Dial`, accept and `NewListener`,
   refuse it as they refused a negative value. Zero announced no idle
   timeout, and against a peer announcing none a connection whose peer
@@ -113,7 +120,7 @@ signatures — a value now refused — come last.
 ### Fan-out: `parallel`
 
 - **Every panic raised on a worker or a producer comes back wrapped**
-  (`02a5cc9`, "every relayed panic carries its stack"): `Ordered`,
+  (`02a5cc9`): `Ordered`,
   `OrderedWithState`, `Unordered`, `Async`, and `window.CoalesceWithin`
   raise it again in a `*sluice.PanicError` that carries the stack it was
   raised on — any value, no longer a runtime error alone. An error is still
@@ -142,9 +149,8 @@ signatures — a value now refused — come last.
 
 ### Instrumentation: `probe`
 
-- **`Counter.Elems` is `Counter.Elements`** ("Counter.Elements replaces
-  Elems", listed under the CHANGELOG's `diagnostics` scope, which covers
-  `probe`): the same count, its name spelled out as everywhere else in the
+- **`Counter.Elems` is `Counter.Elements`** (`6dc1bc1`, listed under the
+  CHANGELOG's `diagnostics` scope, which covers `probe`): the same count, its name spelled out as everywhere else in the
   API. Rename the call; `Counter.Batches` and `probe.Probe` keep theirs.
 
 ### PostgreSQL: `database/postgres`
@@ -245,7 +251,7 @@ that never passed a negative value has nothing to change there.
 - **A negative `MaxTokenBytes` is refused** (`dae2743`). It meant the
   default, 8 KiB, as zero does: write zero. Nothing to change otherwise.
 - **`HMACVerifier` refuses what RFC 7519 and RFC 8725 refuse**
-  (`fix(web)!: verify tokens as RFC 7519 and 8725 ask`). A token that
+  (`88cc5ba`). A token that
   carries an `aud` claim is refused when `HMACConfig.Audience` is empty:
   set `Audience` to the value your issuer puts in `aud`. A token is refused
   at the second its `exp` names, not one second later; a header or payload
@@ -327,7 +333,7 @@ that never passed a negative value has nothing to change there.
 - **`ServeH2Conn` drains on cancellation** (`735873e`) instead of cutting
   the connection: see [ADR 0017](design/adr/0017-graceful-shutdown.md).
 - **Request bodies stream by default**
-  (`feat(httpstream)!: stream request bodies by default`): the zero `Config` now
+  (`b2b76e2`): the zero `Config` now
   hands a handler a body through `Request.Stream` as it arrives, with
   `Request.Body` nil, unless the body was already whole in the read that
   brought the request's headers. A handler written against the old
