@@ -883,7 +883,9 @@ func (a *h3Assembler) expire(now time.Time) {
 		if st.handed {
 			continue // each wait for its bytes has ReadTimeout, on the handler's side
 		}
-		if now.After(st.deadline) {
+		// At the deadline, as the gate above: a sweep that let the stream
+		// stand would leave nextExpiry due and its timer re-armed at zero.
+		if !now.Before(st.deadline) {
 			a.fail(id, h3RequestIncomplete, fmt.Errorf(
 				"%w: stream %d assembled nothing complete within the read timeout", ErrH3Protocol, id))
 			continue
