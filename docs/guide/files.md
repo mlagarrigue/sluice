@@ -80,6 +80,21 @@ for b := range src.Stream() {
 JSON Lines writes `<`, `>` and `&` as they are, without the escaping
 `json.Marshal` applies: a data file is not HTML.
 
+## From a file to PostgreSQL
+
+The whole of an ETL pipeline with nothing between the file and the
+database: [`example/csvcopy`](../../example/csvcopy/csvcopy.go) reads a CSV
+file with `csvstream.Read`, drops its header with `sluice.Drop`, types each
+record with `sluice.Convert`, and sends each batch to PostgreSQL in one
+binary COPY call (`Copier.WriteTuples`, see
+[PostgreSQL: In bulk, COPY](postgres.md#in-bulk-copy)).
+
+It runs in one transaction. A record that cannot be read, or a field that
+is not a number, aborts the copy (`Copier.Abort`), and the batches already
+sent are rolled back with it: the table holds the whole file or nothing of
+it. A file too large for one transaction is cut by `CopyConfig.RowsPerTx`
+instead, and a failed load then resumes after the last committed batch.
+
 ## Settings
 
 `csvstream.ReadConfig`, the batch and the bound:
