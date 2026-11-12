@@ -1007,6 +1007,17 @@ func answerH3(ctx context.Context, c *quic.Conn, state *tls.ConnectionState, b h
 			}
 		}
 	}
+	// What each body was delivered in, counted before the call: the handler
+	// owns the requests it is handed and may rewrite Body — decode it, drop
+	// it — and the credit owed is for the bytes delivered, not the ones it
+	// left. On the stack for a batch of up to sixteen requests.
+	var deliveredBuf [16]int
+	delivered := deliveredBuf[:0]
+	if b.credit != nil {
+		for i := range b.reqs {
+			delivered = append(delivered, len(b.reqs[i].Body))
+		}
+	}
 	res, err := apply(ctx, handle, sluice.Batch[Request]{Items: b.reqs}, b.early)
 	closeBodies(b.reqs)
 	if err != nil {
@@ -1027,7 +1038,7 @@ func answerH3(ctx context.Context, c *quic.Conn, state *tls.ConnectionState, b h
 	// window should not re-open for.
 	if b.credit != nil {
 		for i, id := range b.ids {
-			if n := uint64(len(b.reqs[i].Body)); n > 0 {
+			if n := uint64(delivered[i]); n > 0 { //nolint:gosec // G115: a length, positive
 				b.credit(id, n)
 			}
 		}

@@ -1170,3 +1170,53 @@ func TestH3AnswersAWellFormedConnectWith501(t *testing.T) {
 		t.Errorf("the handler saw %d requests, want the one GET and never the CONNECT", got)
 	}
 }
+
+// Under manual credit the bytes a request body was delivered in are given
+// back to the transport once the handler returns. They were counted on
+// Body as the handler left it: a handler that clears Items[i].Body — or
+// decodes it into a shorter one — left delivered bytes without credit, and
+// the connection window closed for good; a grown Body credited more than
+// was delivered. The count is taken before the call. The control rewrites
+// nothing.
+func TestH3CreditCountsTheBytesDeliveredNotTheBodyLeft(t *testing.T) {
+	var released atomic.Uint64
+	count := func(c *quic.Conn, id, n uint64) {
+		released.Add(n)
+		c.ReleaseStreamBytes(id, n)
+	}
+	h3ReleaseHook.Store(&count)
+	t.Cleanup(func() { h3ReleaseHook.Store(nil) })
+
+	for _, tc := range []struct {
+		name    string
+		rewrite func(*Request)
+	}{
+		{"control", func(*Request) {}},
+		{"nil", func(r *Request) { r.Body = nil }},
+		{"grown", func(r *Request) { r.Body = make([]byte, 2*len(r.Body)) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			released.Store(0)
+			conn, _, _ := startH3(t, mustQUICConfig(Config{BodyDelivery: BodyWhole}), func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+				res := make([]Response, b.Len())
+				for i := range res {
+					tc.rewrite(&b.Items[i])
+					res[i] = Response{Status: 200, Body: []byte("ok")}
+				}
+				return sluice.Batch[Response]{Items: res}
+			})
+			var sent uint64
+			for range 4 {
+				req := h3Request("POST", "/upload", [2]string{"content-length", "4096"})
+				req = appendH3Frame(req, h3Data, make([]byte, 4096))
+				sent += uint64(len(req))
+				if body, _ := readH3Body(t, askH3(t, conn, req)); body != "ok" {
+					t.Fatalf("the answer was %q", body)
+				}
+			}
+			if got := released.Load(); got != sent {
+				t.Errorf("released %d bytes back to the transport for %d delivered", got, sent)
+			}
+		})
+	}
+}
