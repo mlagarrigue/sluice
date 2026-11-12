@@ -1690,8 +1690,10 @@ func (c *Conn) streamIfOpen(id uint64) *Stream {
 }
 
 // pendingFrameCost is what each held frame is charged beyond its bytes, so
-// frames carrying none (FIN-only, RESET_STREAM) still count.
-const pendingFrameCost = 64
+// frames carrying none (FIN-only, RESET_STREAM) still count: the Frame the
+// held copy keeps, 80 bytes on a 64-bit platform (a test holds it to that),
+// its bytes sharing one allocation per batch (cloneFrames).
+const pendingFrameCost = 80
 
 // holdPending keeps a copy of batch for a callback that has not registered
 // yet. Every byte held is also uncredited, so the connection receive window

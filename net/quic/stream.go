@@ -1340,11 +1340,24 @@ func (c *Conn) OnStreamFrames(credit Credit, f func([]Frame) error) {
 }
 
 // cloneFrames copies frames out of the buffers they borrow, which is what
-// holding them past the call that parsed them requires.
+// holding them past the call that parsed them requires. Their bytes share
+// one allocation: a copy apiece cost a size class per frame, eight bytes for
+// one, on top of the Frame — what holdPending charges is the Frame and its
+// bytes, nothing more. A frame without bytes keeps a nil Data.
 func cloneFrames(fs []Frame) []Frame {
 	out := make([]Frame, len(fs))
+	total := 0
+	for i := range fs {
+		total += len(fs[i].Data)
+	}
+	buf := make([]byte, 0, total)
 	for i, f := range fs {
-		f.Data = append([]byte(nil), f.Data...)
+		if n := len(f.Data); n > 0 {
+			buf = append(buf, f.Data...)
+			f.Data = buf[len(buf)-n : len(buf) : len(buf)]
+		} else {
+			f.Data = nil
+		}
 		out[i] = f
 	}
 	return out
