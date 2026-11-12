@@ -10,20 +10,36 @@ updates:
       interval: weekly
     commit-message:
       prefix: "build"
-  # The interop module pins quic-go (interop/go.mod); a bump that breaks the
-  # handshake fails the interop-quic job, which is the point of running it.
+  # quic-go, interop/'s one requirement, which the study's two modules take
+  # from it: TestSharedDependenciesAgreeAcrossModules (nodeps_test.go) fails
+  # a bump that moves one go.mod and not the three, so this entry allows
+  # quic-go alone and groups it by name across the three directories — one
+  # pull request raises them together. It still fails
+  # TestNestedReadmesPinWhatTheirGoModRequires (docs_index_test.go): the
+  # version table of interop/README.md is prose Dependabot does not touch.
+  # The pull request is the signal; the bump lands as a commit on main that
+  # raises the three go.mod and the table, and the pull request is closed.
+  # A bump that breaks the handshake fails the interop-quic job, which is
+  # the point of running it.
   - package-ecosystem: gomod
-    directory: "/interop"
+    directories: ["/interop", "/comparison/sluice", "/comparison/loadgen"]
     schedule:
       interval: weekly
+    allow:
+      - dependency-name: "github.com/quic-go/quic-go"
+    groups:
+      quic-go:
+        patterns: ["github.com/quic-go/quic-go"]
+        group-by: dependency-name
     commit-message:
       prefix: "build"
-  # The comparison modules pin the competitors at the versions the study
-  # compares: a version bump would move what is measured, so version updates
-  # are off (a limit of zero). Security updates, enabled on the repository,
-  # still open a pull request when an advisory names a module they require.
+  # benchmarks/ pins the competitors at the versions the study compares
+  # (pgx, which the comparison modules follow): a version bump would move
+  # what is measured, so version updates are off (a limit of zero). Security
+  # updates, enabled on the repository, still open a pull request when an
+  # advisory names a module it requires.
   - package-ecosystem: gomod
-    directories: ["/benchmarks", "/comparison/sluice", "/comparison/loadgen"]
+    directories: ["/benchmarks"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
