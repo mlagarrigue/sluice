@@ -84,7 +84,7 @@ behavior that keep the signatures — a value now refused — come last.
 ### QUIC: `net/quic`
 
 - **A stream identifier is a `quic.StreamID`**
-  (`feat(quic)!: a stream identifier is a StreamID`):
+  (`8309ca3`):
   `Conn.Stream`, `Conn.ReleaseStreamBytes`, `Conn.ReleaseStreamCredit`,
   `Stream.ID` and `Frame.StreamID` take or return a `StreamID` where they
   took a `uint64`, so that an identifier and a byte count passed in the

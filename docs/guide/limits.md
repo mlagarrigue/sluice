@@ -148,6 +148,12 @@ The figures are a laptop's ([measurements](#measurements-what-is-missing)).
 
 ### Bounds, and what is pushed down
 
+- **A replication stream keeps at most 16,384 relations and 64 MiB of
+  their description** — the table of the relations the server describes,
+  their names and columns. Past either, `Replicate` returns `ErrProtocol`.
+  A thousand tables of a hundred columns cost under 6 MiB. There is no
+  setting: the bound in bytes holds the memory whatever the schema
+  ([ADR 0023](../design/adr/0023-logical-replication.md)).
 - **A message from the server is bounded at 64 MiB** — a row with all its
   values, a COPY chunk. Over it, the message is refused unread and the
   connection is broken (`ErrMessageTooLarge`, then `ErrConnBroken`).

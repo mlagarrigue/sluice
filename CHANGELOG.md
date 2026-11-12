@@ -1,8 +1,10 @@
 # Changelog
 
-Each breaking change below is listed by its commit subject; what it changes
-in your code, and what to write instead, is in the
-[migration guide](docs/migration.md), from 0.3.0 on.
+Each version below lists its commits as release-please writes them: the
+whole list, features and fixes. What a version changes in your code, by
+impact, and what to write instead, is in the
+[migration guide](docs/migration.md), from 0.3.0 on: read the section that
+leaves your version, then each section above it up to the one you move to.
 
 ## [0.4.0](https://github.com/mlagarrigue/sluice/compare/v0.3.0...v0.4.0) (2026-10-29)
 

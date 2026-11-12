@@ -118,6 +118,13 @@ type Replication struct {
 // the only way this package opens one: Params may not carry it. The role
 // needs the REPLICATION attribute, and the server wal_level = logical.
 //
+// The stream keeps a table of the relations the server describes, to decode
+// the changes that name them, and the table is bounded: past 16,384
+// distinct relations, or 64 MiB of names and columns, the server is refused
+// with [ErrProtocol]. A publication of ordinary shape stays far under both:
+// a thousand tables of a hundred columns cost under 6 MiB, and 16,384 tables
+// of thirty columns about 28 MiB.
+//
 // Changes arrive at least once. The server holds every change the consumer
 // has not acknowledged through [Replication.Ack], and a stream that stops
 // and starts again resumes after the last acknowledged position; what came

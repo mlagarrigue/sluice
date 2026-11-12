@@ -1,5 +1,21 @@
 # Security Policy
 
+## Reporting a vulnerability
+
+**Do not open a public issue for a security problem.**
+
+Report it privately through
+[GitHub Security Advisories](https://github.com/mlagarrigue/sluice/security/advisories/new).
+That channel is private until an advisory is published, so a fix can be prepared
+before the problem is known.
+
+Please include what the issue is, how to reproduce it, and what an attacker
+could achieve with it. A failing test or a short program is worth more than a
+description.
+
+You should get an acknowledgement within a week. If a report is accepted, you
+will be credited in the advisory unless you ask otherwise.
+
 ## Supported versions
 
 **Today, in v0:** the latest tagged minor is supported, and a fix ships as a
@@ -22,22 +38,6 @@ patch of it. A v0 minor may break the API; the
 
 A version published by mistake, or made dangerous by a defect, is withdrawn
 with the `retract` directive in `go.mod`.
-
-## Reporting a vulnerability
-
-**Do not open a public issue for a security problem.**
-
-Report it privately through
-[GitHub Security Advisories](https://github.com/mlagarrigue/sluice/security/advisories/new).
-That channel is private until an advisory is published, so a fix can be prepared
-before the problem is known.
-
-Please include what the issue is, how to reproduce it, and what an attacker
-could achieve with it. A failing test or a short program is worth more than a
-description.
-
-You should get an acknowledgement within a week. If a report is accepted, you
-will be credited in the advisory unless you ask otherwise.
 
 ## What counts as a vulnerability here
 
@@ -72,7 +72,8 @@ tests). These are development tooling and never reach a user's binary.
 ## Dependencies
 
 Every production dependency is a recorded decision (ADR 0002). Today there
-are two, both maintained by the Go team. `golang.org/x/crypto` is used for
+are two direct ones, both maintained by the Go team, and one the first brings
+with it. `golang.org/x/crypto` is used for
 the ChaCha20-Poly1305 packet protection the QUIC transport needs
 (`crypto/tls` negotiates the suite but does not export the cipher); it
 brings `golang.org/x/sys/cpu` with it for CPU feature detection.
