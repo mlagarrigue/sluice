@@ -418,7 +418,10 @@ type Conn struct {
 	// race every other connection sharing it). nil means this Conn owns its
 	// net.PacketConn exclusively — [Dial] and standalone accept — and
 	// readOne/readLoop read it directly, exactly as before this existed.
+	// fedDone is closed when the loop fed by incoming returns: gone does not
+	// wait for it, since the loop holds no socket.
 	incoming chan rawDatagram
+	fedDone  chan struct{}
 
 	// amplActive gates the RFC 9000 §8.1 anti-amplification limit: true only
 	// while a server connection's peer address is not yet validated —

@@ -182,6 +182,7 @@ func (c *Conn) rebound(pc net.PacketConn) bool {
 // these bytes come from" — receive, pump, the idle deadline's wake-up
 // cadence — is identical to the socket-owning readLoop above.
 func (c *Conn) readLoopFed() {
+	defer close(c.fedDone)
 	// One timer for the loop's life, re-armed per round: a fresh one per
 	// datagram was three allocations on the receive path. Go ≥1.23 timers
 	// need no drain before Reset.

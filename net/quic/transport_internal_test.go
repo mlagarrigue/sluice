@@ -714,9 +714,9 @@ func BenchmarkReadLoopFed(b *testing.B) {
 	peer := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 4433}
 	c := newConn(&fuzzSink{addr: "bench:self"}, peer, []byte("dcid0000"), []byte("scid0000"), false, DefaultConfig())
 	c.tls = tls.QUICServer(&tls.QUICConfig{TLSConfig: &tls.Config{}})
-	c.incoming = make(chan rawDatagram)
-	done := make(chan struct{})
-	go func() { c.readLoopFed(); close(done) }()
+	c.incoming, c.fedDone = make(chan rawDatagram), make(chan struct{})
+	go c.readLoopFed()
+	done := c.fedDone
 	d := rawDatagram{data: []byte{0x40, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}, from: peer}
 	b.ReportAllocs()
 	for b.Loop() {

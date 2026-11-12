@@ -1367,6 +1367,7 @@ func (l *Listener) prepareConn(c *Conn) error {
 	c.params.statelessResetToken = t[:]
 	c.registrar = l
 	c.incoming = make(chan rawDatagram, l.lcfg.ConnQueueLen)
+	c.fedDone = make(chan struct{})
 	c.sendsTicket = l.lcfg.SessionTickets || l.lcfg.EarlyData
 	c.early = l.early
 	if l.preferred == nil {

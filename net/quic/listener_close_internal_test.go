@@ -635,6 +635,13 @@ func TestAForgottenConnectionIsNotRoutedAgain(t *testing.T) {
 		t.Fatal("the connection never released its socket")
 	}
 	waitFor(t, "the listener to forget the connection", func() bool { return routed(l) == 0 })
+	// The read loop may still be inside a datagram it took before the end:
+	// an empty queue says it took them, not that it is done with them.
+	select {
+	case <-server.fedDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the fed read loop never returned")
+	}
 
 	// What the fed read loop does with a datagram it already took.
 	for _, d := range held {
