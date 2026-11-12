@@ -524,3 +524,22 @@ func reportTo(diags *diagnostics.Collector) func(limit, held int) {
 			WithMessage("BuildTableOverflow", map[string]any{"limit": limit, "held": held}))
 	}
 }
+
+// The build side's map is rebuilt at double its size when it fills, and not
+// before: ten keys under a limit of 65,536 keep the first 64 entries, and
+// the 65th key doubles them once.
+func TestMapTableGrowsWhenFullOnly(t *testing.T) {
+	m := newMapTable[int, int](1 << 16)
+	for k := range 10 {
+		m.Put(k, k)
+	}
+	if m.reserved != initialBuildTable {
+		t.Fatalf("after 10 keys, reserved = %d, want %d", m.reserved, initialBuildTable)
+	}
+	for k := 10; k <= initialBuildTable; k++ {
+		m.Put(k, k)
+	}
+	if m.reserved != 2*initialBuildTable {
+		t.Errorf("after %d keys, reserved = %d, want %d", initialBuildTable+1, m.reserved, 2*initialBuildTable)
+	}
+}
