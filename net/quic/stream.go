@@ -347,7 +347,7 @@ func (s *Stream) SetWriteDeadline(t time.Time) error {
 	c.mu.Lock()
 	s.writeDeadline = t
 	c.armStreamDeadlineLocked(t)
-	c.cond.Broadcast() // a writer parked on credit or on the window re-reads its deadline
+	c.wakeAllLocked() // a writer parked on credit or on the window re-reads its deadline
 	c.mu.Unlock()
 	return nil
 }
@@ -402,7 +402,7 @@ func (c *Conn) expireStreamDeadlinesLocked(now time.Time) time.Time {
 		earlier(s.writeDeadline)
 	}
 	if wakeWriters {
-		c.cond.Broadcast()
+		c.wakeAllLocked()
 	}
 	return next
 }
@@ -439,6 +439,9 @@ func (s *Stream) write(p []byte, fin bool) (int, error) {
 	// write is four datagrams, and one system call carries the four.
 	c.batching, c.batchErr = true, nil
 	written, err := s.writeLocked(p, fin)
+	// Whatever ended the write — done, failed, or woken by a MAX_DATA it
+	// had no use for — the credit it leaves goes to the next parked writer.
+	c.passCreditLocked()
 	c.batching = false
 	c.flushBatchLocked()
 	if c.writersIn.Add(-1) == 0 {
@@ -495,7 +498,11 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 			// is entitled to know it is the bottleneck (§4.1) — then wait
 			// for MAX_DATA / MAX_STREAM_DATA to arrive on the read loop.
 			c.sendBlockedFramesLocked(s)
-			if err := c.waitForCreditLocked(s.writeDeadline); err != nil {
+			wait := c.waitForCreditLocked
+			if s.sendQ.avail() > 0 {
+				wait = c.waitForConnCreditLocked // the connection's credit alone is spent
+			}
+			if err := wait(s.writeDeadline); err != nil {
 				return written, err
 			}
 			continue
@@ -515,6 +522,7 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 		// go gives its credit back.
 		s.sendQ.sent += uint64(n)
 		c.connSend.sent += uint64(n)
+		c.passCreditLocked() // what this frame left is another writer's
 		// sendableLocked again after every wake from the window: the wait
 		// releases mu, and a STOP_SENDING read meanwhile would have ended
 		// this direction and declared this very offset final
@@ -531,6 +539,7 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 				// from the new account would wrap the counter and leave
 				// the connection without credit for good.
 				c.connSend.sent -= uint64(n)
+				c.passCreditLocked()
 			}
 			if errors.Is(err, errRefit) {
 				continue // cut again for the datagram size now in force
@@ -585,7 +594,7 @@ func (s *Stream) Reset(code uint64) error {
 	frame := appendFrame(nil, FrameResetStream, s.id, code, s.writeOff)
 	err := c.sendPacketLocked(spaceApplication, frame, sendOpts{}) // ungated: see sendOpts.waitCwnd
 	c.maybeRemoveLocked(s)
-	c.cond.Broadcast() // a writer blocked on credit for this stream gives up
+	c.wakeAllLocked() // a writer blocked on credit for this stream gives up
 	return sentOrRecorded(err)
 }
 
@@ -963,7 +972,7 @@ func (c *Conn) localStreamCountersLocked(uni bool) (opened, limit *uint64) {
 func (c *Conn) waitStreamCreditLocked(ctx context.Context, uni bool) error {
 	stop := context.AfterFunc(ctx, func() {
 		c.mu.Lock()
-		c.cond.Broadcast()
+		c.wakeAllLocked()
 		c.mu.Unlock()
 	})
 	defer stop()

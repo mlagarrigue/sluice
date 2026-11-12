@@ -5,7 +5,8 @@ import (
 	"testing/synctest"
 )
 
-// creditWakes parks writers on the connection's cond, counts their wake-ups,
+// creditWakes parks writers where a writer out of the connection's credit
+// alone parks (connCredit), counts their wake-ups,
 // and sends the MAX_DATA values given; it returns the wake-ups counted.
 // spent starts the connection window used up, as a writer that parked for
 // credit leaves it.
@@ -21,7 +22,7 @@ func creditWakes(t *testing.T, writers int, spent bool, raise func(base uint64, 
 			go func() {
 				c.mu.Lock()
 				for !stop {
-					c.cond.Wait()
+					c.connCredit.Wait()
 					if !stop {
 						wakes++
 					}
@@ -46,7 +47,7 @@ func creditWakes(t *testing.T, writers int, spent bool, raise func(base uint64, 
 		c.mu.Lock()
 		got = wakes
 		stop = true
-		c.cond.Broadcast()
+		c.wakeAllLocked()
 		c.mu.Unlock()
 		for range writers {
 			<-done
@@ -76,12 +77,14 @@ func TestAMaxDataAgainstAWindowWithRoomWakesNoOne(t *testing.T) {
 }
 
 // The other side of the rule: against a spent window, the first raise wakes
-// every parked writer — any of them may take the credit — and the raises
-// after it, the window no longer spent, wake no one.
-func TestAMaxDataAgainstASpentWindowWakesTheWritersOnce(t *testing.T) {
+// one parked writer — the one that takes the credit, and wakes the next if
+// it leaves some (passCreditLocked) — and the raises after it, the window no
+// longer spent, wake no one. It woke every parked writer, all but one to
+// park again.
+func TestAMaxDataAgainstASpentWindowWakesOneWriter(t *testing.T) {
 	const writers, frames = 4, 8
 	got := creditWakes(t, writers, true, func(base uint64, i int) uint64 { return base + uint64(i) + 1 }, frames)
-	if got != writers {
-		t.Fatalf("%d one-byte MAX_DATA raises against a spent window woke %d parked writers %d times, want %d", frames, writers, got, writers)
+	if got != 1 {
+		t.Fatalf("%d one-byte MAX_DATA raises against a spent window woke %d parked writers %d times, want once", frames, writers, got)
 	}
 }

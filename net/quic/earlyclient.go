@@ -286,7 +286,7 @@ func (c *Conn) rejectEarlyLocked() {
 		c.peerMaxStreamsUni = c.peerParams.InitialMaxStreamsUni
 	}
 	c.grants = c.grants[:0]
-	c.cond.Broadcast()
+	c.wakeAllLocked()
 }
 
 // applyRememberedLocked takes a ticket's remembered parameters as the

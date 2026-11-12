@@ -7,6 +7,7 @@ import (
 	"math"
 	"net"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/mlagarrigue/sluice/internal/varint"
@@ -1789,6 +1790,34 @@ func (o sendOpts) deadlineLocked() time.Time {
 // broadcast at the deadline wakes the writer, whose own loop comes back
 // here — still out of credit — and finds the time passed.
 func (c *Conn) waitForCreditLocked(deadline time.Time) error {
+	return c.waitOnLocked(&c.cond, deadline)
+}
+
+// waitForConnCreditLocked is waitForCreditLocked for a writer whose stream
+// has room and whose connection's credit is spent: it parks on connCredit,
+// which a MAX_DATA wakes one writer at a time.
+func (c *Conn) waitForConnCreditLocked(deadline time.Time) error {
+	return c.waitOnLocked(&c.connCredit, deadline)
+}
+
+// passCreditLocked wakes the next writer parked on the connection's credit
+// when some is left: a MAX_DATA woke one, and what that one did not take
+// is the next one's. Callers hold mu.
+func (c *Conn) passCreditLocked() {
+	if c.connSend.avail() > 0 {
+		c.connCredit.Signal()
+	}
+}
+
+// wakeAllLocked wakes every parked writer, whichever cond it waits on: the
+// wake-ups that are not a MAX_DATA's concern them all. Callers hold mu.
+func (c *Conn) wakeAllLocked() {
+	c.cond.Broadcast()
+	c.connCredit.Broadcast()
+}
+
+// waitOnLocked is the two waits' body, parking on cond.
+func (c *Conn) waitOnLocked(cond *sync.Cond, deadline time.Time) error {
 	select {
 	case <-c.closed:
 		return errClosed
@@ -1812,7 +1841,7 @@ func (c *Conn) waitForCreditLocked(deadline time.Time) error {
 	// return it as they end, and would erase it or return it as theirs.
 	batchErr := c.batchErr
 	c.batchErr = nil
-	c.cond.Wait()
+	cond.Wait()
 	c.batching, c.batchErr = batching, batchErr
 	select {
 	case <-c.closed:

@@ -732,7 +732,7 @@ func (c *Conn) applyPeerLimitsLocked(p TransportParameters) {
 	// Whoever raises the limits wakes what the old ones stopped: a writer
 	// parked on the remembered credit has room now. Held back, the raise no
 	// longer rides handlePeerParameters' own broadcast.
-	c.cond.Broadcast()
+	c.wakeAllLocked()
 }
 
 // sendLimitsLocked is the parameter set this end's sending is bounded by:
@@ -885,7 +885,7 @@ func (c *Conn) handlePeerParameters(raw []byte) error {
 	if c.idleTimeout != 0 {
 		c.idleDeadline = time.Now().Add(c.idleTimeout)
 	}
-	c.cond.Broadcast()
+	c.wakeAllLocked()
 	return nil
 }
 
@@ -917,7 +917,7 @@ func (c *Conn) install(l tls.QUICEncryptionLevel, suiteID uint16, secret []byte,
 				c.flushDatagramLocked()
 			}
 			c.earlySealer = nil
-			c.cond.Broadcast() // a writer waiting since a refused 0-RTT (awaitSealLocked)
+			c.wakeAllLocked() // a writer waiting since a refused 0-RTT (awaitSealLocked)
 		}
 		c.spaces[space].sealer = sealer
 		if space == spaceApplication && c.limitsHeld {

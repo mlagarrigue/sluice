@@ -101,6 +101,15 @@ type Conn struct {
 	// registration takes the listener's lock under this one.
 	mu   sync.Mutex
 	cond sync.Cond // credit arriving, or the connection ending
+	// connCredit is where a writer parks when the connection's credit
+	// alone is spent (its stream has room): a MAX_DATA wakes one of them,
+	// and a writer that leaves credit behind wakes the next (passCredit).
+	// On cond, every parked writer woke for every MAX_DATA that raised a
+	// spent window and all but one parked again: a peer granting a byte at
+	// a time bought a wake-up per writer with each three-byte frame
+	// (BenchmarkCreditTrickle). Every other wake-up reaches both
+	// (wakeAllLocked): a deadline, a reset or the end concern them too.
+	connCredit sync.Cond
 
 	// writeRefusals counts sends refused by an ICMP surfacing on the
 	// socket, and writeRefusal keeps the last one; the handshake adds them

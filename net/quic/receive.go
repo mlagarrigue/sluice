@@ -1574,7 +1574,9 @@ func (c *Conn) handleLimitGrant(f Frame) {
 		if c.connSend.grant(f.value) {
 			c.rxProgress = true
 			if spent {
-				c.cond.Broadcast()
+				// One writer parked on the connection's credit; it wakes
+				// the next if it leaves credit behind (passCreditLocked).
+				c.connCredit.Signal()
 			}
 		}
 	// A MAX_STREAMS wakes the writers waiting for a stream only when it
@@ -1586,14 +1588,14 @@ func (c *Conn) handleLimitGrant(f Frame) {
 			c.peerMaxStreamsBidi = f.value
 			c.bidiBlockedTold = false
 			c.rxProgress = true
-			c.cond.Broadcast()
+			c.wakeAllLocked()
 		}
 	default: // MAX_STREAMS for unidirectional streams
 		if f.value > c.peerMaxStreamsUni {
 			c.peerMaxStreamsUni = f.value
 			c.uniBlockedTold = false
 			c.rxProgress = true
-			c.cond.Broadcast()
+			c.wakeAllLocked()
 		}
 	}
 }
@@ -1614,7 +1616,7 @@ func (c *Conn) handleMaxStreamData(f Frame, space int) error {
 	if s.sendQ.grant(f.value) {
 		c.rxProgress = true
 		if spent {
-			c.cond.Broadcast() // see handleLimitGrant
+			c.wakeAllLocked() // see handleLimitGrant
 		}
 	}
 	c.mu.Unlock()
@@ -1938,7 +1940,7 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 	if out.newlyAcked > 0 {
 		// The controller heard each acknowledged packet; the window may
 		// have grown and a writer parked on it must look again.
-		c.cond.Broadcast()
+		c.wakeAllLocked()
 		// What this path has carried, which is what earns a DPLPMTUD
 		// probe (pmtu.go). Reset with the rest of the path's state on a
 		// migration, since what the old path carried proves nothing

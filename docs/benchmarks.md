@@ -32,6 +32,7 @@ figure that differs, to the character, from the median of its row.
 - [HTTP/1.1, watching for a client that leaves](#http11-watching-for-a-client-that-leaves)
 - [QUIC, on an emulated path](#quic-on-an-emulated-path)
 - [A QUIC socket in a burst](#a-quic-socket-in-a-burst)
+- [Credit a byte at a time](#credit-a-byte-at-a-time)
 - [Joins and hydration, in isolation](#joins-and-hydration-in-isolation)
 - [Measured in one session](#measured-in-one-session)
   - [Conditions](#conditions)
@@ -1307,6 +1308,26 @@ measure again:
 ```
 go test -run '^$' -bench BenchmarkUDPReceiveBurst -benchtime=20x -count=6 ./internal/bench/
 ```
+
+## Credit a byte at a time
+
+What one MAX_DATA frame costs when it raises a spent connection window by a
+single byte while N writers are parked on it (`BenchmarkCreditTrickle`,
+`net/quic`): a peer granting its credit a byte at a time. The writers used
+to wait on one condition, so every frame woke them all; one took the byte,
+the others parked again. They now wait on a condition of the connection's
+credit alone, which a MAX_DATA wakes one writer at a time, each passing the
+turn on when it leaves credit behind. Paired A/B, twelve alternated rounds,
+same machine, mean per frame and rounds won by the change:
+
+| N | before | after | won |
+|---|---|---|---|
+| 1 | 287 ns | 289 ns | 3/12, noise |
+| 64 | 1811 ns | 288 ns | 12/12 |
+| 1024 | 78698 ns | 434 ns | 12/12 |
+
+The cost no longer grows with N: a peer no longer buys N wake-ups with
+three bytes.
 
 ## Joins and hydration, in isolation
 

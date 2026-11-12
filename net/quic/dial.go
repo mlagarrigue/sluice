@@ -368,6 +368,7 @@ func assembleConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient 
 	c.ecnRecv = ecnSocket(pc)
 	c.ecn.reset(c.ecnRecv)
 	c.cond.L = &c.mu
+	c.connCredit.L = &c.mu
 	// RFC 9000 §17.4: an endpoint that does not implement the latency spin
 	// bit SHOULD still set it to a random value per connection, so that
 	// disabling is not itself a signal. Re-rolled when the DCID rotates —

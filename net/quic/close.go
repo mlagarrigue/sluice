@@ -248,7 +248,7 @@ func (c *Conn) ShutdownWithError(ctx context.Context, code uint64) error {
 func (c *Conn) drain(ctx context.Context) error {
 	stop := context.AfterFunc(ctx, func() {
 		c.mu.Lock()
-		c.cond.Broadcast()
+		c.wakeAllLocked()
 		c.mu.Unlock()
 	})
 	defer stop()
@@ -293,7 +293,7 @@ func (c *Conn) Ping(ctx context.Context) error {
 	}
 	stop := context.AfterFunc(ctx, func() {
 		c.mu.Lock()
-		c.cond.Broadcast()
+		c.wakeAllLocked()
 		c.mu.Unlock()
 	})
 	defer stop()
@@ -356,7 +356,7 @@ func (c *Conn) closeOnce(code uint64, app bool) {
 		close(c.closed)
 		c.wakeOwnedReadLoop()
 		c.mu.Lock()
-		c.cond.Broadcast() // writers parked on credit learn it is over
+		c.wakeAllLocked() // writers parked on credit learn it is over
 		c.mu.Unlock()
 	})
 }
