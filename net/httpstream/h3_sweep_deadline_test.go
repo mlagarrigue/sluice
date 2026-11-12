@@ -1,8 +1,15 @@
 package httpstream
 
 import (
+	"context"
+	"fmt"
+	"io"
+	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
+	"github.com/mlagarrigue/sluice/internal/dgram"
 	"github.com/mlagarrigue/sluice/net/quic"
 )
 
@@ -33,4 +40,74 @@ func TestH3ASweepAtTheDeadlineFailsTheStream(t *testing.T) {
 	if len(failed) == 0 && !a.nextExpiry.IsZero() && !a.nextExpiry.After(deadline) {
 		t.Fatalf("a sweep at the deadline failed no stream and left the next expiry at the same instant: the timer is re-armed with a wait of zero, and fires again with the clock unmoved")
 	}
+}
+
+// The same end to end: a client sends a HEADERS frame cut short, then only
+// PINGs, and ServeH3Conn — in a synctest bubble, over an in-memory QUIC
+// pair — resets the stream with H3_REQUEST_INCOMPLETE once ReadTimeout has
+// passed. Before the sweep failed a stream at its deadline, the bubble's
+// clock stopped at that instant: the sweep's timer re-armed at zero for
+// ever, and the test ran into go test's -timeout instead of failing here.
+// IdleTimeout and QUIC's idle timeout are far past the observation, so that
+// only the read timeout can end the stream.
+func TestH3TruncatedHeadersThenPingFailsAtTheDeadline(t *testing.T) {
+	const readTimeout = 300 * time.Millisecond
+	synctest.Test(t, func(t *testing.T) {
+		serverPC, clientPC := dgram.Pair()
+		defer func() { _ = serverPC.Close() }()
+		defer func() { _ = clientPC.Close() }()
+		// As in h3idle_conformance_test.go: the closing period runs out
+		// before the bubble's clock stops.
+		defer time.Sleep(10 * time.Second)
+		params := quic.DefaultConfig()
+		params.MaxIdleTimeout = time.Hour
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		go func() {
+			conn, err := acceptOne(t, serverPC, h3ServerTLS(t), params)
+			if err != nil {
+				return
+			}
+			_ = ServeH3Conn(ctx, conn, Config{ReadTimeout: readTimeout, IdleTimeout: time.Hour}, echoTarget)
+		}()
+		conn, err := quic.Dial(t.Context(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), params)
+		if err != nil {
+			t.Fatalf("Dial: %v", err)
+		}
+		defer func() { _ = conn.Close() }()
+		s, err := conn.OpenStream(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := h3Request("GET", "/")
+		start := time.Now()
+		if _, err := s.Write(request[:len(request)-2]); err != nil {
+			t.Fatal(err)
+		}
+		read := make(chan error, 1)
+		go func() {
+			_, err := io.ReadAll(s)
+			read <- err
+		}()
+		const watch = 20 * readTimeout
+		for time.Since(start) < watch {
+			pctx, stop := context.WithTimeout(t.Context(), readTimeout/3)
+			_ = conn.Ping(pctx)
+			<-pctx.Done()
+			stop()
+			select {
+			case err := <-read:
+				elapsed := time.Since(start)
+				if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%#x", h3RequestIncomplete)) {
+					t.Fatalf("the truncated request's stream ended with %v, want a reset with H3_REQUEST_INCOMPLETE (%#x)", err, h3RequestIncomplete)
+				}
+				if elapsed < readTimeout || elapsed > 2*readTimeout {
+					t.Fatalf("the stream was reset %v after its first bytes, want between ReadTimeout (%v) and twice it", elapsed, readTimeout)
+				}
+				return
+			default:
+			}
+		}
+		t.Fatalf("the truncated request's stream still stands %v after its first bytes, with ReadTimeout %v", time.Since(start), readTimeout)
+	})
 }
