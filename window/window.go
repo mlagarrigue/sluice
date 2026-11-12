@@ -160,9 +160,12 @@ func (l Late) String() string {
 // # Cost
 //
 // Measured at 5.43 ns/element on 1024-element windows and 8.93 on 8-element
-// ones (docs/benchmarks.md, "The architecture's figures"), allocation-free but for one slice per pane. That is above the ~1.5 ns
-// per-stage budget, which bounds stateless operators where the only cost is
-// the indirect call; here every element also pays a caller callback returning
+// ones (BenchmarkWindowWide and BenchmarkWindowNarrow, docs/benchmarks.md,
+// "The architecture's figures"), allocation-free but for one slice per pane.
+//
+// That is above the ~1.5 ns per-stage budget, which bounds stateless
+// operators where the only cost is the indirect call; here every element
+// also pays a caller callback returning
 // a 24-byte [time.Time] and two time comparisons — the order check and the
 // window test. What is left is the operator's actual work. The narrow-window
 // figure is the same work plus the per-pane copy, which is what buys [Pane]'s

@@ -1,6 +1,7 @@
 package sluice_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -613,19 +614,149 @@ func TestDurationsHaveASource(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for i, line := range strings.Split(string(b), "\n") {
-			if strings.HasSuffix(f, ".go") && !strings.HasPrefix(strings.TrimSpace(line), "//") {
-				continue
+		for _, e := range unsourcedDurationsIn(f, string(b), string(page), measured) {
+			t.Error(e)
+		}
+	}
+}
+
+// A paragraph that names its section of docs/benchmarks.md is held to that
+// section: the page holds hundreds of durations, and more than half of those
+// of a decade lie within the tolerance of another, so a stale figure checked
+// against the whole page passed — window.go's 4.5 ns, where its section says
+// 5.43.
+func TestDurationsAreReadInTheSectionTheyCite(t *testing.T) {
+	page, err := os.ReadFile("docs/benchmarks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := os.ReadFile("window/window.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const quoted = "Measured at 5.43 ns/element"
+	if !strings.Contains(string(src), quoted) {
+		t.Fatalf("window/window.go no longer says %q: the witness needs another figure", quoted)
+	}
+	stale := strings.Replace(string(src), quoted, "Measured at 4.5 ns/element", 1)
+	errs := unsourcedDurationsIn("window/window.go", stale, string(page), measuredIn(string(page)))
+	if !slices.ContainsFunc(errs, func(e string) bool { return strings.Contains(e, "4.5 ns") }) {
+		t.Errorf("window.go quoting 4.5 ns against a section that says 5.43 passed: %v", errs)
+	}
+}
+
+// citedSection is the section of docs/benchmarks.md a paragraph names, as
+// `docs/benchmarks.md, "Title"`, wrapped across lines or not; benchName is a
+// benchmark a paragraph names, which narrows it to that benchmark's rows.
+var (
+	citedSection = regexp.MustCompile(`docs/benchmarks\.md, "([^"]+)"`)
+	benchName    = regexp.MustCompile(`\bBenchmark[A-Z][A-Za-z0-9_]*`)
+)
+
+// sectionTitled finds the section a citation names: by its title, or by the
+// start of it — a heading may carry a date the citation leaves out.
+func sectionTitled(bySection map[string]string, title string) (string, bool) {
+	slug := slugOf(title)
+	if s, ok := bySection[slug]; ok {
+		return s, true
+	}
+	best := ""
+	for k := range bySection {
+		if strings.HasPrefix(k, slug+"-") && (best == "" || len(k) < len(best)) {
+			best = k
+		}
+	}
+	return bySection[best], best != ""
+}
+
+// linesNaming is the part of page that states figures for the benchmarks
+// named: every line that names one, and the header of each table one of its
+// rows does, so that measuredIn still reads the row's bare figures in the
+// unit the header gives them.
+func linesNaming(page string, names []string) string {
+	quoted := make([]string, len(names))
+	for i, n := range names {
+		quoted[i] = regexp.QuoteMeta(n)
+	}
+	named := regexp.MustCompile(`\b(?:` + strings.Join(quoted, "|") + `)\b`)
+	lines := strings.Split(page, "\n")
+	var out []string
+	header := -1 // the first line of the table being read
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "|") {
+			header = -1
+		} else if header < 0 {
+			header = i
+		}
+		if !named.MatchString(line) {
+			continue
+		}
+		if header >= 0 && header+1 < i {
+			out = append(out, "", lines[header], lines[header+1])
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
+// unsourcedDurationsIn checks the durations of one file — its comments for
+// Go, all of it for a decision record — paragraph by paragraph: a paragraph
+// that cites a section of page against that section's figures, any other
+// against whole, every figure of the page.
+func unsourcedDurationsIn(f, text, page string, whole []float64) []string {
+	bySection := sections(page)
+	goFile := strings.HasSuffix(f, ".go")
+	lines := strings.Split(text, "\n")
+	var errs []string
+	var para []int // line indexes of the paragraph being read
+	flush := func() {
+		if len(para) == 0 {
+			return
+		}
+		var joined []string
+		for _, i := range para {
+			joined = append(joined, strings.TrimPrefix(strings.TrimSpace(lines[i]), "//"))
+		}
+		flat := strings.Join(strings.Fields(strings.Join(joined, " ")), " ")
+		pool, where := whole, "in no table or sentence of docs/benchmarks.md"
+		if m := citedSection.FindStringSubmatch(flat); m != nil {
+			section, ok := sectionTitled(bySection, m[1])
+			if !ok {
+				errs = append(errs, fmt.Sprintf("%s:%d: cites %q, a section docs/benchmarks.md does not have", f, para[0]+1, m[1]))
 			}
-			for _, m := range duration.FindAllStringSubmatch(line, -1) {
+			pool, where = measuredIn(section), fmt.Sprintf("not in %q, the section of docs/benchmarks.md its paragraph cites", m[1])
+			// Naming the benchmarks as well narrows it to their rows: a
+			// section holds figures of many, and a stale one sits within the
+			// tolerance of some other as often as not.
+			if names := benchName.FindAllString(flat, -1); len(names) > 0 {
+				pool = measuredIn(linesNaming(section, names))
+				where = fmt.Sprintf("in no row of %q naming %s, which its paragraph names", m[1], strings.Join(names, " or "))
+			}
+		}
+		for _, i := range para {
+			for _, m := range duration.FindAllStringSubmatch(lines[i], -1) {
 				if _, ok := unsourcedDurations[f+" "+m[0]]; ok {
 					continue
 				}
 				v := nanos(m)
-				if !slices.ContainsFunc(measured, func(w float64) bool { return relative(v, w) <= figureTolerance }) {
-					t.Errorf("%s:%d: %s is in no table or sentence of docs/benchmarks.md", f, i+1, m[0])
+				if !slices.ContainsFunc(pool, func(w float64) bool { return relative(v, w) <= figureTolerance }) {
+					errs = append(errs, fmt.Sprintf("%s:%d: %s is %s", f, i+1, m[0], where))
 				}
 			}
 		}
+		para = para[:0]
 	}
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case goFile && (!strings.HasPrefix(trimmed, "//") || trimmed == "//"):
+			flush()
+		case !goFile && trimmed == "":
+			flush()
+		default:
+			para = append(para, i)
+		}
+	}
+	flush()
+	return errs
 }
