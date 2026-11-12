@@ -7,6 +7,9 @@ import (
 	"compress/zlib"
 	"io"
 	"testing"
+
+	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/zstd"
 )
 
 // TestEncodings: under each protocol and each coding, buffered and in
@@ -16,7 +19,7 @@ import (
 // deflate body is decoded and counted.
 func TestEncodings(t *testing.T) {
 	protos(t, func(t *testing.T, proto string) { //nolint:thelper // a sub-test body
-		for _, encoding := range []string{"identity", codingGzip, codingDeflate} {
+		for _, encoding := range []string{"identity", codingGzip, codingDeflate, codingBrotli, codingZstd} {
 			for _, stream := range []bool{false, true} {
 				name := encoding
 				if stream {
@@ -74,6 +77,8 @@ func TestDecode(t *testing.T) {
 	gz := enc(func(w io.Writer) io.WriteCloser { return gzip.NewWriter(w) })
 	zl := enc(func(w io.Writer) io.WriteCloser { return zlib.NewWriter(w) })
 	raw := enc(func(w io.Writer) io.WriteCloser { fw, _ := flate.NewWriter(w, flate.DefaultCompression); return fw })
+	br := enc(func(w io.Writer) io.WriteCloser { return brotli.NewWriter(w) })
+	zs := enc(func(w io.Writer) io.WriteCloser { zw, _ := zstd.NewWriter(w); return zw })
 	for _, tc := range []struct {
 		name, asked, coding string
 		body                []byte
@@ -91,6 +96,14 @@ func TestDecode(t *testing.T) {
 		{"gzip cut", codingGzip, "gzip", gz[:len(gz)-4], false, false, false},
 		{"zlib cut", codingDeflate, "deflate", zl[:len(zl)/2], false, false, false},
 		{"gzip header on a clear body", codingGzip, "gzip", doc, false, false, false},
+		{"br", codingBrotli, "br", br, true, true, false},
+		{"zstd", codingZstd, "zstd", zs, true, true, false},
+		{"zstd asked, clear", codingZstd, "", doc, true, false, false},
+		{"zstd when br asked", codingBrotli, "zstd", zs, false, false, false},
+		{"br unasked", "", "br", br, false, false, false},
+		{"br cut", codingBrotli, "br", br[:len(br)/2], false, false, false},
+		{"zstd cut", codingZstd, "zstd", zs[:len(zs)/2], false, false, false},
+		{"zstd header on a clear body", codingZstd, "zstd", doc, false, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d, err := decode(tc.asked, tc.coding, tc.body)
@@ -107,5 +120,21 @@ func TestDecode(t *testing.T) {
 	}
 	if r := float64(len(doc)) / float64(len(gz)); r < 3 {
 		t.Fatalf("a list page compresses %.1f×, want a document worth compressing", r)
+	}
+
+	// Past maxDecoded, a few kilobytes on the wire are refused, on the
+	// streamed decoders and on zstd's whole-frame one alike.
+	big := make([]byte, maxDecoded+1)
+	var gzBig bytes.Buffer
+	gw, _ := gzip.NewWriterLevel(&gzBig, gzip.BestSpeed)
+	_, _ = gw.Write(big)
+	_ = gw.Close()
+	zw, _ := zstd.NewWriter(nil)
+	zsBig := zw.EncodeAll(big, nil)
+	_ = zw.Close()
+	for coding, body := range map[string][]byte{codingGzip: gzBig.Bytes(), codingZstd: zsBig} {
+		if _, err := decode(coding, coding, body); err == nil {
+			t.Errorf("%s: a document of %d bytes, from %d on the wire, accepted past the bound", coding, len(big), len(body))
+		}
 	}
 }

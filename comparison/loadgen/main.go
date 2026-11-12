@@ -189,7 +189,7 @@ func parse(args []string) (campaign, error) {
 	fs.BoolVar(&st.noVerify, "no-verify", false, "accept any certificate from the server: for one that generated its own at startup (the trivial server, a local or chained run of the study's); never with -ca")
 	fs.DurationVar(&st.slo, "slo", 0, "X: the p99 to hold; 0 takes the scenario's (static 10ms, unit and write 25ms, list 100ms, mixed 50ms). A request unanswered 10 X + 4 RTT after it was due timed out")
 	fs.DurationVar(&st.rtt, "rtt", 0, "the round trip injected on the wire, for the budget C = 2 R (RTT + X) of a ramp and the deadline 10 X + 4 RTT of a request")
-	fs.StringVar(&st.encoding, "encoding", "identity", "the content coding asked for in Accept-Encoding: identity, gzip or deflate (br and zstd once their decoders are in go.mod)")
+	fs.StringVar(&st.encoding, "encoding", "identity", "the content coding asked for in Accept-Encoding: identity, gzip, deflate, br or zstd")
 	fs.StringVar(&st.profile, "profile", profileStage, "stage (one rate for -duration), plateau (the same, long, read by -window) or peak (-duration at -rate, -peak-for at -peak-factor times it, -duration at -rate again)")
 	fs.DurationVar(&st.window, "window", 0, "also write one line per window of this length; a plateau or a peak defaults to 10s")
 	fs.IntVar(&st.peakFactor, "peak-factor", 5, "the peak's rate over -rate, under -profile peak")
@@ -249,11 +249,9 @@ func parse(args []string) (campaign, error) {
 	switch st.encoding {
 	case "identity":
 		st.encoding = ""
-	case codingGzip, codingDeflate:
-	case "br", "zstd":
-		return c, fmt.Errorf("-encoding %s: its decoder is not in loadgen/go.mod yet; identity, gzip or deflate", st.encoding)
+	case codingGzip, codingDeflate, codingBrotli, codingZstd:
 	default:
-		return c, fmt.Errorf("-encoding %q: want identity, gzip or deflate", st.encoding)
+		return c, fmt.Errorf("-encoding %q: want identity, gzip, deflate, br or zstd", st.encoding)
 	}
 	if rates != "" {
 		for part := range strings.SplitSeq(rates, ",") {

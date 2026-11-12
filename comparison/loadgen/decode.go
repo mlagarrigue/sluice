@@ -10,6 +10,9 @@ import (
 	"io"
 	"strings"
 	"sync"
+
+	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/zstd"
 )
 
 // The content codings the generator asks for (§2.3 bis). It asks for one
@@ -18,7 +21,14 @@ import (
 const (
 	codingGzip    = "gzip"
 	codingDeflate = "deflate"
+	codingBrotli  = "br"   // RFC 7932
+	codingZstd    = "zstd" // RFC 8878
 )
+
+// maxDecoded bounds a decoded document: a list page is ~50 KB, and a
+// zstd frame may announce a window or a size the generator has no reason
+// to allocate.
+const maxDecoded = 64 << 20
 
 // decoded is a body as the check reads it, and what it cost on the wire.
 type decoded struct {
@@ -28,9 +38,10 @@ type decoded struct {
 }
 
 // decode returns the document under the body's Content-Encoding, read to
-// its end: a gzip member's trailer or a zlib stream's checksum is where a
-// compressed body is complete, whether or not a Content-Length announced
-// it. A body in clear is always accepted (§2.3 bis: a server may decline
+// its end: a gzip member's trailer, a zlib stream's checksum, a brotli
+// stream's last meta-block or a zstd frame's end is where a compressed body
+// is complete, whether or not a Content-Length announced it; past
+// maxDecoded bytes it is refused. A body in clear is always accepted (§2.3 bis: a server may decline
 // to compress, and that is counted, not a fault); a coding the client did
 // not ask for never is, since a client could not read it.
 //
@@ -76,11 +87,35 @@ func decode(asked, coding string, body []byte) (decoded, error) {
 			defer zlibReaders.Put(zr)
 			r = zr
 		}
+	case codingBrotli:
+		br, _ := brotliReaders.Get().(*brotli.Reader)
+		if br == nil {
+			br = brotli.NewReader(bytes.NewReader(body))
+		} else {
+			_ = br.Reset(bytes.NewReader(body)) // always nil
+		}
+		defer brotliReaders.Put(br)
+		r = br
+	case codingZstd:
+		// DecodeAll reads whole frames: a frame cut short is an error, and
+		// a checksum the frame carries is verified.
+		zd, err := zstdDecoder()
+		if err != nil {
+			return decoded{}, fmt.Errorf("zstd: %w", err)
+		}
+		doc, err := zd.DecodeAll(body, make([]byte, 0, 4*len(body)))
+		if err != nil {
+			return decoded{}, fmt.Errorf("zstd: %w", err)
+		}
+		return decoded{doc: doc, compressed: true}, nil
 	}
 	var buf bytes.Buffer
 	buf.Grow(4 * len(body))
-	if _, err := buf.ReadFrom(r); err != nil {
+	if _, err := buf.ReadFrom(io.LimitReader(r, maxDecoded+1)); err != nil {
 		return decoded{}, fmt.Errorf("%s: %w", asked, err)
+	}
+	if buf.Len() > maxDecoded {
+		return decoded{}, fmt.Errorf("%s: a document past %d bytes", asked, maxDecoded)
 	}
 	return decoded{doc: buf.Bytes(), compressed: true, raw: raw}, nil
 }
@@ -88,7 +123,14 @@ func decode(asked, coding string, body []byte) (decoded, error) {
 // The decoders are reused: their tables are the cost, and the generator
 // decodes every answer of a stage (§2.3 bis: it must not become the
 // bottleneck).
-var gzipReaders, zlibReaders sync.Pool
+var gzipReaders, zlibReaders, brotliReaders sync.Pool
+
+// zstdDecoder is one decoder for the process: DecodeAll is safe from every
+// goroutine at once, and its block decoders, one per GOMAXPROCS, are the
+// tables reused.
+var zstdDecoder = sync.OnceValues(func() (*zstd.Decoder, error) {
+	return zstd.NewReader(nil, zstd.WithDecoderConcurrency(0), zstd.WithDecoderMaxMemory(maxDecoded))
+})
 
 // zlibResetter is what zlib.NewReader returns.
 type zlibResetter interface {

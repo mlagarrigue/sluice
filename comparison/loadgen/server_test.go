@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/zstd"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 )
@@ -69,7 +71,7 @@ type connState struct {
 // document that honours the response contract for the key the path
 // carries, so that the generator's checks all pass and only the delay is
 // under test. The document is encoded in the coding the request asks for,
-// gzip or deflate. A key listed in `faults` gets the fault instead:
+// gzip, deflate, br or zstd. A key listed in `faults` gets the fault instead:
 // another key, a 404, a 503, no answer, or a body in clear, cut, in
 // another coding or in raw deflate. Under h1 and h2 it is net/http's
 // server; under h3, quic-go's, on a UDP socket, with the same certificate.
@@ -176,7 +178,10 @@ func (ts *testServer) write(w http.ResponseWriter, r *http.Request, doc []byte, 
 	case inClear:
 		coding = ""
 	case unasked:
-		coding = map[string]string{"": codingGzip, codingGzip: codingDeflate, codingDeflate: codingGzip}[coding]
+		coding = map[string]string{
+			"": codingGzip, codingGzip: codingDeflate, codingDeflate: codingGzip,
+			codingBrotli: codingZstd, codingZstd: codingBrotli,
+		}[coding]
 	}
 	body := doc
 	if coding != "" {
@@ -185,6 +190,10 @@ func (ts *testServer) write(w http.ResponseWriter, r *http.Request, doc []byte, 
 		switch {
 		case coding == codingGzip:
 			zw = gzip.NewWriter(&buf)
+		case coding == codingBrotli:
+			zw = brotli.NewWriter(&buf)
+		case coding == codingZstd:
+			zw, _ = zstd.NewWriter(&buf)
 		case f == rawDeflate:
 			zw, _ = flate.NewWriter(&buf, flate.DefaultCompression)
 		default:
