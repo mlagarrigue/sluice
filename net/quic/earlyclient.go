@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net"
 	"slices"
+	"time"
 )
 
 // ErrEarlyDataRejected is what a stream opened in 0-RTT reports once the
@@ -198,8 +199,9 @@ func earlyTLSConfig(cfg *tls.Config) *tls.Config {
 //
 // ctx bounds DialEarly's own wait, as it bounds Dial's handshake. Once
 // DialEarly has returned early, the rest of the handshake runs under
-// [DefaultHandshakeTimeout]; a handshake that fails then closes the
-// connection, which [Conn.Done] reports. cfg follows Dial's rules.
+// [DefaultHandshakeTimeout], or under ctx's deadline when that is later; a
+// handshake that fails then closes the connection, which [Conn.Done]
+// reports. cfg follows Dial's rules.
 func DialEarly(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls.Config, params Config) (*Conn, error) {
 	c, err := newClientConn(ctx, pc, addr, earlyTLSConfig(cfg), params)
 	if err != nil {
@@ -207,7 +209,11 @@ func DialEarly(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls.C
 	}
 	c.wantsEarly = true
 	done := make(chan error, 1)
-	go func() { done <- c.handshake(context.WithoutCancel(ctx)) }()
+	hsCtx, cancel := earlyHandshakeContext(ctx, time.Now())
+	go func() {
+		defer cancel()
+		done <- c.handshake(hsCtx)
+	}()
 	select {
 	case err := <-done:
 		if err != nil {
@@ -221,6 +227,21 @@ func DialEarly(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls.C
 		<-done
 		return nil, abandonedErr(ctx)
 	}
+}
+
+// earlyHandshakeContext is the context DialEarly's handshake runs under: not
+// canceled with ctx, since the handshake outlives an early return, but held
+// to ctx's deadline when that is later than DefaultHandshakeTimeout from now.
+// A shorter one is DialEarly's own wait's to keep (its select), and once
+// DialEarly has returned the default applies, as its doc says; without the
+// longer one a slow path got the default where Dial, under the same ctx,
+// waits for ctx.
+func earlyHandshakeContext(ctx context.Context, now time.Time) (context.Context, context.CancelFunc) {
+	hs := context.WithoutCancel(ctx)
+	if d, ok := ctx.Deadline(); ok && d.After(now.Add(DefaultHandshakeTimeout)) {
+		return context.WithDeadline(hs, d)
+	}
+	return hs, func() {}
 }
 
 // rejectEarlyLocked is a client's answer to the server's refusal of 0-RTT,
