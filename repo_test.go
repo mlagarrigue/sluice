@@ -1075,6 +1075,22 @@ func TestH3SpecIsPinned(t *testing.T) {
 	}
 }
 
+// TestCheckAPIIgnoresMainPackages: scripts/check-api.sh compares what each
+// commit exports, and a main package exports nothing anyone can import.
+// 99fcc10, a refactor without a '!', renamed cmd/sluicegen's Generate to
+// generate, and the script refused it as a removal. It needs the commit in
+// the clone: the hygiene job fetches the whole history and runs this test.
+func TestCheckAPIIgnoresMainPackages(t *testing.T) {
+	const commit = "99fcc10"
+	if exec.Command("git", "cat-file", "-e", commit+"^{commit}").Run() != nil {
+		t.Skipf("%s is not in this clone (a shallow fetch)", commit)
+	}
+	out, err := exec.Command("scripts/check-api.sh", commit+"^", commit).CombinedOutput()
+	if err != nil {
+		t.Fatalf("scripts/check-api.sh %s^ %s: %v\n%s", commit, commit, err, out)
+	}
+}
+
 // TestPostgresRangeMatchesTheCIMatrix: the postgres job plays every major the
 // PostgreSQL project still supports, and three documents name that range to
 // a reader choosing a server. A major that leaves the matrix at its end of

@@ -695,7 +695,7 @@ jobs:
       - name: No tool traces, no attributions
         run: scripts/check-hygiene.sh
       - name: Commit messages, links, decision records
-        run: go test -run 'TestCommitMessages|TestDocumentationLinks|TestDecisionRecords|TestScopeList' .
+        run: go test -run 'TestCommitMessages|TestDocumentationLinks|TestDecisionRecords|TestScopeList|TestCheckAPIIgnoresMainPackages' .
       # Each commit of the event's range against its parent: the pull
       # request's base..head, or the push's before..after.
       - name: Exported API, commit by commit

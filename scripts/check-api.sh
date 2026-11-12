@@ -55,14 +55,28 @@ commit_data() {
   echo "$out"
 }
 
-# incompatible OLD NEW prints apidiff's incompatible changes, if any.
+# incompatible OLD NEW prints apidiff's incompatible changes, if any, but
+# those of a main package: nothing imports one, so the names it exports are
+# no one's API (cmd/sluicegen renamed Generate to generate in 99fcc10, a
+# refactor apidiff called a removal).
 incompatible() {
-  if ! go run "$apidiff" -m -incompatible "$1" "$2" 2>"$tmp/log"; then
+  if ! go run "$apidiff" -m -incompatible "$1" "$2" >"$tmp/changes" 2>"$tmp/log"; then
     cat "$tmp/log" >&2
     echo "check-api: apidiff rendered no verdict" >&2
     exit 1
   fi
+  if [ -z "$mains" ]; then
+    mains=$(go list -f '{{if eq .Name "main"}}{{.ImportPath}}{{end}}' ./... | sed "s|^$module/||" | grep . || true)
+    mains=${mains:-none}
+  fi
+  while IFS= read -r line; do
+    symbol=${line#- ./}
+    pkg=${symbol%%.*}
+    [ "$symbol" != "$line" ] && echo "$mains" | grep -qxF "$pkg" && continue
+    echo "$line"
+  done <"$tmp/changes"
 }
+mains=
 
 gochange='*.go :!*_test.go go.mod'
 
