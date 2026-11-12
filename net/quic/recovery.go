@@ -790,34 +790,63 @@ type lostRef struct {
 	payload []byte
 }
 
-// lostMemory bounds sentTracker.lost.
+// lostMemory bounds sentTracker.lost. lateAcked marks what it takes in one
+// 64-bit word, hence the bound on the bound.
 const lostMemory = 64
 
+var _ [64 - lostMemory]struct{} // lateAcked's word holds a bit per entry
+
 // rememberLost records a packet declared lost whose payload is queued for
-// retransmission, forgetting the oldest entry past lostMemory.
+// retransmission. s.lost stays ascending by packet number, which is the
+// order losses are declared in nearly always — the insert is an append —
+// and past lostMemory the lowest number, the oldest packet, is forgotten.
 func (s *sentTracker) rememberLost(pn uint64, payload []byte) {
 	if len(s.lost) == lostMemory {
+		if pn < s.lost[0].pn {
+			return // older than all it would displace
+		}
 		copy(s.lost, s.lost[1:])
 		s.lost = s.lost[:lostMemory-1]
 	}
-	s.lost = append(s.lost, lostRef{pn: pn, payload: payload})
+	i := len(s.lost)
+	for i > 0 && s.lost[i-1].pn > pn {
+		i--
+	}
+	s.lost = append(s.lost, lostRef{})
+	copy(s.lost[i+1:], s.lost[i:])
+	s.lost[i] = lostRef{pn: pn, payload: payload}
 }
 
 // lateAcked moves the entries of s.lost that the frame's ranges cover to
 // out.lateAcked: packets declared lost that arrived after all. Called only
 // when s.lost holds something, which no connection without loss does.
+//
+// The ranges come strictly descending and s.lost is ascending, so one merge
+// from the top of both visits each range and each entry once, as markAcked
+// does against s.packets: an ACK costs its own walk plus the table once,
+// never ranges times entries, which a peer would buy at two bytes a range.
 func (s *sentTracker) lateAcked(out *ackOutcome, largest uint64, rangeData []byte) {
+	j := len(s.lost) - 1
+	var took uint64
 	_ = decodeAckRanges(largest, rangeData, func(lo, hi uint64) {
-		kept := s.lost[:0]
-		for _, l := range s.lost {
-			if lo <= l.pn && l.pn <= hi {
-				out.lateAcked = append(out.lateAcked, l.payload)
-				continue
+		for ; j >= 0 && s.lost[j].pn >= lo; j-- {
+			if s.lost[j].pn <= hi {
+				out.lateAcked = append(out.lateAcked, s.lost[j].payload)
+				took |= 1 << j
 			}
+		}
+	})
+	if took == 0 {
+		return
+	}
+	kept := s.lost[:0]
+	for k, l := range s.lost {
+		if took&(1<<k) == 0 {
 			kept = append(kept, l)
 		}
-		s.lost = kept
-	})
+	}
+	clear(s.lost[len(kept):])
+	s.lost = kept
 }
 
 // oldestEliciting is what the probe timeout is armed on.

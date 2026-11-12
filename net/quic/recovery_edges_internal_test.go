@@ -148,6 +148,12 @@ func TestLostMemoryKeepsTheNewest(t *testing.T) {
 	if len(s.lost) != lostMemory || s.lost[0].pn != 6 {
 		t.Errorf("%d remembered from %d, want %d from 6", len(s.lost), s.lost[0].pn, lostMemory)
 	}
+	// A loss declared late for an older packet than all those remembered
+	// displaces none of them.
+	s.rememberLost(2, []byte{framePing})
+	if len(s.lost) != lostMemory || s.lost[0].pn != 6 {
+		t.Errorf("after packet 2: %d remembered from %d, want %d from 6", len(s.lost), s.lost[0].pn, lostMemory)
+	}
 }
 
 // takeAll counts every packet's bytes and returns only real payloads.
