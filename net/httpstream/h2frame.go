@@ -223,9 +223,11 @@ func (r *frameReader) next() ([]h2Frame, bool) {
 		}
 		// The preface consumes bytes without producing a frame, so what it
 		// took has to be dropped here or the next round parses it again — as
-		// a frame, which it is not.
+		// a frame, which it is not. Its deadline goes with it, as a consumed
+		// frame's does above.
 		if used > 0 {
 			r.consume(used)
+			r.deadline = time.Time{}
 			continue
 		}
 		if err := r.fill(); err != nil {
