@@ -1092,11 +1092,13 @@ func parseHeaderLine(line []byte) (Header, error) {
 //   - beside Content-Length it is the smuggling pair itself, 400;
 //   - on HTTP/1.0 the sender cannot know the coding is understood, so RFC
 //     9112 §6.1 calls the framing faulty, 400;
-//   - chunked anywhere but last ("chunked, gzip", "chunked, chunked") is a
-//     body whose length cannot be determined, 400 and the connection closed
-//     (RFC 9112 §6.3), as is a field that names no coding at all;
-//   - a final coding this server does not implement ("gzip", "gzip, chunked",
-//     "chunked;q=1") is a feature gap, not a malformed request — 501, as §6.1
+//   - chunked anywhere but last ("chunked, gzip", "chunked, chunked") or
+//     absent ("gzip", "chunked;q=1", which is not the bare coding) is a body
+//     whose length cannot be determined, 400 and the connection closed (RFC
+//     9112 §6.3, a MUST that outranks §6.1's SHOULD of 501), as is a field
+//     that names no coding at all;
+//   - chunked last behind a coding this server does not implement ("gzip,
+//     chunked") is a feature gap, not a malformed request — 501, as §6.1
 //     asks. The connection closes there too: no framing was established.
 func checkFraming(req Request, http11 bool) (chunked bool, err error) {
 	hosts, lengths := 0, 0
@@ -1151,6 +1153,8 @@ func checkFraming(req Request, http11 bool) (chunked bool, err error) {
 		return false, fmt.Errorf("%w: chunked is not the final transfer coding", ErrMalformed)
 	case !lastChunked && unknown == nil:
 		return false, fmt.Errorf("%w: Transfer-Encoding names no coding", ErrMalformed)
+	case !lastChunked:
+		return false, fmt.Errorf("%w: chunked is not the final transfer coding", ErrMalformed)
 	case unknown != nil:
 		return false, fmt.Errorf("%w: %s", errUnsupportedCoding, cite(unknown))
 	}

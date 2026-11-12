@@ -128,8 +128,11 @@ guessing:
   Content-Length beside it is decoded — bounded like any body, by
   `Config.MaxBodyBytes` or, streamed, `Config.MaxStreamedBodyBytes`; chunk
   extensions ignored, trailers delivered in `Request.Trailers` once the
-  body has ended. A coding this server does not implement is answered 501;
-  Transfer-Encoding beside Content-Length — the request-smuggling pair in
+  body has ended. A request whose last coding is not chunked ("gzip"
+  alone, "chunked, gzip") is answered 400 and the connection closed: the
+  length of its body cannot be known (RFC 9112 §6.3). A coding this server
+  does not implement, followed by chunked ("gzip, chunked"), is answered
+  501. Transfer-Encoding beside Content-Length — the request-smuggling pair in
   its entirety — or on an HTTP/1.0 request is answered 400.
 - **A repeated or non-numeric Content-Length**, answered 400.
 - **Authority-form targets** — origin-form, a target starting with "/", is

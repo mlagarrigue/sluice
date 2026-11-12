@@ -733,9 +733,10 @@ func statusFor(err error) int {
 	case isTimeout(err):
 		return 408
 	case errors.Is(err, errUnsupportedCoding):
-		// RFC 9112 §6.1: a transfer coding this server does not implement is
-		// answered 501, not 400 — the request may be well-formed; the server
-		// is the one missing the feature.
+		// RFC 9112 §6.1: a transfer coding this server does not implement,
+		// with chunked final, is answered 501, not 400 — the request may be
+		// well-formed; the server is the one missing the feature. Without
+		// chunked final, checkFraming answers 400 first (§6.3).
 		return 501
 	case errors.Is(err, errRequestLineTooLong):
 		// RFC 9112 §3: a request-target longer than the server will parse

@@ -44,9 +44,16 @@ func TestParseRefusals(t *testing.T) {
 		want error
 	}{
 		{
-			"a transfer coding this server does not implement",
-			req("POST /x HTTP/1.1", "Host: h", "Transfer-Encoding: gzip"),
+			"a transfer coding this server does not implement, chunked final",
+			req("POST /x HTTP/1.1", "Host: h", "Transfer-Encoding: gzip, chunked"),
 			errUnsupportedCoding,
+		},
+		{
+			// RFC 9112 §6.3: chunked is not the final coding, so the length
+			// cannot be determined — 400 and close, not §6.1's 501.
+			"a transfer coding with no chunked after it",
+			req("POST /x HTTP/1.1", "Host: h", "Transfer-Encoding: gzip"),
+			ErrMalformed,
 		},
 		{
 			"a fragment in the target",
@@ -287,8 +294,10 @@ func TestTransferEncodingIsReadAsAList(t *testing.T) {
 		{"chunked stacked on itself", []string{"Transfer-Encoding: chunked, chunked"}, ErrMalformed},
 		{"no coding at all", []string{"Transfer-Encoding: ,"}, ErrMalformed},
 		{"a coding this server does not implement, chunked final", []string{"Transfer-Encoding: gzip, chunked"}, errUnsupportedCoding},
-		{"a coding this server does not implement, alone", []string{"Transfer-Encoding: gzip"}, errUnsupportedCoding},
-		{"chunked with a parameter", []string{"Transfer-Encoding: chunked;q=1"}, errUnsupportedCoding},
+		// RFC 9112 §6.3: with chunked absent it is not the final coding, and
+		// the MUST (400) outranks §6.1's SHOULD (501).
+		{"a coding this server does not implement, alone", []string{"Transfer-Encoding: gzip"}, ErrMalformed},
+		{"chunked with a parameter", []string{"Transfer-Encoding: chunked;q=1"}, ErrMalformed},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
