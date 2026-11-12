@@ -186,6 +186,13 @@ type Conn struct {
 	// its transaction" from a wrong answer into an error.
 	txGen uint64
 
+	// sending joins the goroutine that flushes a pipelined write
+	// (Tx.Pipeline, Tx.Savepoints) while the answers are read, nil
+	// otherwise. The Writer's buffer is that goroutine's until it has
+	// returned, so a write the read must make — refusing a copy-in it did
+	// not ask for (refuseCopyIn) — waits for it first.
+	sending func() error
+
 	// stmts is the prepared-statement cache, nil when off. See
 	// [Config.StatementCacheSize] — including the two places where it loses.
 	stmts *stmtCache

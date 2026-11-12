@@ -851,6 +851,14 @@ const copyTextReason = "the client writes binary rows and the COPY statement doe
 // write. A batched read has no Sync out yet and sends its own in resync; a
 // simple Query has none to send, the backend reports ready on its own.
 func (c *Conn) refuseCopyIn(synced bool) error {
+	if c.sending != nil {
+		// Met while a pipelined write may still be flushing: the Writer is
+		// the sender's until it has returned. A server in copy-in mode is
+		// reading, so the flush ends.
+		if err := c.sending(); err != nil {
+			return c.breakConn(fmt.Errorf("refusing an unexpected copy-in: %w", err))
+		}
+	}
 	c.w.Message(pgwire.FrontendCopyFail, append([]byte(copyFailReason), 0))
 	if synced {
 		c.w.Sync()

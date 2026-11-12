@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mlagarrigue/sluice"
@@ -797,6 +798,11 @@ func (tx *Tx) Savepoints(ctx context.Context, names ...string) error {
 		}
 		sent <- err
 	}()
+	// Read while the write may still be going, as Tx.Pipeline does; a
+	// copy-in refused on the way waits for the sender (Conn.sending).
+	join := sync.OnceValue(func() error { return c.joinSender(sent) })
+	c.sending = join
+	defer func() { c.sending = nil; _ = join() }()
 	w := c.watchCancel(ctx)
 	// A simple Query message is its own transaction boundary, so each one
 	// answers with its own ReadyForQuery.
@@ -813,7 +819,7 @@ func (tx *Tx) Savepoints(ctx context.Context, names ...string) error {
 	}
 	// Joined before returning: the next statement reuses the Writer's
 	// buffer, which is the sender's until it has returned.
-	if err := c.joinSender(sent); err != nil {
+	if err := join(); err != nil {
 		// The write's error, whatever the read broke the connection with
 		// first: the sender's close is what ended that read.
 		c.broken = fmt.Errorf("%w: establishing %d savepoints: %w", ErrConnBroken, len(names), err)

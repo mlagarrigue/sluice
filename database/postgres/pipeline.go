@@ -227,7 +227,8 @@ func (tx *Tx) Pipeline(ctx context.Context, parts []Part, cfg QueryConfig, fn fu
 	// on this connection reuses the Writer's buffer, which is the sender's
 	// until it has returned.
 	join := sync.OnceValue(func() error { return c.joinSender(sent) })
-	defer func() { _ = join() }()
+	c.sending = join
+	defer func() { c.sending = nil; _ = join() }()
 	w := c.watchCancel(ctx)
 	defer w.disarm()
 	err = c.readPipeline(ctx, parts, batchRows, batchBytes, fn)
