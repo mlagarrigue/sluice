@@ -749,9 +749,12 @@ func (b *bbr3) isTimeToProbeBW(now time.Time) bool {
 // and TargetInflight is in bytes, which the 63 bound would always win;
 // the intent §5.3.3.8.2 states is "min(reno_bdp, T_reno_bound) round
 // trips", a BDP counted in packets — Linux reads it that way too — so the
-// target is divided by the datagram size first.
+// target is divided by the datagram size first. The target is floored at
+// minPipeCwnd: under one datagram of product the division gives zero
+// rounds, the condition holds at once, and DOWN and CRUISE are skipped for
+// a bandwidth probe that never ends.
 func (b *bbr3) renoCoexistenceProbeTime() bool {
-	rounds := min(b.targetInflight()/b.maxDatagram, bbr3RenoRoundsBound)
+	rounds := min(max(b.targetInflight(), b.minPipeCwnd())/b.maxDatagram, bbr3RenoRoundsBound)
 	return b.roundsSinceBwProbe >= rounds
 }
 

@@ -860,3 +860,47 @@ func TestBBR3ProbeRTTWaitsMinRTTFilterLen(t *testing.T) {
 	}
 	t.Fatalf("no ProbeRTT within %v of the min_rtt stamp", 2*bbr3MinRTTFilterLen)
 }
+
+// Under one datagram of bandwidth-delay product the Reno-coexistence count
+// divides to zero rounds; floored at minPipeCwnd, it is four, and a probe
+// does not start at once.
+func TestBBR3RenoCoexistenceWaitsUnderOneDatagram(t *testing.T) {
+	b := newBBR3(1200, &deliveryEstimator{})
+	b.minRTT = time.Millisecond
+	b.bw = 500 / b.minRTT.Seconds() // a product of 500 bytes
+	if got := b.targetInflight(); got >= b.maxDatagram {
+		t.Fatalf("targetInflight = %d, want under one datagram for this test", got)
+	}
+	b.roundsSinceBwProbe = 0
+	if b.renoCoexistenceProbeTime() {
+		t.Error("probe time at zero rounds under one datagram of product")
+	}
+	b.roundsSinceBwProbe = bbr3MinPipeCwnd
+	if !b.renoCoexistenceProbeTime() {
+		t.Errorf("no probe time after %d rounds", bbr3MinPipeCwnd)
+	}
+}
+
+// An application-limited sample below max_bw says nothing of the path and
+// leaves the max filter alone (§5.5.4); one above it, or one not limited,
+// is taken.
+func TestBBR3MaxFilterSkipsAnAppLimitedLowSample(t *testing.T) {
+	b := newBBR3(1200, &deliveryEstimator{})
+	high := rateSample{delivered: 12000, interval: 10 * time.Millisecond}
+	b.updateMaxBw(high, 0)
+	want := high.deliveryRate()
+	if b.maxBw != want {
+		t.Fatalf("max_bw = %v after the first sample, want %v", b.maxBw, want)
+	}
+	low := rateSample{delivered: 1200, interval: 10 * time.Millisecond, appLimited: true}
+	b.cycleCount += bbr3MaxBwFilterLen // the old sample has aged out of the window
+	b.updateMaxBw(low, 0)
+	if b.maxBw != want {
+		t.Errorf("max_bw = %v after an app-limited sample below it, want %v kept", b.maxBw, want)
+	}
+	low.appLimited = false
+	b.updateMaxBw(low, 0)
+	if b.maxBw != low.deliveryRate() {
+		t.Errorf("max_bw = %v after a sample not app-limited, want %v", b.maxBw, low.deliveryRate())
+	}
+}
