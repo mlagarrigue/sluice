@@ -41,19 +41,20 @@ func TestIntegrationContainersMatchTheServer(t *testing.T) {
 	t.Run("int4[] of 2x3 with a NULL", func(t *testing.T) {
 		a := pgtype.Array[int32]{
 			Dims:  []pgtype.ArrayDim{{Len: 2, Lower: 1}, {Len: 3, Lower: 1}},
-			Elems: []pgtype.Null[int32]{{Value: 1, Valid: true}, {Value: 2, Valid: true}, {Value: 3, Valid: true}, {Value: 4, Valid: true}, {}, {Value: 6, Valid: true}},
+			Elems: []int32{1, 2, 3, 4, 0, 6},
+			Nulls: []bool{false, false, false, false, true, false},
 		}
 		check(t, `'{{1,2,3},{4,NULL,6}}'::int4[]`, "int4[]", pgtype.OIDInt4Array,
 			pgtype.AppendArray(nil, a, pgtype.Int4Codec()), func(b []byte) bool {
 				got, err := pgtype.DecodeArray(pgtype.Array[int32]{}, b, pgtype.Int4Codec())
-				return err == nil && slices.Equal(got.Dims, a.Dims) && slices.Equal(got.Elems, a.Elems)
+				return err == nil && slices.Equal(got.Dims, a.Dims) && slices.Equal(got.Elems, a.Elems) && slices.Equal(got.Nulls, a.Nulls)
 			})
 	})
 
 	t.Run("text[] numbered from 0 and from -1", func(t *testing.T) {
 		a := pgtype.Array[string]{
 			Dims:  []pgtype.ArrayDim{{Len: 2, Lower: 0}, {Len: 1, Lower: -1}},
-			Elems: []pgtype.Null[string]{{Value: "a", Valid: true}, {Value: "", Valid: true}},
+			Elems: []string{"a", ""},
 		}
 		check(t, `'[0:1][-1:-1]={{a},{""}}'::text[]`, "text[]", pgtype.OIDTextArray,
 			pgtype.AppendArray(nil, a, pgtype.TextCodec()), func(b []byte) bool {
@@ -151,13 +152,11 @@ func TestIntegrationContainersMatchTheServer(t *testing.T) {
 				return pgtype.DecodeArray(pgtype.Array[pgtype.Range[int32]]{}, b, pgtype.Int4RangeCodec())
 			},
 		},
-		pgtype.Array[pgtype.Range[int32]]{Elems: []pgtype.Null[pgtype.Range[int32]]{
-			{Value: pgtype.Range[int32]{
-				Lower: pgtype.RangeBound[int32]{Value: 1, Inclusive: true}, Upper: pgtype.RangeBound[int32]{Value: 6},
-			}, Valid: true},
+		pgtype.Array[pgtype.Range[int32]]{Elems: []pgtype.Range[int32]{
+			{Lower: pgtype.RangeBound[int32]{Value: 1, Inclusive: true}, Upper: pgtype.RangeBound[int32]{Value: 6}},
 			{},
-			{Value: pgtype.Range[int32]{Empty: true}, Valid: true},
-		}})
+			{Empty: true},
+		}, Nulls: []bool{false, true, false}})
 
 	t.Run("record", func(t *testing.T) {
 		// record_recv refuses the anonymous record, so the bound parameter is
@@ -203,7 +202,7 @@ func TestIntegrationAnonymousRecordDecodes(t *testing.T) {
 		t.Fatalf("field 1 has OID %d, want int8[]", rec[1].OID)
 	}
 	a, err := pgtype.DecodeArray(pgtype.Array[int64]{}, rec[1].Value, pgtype.Int8Codec())
-	if err != nil || !slices.Equal(a.Elems, []pgtype.Null[int64]{{Value: 2, Valid: true}, {Value: 3, Valid: true}}) {
+	if err != nil || !slices.Equal(a.Elems, []int64{2, 3}) || len(a.Nulls) != 0 {
 		t.Errorf("field 1 = %+v, %v", a, err)
 	}
 	if _, err := pgtype.DecodeRecordField(rec[1], pgtype.Int8Codec()); err == nil {

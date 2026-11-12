@@ -37,27 +37,27 @@ func ExampleAppendText() {
 func ExampleAppendInt8Array() {
 	b := pgtype.AppendInt8Array(nil, []int64{1, 2, 3})
 	arr, err := pgtype.DecodeArray(pgtype.Array[int64]{}, b, pgtype.Int8Codec())
-	fmt.Println(len(b), len(arr.Elems), arr.Elems[2].Value, err)
+	fmt.Println(len(b), len(arr.Elems), arr.Elems[2], err)
 	// Output: 56 3 3 <nil>
 }
 
-// Any array of any type the package encodes, through its codec: a NULL
-// element comes back invalid rather than as a zero.
+// Any array of any type the package encodes, through its codec: the values
+// in a plain slice, and a NULL marked in Nulls rather than read as a zero.
 func ExampleDecodeArray() {
-	in := pgtype.Array[int32]{Elems: []pgtype.Null[int32]{{Value: 4, Valid: true}, {}, {Value: 6, Valid: true}}}
+	in := pgtype.Array[int32]{Elems: []int32{4, 0, 6}, Nulls: []bool{false, true, false}}
 	b := pgtype.AppendArray(nil, in, pgtype.Int4Codec())
 	out, err := pgtype.DecodeArray(pgtype.Array[int32]{}, b, pgtype.Int4Codec())
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
-	for _, e := range out.Elems {
-		fmt.Println(e.Value, e.Valid)
+	for i, v := range out.Elems {
+		fmt.Println(v, out.Nulls[i])
 	}
 	// Output:
-	// 4 true
-	// 0 false
-	// 6 true
+	// 4 false
+	// 0 true
+	// 6 false
 }
 
 // The codec of int4: its OIDs, and the pair of functions the containers

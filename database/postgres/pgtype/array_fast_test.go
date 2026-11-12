@@ -22,25 +22,27 @@ func fastMatchesGeneral[T any](t *testing.T, c Codec[T], values []T) {
 	general.decodeElems, general.appendElems = nil, nil
 	shapes := map[string]Array[T]{}
 	for _, n := range []int{0, 1, 3, 4, 5, 9, len(values)} {
-		elems := make([]Null[T], n)
+		elems := make([]T, n)
 		for i := range elems {
-			elems[i] = Null[T]{Value: values[i%len(values)], Valid: true}
+			elems[i] = values[i%len(values)]
 		}
 		shapes["n="+strconv.Itoa(n)] = Array[T]{Elems: elems}
+		// A mask with no NULL in it is no NULL: written as the array without.
+		shapes["n="+strconv.Itoa(n)+",mask"] = Array[T]{Elems: elems, Nulls: make([]bool, n)}
 		for _, at := range []int{0, 1, 2, 3, 4, n - 1} {
 			if at < 0 || at >= n {
 				continue
 			}
-			withNull := append([]Null[T](nil), elems...)
-			withNull[at] = Null[T]{}
-			shapes["n="+strconv.Itoa(n)+",null@"+strconv.Itoa(at)] = Array[T]{Elems: withNull}
+			withNull := append([]T(nil), elems...)
+			var zero T
+			withNull[at] = zero
+			nulls := make([]bool, n)
+			nulls[at] = true
+			shapes["n="+strconv.Itoa(n)+",null@"+strconv.Itoa(at)] = Array[T]{Elems: withNull, Nulls: nulls}
 		}
 	}
 	if len(values) >= 4 {
-		elems := make([]Null[T], 4)
-		for i := range elems {
-			elems[i] = Null[T]{Value: values[i], Valid: true}
-		}
+		elems := append([]T(nil), values[:4]...)
 		shapes["2x2 from 0"] = Array[T]{Dims: []ArrayDim{{Len: 2, Lower: 0}, {Len: 2, Lower: 1}}, Elems: elems}
 	}
 	for name, a := range shapes {
@@ -58,7 +60,7 @@ func fastMatchesGeneral[T any](t *testing.T, c Codec[T], values []T) {
 	// An element of a length the type does not have, after three that
 	// are right: the loop leaves it to the general path, whose error it is.
 	if len(values) >= 3 {
-		raw := AppendArray(nil, Array[T]{Elems: []Null[T]{{Value: values[0], Valid: true}, {Value: values[1], Valid: true}, {Value: values[2], Valid: true}}}, c)
+		raw := AppendArray(nil, Array[T]{Elems: values[:3]}, c)
 		raw = binary.BigEndian.AppendUint32(raw, 3)
 		raw = append(raw, 1, 2, 3)
 		binary.BigEndian.PutUint32(raw[12:], 4) // four elements now

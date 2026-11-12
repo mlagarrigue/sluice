@@ -51,10 +51,11 @@ type Codec[T any] struct {
 	// decodeElems and appendElems are the element loops of an array of
 	// the type (array_fast.go), set by this package's codecs of the common
 	// types alone: a Codec built elsewhere keeps its own Decode and Append
-	// for every element. decodeElems reads n elements off body and returns
-	// what follows them; appendElems says whether an element was NULL.
-	decodeElems func(dst []Null[T], body []byte, n int) ([]Null[T], []byte, error)
-	appendElems func(dst []byte, elems []Null[T]) ([]byte, bool)
+	// for every element. decodeElems reads, of n elements, those it expects
+	// and returns what follows them; appendElems writes an array with no
+	// NULL.
+	decodeElems func(dst []T, body []byte, n int) ([]T, []byte, error)
+	appendElems func(dst []byte, elems []T) []byte
 }
 
 // decodeTextValue is [DecodeText] in the shape of a Codec's Decode. A named

@@ -398,8 +398,9 @@ truncating to the server's microsecond. And `JSONBVersion` is the version
 byte a binary `jsonb` starts with; any other is refused.
 
 **NULL has one form in the connector: `pgtype.Null[T]`** — the value beside a
-`Valid` bit, no pointer, so no allocation. The nullable arrays carry
-`[]Null[T]`, and a generated hydrator (next section) fills a
+`Valid` bit, no pointer, so no allocation. An array keeps its NULLs in a
+mask beside its values (`Array[T].Nulls`) rather than one `Null[T]` per
+element, and a generated hydrator (next section) fills a
 `pgtype.Null[T]` field. A `Scan*` refuses a NULL rather than writing a
 zero; `ScanNulls` gives the mask of a column that may hold one. In your own
 structs, `*T` is accepted too, because the struct is yours; it costs the
@@ -426,9 +427,10 @@ r, err := pgtype.DecodeRange(raw, pgtype.DateCodec())         // a daterange
 ```
 
 - `Array[T]`: `Dims` — for each dimension, `Len` and `Lower`, the index of
-  the first element (1 unless stated otherwise) — and `Elems`, the elements
-  as `Null[T]`, row after row. `Array[T]{Elems: e}` without `Dims` is the
-  one-dimensional array. An array of any type in the table, up to six
+  the first element (1 unless stated otherwise) — `Elems`, the values, row
+  after row, and `Nulls`, the mask of the NULL elements, empty when there
+  is none. `Array[T]{Elems: values}` without `Dims` is the one-dimensional
+  array, and takes your slice as it is. An array of any type in the table, up to six
   dimensions, goes through `AppendArray`/`DecodeArray`; its parameter OID
   is `OIDXArray`.
 - `Range[T]`: two `RangeBound[T]` (`Value`, `Inclusive`, and `Unbounded`

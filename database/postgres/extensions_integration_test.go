@@ -87,7 +87,7 @@ func TestIntegrationExtensionTypesMatchTheServer(t *testing.T) {
 				return pgtype.DecodeArray(pgtype.Array[string]{}, b, ltree)
 			},
 		},
-		pgtype.Array[string]{Elems: []pgtype.Null[string]{{Value: "a.b", Valid: true}, {}}})
+		pgtype.Array[string]{Elems: []string{"a.b", ""}, Nulls: []bool{false, true}})
 }
 
 // pgvector is not in the official images; one CI entry installs its package and

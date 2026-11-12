@@ -33,11 +33,7 @@ func benchBoolValues() []bool {
 
 func benchBoolArray() Array[bool] {
 	values := benchBoolValues()
-	a := Array[bool]{Elems: make([]Null[bool], len(values))}
-	for i, v := range values {
-		a.Elems[i] = Null[bool]{Value: v, Valid: true}
-	}
-	return a
+	return Array[bool]{Elems: values}
 }
 
 func BenchmarkArrayDecodeBool1000(b *testing.B) {
@@ -73,11 +69,7 @@ func benchInt2Values() []int16 {
 
 func benchInt2Array() Array[int16] {
 	values := benchInt2Values()
-	a := Array[int16]{Elems: make([]Null[int16], len(values))}
-	for i, v := range values {
-		a.Elems[i] = Null[int16]{Value: v, Valid: true}
-	}
-	return a
+	return Array[int16]{Elems: values}
 }
 
 func BenchmarkArrayDecodeInt21000(b *testing.B) {
@@ -113,11 +105,7 @@ func benchInt4Values() []int32 {
 
 func benchInt4Array() Array[int32] {
 	values := benchInt4Values()
-	a := Array[int32]{Elems: make([]Null[int32], len(values))}
-	for i, v := range values {
-		a.Elems[i] = Null[int32]{Value: v, Valid: true}
-	}
-	return a
+	return Array[int32]{Elems: values}
 }
 
 func BenchmarkArrayDecodeInt41000(b *testing.B) {
@@ -153,11 +141,7 @@ func benchInt8Values() []int64 {
 
 func benchInt8Array() Array[int64] {
 	values := benchInt8Values()
-	a := Array[int64]{Elems: make([]Null[int64], len(values))}
-	for i, v := range values {
-		a.Elems[i] = Null[int64]{Value: v, Valid: true}
-	}
-	return a
+	return Array[int64]{Elems: values}
 }
 
 func BenchmarkArrayDecodeInt81000(b *testing.B) {
@@ -193,11 +177,7 @@ func benchFloat4Values() []float32 {
 
 func benchFloat4Array() Array[float32] {
 	values := benchFloat4Values()
-	a := Array[float32]{Elems: make([]Null[float32], len(values))}
-	for i, v := range values {
-		a.Elems[i] = Null[float32]{Value: v, Valid: true}
-	}
-	return a
+	return Array[float32]{Elems: values}
 }
 
 func BenchmarkArrayDecodeFloat41000(b *testing.B) {
@@ -233,11 +213,7 @@ func benchFloat8Values() []float64 {
 
 func benchFloat8Array() Array[float64] {
 	values := benchFloat8Values()
-	a := Array[float64]{Elems: make([]Null[float64], len(values))}
-	for i, v := range values {
-		a.Elems[i] = Null[float64]{Value: v, Valid: true}
-	}
-	return a
+	return Array[float64]{Elems: values}
 }
 
 func BenchmarkArrayDecodeFloat81000(b *testing.B) {
@@ -273,11 +249,7 @@ func benchUUIDValues() [][16]byte {
 
 func benchUUIDArray() Array[[16]byte] {
 	values := benchUUIDValues()
-	a := Array[[16]byte]{Elems: make([]Null[[16]byte], len(values))}
-	for i, v := range values {
-		a.Elems[i] = Null[[16]byte]{Value: v, Valid: true}
-	}
-	return a
+	return Array[[16]byte]{Elems: values}
 }
 
 func BenchmarkArrayDecodeUUID1000(b *testing.B) {
@@ -313,11 +285,7 @@ func benchTimestampTZValues() []time.Time {
 
 func benchTimestampTZArray() Array[time.Time] {
 	values := benchTimestampTZValues()
-	a := Array[time.Time]{Elems: make([]Null[time.Time], len(values))}
-	for i, v := range values {
-		a.Elems[i] = Null[time.Time]{Value: v, Valid: true}
-	}
-	return a
+	return Array[time.Time]{Elems: values}
 }
 
 func BenchmarkArrayDecodeTimestampTZ1000(b *testing.B) {
@@ -353,11 +321,7 @@ func benchTimestampValues() []time.Time {
 
 func benchTimestampArray() Array[time.Time] {
 	values := benchTimestampValues()
-	a := Array[time.Time]{Elems: make([]Null[time.Time], len(values))}
-	for i, v := range values {
-		a.Elems[i] = Null[time.Time]{Value: v, Valid: true}
-	}
-	return a
+	return Array[time.Time]{Elems: values}
 }
 
 func BenchmarkArrayDecodeTimestamp1000(b *testing.B) {
@@ -393,11 +357,7 @@ func benchDateValues() []time.Time {
 
 func benchDateArray() Array[time.Time] {
 	values := benchDateValues()
-	a := Array[time.Time]{Elems: make([]Null[time.Time], len(values))}
-	for i, v := range values {
-		a.Elems[i] = Null[time.Time]{Value: v, Valid: true}
-	}
-	return a
+	return Array[time.Time]{Elems: values}
 }
 
 func BenchmarkArrayDecodeDate1000(b *testing.B) {
@@ -433,11 +393,7 @@ func benchTextValues() []string {
 
 func benchTextArray() Array[string] {
 	values := benchTextValues()
-	a := Array[string]{Elems: make([]Null[string], len(values))}
-	for i, v := range values {
-		a.Elems[i] = Null[string]{Value: v, Valid: true}
-	}
-	return a
+	return Array[string]{Elems: values}
 }
 
 func BenchmarkArrayDecodeText1000(b *testing.B) {
@@ -473,11 +429,7 @@ func benchByteaValues() [][]byte {
 
 func benchByteaArray() Array[[]byte] {
 	values := benchByteaValues()
-	a := Array[[]byte]{Elems: make([]Null[[]byte], len(values))}
-	for i, v := range values {
-		a.Elems[i] = Null[[]byte]{Value: v, Valid: true}
-	}
-	return a
+	return Array[[]byte]{Elems: values}
 }
 
 func BenchmarkArrayDecodeBytea1000(b *testing.B) {
@@ -513,11 +465,7 @@ func benchNumericValues() []Numeric {
 
 func benchNumericArray() Array[Numeric] {
 	values := benchNumericValues()
-	a := Array[Numeric]{Elems: make([]Null[Numeric], len(values))}
-	for i, v := range values {
-		a.Elems[i] = Null[Numeric]{Value: v, Valid: true}
-	}
-	return a
+	return Array[Numeric]{Elems: values}
 }
 
 func BenchmarkArrayDecodeNumeric1000(b *testing.B) {

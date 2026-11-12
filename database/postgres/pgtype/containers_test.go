@@ -22,12 +22,8 @@ func words(ws ...int64) []byte {
 	return b
 }
 
-func valid[T any](vs ...T) []Null[T] {
-	out := make([]Null[T], len(vs))
-	for i, v := range vs {
-		out[i] = Null[T]{Value: v, Valid: true}
-	}
-	return out
+func valid[T any](vs ...T) []T {
+	return vs
 }
 
 // '{{1,2,3},{4,NULL,6}}'::int4[] as array_send writes it: two dimensions, the
@@ -42,7 +38,8 @@ var twoByThree = slices.Concat(
 func TestArrayTwoDimensionsMatchesArraySend(t *testing.T) {
 	a := Array[int32]{
 		Dims:  []ArrayDim{{Len: 2, Lower: 1}, {Len: 3, Lower: 1}},
-		Elems: []Null[int32]{{1, true}, {2, true}, {3, true}, {4, true}, {}, {6, true}},
+		Elems: []int32{1, 2, 3, 4, 0, 6},
+		Nulls: []bool{false, false, false, false, true, false},
 	}
 	if got := AppendArray(nil, a, Int4Codec()); !bytes.Equal(got, twoByThree) {
 		t.Errorf("AppendArray = % x\n        want % x", got, twoByThree)
@@ -64,7 +61,7 @@ func TestArrayOneDimensionMatchesTheNamedEncoders(t *testing.T) {
 	if want := AppendInt4Array(nil, []int32{1, -2, 3}); !bytes.Equal(plain, want) {
 		t.Errorf("one dimension, no NULL:\n generic % x\n named   % x", plain, want)
 	}
-	withNull := AppendArray(nil, Array[int64]{Elems: []Null[int64]{{7, true}, {}}}, Int8Codec())
+	withNull := AppendArray(nil, Array[int64]{Elems: []int64{7, 0}, Nulls: []bool{false, true}}, Int8Codec())
 	if want := AppendNullableInt8Array(nil, []Null[int64]{{7, true}, {}}); !bytes.Equal(withNull, want) {
 		t.Errorf("one dimension, a NULL:\n generic % x\n named   % x", withNull, want)
 	}
@@ -94,9 +91,10 @@ func TestArrayRoundTrips(t *testing.T) {
 		{name: "numbered from below zero", in: Array[string]{Dims: []ArrayDim{{1, -5}}, Elems: valid("x")}},
 		{name: "three dimensions", in: Array[string]{
 			Dims:  []ArrayDim{{1, 1}, {2, 1}, {2, 3}},
-			Elems: []Null[string]{{"a", true}, {}, {"", true}, {"d", true}},
+			Elems: []string{"a", "", "", "d"},
+			Nulls: []bool{false, true, false, false},
 		}},
-		{name: "all NULL", in: Array[string]{Dims: []ArrayDim{{2, 1}}, Elems: make([]Null[string], 2)}},
+		{name: "all NULL", in: Array[string]{Dims: []ArrayDim{{2, 1}}, Elems: make([]string, 2), Nulls: []bool{true, true}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			want := tc.want
@@ -117,7 +115,7 @@ func TestArrayRoundTrips(t *testing.T) {
 // The storage handed in is reused, and what was in it is gone: a decode that
 // appended to the caller's elements would hand back last batch's rows.
 func TestDecodeArrayReusesItsDestination(t *testing.T) {
-	dst := Array[int32]{Dims: make([]ArrayDim, 0, 4), Elems: make([]Null[int32], 3, 16)}
+	dst := Array[int32]{Dims: make([]ArrayDim, 0, 4), Elems: make([]int32, 3, 16)}
 	got, err := DecodeArray(dst, twoByThree, Int4Codec())
 	if err != nil {
 		t.Fatal(err)
@@ -161,7 +159,7 @@ func TestDecodeArrayRefusesWhatArraySendNeverWrites(t *testing.T) {
 		{"bytes after an empty array", slices.Concat(header(0, 0, OIDInt4), []byte{0}), "after the last"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			dst := Array[int32]{Elems: make([]Null[int32], 0, 4)}
+			dst := Array[int32]{Elems: make([]int32, 0, 4)}
 			got, err := DecodeArray(dst, tc.b, Int4Codec())
 			if !errors.Is(err, ErrCodec) || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want ErrCodec saying %q", err, tc.want)
@@ -504,13 +502,14 @@ func TestEveryCodecIsDistinctAndRoundTrips(t *testing.T) {
 func roundTrip[T any](c Codec[T], v T) func(*testing.T) (uint32, uint32) {
 	return func(t *testing.T) (uint32, uint32) {
 		t.Helper()
-		in := Array[T]{Elems: []Null[T]{{v, true}, {}}}
+		var zero T
+		in := Array[T]{Elems: []T{v, zero}, Nulls: []bool{false, true}}
 		got, err := DecodeArray(Array[T]{}, AppendArray(nil, in, c), c)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !got.Elems[1].Valid && got.Elems[0].Valid &&
-			bytes.Equal(c.Append(nil, got.Elems[0].Value), c.Append(nil, v)) {
+		if len(got.Nulls) == 2 && got.Nulls[1] && !got.Nulls[0] &&
+			bytes.Equal(c.Append(nil, got.Elems[0]), c.Append(nil, v)) {
 			return c.OID, c.ArrayOID
 		}
 		t.Errorf("%v came back as %+v", v, got.Elems)
@@ -523,10 +522,10 @@ func roundTrip[T any](c Codec[T], v T) func(*testing.T) (uint32, uint32) {
 func TestRangeCodecOfACreatedType(t *testing.T) {
 	const oid, arrayOID = 16500, 16499
 	floatrange := RangeCodec(Float8Codec(), oid, arrayOID)
-	in := Array[Range[float64]]{Elems: []Null[Range[float64]]{
-		{Value: Range[float64]{Lower: RangeBound[float64]{Value: -0.5, Inclusive: true}, Upper: RangeBound[float64]{Unbounded: true}}, Valid: true},
+	in := Array[Range[float64]]{Elems: []Range[float64]{
+		{Lower: RangeBound[float64]{Value: -0.5, Inclusive: true}, Upper: RangeBound[float64]{Unbounded: true}},
 		{},
-	}}
+	}, Nulls: []bool{false, true}}
 	b := AppendArray(nil, in, floatrange)
 	if got := binary.BigEndian.Uint32(b[8:12]); got != oid {
 		t.Errorf("the array names element type %d, want the range's %d", got, oid)

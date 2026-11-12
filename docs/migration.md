@@ -26,6 +26,15 @@ behavior that keep the signatures — a value now refused — come last.
 
 ### Database: `postgres`
 
+- **`Array[T]` holds its values in a `[]T`, its NULLs in `Nulls`**
+  (`feat(postgres)!: Array holds its values as a slice of T`):
+  `Elems` is a `[]T` where it was a `[]Null[T]`, and `Nulls []bool` marks
+  the NULL elements, empty when there is none.
+  `Array[T]{Elems: []Null[T]{{Value: v, Valid: true}}}` becomes
+  `Array[T]{Elems: []T{v}}`; an element read as `e.Value, e.Valid` is read
+  as `a.Elems[i]`, NULL when `i < len(a.Nulls) && a.Nulls[i]`. An array
+  with no NULL is then a plain slice, written and read as fast as the
+  named functions (`AppendInt4Array` and the others) write and read it.
 - **`Copier.Close` takes a context**
   (`a534fe5`): `cp.Close(ctx)`.
   It bounds the commit of the last

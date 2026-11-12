@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"slices"
 )
 
 // # The containers
@@ -21,24 +22,32 @@ import (
 //	// '{{1,2,3},{4,5,6}}'::int4[]
 //	pgtype.Array[int32]{
 //		Dims:  []pgtype.ArrayDim{{Len: 2, Lower: 1}, {Len: 3, Lower: 1}},
-//		Elems: []pgtype.Null[int32]{
-//			{Value: 1, Valid: true}, {Value: 2, Valid: true}, {Value: 3, Valid: true},
-//			{Value: 4, Valid: true}, {Value: 5, Valid: true}, {Value: 6, Valid: true},
-//		},
+//		Elems: []int32{1, 2, 3, 4, 5, 6},
 //	}
 //
-// Dims left nil means one dimension holding every element, numbered from 1:
-// `Array[T]{Elems: e}` is the one-dimensional array most callers want. An
-// array with no elements is the empty array, which the server sends with no
-// dimensions at all, and [DecodeArray] returns with Dims empty.
+//	// '{7,NULL,9}'::int4[]
+//	pgtype.Array[int32]{Elems: []int32{7, 0, 9}, Nulls: []bool{false, true, false}}
 //
-// Every element is a [Null], because any element of any array may be NULL and
-// a container written for every type cannot know which ones never are. The
-// one-dimensional functions named after their element (DecodeInt4Array and
-// the others) return plain values and refuse a NULL.
+// Dims left nil means one dimension holding every element, numbered from 1:
+// `Array[T]{Elems: values}` is the one-dimensional array most callers want,
+// and takes the caller's slice as it is. An array with no elements is the
+// empty array, which the server sends with no dimensions at all, and
+// [DecodeArray] returns with Dims empty.
+//
+// The values are a []T and the NULLs a mask beside them, rather than one
+// [Null] per element: an array with no NULL — the common case — is then a
+// plain slice to fill and to read, and its elements are written and read by
+// the same loop a []int32 gets, where the flag beside every element cost
+// 17 to 24% on int4.
 type Array[T any] struct {
 	Dims  []ArrayDim
-	Elems []Null[T]
+	Elems []T
+	// Nulls marks the NULL elements: Nulls[i] says Elems[i] is NULL, its
+	// value then ignored when encoding and zero when decoded. Empty means
+	// no element is NULL; set, it runs parallel to Elems, and an index past
+	// its end is not NULL. DecodeArray sets it only for an array that has a
+	// NULL, and reuses its storage.
+	Nulls []bool
 }
 
 // ArrayDim is one dimension of an [Array]: how many elements it spans, and
@@ -74,17 +83,22 @@ func AppendArray[T any](dst []byte, a Array[T], c Codec[T]) []byte {
 		dst = binary.BigEndian.AppendUint32(dst, uint32(d.Len))   //nolint:gosec // G115: the protocol field is int32
 		dst = binary.BigEndian.AppendUint32(dst, uint32(d.Lower)) //nolint:gosec // G115: the protocol field is int32
 	}
-	hasNull := false
-	if c.appendElems != nil {
-		dst, hasNull = c.appendElems(dst, a.Elems)
-	} else {
-		for _, v := range a.Elems {
-			hasNull = hasNull || !v.Valid
-			dst = appendNullValue(dst, v, c.Append)
-		}
-	}
-	if hasNull {
+	switch {
+	case slices.Contains(a.Nulls, true):
 		binary.BigEndian.PutUint32(dst[flags:], 1)
+		for i, v := range a.Elems {
+			if i < len(a.Nulls) && a.Nulls[i] {
+				dst = binary.BigEndian.AppendUint32(dst, nullElement)
+				continue
+			}
+			dst = appendValue(dst, v, c.Append)
+		}
+	case c.appendElems != nil:
+		dst = c.appendElems(dst, a.Elems)
+	default:
+		for _, v := range a.Elems {
+			dst = appendValue(dst, v, c.Append)
+		}
 	}
 	return dst
 }
@@ -115,7 +129,7 @@ func appendValue[T any](dst []byte, v T, enc func([]byte, T) []byte) []byte {
 // codec of int4 is refused rather than misread, and so is an empty one, which
 // still names its element type.
 func DecodeArray[T any](dst Array[T], b []byte, c Codec[T]) (Array[T], error) {
-	dst.Dims, dst.Elems = dst.Dims[:0], dst.Elems[:0]
+	dst.Dims, dst.Elems, dst.Nulls = dst.Dims[:0], dst.Elems[:0], dst.Nulls[:0]
 	if len(b) < 12 {
 		return dst, fmt.Errorf("%w: array header is %d bytes, want at least 12", ErrCodec, len(b))
 	}
@@ -157,16 +171,16 @@ func DecodeArray[T any](dst Array[T], b []byte, c Codec[T]) (Array[T], error) {
 		n *= int(d.Len)
 		dst.Dims = append(dst.Dims, d)
 	}
+	var err error
 	if c.decodeElems != nil {
-		var err error
+		// The type's loop reads what it expects; the general path takes the
+		// rest, from the first NULL or unexpected length on.
 		if dst.Elems, body, err = c.decodeElems(dst.Elems, body, n); err != nil {
 			return dst.reset(), err
 		}
-	} else {
-		var err error
-		if dst.Elems, body, err = otherElements(dst.Elems, body, 0, n, c.Decode); err != nil {
-			return dst.reset(), err
-		}
+	}
+	if dst, body, err = otherElements(dst, body, len(dst.Elems), n, c.Decode); err != nil {
+		return dst.reset(), err
 	}
 	if err := trailing(body); err != nil {
 		return dst.reset(), err
@@ -175,7 +189,9 @@ func DecodeArray[T any](dst Array[T], b []byte, c Codec[T]) (Array[T], error) {
 }
 
 // reset is the array a failed decode returns: dst's storage, nothing in it.
-func (a Array[T]) reset() Array[T] { return Array[T]{Dims: a.Dims[:0], Elems: a.Elems[:0]} }
+func (a Array[T]) reset() Array[T] {
+	return Array[T]{Dims: a.Dims[:0], Elems: a.Elems[:0], Nulls: a.Nulls[:0]}
+}
 
 // Range is a PostgreSQL range: two bounds, each included or not, either
 // absent, or the empty range.

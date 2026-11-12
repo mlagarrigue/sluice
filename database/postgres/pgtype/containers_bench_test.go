@@ -25,7 +25,7 @@ func BenchmarkDecodeInt4Array1000(b *testing.B) {
 	}
 	raw := AppendInt4Array(nil, values)
 	plain := make([]int32, 0, len(values))
-	arr := Array[int32]{Dims: make([]ArrayDim, 0, 1), Elems: make([]Null[int32], 0, len(values))}
+	arr := Array[int32]{Dims: make([]ArrayDim, 0, 1), Elems: make([]int32, 0, len(values))}
 	var err error
 	b.ReportAllocs()
 	switch benchArrayDecoder {
@@ -53,12 +53,12 @@ func BenchmarkDecodeInt4Array1000(b *testing.B) {
 // DecodeArray: the fixed-size geometric decoders allocate nothing per
 // element.
 func BenchmarkDecodePointArray1000(b *testing.B) {
-	elems := make([]Null[Point], 1000)
+	elems := make([]Point, 1000)
 	for i := range elems {
-		elems[i] = Null[Point]{Value: Point{X: float64(i), Y: -float64(i) / 3}, Valid: true}
+		elems[i] = Point{X: float64(i), Y: -float64(i) / 3}
 	}
 	raw := AppendArray(nil, Array[Point]{Elems: elems}, PointCodec())
-	arr := Array[Point]{Dims: make([]ArrayDim, 0, 1), Elems: make([]Null[Point], 0, len(elems))}
+	arr := Array[Point]{Dims: make([]ArrayDim, 0, 1), Elems: make([]Point, 0, len(elems))}
 	var err error
 	b.ReportAllocs()
 	for b.Loop() {
@@ -67,7 +67,7 @@ func BenchmarkDecodePointArray1000(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	if len(arr.Elems) != len(elems) || arr.Elems[999].Value != elems[999].Value {
-		b.Fatalf("decoded %d points, the last %v", len(arr.Elems), arr.Elems[len(arr.Elems)-1].Value)
+	if len(arr.Elems) != len(elems) || arr.Elems[999] != elems[999] {
+		b.Fatalf("decoded %d points, the last %v", len(arr.Elems), arr.Elems[len(arr.Elems)-1])
 	}
 }
