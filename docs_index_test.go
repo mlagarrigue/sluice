@@ -319,3 +319,42 @@ func TestEveryStatusOfTheGuidesIsInTroubleshooting(t *testing.T) {
 		}
 	}
 }
+
+// glossaryTerms are terms the guides use without defining them, counting on
+// the glossary they recommend ("a word you do not know is likely in the
+// glossary"); eleven of them had no entry. A closed list rather than every
+// bold term of the guides: bold there is also emphasis.
+var glossaryTerms = []string{
+	"Isolation level", "SCRAM", "SASLprep", "Realm", "Wildcard", "HPACK",
+	"GOAWAY", "RST_STREAM", "0-RTT", "NAT", "Congestion controller",
+	"Slow start", "Reno", "Fuzzing",
+}
+
+// Every term of glossaryTerms has its entry, and is still used by a page of
+// docs/ other than the glossary — a term no page uses leaves the list.
+func TestGlossaryDefinesTheGuidesTerms(t *testing.T) {
+	glossary, err := os.ReadFile("docs/glossary.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var others []byte
+	err = filepath.WalkDir("docs", func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".md") || p == filepath.Join("docs", "glossary.md") {
+			return err
+		}
+		b, err := os.ReadFile(p) //nolint:gosec // G304: a repository path, not input
+		others = append(others, b...)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, term := range glossaryTerms {
+		if !bytes.Contains(glossary, []byte("\n- **"+term)) {
+			t.Errorf("docs/glossary.md has no entry for %q", term)
+		}
+		if !bytes.Contains(bytes.ToLower(others), bytes.ToLower([]byte(term))) {
+			t.Errorf("%q is used by no page of docs/ but the glossary: drop it from glossaryTerms", term)
+		}
+	}
+}

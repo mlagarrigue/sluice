@@ -102,10 +102,10 @@ places is.
 - **Prepared statement** — a query PostgreSQL has parsed and planned once,
   run again with new parameters; the **plan** is how the server decided to
   read the tables.
-- **Tenant** — one customer of a service shared by several, whose data must
-  stay apart from the others'.
-- **Row-level security** — PostgreSQL's policies that decide which rows a
-  session may see, from that session's settings (`SET LOCAL app.tenant_id`).
+- **Isolation level** — how much a transaction sees of the others running
+  beside it: *read committed* (PostgreSQL's default: each statement sees
+  what was committed before it began), *repeatable read*, *serializable*.
+  `TxConfig.Isolation` chooses it.
 - **WAL** — PostgreSQL's write-ahead log: every change, written before the
   data files; logical replication reads it as a stream of changes.
 - **LSN** — log sequence number: a position in the WAL, written like
@@ -119,32 +119,66 @@ places is.
 
 - **Round trip** — a question sent to a server and its answer; one network
   journey, often the dominant cost.
-- **RTT** — round-trip time: how long a packet takes to reach the peer and
-  its answer to come back.
 - **TLS** — the encryption layer HTTPS and QUIC run under; the handshake is
   where the two ends agree on keys and check certificates.
 - **ALPN** — the TLS extension by which the two ends agree, during the
   handshake, on the protocol they will speak (`h2`, `http/1.1`, `h3`).
-- **QUIC** — the transport over UDP that HTTP/3 runs on (RFC 9000):
-  encrypted, with several independent streams per connection.
 - **Parser** — the code that reads bytes from the network and makes
   something of them (a request, a packet); where hostile input does its
   damage, so it is written once and bounded everywhere.
-- **Frame** — the unit HTTP/2, HTTP/3 and QUIC cut their bytes into, each
-  with a type (DATA, HEADERS, ACK). `END_STREAM` is the flag on the last
-  frame of a stream; `CONTINUATION` the frame that carries the rest of a
-  header block too large for one.
-- **MTU** — the largest packet a link carries in one piece; a datagram
-  larger than the path's MTU is fragmented or dropped.
-- **AQM** — active queue management: a router that marks or drops packets
-  before its queue is full, so that senders slow down early.
-- **GREASE** — values a protocol reserves to be sent at random, so that a
-  peer that chokes on unknown values is found before a real extension
-  needs them.
+- **Realm** — the name a 401 gives the protected space in its
+  `WWW-Authenticate` field (`realm="orders"`), so that a client knows which
+  credentials to send.
+- **Wildcard** — a segment of a route pattern written `{order}`, which
+  matches any value of the path at that place; `PathInt64` reads it.
 - **File descriptor** — the number the operating system gives an open file
   or socket; a process has a limited supply.
 - **CDN** — content delivery network: servers in front of a service that
   answer from a copy near the client.
+
+## HTTP/2, HTTP/3 and QUIC
+
+- **QUIC** — the transport over UDP that HTTP/3 runs on (RFC 9000):
+  encrypted, with several independent streams per connection.
+- **Frame** — the unit HTTP/2, HTTP/3 and QUIC cut their bytes into, each
+  with a type (DATA, HEADERS, ACK). `END_STREAM` is the flag on the last
+  frame of a stream; `CONTINUATION` the frame that carries the rest of a
+  header block too large for one.
+- **HPACK** — HTTP/2's header compression (RFC 7541): each side keeps a
+  table of the fields already sent, and later sends an index in place of
+  the field.
+- **GOAWAY** — the HTTP/2 and HTTP/3 frame that says the connection takes
+  no new request; those in flight finish.
+- **RST_STREAM** — the HTTP/2 frame that ends one stream, and only it,
+  without closing the connection (RESET_STREAM in HTTP/3 and QUIC).
+- **0-RTT** — early data: on a resumed connection, a client may send its
+  first request with its first packet, before the handshake ends; a third
+  party can replay it, so only a request a duplicate does not hurt should
+  be accepted.
+- **GREASE** — values a protocol reserves to be sent at random, so that a
+  peer that chokes on unknown values is found before a real extension
+  needs them.
+
+## The network path
+
+- **RTT** — round-trip time: how long a packet takes to reach the peer and
+  its answer to come back.
+- **MTU** — the largest packet a link carries in one piece; a datagram
+  larger than the path's MTU is fragmented or dropped.
+- **NAT** — network address translation: a router that rewrites the
+  address and port of outgoing packets; a mobile one changes them without
+  warning, which QUIC follows as a migration.
+- **AQM** — active queue management: a router that marks or drops packets
+  before its queue is full, so that senders slow down early.
+- **Congestion controller** — the part of a transport that decides how much
+  to send before an acknowledgement comes back, from what the path lets
+  through. NewReno and CUBIC read losses; BBR measures rate and delay.
+- **Slow start** — the beginning of a connection's sending, where the
+  congestion controller doubles its window every round trip until a loss or
+  a sign of queueing ends it.
+- **Reno, NewReno** — the classic congestion controller: the window grows by
+  one datagram per round trip and halves on each loss episode; NewReno
+  (RFC 9002 §7) is the form QUIC describes, and `net/quic`'s default.
 
 ## Identity and credentials
 
@@ -162,6 +196,16 @@ places is.
 - **PBKDF2** — a function that derives a key from a password slowly, by
   hashing it many times over; SCRAM uses it, and the iteration count is
   what makes guessing costly.
+- **Tenant** — one customer of a service shared by several, whose data must
+  stay apart from the others'.
+- **Row-level security** — PostgreSQL's policies that decide which rows a
+  session may see, from that session's settings (`SET LOCAL app.tenant_id`).
+- **SCRAM** — the password authentication PostgreSQL asks for by default
+  (SCRAM-SHA-256): the password never crosses the network, and with
+  *channel binding* the exchange is tied to the TLS connection it runs in.
+- **SASLprep** — the normalisation a password goes through before SCRAM
+  hashes it (RFC 4013), so that two spellings of one Unicode character give
+  the same key.
 
 ## The project's own words
 
@@ -172,6 +216,9 @@ places is.
   `golang.org/x` modules only (ADR 0002), nothing else.
 - **ADR** — Architecture Decision Record: one structural decision, its
   problem, the decision and why, in [design/adr](design/adr/).
+- **Fuzzing** — feeding a parser masses of generated inputs, mutated from a
+  corpus, to find one that makes it crash or loop; Go runs it with
+  `go test -fuzz`, and CI plays it on the parsers.
 - **CVE** — the public identifier of a known vulnerability
   (CVE-2023-44487, HTTP/2's "rapid reset"); a bound cited with its CVE says
   which attack it stops.
