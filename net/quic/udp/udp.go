@@ -81,7 +81,10 @@ import (
 // rounds of twelve; at 7 MiB no datagram was lost in any of the 24 rounds.
 // The kernel grants at most net.core.rmem_max, itself 208 KiB on many
 // distributions: below 7 MiB, the buffer is capped there without an error,
-// and the udp-rmem check of package audit names the sysctl to raise.
+// and the udp-rmem check of package audit names the sysctl to raise. A
+// kernel that refuses the request instead (Darwin, above
+// kern.ipc.maxsockbuf) is asked for half as much until it accepts, down to
+// 64 KiB.
 const ReceiveBuffer = 7 << 20
 
 // Listen opens a UDP socket on network ("udp", "udp4" or "udp6") and
@@ -105,11 +108,30 @@ func Listen(network, address string) (*net.UDPConn, error) {
 		_ = c.Close() // the configuration error is the one worth reporting
 		return nil, err
 	}
-	if err := c.SetReadBuffer(ReceiveBuffer); err != nil {
+	if err := askReadBuffer(c.SetReadBuffer, ReceiveBuffer); err != nil {
 		_ = c.Close() // the buffer's error is the one worth reporting
 		return nil, fmt.Errorf("udp: %w", err)
 	}
 	return c, nil
+}
+
+// minReceiveBuffer is the smallest buffer askReadBuffer settles for.
+const minReceiveBuffer = 64 << 10
+
+// askReadBuffer asks set for want bytes and, refused, for half as many,
+// down to minReceiveBuffer: Linux caps a request at net.core.rmem_max
+// without an error, where Darwin refuses one above kern.ipc.maxsockbuf
+// (ENOBUFS), and the largest buffer the kernel grants is what Listen is
+// after on either. Only a kernel that refuses even minReceiveBuffer fails
+// it, with that refusal.
+func askReadBuffer(set func(int) error, want int) error {
+	for {
+		err := set(want)
+		if err == nil || want/2 < minReceiveBuffer {
+			return err
+		}
+		want /= 2
+	}
 }
 
 // Configure sets the Don't Fragment option on c and, where the platform
