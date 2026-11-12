@@ -601,25 +601,9 @@ func (c *Conn) handleTLSEvent(e tls.QUICEvent) (done bool, err error) {
 		if err := c.install(e.Level, e.Suite, e.Data, e.Kind == tls.QUICSetWriteSecret); err != nil {
 			return false, err
 		}
-		if e.Level == tls.QUICEncryptionLevelApplication && e.Kind == tls.QUICSetWriteSecret {
-			if !c.isClient {
-				return false, c.releaseEarly()
-			}
-			// RFC 9001 §4.9.3: a client SHOULD discard its 0-RTT keys as
-			// soon as it installs 1-RTT keys; from here everything leaves
-			// in 1-RTT, retransmissions of 0-RTT data included. A 0-RTT
-			// packet still gathered — built by a writer that left it for
-			// the next one (writersIn > 1) — leaves first, under the keys
-			// it was built for: its stream bytes are already counted as
-			// sent, and only its sent record would ever send them again
-			// (RFC 9000 §13.3).
-			c.mu.Lock()
-			if p := c.dgramPend; p != nil && p.early {
-				c.flushDatagramLocked()
-			}
-			c.earlySealer = nil
-			c.cond.Broadcast() // a writer waiting since a refused 0-RTT (awaitSealLocked)
-			c.mu.Unlock()
+		// A client's 0-RTT keys go inside install, with the 1-RTT sealer.
+		if e.Level == tls.QUICEncryptionLevelApplication && e.Kind == tls.QUICSetWriteSecret && !c.isClient {
+			return false, c.releaseEarly()
 		}
 		return false, nil
 	case tls.QUICResumeSession:
@@ -917,6 +901,23 @@ func (c *Conn) install(l tls.QUICEncryptionLevel, suiteID uint16, secret []byte,
 		sealer, err := newSealerSuite(secret, s)
 		if err != nil {
 			return err
+		}
+		if space == spaceApplication && c.isClient {
+			// RFC 9001 §4.9.3: a client SHOULD discard its 0-RTT keys as
+			// soon as it installs 1-RTT keys; from here everything leaves
+			// in 1-RTT, retransmissions of 0-RTT data included. A 0-RTT
+			// packet still gathered — built by a writer that left it for
+			// the next one (writersIn > 1) — leaves first, under the keys
+			// it was built for: its stream bytes are already counted as
+			// sent, and only its sent record would ever send them again
+			// (RFC 9000 §13.3). It leaves before the 1-RTT sealer is set,
+			// in the same critical section: "once a client has installed
+			// 1-RTT keys, it MUST NOT send any more 0-RTT packets" (§5.6).
+			if p := c.dgramPend; p != nil && p.early {
+				c.flushDatagramLocked()
+			}
+			c.earlySealer = nil
+			c.cond.Broadcast() // a writer waiting since a refused 0-RTT (awaitSealLocked)
 		}
 		c.spaces[space].sealer = sealer
 		if space == spaceApplication && c.limitsHeld {

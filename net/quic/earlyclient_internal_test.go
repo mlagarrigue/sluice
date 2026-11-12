@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -70,11 +72,15 @@ func TestParkedWriterDoesNotHoldAGatheredDatagram(t *testing.T) {
 // 1) is still pending when crypto/tls hands the client its 1-RTT write
 // secret. The 0-RTT keys go then (RFC 9001 §4.9.3), but the packet built
 // under them leaves first: its stream bytes were already counted as sent,
-// and nothing would ever send them again (RFC 9000 §13.3).
+// and nothing would ever send them again (RFC 9000 §13.3). It leaves before
+// the 1-RTT keys are installed, too: "once a client has installed 1-RTT
+// keys, it MUST NOT send any more 0-RTT packets" (RFC 9001 §5.6).
 func TestZeroRTTPacketPendingAtTheKeyChangeLeaves(t *testing.T) {
 	tap := newTap(&fuzzSink{addr: "keychange:self"})
+	watch := &oneRTTWatch{PacketConn: tap}
 	dcid, scid := []byte("dcid0000"), []byte("scid0000")
-	c := assembleConn(tap, fakeFuzzAddr("keychange:peer"), dcid, scid, true, DefaultConfig())
+	c := assembleConn(watch, fakeFuzzAddr("keychange:peer"), dcid, scid, true, DefaultConfig())
+	watch.c = c
 	t.Cleanup(func() { _ = c.Close() })
 	c.initialDCID = dcid
 	if err := c.installInitial(dcid); err != nil {
@@ -150,6 +156,36 @@ func TestZeroRTTPacketPendingAtTheKeyChangeLeaves(t *testing.T) {
 		t.Fatalf("writer A's 300 bytes: %d 0-RTT packets on the wire, recorded as sent %v, queued for retransmission %v; want one 0-RTT packet recorded as sent",
 			zeroRTT, recorded, queued)
 	}
+	if n := watch.late.Load(); n > 0 {
+		t.Fatalf("%d datagrams carried a 0-RTT packet after the 1-RTT sealer was installed (RFC 9001 §5.6)", n)
+	}
+}
+
+// oneRTTWatch counts the datagrams that carry a 0-RTT packet while the
+// connection already holds its 1-RTT sealer. A datagram is written under
+// the connection's mu, so the sealer read here is the one in force when it
+// left.
+type oneRTTWatch struct {
+	net.PacketConn
+	c    *Conn
+	late atomic.Int32
+}
+
+func (w *oneRTTWatch) WriteTo(p []byte, addr net.Addr) (int, error) {
+	if w.c != nil && w.c.spaces[spaceApplication].sealer != nil {
+		for d := p; len(d) > 0 && d[0]&0x80 != 0; {
+			h, rest, err := parseLongHeader(d)
+			if err != nil {
+				break
+			}
+			if h.Type == packetZeroRTT {
+				w.late.Add(1)
+				break
+			}
+			d = rest
+		}
+	}
+	return w.PacketConn.WriteTo(p, addr)
 }
 
 // sealLocked never drops a packet it cannot seal while its space lives: a
