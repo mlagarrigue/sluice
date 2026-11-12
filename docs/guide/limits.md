@@ -314,6 +314,9 @@ conditions, checkable one by one; they stay in the module
 ([ADR 0021](../design/adr/0021-net-quic-stays.md)). The conditions, and
 where each package stands:
 [Exit conditions](../reference/exit-conditions.md).
+Four symbols of stable packages carry the label too — HTTP/3's entry
+points and `gateway.Partitions` — outside the compatibility promise until
+their condition is met; [Experimental](experimental.md) names them.
 
 ## Measurements: what is missing
 

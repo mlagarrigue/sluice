@@ -6,6 +6,14 @@ first says what the word means here, then what each one does and what not
 to expect from it. The packages that left the label have [their own guide](httpstream.md); the deployments have
 [theirs](deployments.md).
 
+Four symbols of stable packages carry the same label, in an
+"Experimental:" paragraph of their documentation: HTTP/3's entry points,
+which run over `net/quic` — `httpstream.ServeH3Conn`, `Server.ServeQUIC`,
+`Config.QUICConfig` — and `gateway.Partitions`. The word means the same for
+them: outside the compatibility promise
+([ADR 0020](../design/adr/0020-compatibility.md)) until their condition is
+met.
+
 ## What "experimental" means
 
 **What is promised.** The code exists. It is tested with Go's data race
@@ -141,9 +149,10 @@ p.Congestion = quic.CongestionConfig{Algorithm: quic.CongestionCubic} // or quic
   flow it takes 0.56 of the line. Its startup has its own exit and ignores
   `SlowStart`.
 
-The last two are **experimental**: measured on this repository's emulated
-paths only ([QUIC, on an emulated path](../benchmarks.md#quic-on-an-emulated-path),
-with the command that replays the comparison). To judge on yours,
+The last two are measured on this repository's emulated paths only
+([QUIC, on an emulated path](../benchmarks.md#quic-on-an-emulated-path),
+with the command that replays the comparison), which is why NewReno stays
+the default. To judge on yours,
 `Conn.Stats()` gives the controller in use (`Algorithm`), its window
 (`CongestionWindow`), the losses (`LostPackets`) and the round trip
 (`SmoothedRTT` against `MinRTT`: the gap is the queue the flow keeps).
@@ -156,8 +165,8 @@ with the command that replays the comparison). To judge on yours,
 | `SlowStart` | the algorithm's default: HyStart++ for CUBIC, standard for NewReno | | how a loss-based controller ends its initial slow start |
 | `DisableFastConvergence` | on | | turns off CUBIC's fast convergence, for a flow alone on its path |
 
-**Where QUIC's own texts decide.** The three controllers follow RFC 9002
-when a general text says otherwise. A PTO expiry is not read as a loss
+**Where QUIC's own texts decide.** When a general text and QUIC's
+disagree, QUIC's wins: the three controllers follow RFC 9002. A PTO expiry is not read as a loss
 (RFC 9002 §6.2): the conservative cut RFC 8085 §3.1.1 asks for is
 persistent congestion's, the window down to its minimum. The window does
 not go below two datagrams, and persistent ECN marks add no back-off timer
@@ -169,8 +178,7 @@ declared lost by QUIC's loss detection, without RFC 8899 §5.1.1's
 one-second PROBE_TIMER (RFC 9000 §14.3). BBR keeps neither
 `pending_transmissions`, `lost_out` nor `retrans_out`: an application-limited
 sample is read from an empty retransmission queue and a send batch flushed
-before the window is waited for. In plain words: when two texts disagree,
-QUIC's wins.
+before the window is waited for.
 
 ## Deployments
 
@@ -178,3 +186,11 @@ Which deployments the network packages are written for — HTTP/1.1 exposed
 directly, behind nginx or Envoy, TLS in front, QUIC behind a mobile NAT,
 0-RTT — and what to set for each is on a page of its own:
 [Deployments](deployments.md).
+
+## You can now
+
+- tell what the experimental label promises, and what it does not;
+- choose a congestion controller, and judge it on your own path with
+  `Conn.Stats()`;
+- find what would lift the label:
+  [Exit conditions](../reference/exit-conditions.md).
