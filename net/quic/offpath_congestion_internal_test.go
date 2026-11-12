@@ -40,6 +40,11 @@ func TestALostOffPathPacketLeavesTheWindowAlone(t *testing.T) {
 	c, cc := appConn(t)
 	c.mu.Lock()
 	initial := cc.cwnd
+	// A round trip of a second already measured keeps the time threshold
+	// (RFC 9002 §6.1.2) far above the gaps between the sends below: with a
+	// millisecond, a Windows clock that ticked 15 ms between two of them
+	// declared the on-path packets lost by time as well (CI, 2026-11-12).
+	c.rtt.sample(time.Second, 0)
 	pn := offPathAnswer(t, c)
 	for range 3 {
 		sent(t, c, []byte{framePing}) // on the path in use
