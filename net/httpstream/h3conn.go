@@ -1264,7 +1264,16 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 			return err
 		}
 		st.dataLeft -= k
-		st.buf = st.buf[:copy(st.buf, st.buf[k:])]
+		// A delivery may be as large as the stream window, and a buffer
+		// compacted in place keeps that capacity, outside assembling, for
+		// the stream's life: past h3DeliveryKept it goes as keepStreamRest
+		// lets a parsed frame's go. Under it the buffer stays, so that an
+		// upload arriving a datagram or a frame at a time reuses one.
+		if cap(st.buf) > h3DeliveryKept {
+			st.buf = keepStreamRest(st.buf, st.buf[k:])
+		} else {
+			st.buf = st.buf[:copy(st.buf, st.buf[k:])]
+		}
 		if st.dataLeft > 0 {
 			return nil
 		}
@@ -1513,6 +1522,11 @@ func keepStreamRest(buf, rest []byte) []byte {
 	}
 	return append(buf[:0], rest...)
 }
+
+// h3DeliveryKept is the largest buffer a stream inside a streamed DATA
+// frame keeps from one delivery to the next: a default HTTP/2-sized frame,
+// so that ordinary deliveries reuse it.
+const h3DeliveryKept = 16 << 10
 
 // h3BufferSlack is the spare capacity a request stream's buffer may keep
 // beyond what it holds: enough for the frames of a few datagrams, so the
