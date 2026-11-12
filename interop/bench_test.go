@@ -14,9 +14,9 @@ import (
 	"github.com/mlagarrigue/sluice/net/httpstream"
 )
 
-// These benchmarks are the measurement docs/guide/limits.md names as the
-// exit condition of net/httpstream's experimental label: a client that
-// shares no code with sluice — the standard library's HTTP/2 client, quic-go's
+// These benchmarks are the measurement that took net/httpstream out of its
+// experimental label, reported in docs/benchmarks.md ("HTTP/2 and HTTP/3,
+// from a real client"): a client that shares no code with sluice — the standard library's HTTP/2 client, quic-go's
 // HTTP/3 client — requests a plain response, a small streamed one and a
 // bulk streamed one over loopback. ns/op is the round trip seen by the
 // client; MB/s counts the body bytes it received. The package's own

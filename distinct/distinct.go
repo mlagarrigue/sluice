@@ -89,9 +89,8 @@ func By[T any, K comparable](s sluice.Stream[T], maxKeys int, key func(T) K, pol
 		}
 
 		// seen is a set: membership is the whole question, and the eviction
-		// order lives in the ring beside it. An earlier version stored a
-		// position here and never read it, paying a word per entry for a field
-		// nothing consulted.
+		// order lives in the ring beside it. A position stored here would
+		// cost a word per entry and nothing would read it.
 		var seen map[K]struct{}
 		order := newRing[K](maxKeys)
 

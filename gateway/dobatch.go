@@ -41,6 +41,12 @@ type Outcome[Out any] struct {
 // their callers' contexts (ADR 0005). An element whose effect must not
 // happen after its caller gave up has to carry its own deadline in In and
 // have the pipeline check it.
+//
+// For the same reason each In must own its memory. The pipeline may read it
+// after ctx has expired and the caller has moved on: an In that borrows a
+// buffer the caller reuses — a field of an httpstream Exchange, which
+// borrows the connection's read buffer — would be read after that buffer
+// changed. Copy what the call needs into In before submitting it.
 func (g *Gateway[In, Out]) DoBatch(ctx context.Context, ins []In) []Outcome[Out] {
 	out := make([]Outcome[Out], len(ins))
 	if len(ins) == 0 {

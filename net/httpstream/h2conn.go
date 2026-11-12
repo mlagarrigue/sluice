@@ -538,18 +538,15 @@ func ServeH2Conn(ctx context.Context, c net.Conn, cfg Config, handle Handler) er
 // way and given LingerTimeout to send it; without it, a GOAWAY naming stream
 // 0 and the close (see beginDrain).
 //
-// The reader also keeps the state's phase: busy while a stream is open or in
-// flight, idle otherwise, which is what a forced stop counts as cut. The
-// drain tells every HTTP/2 connection rather than closing an idle one (ADR
-// 0017). The phase is the reader's view at
-// its last batch, which runs late when the last answer went out and the peer
-// has since said nothing: that connection is drained like a busy one and
-// closes one round trip after the cancellation rather than at it. Writing the
-// phase from the responder too would make it exact, and would also let an
-// idle verdict land after a stream the reader has just opened; late is the
-// safe side. A peer that never acknowledges the PING holds the connection
-// until the grace closes it, which is the bound every drain has. A nil state
-// is a test driving the connection directly, which nothing drains.
+// The state's phase says busy while a stream is open or in flight, idle
+// otherwise, which is what a forced stop counts as cut. The drain tells
+// every HTTP/2 connection rather than closing an idle one (ADR 0017). Two
+// goroutines write it, under phaseMu: the reader marks it busy before a
+// handler starts, and the responder marks it idle once the last answer is
+// out, so an idle verdict cannot land after a stream the reader has just
+// opened. A peer that never acknowledges the PING holds the connection
+// until the grace closes it, which is the bound every drain has. A nil
+// state is a test driving the connection directly, which nothing drains.
 //
 // serveH2Conn runs in this order: build the connection's state and start the
 // responder goroutine; read the preface and send SETTINGS (hello); register

@@ -9,7 +9,7 @@ import (
 
 // A message too long to send and a message too long to read are two
 // failures: the first leaves the stream where it was and no setting moves
-// its bound, the second is the end of the connection and Config.MaxMessage
+// its bound, the second is the end of the connection and Config.MaxMessageBytes
 // moves it. One sentinel for both made the connector break a connection
 // that had sent nothing and advise the read limit.
 func TestOutgoingAndIncomingBoundsAreToldApart(t *testing.T) {

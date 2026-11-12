@@ -896,8 +896,8 @@ type h3Batch struct {
 	// or its writer gave up, so the wait is bounded as that write is.
 	after []<-chan struct{}
 	// fieldSection is the peer's SETTINGS_MAX_FIELD_SECTION_SIZE at hand-off
-	// time, zero for unbounded; the call holds every response's field
-	// section under it (RFC 9114 §4.2.2).
+	// time, h3NoFieldSectionLimit before its SETTINGS arrive; the call holds
+	// every response's field section under it (RFC 9114 §4.2.2).
 	fieldSection uint64
 	// credit is the assembler's manual-credit release, nil when the
 	// transport credits on delivery. Releasing a body in that mode as well

@@ -291,6 +291,7 @@ the clock: [reference](../reference/web.md#verifier-settings).
 ```go
 ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt) // Ctrl-C cancels ctx
 defer stop()
+context.AfterFunc(ctx, stop) // a second Ctrl-C, during the drain, ends the process
 srv := &http.Server{Addr: ":8080", Handler: web.Recover(observe, mux)}
 if err := web.Serve(ctx, srv, 10*time.Second, gw); err != nil {
     log.Fatal(err)

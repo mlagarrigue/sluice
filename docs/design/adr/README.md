@@ -74,6 +74,8 @@ theme, the question each one settles beside its title.
 - [ADR 0012 — The gateway takes a transport batch in one submission](0012-gateway-batch-submission.md)
   — how the gateway takes what arrived together in one call.
 
+What the gateway logs is settled by ADR 0025, listed under HTTP, its theme.
+
 ## Tooling (`ci`)
 
 - [ADR 0002 — The dependency graph is a decision, never a default](0002-dependency-graph.md)

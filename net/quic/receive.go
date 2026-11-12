@@ -927,8 +927,8 @@ func (c *Conn) handleVersionNegotiation(datagram []byte) {
 // sets no bound and §17.2.5.3 expects the client to need several Initial
 // packets for a long one: sendCrypto and fitFrames cut the ClientHello into
 // as many as the room left asks. A server's token is a few dozen bytes to a
-// few hundred (this package's own, appendRetryToken, is at most 130 for an
-// IPv6 peer without a zone name). Past the bound no Initial could carry the
+// few hundred (this package's own, appendRetryToken, is at most 114: an
+// eight-byte time, the address's digest, two identifiers and the MAC). Past the bound no Initial could carry the
 // token beside a useful CRYPTO fragment: from 1134 bytes at a 1200-byte
 // datagram, not one CRYPTO byte. Callers hold mu.
 func (c *Conn) retryTokenFits(token []byte) bool {
@@ -2083,8 +2083,8 @@ func (c *Conn) streamFor(id StreamID, space int, sendSide bool) (*Stream, bool, 
 	// direction a unidirectional stream lacks.
 	//
 	// A stream the application already picked by identifier (Conn.Stream)
-	// is the one opened, not replaced: replacing it left the caller holding
-	// a stream no frame would ever reach.
+	// is the one opened, not replaced: a replacement would leave the caller
+	// holding a stream no frame would ever reach.
 	//
 	// Outside batch mode each goes to the accept queue, which never blocks
 	// this loop: MAX_STREAMS bounds it (see AcceptStream). A bounded

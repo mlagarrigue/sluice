@@ -311,7 +311,8 @@ type Config struct {
 
 	// IdleTimeout is how long a connection may hold the socket open between
 	// requests — after the first; a connection that has not sent one yet
-	// has ReadTimeout to do so. Zero means two minutes, as in package web: two minutes
+	// has ReadTimeout to do so over HTTP/1.1 and HTTP/2, and over HTTP/3 is
+	// closed by this clock, one to two IdleTimeouts after it opened. Zero means two minutes, as in package web: two minutes
 	// outlasts the idle timeout of the common proxies in front (60 seconds on
 	// most load balancers and on nginx's upstream pool), so the server is not
 	// the side that closes a connection the proxy is about to reuse; a proxy
@@ -473,15 +474,18 @@ type Config struct {
 	// answered the wrong number of requests. At the warn level, the number
 	// of connections a forced stop cut with requests in flight, and the
 	// error that ended a connection [Serve] or [Server] accepted when it is
-	// not an ordinary end (the peer's close, a deadline, a reset): a peer
-	// that broke the protocol, a transport that failed — over HTTP/1.1 a
-	// request answered 400, not one refused by a bound or for a feature this
-	// end lacks, whose status says it to the client. That last line is one
+	// not an ordinary end (the peer's close between requests, a deadline, a
+	// reset): a peer that broke the protocol, a transport that failed — over
+	// HTTP/1.1 a request answered 400, not one refused by a bound or for a
+	// feature this end lacks, whose status says it to the client. A close in
+	// the middle of a request or a frame is one of these: answered 400 over
+	// HTTP/1.1 and logged, though RFC 9112 §8 says it is "usually due to a
+	// canceled request". That last line is one
 	// per connection and within any client's reach, and its text may quote,
 	// escaped, bytes the peer sent: a client that opens connections only to
 	// break them sets its rate. A Logger that must hold a
-	// budget rate-limits what it receives. Nil means [slog.Default]. Every
-	// protocol.
+	// budget rate-limits what it receives. Nil means [slog.Default]. It
+	// serves every protocol.
 	Logger *slog.Logger
 
 	// LingerTimeout is how long a closing HTTP/1.1 connection, its write side

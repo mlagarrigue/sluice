@@ -929,9 +929,11 @@ type congestionController interface {
 	// onPersistentCongestion follows onLost in the same batch when the
 	// losses span more than the persistent-congestion duration (§7.6).
 	onPersistentCongestion()
-	// onMarked follows the onAcked calls of an ACK frame whose ECN counts
-	// passed validation and report more CE marks than before (RFC 9000
-	// §13.4.2): the network is signalling congestion without dropping.
+	// onMarked is called for an ACK frame whose ECN counts passed
+	// validation and report more CE marks than before (RFC 9000 §13.4.2):
+	// the network is signalling congestion without dropping. It comes
+	// before the frame's losses are detected and its acknowledged packets
+	// released, the order of RFC 9002 A.7.
 	// Controllers that read loss only ignore it.
 	onMarked(ev markEvent)
 	// onLifted releases bytes that leave the flight record without being

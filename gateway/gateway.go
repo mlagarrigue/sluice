@@ -519,7 +519,9 @@ func (g *Gateway[In, Out]) die(err error) {
 // when the gateway is closed — whichever comes first. A ctx with no deadline
 // is a caller choosing to wait indefinitely for a pipeline that may never
 // answer; give it one. Cancelling ctx ends the wait, not the work: a call
-// already submitted is still executed by the pipeline — see [Gateway.DoBatch].
+// already submitted is still executed by the pipeline, so in must own its
+// memory rather than borrow a buffer the caller reuses — see
+// [Gateway.DoBatch].
 func (g *Gateway[In, Out]) Do(ctx context.Context, in In) (Out, error) {
 	var zero Out
 

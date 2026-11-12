@@ -118,7 +118,7 @@ func (a *h3Assembler) uni(f quic.Frame) error {
 func (a *h3Assembler) controlFrames(u *h3Uni) error {
 	if !a.controlSettings && len(u.buf) > 0 {
 		// §6.2.1: SETTINGS must be the control stream's very first frame.
-		// ParseH3Frames below skips GREASE frame types, as §7.2.8 wants
+		// parseH3Frames below skips GREASE frame types, as §7.2.8 wants
 		// everywhere else — so the first frame's type is read here, before
 		// the skip can hide a GREASE frame standing where SETTINGS has to be.
 		if typ, _, err := varint.Read(u.buf); err == nil && typ != h3Settings {

@@ -185,7 +185,7 @@ token, one no Initial could carry beside a useful piece of the handshake,
 is ignored as a malformed Retry would be — a later, well-formed Retry is
 still honoured — and counted in `Stats.DiscardedPackets`. RFC 9000 sets no
 bound; a server's token is a few dozen to a few hundred bytes, this
-package's own 130 at most.
+package's own 114 at most.
 
 ## The QUIC transport, in detail
 

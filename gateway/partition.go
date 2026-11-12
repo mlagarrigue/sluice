@@ -84,6 +84,9 @@ type Partitions[T any, K comparable] struct {
 //
 // The slice handed to fn borrows this type's storage and is valid only for the
 // duration of the call, like every batch in this library.
+//
+// Each panics when key or fn is nil: a missing function is a wiring mistake,
+// found on the first batch rather than answered as an error per batch.
 func (p *Partitions[T, K]) Each(b sluice.Batch[T], key func(T) K, fn func(K, []T) error) error {
 	if key == nil || fn == nil {
 		panic("gateway: Partitions.Each requires a key function and a callback")

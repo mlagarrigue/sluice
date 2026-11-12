@@ -259,6 +259,7 @@ const DefaultShutdownGrace = 5 * time.Second
 //
 //	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 //	defer stop()
+//	context.AfterFunc(ctx, stop) // a second Ctrl-C, during the drain, ends the process
 //	if err := web.Serve(ctx, srv, 10*time.Second, gw); err != nil {
 //	    log.Fatal(err)
 //	}

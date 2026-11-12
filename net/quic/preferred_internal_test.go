@@ -1343,9 +1343,8 @@ func TestThePreferredAddressIsHeardAfterARebind(t *testing.T) {
 // confirmed, when the server is in the middle of a transfer with its
 // window full — and the answer was gated by that window, the window of a
 // path the answer does not take, and dropped. The interop runner's
-// connectionmigration case went red against ngtcp2, aioquic and lsquic
-// (run 42468068837): aioquic challenged once, heard nothing, and never
-// moved. The answer toward another path now leaves whatever the window of
+// connectionmigration case went red against ngtcp2, aioquic and lsquic:
+// aioquic challenged once, heard nothing, and never moved. The answer toward another path now leaves whatever the window of
 // the path in use, within maxOffPathAnswers.
 func TestPreferredPathIsAnsweredWithTheWindowFull(t *testing.T) {
 	c, main := newMigratableServer(t, "full")

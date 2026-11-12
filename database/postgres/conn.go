@@ -1547,8 +1547,8 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 			// send, and a row past them must reach Append to be refused — but
 			// the byte bound cuts on either fetch: it is this side's, and the
 			// server knows nothing of it. Polling here, on the per-row loop
-			// the regression gate watches, measured within noise of the
-			// error path it replaced in a paired A/B of BenchmarkPGReadRows.
+			// the regression gate watches, costs nothing measurable: a paired
+			// A/B of BenchmarkPGReadRows reads it as noise.
 			if q.rows.full() && (q.allRows || q.rows.fullOnBytes()) {
 				if !q.emit(yield) {
 					q.stopped = true

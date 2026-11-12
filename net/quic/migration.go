@@ -1254,8 +1254,9 @@ func (c *Conn) Rebind(pc net.PacketConn) error {
 		(c.preferred == nil || !sameAddr(c.preferred, c.peer)):
 		// §18.2: "MUST NOT use a new local address when sending to the
 		// address that the peer used during the handshake" — and sending
-		// to the preferred address once the move is done (adoptPreferred-
-		// PathLocked set c.peer to it) is not sending to that address.
+		// to the preferred address once the move is done (c.peer set to it
+		// by adoptPreferredPathLocked or adoptPreferredCandidateLocked) is
+		// not sending to that address.
 		return ErrMigrationDisabled
 	}
 	select {

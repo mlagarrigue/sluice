@@ -356,7 +356,7 @@ func (b *intervalBuffer[K, V]) compact() {
 	copy(b.ts, b.ts[b.firstLive:])
 	copy(b.keys, b.keys[b.firstLive:])
 	// The dead tail of vals would otherwise retain its values past the
-	// truncation — same reasoning as ring.pop. ts is cleared too: a
+	// truncation — the reasoning of distinct's ring.pop. ts is cleared too: a
 	// time.Time carries a *time.Location, so the tail would pin loaded
 	// zones the same way.
 	clear(b.vals[live:])

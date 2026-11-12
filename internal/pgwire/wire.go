@@ -24,7 +24,7 @@ const MaxOutgoingMessage = 1<<30 - 1
 // message, which is the whole point of the limit (guarantee S8): a length
 // prefix is attacker-controlled, and a reader that allocates first and
 // checks second can be made to allocate two gigabytes by four bytes of
-// input. The limit is the connector's Config.MaxMessage, which the
+// input. The limit is the connector's Config.MaxMessageBytes, which the
 // connector's error names when it breaks the connection.
 var ErrMessageTooLarge = errors.New("postgres: message longer than the limit")
 

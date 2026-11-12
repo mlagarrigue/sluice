@@ -198,7 +198,7 @@ type h3Assembler struct {
 	// gate it closes.
 	continues []h3Continue
 
-	// frames is drain's scratch for ParseH3Frames, reused across streams and
+	// frames is drain's scratch for parseH3Frames, reused across streams and
 	// calls: nothing drain does retains the slice past its own use, so there
 	// is no reason to allocate it fresh every time a stream's buffer drains.
 	frames []h3Frame
@@ -1383,7 +1383,7 @@ func (a *h3Assembler) requestFrame(st *h3Stream, f h3Frame) error {
 	switch f.Type {
 	case h3Headers:
 		// A HEADERS frame answers to the header bound, not the body one
-		// ParseH3Frames enforced: MaxBodyBytes is 32× the advertised
+		// parseH3Frames enforced: MaxBodyBytes is 32× the advertised
 		// MAX_FIELD_SECTION_SIZE, and a frame that large bought a QPACK
 		// decode far past the budget the server announced.
 		if len(f.Payload) > a.cfg.MaxHeaderBytes {

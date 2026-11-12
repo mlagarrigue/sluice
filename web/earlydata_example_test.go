@@ -49,6 +49,7 @@ func ExampleTooEarlyReport() {
 func ExampleServeTLS() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	context.AfterFunc(ctx, stop) // a second Ctrl-C, during the drain, ends the process
 	// ReadHeaderTimeout left at zero would get ServeTLS's ten seconds too.
 	srv := &http.Server{Addr: ":8443", Handler: http.NewServeMux(), ReadHeaderTimeout: 10 * time.Second}
 	if err := web.ServeTLS(ctx, srv, 10*time.Second, "cert.pem", "key.pem"); err != nil {

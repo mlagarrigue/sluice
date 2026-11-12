@@ -469,8 +469,8 @@ func (c *Conn) idleExpired() {
 	_ = c.Close()
 }
 
-// The closing state (RFC 9000 §10.2.1). Once this end's CONNECTION_CLOSE
-// has left, the peer may still be sending: the close itself may have been
+// closingState holds the closing state (RFC 9000 §10.2.1) and the draining
+// one. Once this end's CONNECTION_CLOSE has left, the peer may still be sending: the close itself may have been
 // lost, or packets were in flight when it went. A connection that simply
 // vanished would answer those with a stateless reset (§10.3) — the listener
 // no longer routing its identifier — and the peer would learn that this end

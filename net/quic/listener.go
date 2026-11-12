@@ -183,7 +183,7 @@ type ListenerConfig struct {
 	// datagrams in 1,200 requests, and each loss stalled its request for a
 	// client PTO (~27 ms, 45% of the send-to-receive time); at 32 none were
 	// lost. Zero means 64, twice that margin. The channel itself is about
-	// 3.5 KB per connection, but each queued datagram is a copy: a
+	// 4 KiB per connection (64 slots of 64 bytes), but each queued datagram is a copy: a
 	// connection whose reader is stalled holds up to ConnQueueLen ×
 	// max(MaxUDPPayloadSize, 2048) bytes, 128 KiB at the defaults —
 	// the figure to multiply by MaxConns when sizing memory. A negative
@@ -1108,9 +1108,10 @@ func (l *Listener) handleNewInitial(datagram []byte, from net.Addr, h longHeader
 	// destination identifier, so the check needs no state and costs one
 	// key schedule; what it buys is that a flood of sealed-looking noise
 	// cannot occupy MaxPendingConns slots for the price of sending it:
-	// each slot holds TLS state and two goroutines (runHandshake and the
-	// handshake it waits on; three once 0-RTT is accepted, with the one
-	// that waits for gone) for up to the 10-second handshake deadline.
+	// each slot holds TLS state and three goroutines (runHandshake, the
+	// crypto/tls handshake it waits on, and the connection's timer loop;
+	// four once 0-RTT is accepted, with the one that waits for gone) for up
+	// to the 10-second handshake deadline.
 	keys, ok := initialPacketDecrypts(h)
 	if !ok {
 		l.noteDiscard()

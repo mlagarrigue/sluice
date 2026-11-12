@@ -42,10 +42,11 @@ type h3Scratch struct {
 	clen   [20]byte // enough digits for any int
 }
 
-// appendH3Response is AppendH3Response's real body, plus two things the
-// exported wrapper cannot know: the request's method, needed to withhold a
-// HEAD response's bytes the same way the HTTP/1.1 and HTTP/2 paths do, and
-// the peer's SETTINGS_MAX_FIELD_SECTION_SIZE — zero for unbounded — which
+// appendH3Response is appendH3ResponseBasic's body, plus two things that
+// wrapper cannot know: the request's method, needed to withhold a HEAD
+// response's bytes the same way the HTTP/1.1 and HTTP/2 paths do, and the
+// peer's SETTINGS_MAX_FIELD_SECTION_SIZE — h3NoFieldSectionLimit before its
+// SETTINGS arrive, and zero a limit of zero ([checkH3FieldSection]) — which
 // RFC 9114 §4.2.2 says a sender SHOULD NOT exceed. A field section that
 // would exceed it is refused here rather than sent to a client that told
 // us it will not accept it. date is [dateFor]'s value for the batch.

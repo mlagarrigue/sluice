@@ -42,7 +42,7 @@ cd "$(dirname "$0")/.."
 
 RUNNER_DIR=${RUNNER_DIR:-${TMPDIR:-/tmp}/quic-interop-runner}
 # Pinned by commit, as h2spec is in interop-http.sh: the revision the
-# results in docs/guide/limits.md were read at. repo_test.go refuses a
+# results in docs/reference/protocol-positions.md were read at. repo_test.go refuses a
 # branch here, since a branch moves under the results.
 RUNNER_REF=${RUNNER_REF:-ab039a4a4b43ae2e21bb5704c9fad1f8fe6257d6}
 TESTS=${TESTS:-handshake,transfer,longrtt,chacha20,multiplexing,retry,resumption,zerortt,http3,blackhole,keyupdate,ecn,amplificationlimit,handshakeloss,transferloss,handshakecorruption,transfercorruption,ipv6,v2,rebind-port,rebind-addr,connectionmigration}

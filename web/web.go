@@ -225,10 +225,11 @@ func invalid(name, raw, kind string) diagnostics.Diagnostic {
 //
 // 422 rather than 400 for both Error and Critical: the request parsed, its
 // syntax was fine, and what failed is a rule about its content. A 400 tells a
-// client to fix its encoding, which is the wrong instruction. Transport-level
-// problems — a malformed body, a missing parameter — are the caller's to map
-// to 400 if they wish; they carry [CodeMalformedBody] and friends, and
-// [IsTransport] tells them apart.
+// client to fix its encoding, which is the wrong instruction. Status does not
+// tell transport problems apart: a refusal of [DecodeJSON] — a malformed
+// body, a wrong label, a body too large — is an Error diagnostic, and
+// Status maps it to 422 like any other. Map those with [TransportStatus]
+// (400, 413 or 415); [IsTransport] tells them apart.
 func Status(diags []diagnostics.Diagnostic) int {
 	for _, d := range diags {
 		if d.Severity >= diagnostics.Error {
