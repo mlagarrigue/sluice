@@ -1,7 +1,9 @@
 package httpstream
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -212,5 +214,180 @@ func TestBodyDripDoesNotReparseHeaders(t *testing.T) {
 		if progress != (chunkProgress{}) {
 			t.Errorf("expect=%v: a completed request left its progress behind: %+v", expect, progress)
 		}
+	}
+}
+
+// MaxBodyBytes bounds the decoded body, not its framing. Under BodyWhole the
+// whole body must sit in the connection's buffer, whose ceiling counts
+// MaxBodyBytes once: a chunked body inside the bound but sent in small
+// chunks — five bytes of framing per byte in one-byte chunks, 6% in chunks
+// of a hundred — filled it and was refused 413. The reader compacts the
+// validated chunks in place when the buffer is full, so their framing stops
+// counting; one byte past the bound is still 413, and the streamed delivery,
+// which never held the body whole, is the scope's control.
+func TestAChunkedBodyInsideTheBoundIsServedWhateverItsChunks(t *testing.T) {
+	send := func(t *testing.T, cfg Config, size, chunk int, trailer string) string {
+		t.Helper()
+		addr, _ := serveTest(t, cfg, echoBodyHandler)
+		c := dial(t, addr)
+		body := pattern(size)
+		var w bytes.Buffer
+		w.WriteString("POST /up HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n")
+		for i := 0; i < len(body); i += chunk {
+			part := body[i:min(i+chunk, len(body))]
+			fmt.Fprintf(&w, "%x\r\n%s\r\n", len(part), part)
+		}
+		w.WriteString("0\r\n" + trailer + "\r\n")
+		go func() { _, _ = c.Write(w.Bytes()) }()
+		status, got := readResponse(t, bufio.NewReader(c))
+		if strings.Contains(status, " 200 ") && got != string(body) {
+			t.Errorf("served %d bytes, want the %d sent, in order", len(got), len(body))
+		}
+		return status
+	}
+	for _, tc := range []struct {
+		name        string
+		cfg         Config
+		size, chunk int
+		trailer     string
+		want        string
+	}{
+		{"whole, 16 KiB in one-byte chunks, MaxBodyBytes 16 KiB", Config{BodyDelivery: BodyWhole, MaxBodyBytes: 16 << 10}, 16 << 10, 1, "", "200"},
+		{"whole, 1 MiB in 100-byte chunks, defaults", Config{BodyDelivery: BodyWhole}, 1 << 20, 100, "", "200"},
+		{"whole, 16 KiB in one-byte chunks and a trailer", Config{BodyDelivery: BodyWhole, MaxBodyBytes: 16 << 10}, 16 << 10, 1, "X-Sum: 1\r\n", "200"},
+		{"whole, 16 KiB + 1 in one-byte chunks: over the bound", Config{BodyDelivery: BodyWhole, MaxBodyBytes: 16 << 10}, 16<<10 + 1, 1, "", "413"},
+		{"streamed, 1 MiB in 100-byte chunks, defaults", Config{}, 1 << 20, 100, "", "200"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := send(t, tc.cfg, tc.size, tc.chunk, tc.trailer); !strings.Contains(got, " "+tc.want+" ") {
+				t.Errorf("status %q, want %s", got, tc.want)
+			}
+		})
+	}
+
+	// A request pipelined behind a compacted body starts where the
+	// compacted body ends.
+	t.Run("whole, a request pipelined behind a compacted body", func(t *testing.T) {
+		addr, _ := serveTest(t, Config{BodyDelivery: BodyWhole, MaxBodyBytes: 16 << 10}, echoBodyHandler)
+		c := dial(t, addr)
+		body := pattern(16 << 10)
+		var w bytes.Buffer
+		w.WriteString("POST /up HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n")
+		for _, b := range body {
+			fmt.Fprintf(&w, "1\r\n%c\r\n", b)
+		}
+		w.WriteString("0\r\n\r\nPOST /next HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\n\r\nnext")
+		go func() { _, _ = c.Write(w.Bytes()) }()
+		br := bufio.NewReader(c)
+		if status, got := readResponse(t, br); !strings.Contains(status, " 200 ") || got != string(body) {
+			t.Fatalf("first: %q, %d bytes", status, len(got))
+		}
+		if status, got := readResponse(t, br); !strings.Contains(status, " 200 ") || got != "next" {
+			t.Fatalf("second: %q, %q", status, got)
+		}
+	})
+}
+
+// echoBodyHandler answers each request with its body, read whole.
+func echoBodyHandler(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+	out := make([]Response, b.Len())
+	for i := range b.Items {
+		body, err := b.Items[i].ReadAll(nil, 1<<20)
+		if err != nil {
+			out[i] = Response{Status: 400, Body: []byte(err.Error())}
+			continue
+		}
+		out[i] = Response{Status: 200, Body: body}
+	}
+	return sluice.Batch[Response]{Items: out}
+}
+
+// The compaction, again and again: a buffer a few hundred bytes long, a body
+// at MaxBodyBytes in one-byte chunks and a trailer, delivered one byte per
+// read. The buffer fills with framing many times over, in the chunks and in
+// the trailer section; each time the validated chunks give their framing
+// back, and the request comes out whole, its trailer and the request behind
+// it intact.
+func TestACompactedChunkedBodyDrippedComesOutWhole(t *testing.T) {
+	cfg := Config{BodyDelivery: BodyWhole, MaxRequestLineBytes: 64, MaxHeaderBytes: 128, MaxBodyBytes: 64, ReadTimeout: 30 * time.Second}.mustResolve()
+	body := pattern(64)
+	var w bytes.Buffer
+	w.WriteString("POST /up HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n")
+	for _, b := range body {
+		fmt.Fprintf(&w, "1;e=%02x\r\n%c\r\n", b, b)
+	}
+	w.WriteString("0\r\nX-Sum: " + strings.Repeat("s", 40) + "\r\n\r\nGET /next HTTP/1.1\r\nHost: x\r\n\r\n")
+	if w.Len() < 3*cfg.maxBuffer() {
+		t.Fatalf("%d bytes sent for a %d-byte buffer: the test would not compact", w.Len(), cfg.maxBuffer())
+	}
+	r := &h1Conn{cfg: cfg}
+	r.conn = &dripConn{data: w.Bytes(), stop: w.Len()}
+	// What each request holds is a view into the reader's buffer: copied
+	// out before the next read reuses it.
+	var bodies, sums, targets []string
+	for len(targets) < 2 {
+		batch, ok := r.next()
+		if !ok {
+			t.Fatalf("after %d requests: %v", len(targets), r.err)
+		}
+		for _, q := range batch {
+			bodies, targets = append(bodies, string(q.Body)), append(targets, string(q.Target))
+			sum := ""
+			for _, h := range q.Trailers() {
+				if string(h.Name) == "X-Sum" {
+					sum = string(h.Value)
+				}
+			}
+			sums = append(sums, sum)
+		}
+	}
+	if bodies[0] != string(body) {
+		t.Errorf("body %q, want %q", bodies[0], body)
+	}
+	if sums[0] != strings.Repeat("s", 40) {
+		t.Errorf("trailer X-Sum %q, want the forty bytes sent", sums[0])
+	}
+	if targets[1] != "/next" {
+		t.Errorf("second request %q, want /next", targets[1])
+	}
+}
+
+// compactChunked once the walk has reached the trailer section: the chunks'
+// framing goes, the last-chunk line and the partial trailer line move down
+// behind the data, unchanged, and the body completed after the compaction
+// decodes to the same bytes and trailer as the uncompacted one.
+func TestCompactChunkedInTheTrailerSection(t *testing.T) {
+	cfg := Config{BodyDelivery: BodyWhole}.mustResolve()
+	framed := "3\r\nabc\r\n2;x=y\r\nde\r\n0\r\nX-Sum: 1"
+	body := []byte(framed)
+	p := &chunkProgress{headersEnd: 0}
+	if _, _, _, err := walkChunks(body, cfg, p, false, nil); !errors.Is(err, errIncomplete) {
+		t.Fatalf("validating walk: %v, want errIncomplete", err)
+	}
+	if !p.trailer || p.w != 5 || p.zeroAt != strings.Index(framed, "0\r\n") {
+		t.Fatalf("progress %+v: want the trailer reached, 5 bytes decoded, zeroAt at the last-chunk line", *p)
+	}
+	gap := compactChunked(body, cfg, p)
+	if want := strings.Index(framed, "0\r\n") - 5; gap != want {
+		t.Fatalf("gap %d, want the %d bytes of framing before the last-chunk line", gap, want)
+	}
+	body = body[:len(body)-gap]
+	if got, want := string(body), "abcde0\r\nX-Sum: 1"; got != want {
+		t.Fatalf("compacted %q, want %q", got, want)
+	}
+	if p.compact != 5 || p.zeroAt != 5 || p.r != len("abcde0\r\n") {
+		t.Fatalf("progress after compaction %+v", *p)
+	}
+	body = append(body, "\r\n\r\nGET"...)
+	got, consumed, trailers, err := decodeChunked(body, cfg, p, 0, nil)
+	if err != nil || string(got) != "abcde" || consumed != len(body)-len("GET") {
+		t.Fatalf("decoded %q, consumed %d of %d, %v", got, consumed, len(body), err)
+	}
+	if len(trailers) != 1 || string(trailers[0].Name) != "X-Sum" || string(trailers[0].Value) != "1" {
+		t.Fatalf("trailers %v", trailers)
+	}
+	// A second compaction finds nothing more to give back.
+	if gap := compactChunked(body, cfg, &chunkProgress{}); gap != 0 {
+		t.Fatalf("an empty progress compacted %d bytes", gap)
 	}
 }

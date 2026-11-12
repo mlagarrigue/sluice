@@ -1170,6 +1170,13 @@ type chunkProgress struct {
 	// w and r are the decoded and encoded byte counts of the chunks fully
 	// validated so far: size line, data and the CRLF after it.
 	w, r int
+	// compact is how much of the body, from its start, is decoded data the
+	// reader already moved into place over its framing (compactChunked):
+	// the encoded walk resumes at r, which counts from there, and the
+	// moving pass starts at compact rather than at zero. zeroAt is where
+	// the last-chunk line starts, once the walk reached it: the framing
+	// from there on is the trailer section, which is not compacted.
+	compact, zeroAt int
 	// trailer is set once the last chunk has been read; r then points into
 	// the trailer section and trailerBytes is what of it has been accepted
 	// against MaxHeaderBytes; trailerFields is how many field lines that
@@ -1339,9 +1346,46 @@ func decodeChunked(buf []byte, cfg Config, progress *chunkProgress, headersEnd i
 		}
 		return nil, 0, arena, err
 	}
+	compact := progress.compact
 	*progress = chunkProgress{}
+	local = chunkProgress{compact: compact}
 	w, r, out, _ := walkChunks(buf, cfg, &local, true, arena)
 	return buf[:w], r, out, nil
+}
+
+// compactChunked moves the data of the chunks p has validated down over
+// their framing, in place at the front of body, and the bytes after them —
+// the part of the body still arriving — down behind it; it returns how many
+// bytes that freed. The reader calls it when its buffer is full
+// (h1Conn.fill): MaxBodyBytes bounds the decoded body, which the buffer's
+// ceiling counts once, and a body inside the bound but sent in small chunks
+// — five bytes of framing for each byte in one-byte chunks — would fill the
+// buffer with framing and be refused. The validated prefix is walked again
+// by the moving pass, from the previous compaction on, so each data byte is
+// moved into place once; the tail moved with it is at most the chunk still
+// arriving. The trailer section is left where it is: the moving pass reads
+// it again when the body is whole.
+func compactChunked(body []byte, cfg Config, p *chunkProgress) int {
+	end := p.r
+	if p.trailer {
+		end = p.zeroAt
+	}
+	if end <= p.compact || end > len(body) {
+		return 0
+	}
+	mover := chunkProgress{compact: p.compact}
+	w, r, _, err := walkChunks(body[:end], cfg, &mover, true, nil)
+	if !errors.Is(err, errIncomplete) || r != end || w != p.w {
+		return 0 // not the prefix p validated: leave the body as it is
+	}
+	gap := end - w
+	copy(body[w:], body[end:])
+	p.compact = w
+	p.r -= gap
+	if p.trailer {
+		p.zeroAt -= gap
+	}
+	return gap
 }
 
 // walkChunks walks the chunked framing at the front of buf from the state in
@@ -1353,16 +1397,23 @@ func decodeChunked(buf []byte, cfg Config, progress *chunkProgress, headersEnd i
 func walkChunks(buf []byte, cfg Config, p *chunkProgress, move bool, out []Header) (w, r int, fields []Header, err error) {
 	w, r = p.w, p.r
 	if move {
-		// The moving pass starts from zero: chunk data is copied down over
-		// framing already validated, so it cannot share a cursor with the
-		// validating pass that walked it.
-		w, r = 0, 0
+		// The moving pass starts from what is already decoded in place
+		// (compact, zero unless the reader compacted): chunk data is copied
+		// down over framing already validated, so it cannot share a cursor
+		// with the validating pass that walked it. Stopped short, it says
+		// how far it got: compactChunked walks a prefix that ends between
+		// two chunks.
+		w, r = p.compact, p.compact
 	}
 	for !p.trailer || move {
+		lineAt := r
 		line, rest, ok := cutCRLF(buf[r:], maxChunkLineBytes)
 		if !ok {
 			if len(buf)-r > maxChunkLineBytes+1 {
 				return 0, 0, out, fmt.Errorf("%w: a chunk-size line over %d bytes", ErrMalformed, maxChunkLineBytes)
+			}
+			if move {
+				return w, r, out, errIncomplete
 			}
 			return 0, 0, out, errIncomplete
 		}
@@ -1373,7 +1424,7 @@ func walkChunks(buf []byte, cfg Config, p *chunkProgress, move bool, out []Heade
 		r = len(buf) - len(rest)
 		if size == 0 {
 			if !move {
-				p.r, p.trailer = r, true
+				p.r, p.trailer, p.zeroAt = r, true, lineAt
 			}
 			break
 		}

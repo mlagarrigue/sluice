@@ -84,7 +84,10 @@ func newRequestReader(c net.Conn, st *connState, cfg Config) sluice.Source[Reque
 // The ceiling counts the four bytes the bounds leave out: the request line's
 // CRLF, which MaxRequestLineBytes does not count, and the empty line RFC
 // 9112 §2.2 lets come before it. Without them a request at every bound was
-// refused as filling the buffer.
+// refused as filling the buffer. A chunked body's framing is not counted
+// either: under BodyWhole, a full buffer gives back the framing of the
+// chunks already validated (compactBody), so MaxBodyBytes bounds the
+// decoded body however small its chunks.
 func (c Config) maxBuffer() int {
 	return 2 + c.MaxRequestLineBytes + 2 + c.MaxHeaderBytes + c.MaxBodyBytes
 }
@@ -407,10 +410,24 @@ func (r *h1Conn) resting() bool {
 // peer's close: serveConn does not report it.
 var errClosedMidRequest = errors.New("the connection closed mid-request")
 
+// compactBody makes room in a full buffer whose front request is a chunked
+// body under BodyWhole, its head accepted: the chunks validated so far give
+// their framing back (compactChunked). It reports whether that freed
+// anything.
+func (r *h1Conn) compactBody() bool {
+	p := &r.progress
+	if !p.chunked || p.at != 0 || p.headersEnd > r.n {
+		return false
+	}
+	gap := compactChunked(r.buf[p.headersEnd:r.n], r.cfg, p)
+	r.n -= gap
+	return gap > 0
+}
+
 // fill reads once, growing the buffer toward the ceiling but never past it.
 func (r *h1Conn) fill() error {
 	limit := r.cfg.maxBuffer()
-	if r.n >= limit {
+	if r.n >= limit && !r.compactBody() {
 		// The buffer is full and nothing in it parsed, so the request at its
 		// front is larger than the bounds allow.
 		return fmt.Errorf("%w: a request fills the %d-byte buffer without completing", ErrTooLarge, limit)
