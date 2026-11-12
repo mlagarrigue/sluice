@@ -344,4 +344,18 @@ func TestRun(t *testing.T) {
 			})
 		}
 	})
+
+	// The generated code exists, and the place it goes does not: go:generate
+	// must fail, not report success with nothing written.
+	t.Run("unwritable output", func(t *testing.T) {
+		dir := t.TempDir()
+		in := filepath.Join(dir, "thing.go")
+		if err := os.WriteFile(in, []byte(src), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out := filepath.Join(dir, "missing", "thing_hydrate.go")
+		if err := Run("Thing", in, out); err == nil {
+			t.Fatalf("Run wrote into a directory that does not exist and returned no error")
+		}
+	})
 }
