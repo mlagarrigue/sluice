@@ -22,6 +22,20 @@ code: the figures, the traps and the decisions taken against intuition.
 The **ADR** links lead to the formal decision (the problem, the decision,
 the alternatives rejected).
 
+| Part | What it answers |
+|---|---|
+| [Founding principle](#founding-principle) | what the library is, and is not, on two examples |
+| [The central type](#the-central-type--all-batch) | why everything is a batch |
+| [Context, cancellation and stopping](#context-cancellation-and-stopping) | how a stream stops, and why in four ways |
+| [Diagnostics](#diagnostics--errors-warnings-and-affordances) | how a stream reports without stopping |
+| [Operator taxonomy](#operator-taxonomy) | where an operator lives, by what it retains |
+| [Split](#split--a-single-primitive), [N→1 operators](#n1-operators--merging-several-streams) | one stream into several, several into one |
+| [Database connectors](#database-connectors), [Joins](#joins) | the PostgreSQL connector, and joins |
+| [The request path](#the-request-path) | the gateway and the `net/http` path |
+| [API pitfalls](#api-pitfalls) | the traps the API sets |
+| [Security](#security--verifiable-properties) | the fourteen guarantees, S1 to S14 |
+| [Application architecture](#application-architecture) | how to cut an application built on top |
+
 ## Glossary
 
 The terms that recur throughout — stream, batch, operator, source, bound,
@@ -495,7 +509,7 @@ to the serialization format, in favor of `expression`, tied to the model.
 `{0}`/`{1}`: languages reorder, and a translator cannot manage without ambiguity.
 
 **The cause stays unexported**, with `Unwrap() error`. The HTTP serializer is then
-**structurally unable** to leak internals: the S7 guarantee becomes impossible to
+**structurally unable** to leak internals: the [S7](#security--verifiable-properties) guarantee becomes impossible to
 violate instead of being recommended. At the network boundary, the cause is
 replaced by a correlation identifier that only the log resolves.
 
@@ -531,7 +545,7 @@ type". That is the model's added value, and it is a bet — no precedent to copy
 >
 > **Affordances have no collector of their own**, unlike diagnostics ([Diagnostics in a stream](#diagnostics-in-a-stream-what-no-standard-does)).
 > A batch offers a handful of remedies where it may raise thousands of
-> diagnostics, so the S12 ceiling has nothing to bound on that side; the
+> diagnostics, so the [S12](#security--verifiable-properties) ceiling has nothing to bound on that side; the
 > consumer carries them as a plain slice. A zero `Affordance` is the ordinary
 > "no remedy to offer" value and reports `IsZero`. `WithInput` copies rather
 > than appending in place, because an affordance is precisely the kind of
@@ -547,7 +561,7 @@ N diagnostics, memory blows up.
 > drowns the signal.
 
 **`diagnostics.Collector`** is that ceiling, built by `NewCollector(limit)`, whose limit is a required argument —
-S1 requires a bound, and no default fits every use here, so the caller supplies
+[S1](#security--verifiable-properties) requires a bound, and no default fits every use here, so the caller supplies
 it: a limit nobody chose is a limit nobody owns. It keeps the first *n* in arrival order rather than the most severe:
 stable ordering is what makes a report reproducible, and a collector that
 reshuffles under load answers differently for the same input depending on what
@@ -698,7 +712,7 @@ operators *are* that point.
 > **is** the credit: interposing a buffer only delays delivery and forces a copy,
 > since the batches it holds are reusable buffers. The decoupling a caller wants
 > from `Buffer` is what `parallel.Async` provides, with the goroutine that
-> makes it meaningful. This is also S11 read forwards rather than backwards.
+> makes it meaningful. This is also [S11](#security--verifiable-properties) read forwards rather than backwards.
 >
 > The policy itself is one shared `Overflow` type — `DropOldest`, `DropNewest`,
 > `Fail` — rather than a per-operator spelling. Three vocabularies for one
@@ -796,6 +810,20 @@ each branch a slot of **one batch**, instead of exposing N independent
 `iter.Seq`. The backlog stays **O(1)** without Akka's pathological coupling, and
 it is only available because we are pull-based and single-goroutine.
 
+```mermaid
+flowchart LR
+    S[("source, pulled once")] -- "next batch" --> T["shared traversal<br/>route(batch) gives the branches"]
+    T -- "the batch, if branch 0's slot is empty" --> B0["branch 0<br/>a slot of one batch"]
+    T -- "the batch, if branch 1's slot is empty" --> B1["branch 1<br/>a slot of one batch"]
+    B0 --> R0["reader of branch 0"]
+    B1 --> R1["reader of branch 1"]
+    R0 -. "slot empty: drives the traversal" .-> T
+    R1 -. "slot empty: drives the traversal" .-> T
+```
+
+A destination whose slot is still full holds the batch back; a reader that
+can then make no progress panics with `ErrSplitStalled`.
+
 This does **not** escape the theorem in [The impossibility theorem](#the-impossibility-theorem) — nothing does. The sacrifice is
 **branch independence**: a branch whose slot is still full blocks the shared
 pull, so branches read at the same time must be advanced in alternation. What
@@ -857,7 +885,7 @@ coordination cost is amortized.
 > memory against a workspace per batch; all four [measured](../benchmarks.md#the-architectures-figures)).
 > All three share one worker core and so one ordering, shutdown and panic contract.
 >
-> **The input batch is copied at the hand-off (S14).** The operator retains each
+> **The input batch is copied at the hand-off ([S14](#security--verifiable-properties)).** The operator retains each
 > incoming batch while a worker reads it, and upstream operators legitimately
 > reuse their output buffers — composed, a data race with silent corruption.
 > `Items` is copied into a recycled per-slot buffer at the retention point, at
@@ -987,6 +1015,17 @@ loop, the operator is essentially free in batch, and unusable without it.
 > rotation and the rest carry on. [Measured](../benchmarks.md#the-architectures-figures) at 0.305 ns/element from two
 > sources and 0.349 from eight, within the eight-source run's spread: the pull
 > count per element does not change with the source count.
+
+```mermaid
+flowchart LR
+    A[("source A")] -- "iter.Pull: one batch" --> M["Merge<br/>strict rotation, one batch per source in turn"]
+    B[("source B")] -- "iter.Pull: one batch" --> M
+    M -- "A1, B1, A2, B2, …" --> R["reader, on its own goroutine"]
+    R -. "next batch" .-> M
+```
+
+Under `WhenAll` an exhausted source leaves the rotation; under `WhenAny`
+the first one exhausted ends the merged stream.
 
 ### `join.ZipLongest` primitive, `Zip` derived
 
@@ -1210,7 +1249,7 @@ for the best effort-to-gain ratio in the project.
 
 #### The framing layer
 
-> **The framing layer is where S8 is kept or lost.** `internal/pgwire` turns
+> **The framing layer is where [S8](#security--verifiable-properties) is kept or lost.** `internal/pgwire` turns
 > a byte stream into messages and back, on the standard library alone.
 > One ordering decision carries the guarantee: a message's length prefix is
 > attacker-controlled, so it is compared to the reader's limit **before** any
@@ -1218,7 +1257,7 @@ for the best effort-to-gain ratio in the project.
 > comparison and an error, not a gigabyte. The limit cannot be removed, only
 > raised: `SetMaxMessage(0)` restores the default rather than meaning
 > "unbounded", because there is no legitimate way to ask this package for an
-> unbounded read (S3). Verified by fuzzing, as S8 requires rather than
+> unbounded read ([S3](#security--verifiable-properties)). Verified by fuzzing, as S8 requires rather than
 > suggests: ~30 million executions across the reader, the startup reader and a
 > writer/reader round trip, no crash and no allocation past the limit.
 >
@@ -1301,7 +1340,7 @@ for the best effort-to-gain ratio in the project.
 > That resynchronisation is not optional. A connection left mid-result hands
 > the *next* query this one's rows — a wrong answer with no error anywhere, and
 > a symptom no one traces back to its cause — so the drain runs on every path
-> out, including an early stop and a panic in the consumer (S10 meeting the
+> out, including an early stop and a panic in the consumer ([S10](#security--verifiable-properties) meeting the
 > protocol's own requirement). The distinction it rests on: a **query** error
 > leaves the connection usable, because the server skips to the next Sync and
 > carries on, while a **framing** error does not, because the position in the
@@ -1594,6 +1633,15 @@ batch element and renders what comes back, and `gateway` turns concurrent
 request/reply calls into batched stream processing — one pipeline, built at
 startup, serving many callers a batch at a time. Three decisions in the
 gateway are worth carrying ([ADR 0012](adr/0012-gateway-batch-submission.md)).
+
+```mermaid
+flowchart LR
+    H1["handler 1<br/>gw.Do(ctx, in)"] -- "a Call: In and its way back" --> G["gateway<br/>gathers up to Size calls,<br/>the first waiting Within at most"]
+    H2["handler 2<br/>gw.Do(ctx, in)"] -- "a Call" --> G
+    G -- "one batch of calls" --> P["pipeline, built once<br/>one round trip for the batch"]
+    P -. "c.Reply(out) or c.Fail(err)" .-> H1
+    P -. "c.Reply(out) or c.Fail(err)" .-> H2
+```
 
 **The element is the correlation.** A batched request/reply layer must route
 each answer back to the goroutine that asked, and a correlation key carried
