@@ -131,7 +131,7 @@ group's, which are experimental.
 
 | Package | Role |
 |---|---|
-| `sluice` | the core: `Stream`, `Batch`, `Source`, and the operators that keep nothing in memory between two batches |
+| `sluice` | the core: `Stream`, `Batch`, `Source`, and the operators that keep nothing beyond one batch in memory between two batches |
 | `sluice/join` | joins (pairing two streams by a key): they keep one side in memory |
 | `sluice/window` | time windows and regrouping with a delay: they keep time |
 | `sluice/parallel` | work spread over several goroutines, and the decoupling of two stages |

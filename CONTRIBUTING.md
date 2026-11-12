@@ -73,7 +73,7 @@ against the design, not work around it.
 
 | What you add | Where |
 |---|---|
-| an operator that retains nothing between two batches | the root package |
+| an operator that retains nothing beyond one batch between two batches | the root package |
 | an operator that retains one side, time, goroutines, keys | `join/`, `window/`, `parallel/`, `distinct/` |
 | a connector to an external system | `database/<system>`, `net/<protocol>` |
 | shared machinery with no value to a caller | `internal/` |

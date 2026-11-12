@@ -651,7 +651,7 @@ it — an operator lives in the package named after **what it retains between
 two batches** — so that the import path says the cost before the
 documentation does ([ADR 0001](adr/0001-package-map.md)).
 
-**Retains nothing — the root package, O(1).** `Map` · `Convert` · `Filter` ·
+**Retains nothing beyond one batch — the root package, O(1).** `Map` · `Convert` · `Filter` ·
 `FlatMap` · `Peek` · `Scan` · `Take` · `Drop` · `TakeWhile` · `DropWhile` ·
 `Split` · `Concat` · `Merge` · `Coalesce`. Composable indefinitely. `Scan`
 keeps an accumulator, not elements; `Split` keeps one batch of slack per

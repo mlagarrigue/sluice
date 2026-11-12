@@ -17,17 +17,18 @@ the answer before you open the documentation:
 
 | Package | What it retains between two batches |
 |---|---|
-| `sluice` (the root) | nothing |
+| `sluice` (the root) | nothing beyond one batch (`Coalesce`, each branch of `Split`) |
 | `sluice/join` | one side of the other stream |
 | `sluice/window` | time |
 | `sluice/parallel` | goroutines |
 | `sluice/distinct` | keys |
 
 > **In plain words.** Everything in the root composes without limit and
-> cannot overflow memory. Everything elsewhere retains something, and makes
+> cannot overflow memory: what it keeps is one batch at most, of the size
+> you chose. Everything elsewhere retains something, and makes
 > you write how much, at most.
 
-## The root retains nothing
+## The root retains nothing beyond one batch
 
 `Map`, `Convert`, `Filter`, `FlatMap`, `Peek`, `Scan`, `Take`, `Drop`,
 `TakeWhile`, `DropWhile`, `Split`, `Concat`, `Merge`, `Coalesce`, and the
