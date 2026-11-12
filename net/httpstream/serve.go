@@ -1062,12 +1062,26 @@ func (x *batchCtx) written() {
 type streamCalls[K comparable] struct {
 	mu sync.Mutex
 	m  map[K]*batchCtx
+	// over says leaveAll ran: the connection is over, and a batch
+	// registered since is born cancelled. The read side may still be
+	// handing over the last packet's requests when the connection's end
+	// cancels the batches in flight — HTTP/3 delivers a packet's frames
+	// after its CONNECTION_CLOSE has closed the connection — and a batch
+	// registered after that cancellation would keep a context nothing
+	// cancels when the client is the one that left, which the end then
+	// waits on until the server's forced stop.
+	over bool
 }
 
 // register makes the context of a batch about to be handed to the handler.
 func (k *streamCalls[K]) register(parent context.Context, ids []K) *batchCtx {
 	x := &batchCtx{Context: parent, live: len(ids)}
 	k.mu.Lock()
+	if k.over {
+		k.mu.Unlock()
+		x.err = context.Canceled // nobody is left to answer
+		return x
+	}
 	if k.m == nil {
 		k.m = make(map[K]*batchCtx)
 	}
@@ -1094,6 +1108,7 @@ func (k *streamCalls[K]) leave(id K) {
 func (k *streamCalls[K]) leaveAll() {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	k.over = true
 	for id, x := range k.m {
 		x.close(context.Canceled)
 		delete(k.m, id)
