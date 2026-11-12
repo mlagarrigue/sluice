@@ -315,9 +315,9 @@ var cited = regexp.MustCompile(`benchmarks\.md#([\w-]+)\)`)
 // or bounds rather than measurements, keyed by file and figure, each with
 // what it is. Anything else written in ns, µs or ms needs its section.
 var settings = map[string]string{
-	"docs/guide/deployments.md 100 ms":        "a round-trip time the window arithmetic is worked for, and the delay of the proxy the upload was measured through",
-	"docs/guide/experimental.md 80 ms":        "the round-trip time of an emulated path profile",
-	"docs/reference/exit-conditions.md 14 ms": "2^14 ms, the largest max_ack_delay RFC 9000 allows",
+	"docs/guide/deployments.md 100 ms": "a round-trip time the window arithmetic is worked for, and the delay of the proxy the upload was measured through",
+	"docs/guide/experimental.md 80 ms": "the round-trip time of an emulated path profile",
+	"docs/reference/quic.md 14 ms":     "2^14 ms, the largest max_ack_delay RFC 9000 allows",
 }
 
 // Every duration a guide, the architecture or the README quotes is a

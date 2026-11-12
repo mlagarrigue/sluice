@@ -170,7 +170,7 @@ func (r *reassembly) add(off uint64, data []byte) error {
 		// not a violation on the peer's part — fragmenting is legal — and
 		// RFC 9000 §20.1 offers no other code for "cannot continue". The
 		// reason travels with it, for the peer's log. Written up in
-		// docs/reference/exit-conditions.md and ADR 0015. CRYPTO data parks in
+		// docs/reference/quic.md and ADR 0015. CRYPTO data parks in
 		// cryptoBuffer instead, which has no fragment bound.
 		return &transportError{
 			code: transportInternalError,
