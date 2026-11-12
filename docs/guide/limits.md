@@ -201,6 +201,13 @@ The figures are a laptop's ([measurements](#measurements-what-is-missing)).
   `MaxConcurrentStreams` times `InitialWindowSize` on HTTP/2, times
   `InitialMaxStreamDataBidiRemote` on HTTP/3 — the figure to multiply by
   the connections a server accepts.
+- **On HTTP/2, a streamed response holds the other responses of its
+  connection.** Its producer is pulled by the connection's one responding
+  goroutine: until it has finished, no other response of that connection
+  leaves, streamed or buffered, of the same batch or a later one. Give a
+  long response a connection of its own, or serve it over HTTP/3, where
+  each stream has its own transport
+  ([ADR 0008](../design/adr/0008-multiplexed-connection.md)).
 - **One token verifier provided**: HMAC (a symmetric signature with a
   shared secret). Public-key tokens (RSA, ECDSA, EdDSA) are not provided —
   not yet; the `Verifier` interface is the extension point.

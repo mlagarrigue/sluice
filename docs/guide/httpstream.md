@@ -82,11 +82,12 @@ One limit is owned rather than hidden, and it follows from the second
 architecture rule (the batch is the unit of transport). Over HTTP/2 the
 buffered responses of one batch are framed at once and interleave on the
 wire. A **streamed** response is different: its producer is pulled by the
-goroutine that answers the batch, one producer at a time. Two streamed
-responses that arrived in the same batch therefore go out one after the
-other, not interleaved, and the second starts when the first producer has
-finished. The client receives both, whole and in request order; what it
-loses is simultaneity, and a slow reader of the first delays the second.
+goroutine that answers the connection, one producer at a time. While a
+streamed response's producer runs, every other response of the connection
+waits behind it — a second streamed one and a buffered one alike, of the
+same batch or a later one — and goes out when that producer has finished.
+The client receives them all, whole and in request order; what it loses
+is simultaneity, and a slow reader of the first delays the rest.
 Where that matters, give long-lived streamed responses a connection of
 their own, or serve them over HTTP/3, where each stream has its own
 transport. `scripts/interop-http.sh` checks the two-stream case against
