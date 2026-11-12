@@ -179,3 +179,41 @@ func TestWriteDeadlinePassesWithoutCredit(t *testing.T) {
 		t.Fatalf("Read after SetDeadline = %v, want os.ErrDeadlineExceeded", err)
 	}
 }
+
+// A deadline already past, set while a Write waits on credit, ends that
+// Write: SetWriteDeadline no longer wakes the parked writers itself, so it
+// is the timer loop — kicked because the earliest deadline moved — that
+// must. A Write on another stream, waiting with no deadline, stays parked.
+func TestWriteDeadlineSetInThePastWakesTheParkedWriter(t *testing.T) {
+	serverParams := quic.DefaultConfig()
+	serverParams.InitialMaxStreamDataBidiRemote = 64
+	client, server, _, _ := handshakePairParams(t, serverTLS(t), clientTLS(), serverParams)
+	cs, _ := openAccepted(t, client, server)
+	other, _ := openAccepted(t, client, server)
+
+	done := make(chan error, 2)
+	go func() { _, err := cs.Write(make([]byte, 1024)); done <- err }()
+	go func() { _, err := other.Write(make([]byte, 1024)); done <- err }()
+	time.Sleep(50 * time.Millisecond) // both past their 63 bytes of credit, parked
+	start := time.Now()
+	if err := cs.SetWriteDeadline(start.Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Fatalf("a parked Write ended with %v, want os.ErrDeadlineExceeded", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the parked Write did not see a deadline already past")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("the Write with no deadline ended too: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	_ = other.SetWriteDeadline(time.Now())
+	if err := <-done; !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("the second Write ended with %v", err)
+	}
+}

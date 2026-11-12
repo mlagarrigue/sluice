@@ -34,6 +34,7 @@ figure that differs, to the character, from the median of its row.
 - [HTTP/1.1, watching for a client that leaves](#http11-watching-for-a-client-that-leaves)
 - [QUIC, on an emulated path](#quic-on-an-emulated-path)
 - [A QUIC socket in a burst](#a-quic-socket-in-a-burst)
+- [Stream deadlines that mature one by one](#stream-deadlines-that-mature-one-by-one)
 - [Credit a byte at a time](#credit-a-byte-at-a-time)
 - [Joins and hydration, in isolation](#joins-and-hydration-in-isolation)
 - [Measured in one session](#measured-in-one-session)
@@ -1411,6 +1412,25 @@ measure again:
 
 ```
 go test -run '^$' -bench BenchmarkUDPReceiveBurst -benchtime=20x -count=6 ./internal/bench/
+```
+
+## Stream deadlines that mature one by one
+
+What it costs `net/quic` to keep and wake n stream deadlines
+(`BenchmarkStreamDeadlinesMature`, `net/quic`). The HTTP/3 server sets a
+fresh write deadline on a stream before each write, so n streams a peer
+starves of credit carry n deadlines that mature one after another. One op
+is that round — n `SetWriteDeadline` calls, then the timer loop's n
+wake-ups, the benchmark playing the loop — and the figure is the op divided
+by n. Before, each matured deadline walked every stream under the
+connection's lock: 1.6 µs, 15.9 µs and 147 µs per stream at 100, 1,024 and
+8,192 streams, the n². With the deadlines in a heap, 0.23 µs, 0.31 µs and
+0.36 µs: a log n per set and per maturity. Paired by `ab.sh`, eleven
+rounds, the medians of the before/after ratio are ×6.9, ×51 and ×410;
+measured 2026-11-12 in the devcontainer, on mains power.
+
+```
+BINDIR=<dir> internal/bench/scripts/ab.sh StreamDeadlinesMature 11
 ```
 
 ## Credit a byte at a time

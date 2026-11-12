@@ -85,6 +85,9 @@ type Stream struct {
 	// writeDeadline is when a Write parked on credit or the congestion
 	// window gives up (SetWriteDeadline); zero means never.
 	writeDeadline time.Time
+	// dlIdx is where the read (0) and the write (1) deadline stand in
+	// Conn.deadlines, plus one; zero while that deadline is not armed.
+	dlIdx [2]int
 
 	// rejected says the stream was opened in 0-RTT and the server refused
 	// it (rejectEarlyLocked): every Read and Write returns
@@ -345,11 +348,14 @@ func (s *Stream) Write(p []byte) (int, error) {
 // Setting a deadline wakes a Read already parked, so the new bound applies
 // to it too.
 func (s *Stream) SetReadDeadline(t time.Time) error {
+	c := s.conn
+	c.mu.Lock() // mu, then s.mu: the one order the two locks allow
 	s.mu.Lock()
 	s.readDeadline = t
 	s.mu.Unlock()
+	c.setStreamDeadlineLocked(s, false, t)
+	c.mu.Unlock()
 	s.signal()
-	s.conn.armStreamDeadline(t)
 	return nil
 }
 
@@ -359,12 +365,18 @@ func (s *Stream) SetReadDeadline(t time.Time) error {
 // ones return it at once until the deadline is moved. The zero time removes
 // it. It is what lets a server stop waiting on a peer that keeps the
 // connection alive but never grants credit.
+//
+// It wakes no one: a parked writer needs waking only once its deadline has
+// passed, and the timer loop does that when the deadline matures — at once
+// for a deadline already past, which moves the earliest one and kicks the
+// loop. Waking every parked writer here, as it once did, cost the n writers
+// a peer starves of credit a wake-up each time any of their n streams set
+// its deadline, which the HTTP/3 server does before every write.
 func (s *Stream) SetWriteDeadline(t time.Time) error {
 	c := s.conn
 	c.mu.Lock()
 	s.writeDeadline = t
-	c.armStreamDeadlineLocked(t)
-	c.wakeAllLocked() // a writer parked on credit or on the window re-reads its deadline
+	c.setStreamDeadlineLocked(s, true, t)
 	c.mu.Unlock()
 	return nil
 }
@@ -373,62 +385,6 @@ func (s *Stream) SetWriteDeadline(t time.Time) error {
 func (s *Stream) SetDeadline(t time.Time) error {
 	_ = s.SetReadDeadline(t)
 	return s.SetWriteDeadline(t)
-}
-
-// armStreamDeadline records a stream deadline for the timer loop: the
-// earliest one armed is what the loop sleeps on.
-func (c *Conn) armStreamDeadline(t time.Time) {
-	c.mu.Lock()
-	c.armStreamDeadlineLocked(t)
-	c.mu.Unlock()
-}
-
-func (c *Conn) armStreamDeadlineLocked(t time.Time) {
-	if t.IsZero() {
-		return // nothing to wait for; a stale earlier deadline costs one spurious pass
-	}
-	if c.streamDeadline.IsZero() || t.Before(c.streamDeadline) {
-		c.streamDeadline = t
-		c.kickTimer()
-	}
-}
-
-// expireStreamDeadlinesLocked wakes whatever a matured stream deadline
-// holds — the stream's Read, the writers parked on cond — and returns the
-// earliest deadline still to come, zero when none is set. Callers hold mu;
-// taking s.mu under it is the one order the two locks allow.
-//
-// Each matured deadline costs a pass over every open stream, under mu: one
-// lock per stream, bounded by InitialMaxStreamsBidi plus Uni (100 and 8 by
-// default, 65,536 each at most). Only the application sets a deadline, so
-// the number of passes is its own; a heap ordered by deadline would make
-// every SetDeadline pay a log n and a removal, for an application that
-// sets many distinct deadlines on many streams at once.
-func (c *Conn) expireStreamDeadlinesLocked(now time.Time) time.Time {
-	var next time.Time
-	earlier := func(t time.Time) {
-		if !t.IsZero() && now.Before(t) && (next.IsZero() || t.Before(next)) {
-			next = t
-		}
-	}
-	wakeWriters := false
-	for _, s := range c.streams {
-		s.mu.Lock()
-		rd := s.readDeadline
-		s.mu.Unlock()
-		if !rd.IsZero() && !now.Before(rd) {
-			s.signal()
-		}
-		earlier(rd)
-		if wd := s.writeDeadline; !wd.IsZero() && !now.Before(wd) {
-			wakeWriters = true
-		}
-		earlier(s.writeDeadline)
-	}
-	if wakeWriters {
-		c.wakeAllLocked()
-	}
-	return next
 }
 
 // CloseWrite sends the FIN, which is what tells the peer a request or a
@@ -1148,6 +1104,7 @@ func (c *Conn) maybeRemoveLocked(s *Stream) {
 		return
 	}
 	delete(c.streams, s.id)
+	c.dropStreamDeadlinesLocked(s)
 	if peerInitiated { // grant the slot back
 		c.returnStreamSlotLocked(s.id&0x02 != 0)
 	}

@@ -271,6 +271,7 @@ func (c *Conn) rejectEarlyLocked() {
 		s.rejected.Store(true)
 		s.signal()
 		delete(c.streams, id)
+		c.dropStreamDeadlinesLocked(s)
 	}
 	c.openedBidi, c.openedUni = 0, 0
 	c.connSend = sendQuota{}

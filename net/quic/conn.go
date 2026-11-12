@@ -9,6 +9,7 @@
 //	receive.go       a datagram in: the read loops, receiveAt's steps, the frames
 //	send.go          a packet out: sendPacketLocked, writePacketLocked, coalescing
 //	stream.go        Stream: Read and Write, OnStreamFrames and its credit modes
+//	deadline.go      the streams' read and write deadlines, earliest first
 //	reassembly.go    stream bytes put back in order; cryptobuf.go CRYPTO bytes
 //	flow.go          flow control, both directions, both levels (RFC 9000 §4)
 //	ack.go           acknowledgements owed (RFC 9000 §13.2)
@@ -171,11 +172,12 @@ type Conn struct {
 	appLimitedMarks   int
 	appLimitedResends int
 	// streamDeadline is the earliest read or write deadline a stream has
-	// armed (Stream.SetReadDeadline, SetWriteDeadline); the timer loop wakes
-	// what it holds when it matures and recomputes the next from the stream
-	// table. Zero while no stream has one. A deadline removed or moved later
-	// is not recomputed here: the loop fires once for nothing and moves on.
+	// armed (Stream.SetReadDeadline, SetWriteDeadline), the top of
+	// deadlines; the timer loop wakes what it holds when it matures. Zero
+	// while no stream has one.
 	streamDeadline time.Time
+	// deadlines holds every armed stream deadline, earliest first.
+	deadlines deadlineHeap
 
 	ptoCount int
 	// lostPackets, bytesRetransmitted, persistentCongestions and ptoFired

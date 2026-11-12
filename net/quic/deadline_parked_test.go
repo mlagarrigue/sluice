@@ -11,10 +11,10 @@ import (
 // os.ErrDeadlineExceeded, as SetWriteDeadline's godoc promises for both
 // waits — flow-control credit and the congestion window. The window's wait
 // read a copy of the deadline taken when the frame was built, so the writer
-// SetWriteDeadline woke went back to sleep on the stale value. The deadline
-// is set in the past, so no timer is needed: SetWriteDeadline's own
-// broadcast, and the repeated ones below (what the timer loop would do),
-// give the writer every chance to re-read it. The flow-control case is the
+// a wake-up reached went back to sleep on the stale value. The deadline is
+// set in the past, and the broadcasts below stand for the timer loop's (the
+// one TestWriteDeadlineSetInThePastWakesTheParkedWriter runs for real),
+// giving the writer every chance to re-read it. The flow-control case is the
 // control that keeps the test from proving nothing.
 func TestADeadlineSetWhileParkedIsSeen(t *testing.T) {
 	for _, tc := range []struct {
