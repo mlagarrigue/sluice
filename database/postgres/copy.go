@@ -243,11 +243,19 @@ func (cp *Copier) Rows() int64 { return cp.total }
 // The buffer is copied out before returning, so the caller may reuse it for
 // the next batch — the batch contract, applied to the one place in this
 // package where the caller owns the bytes.
+//
+// An empty batch, no bytes and no rows, writes nothing and is no error.
+// Bytes with a count of zero, or a negative count, are refused: dropped,
+// they would leave Rows saying nothing was written. The copy is untouched by
+// the refusal and stays finishable.
 func (cp *Copier) WriteTuples(tuples []byte, rows int) error {
 	if cp.err != nil {
 		return cp.err
 	}
-	if rows <= 0 {
+	if rows < 0 || rows == 0 && len(tuples) > 0 {
+		return fmt.Errorf("postgres: WriteTuples given %d bytes for %d rows: the count says how many tuples the bytes hold", len(tuples), rows)
+	}
+	if rows == 0 {
 		return nil
 	}
 	// Deliberately not routed through fail: fail clears inTx, which would

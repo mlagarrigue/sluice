@@ -926,15 +926,20 @@ func TestCopyChunksAtExactlyChunkBytes(t *testing.T) {
 	})
 }
 
-// A batch of no rows sends nothing, not even the BEGIN a first batch opens.
+// A batch of no rows sends nothing, not even the BEGIN a first batch opens:
+// an empty one is no error, and bytes handed with a count of zero are
+// refused before anything is sent.
 func TestCopyWriteOfNoRowsSendsNothing(t *testing.T) {
 	srv := &fakeServer{}
 	cp, err := NewConn(srv, Config{}).CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)", CopyConfig{RowsPerTx: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := cp.WriteTuples(tuple(new(int64(1)), nil), 0); err != nil || srv.sent.Len() != 0 {
-		t.Fatalf("WriteTuples of 0 rows = %v, %d bytes sent", err, srv.sent.Len())
+	if err := cp.WriteTuples(nil, 0); err != nil || srv.sent.Len() != 0 {
+		t.Fatalf("WriteTuples of an empty batch = %v, %d bytes sent", err, srv.sent.Len())
+	}
+	if err := cp.WriteTuples(tuple(new(int64(1)), nil), 0); err == nil || srv.sent.Len() != 0 {
+		t.Fatalf("WriteTuples of a tuple counted as 0 rows = %v, %d bytes sent; want a refusal and nothing sent", err, srv.sent.Len())
 	}
 }
 
