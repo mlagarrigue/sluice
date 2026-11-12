@@ -516,11 +516,12 @@ const adrRuleSince = "2026-10-28"
 // the commit that adds a line here names the records in its own message,
 // and `git log --grep "ADR 0015"` still finds the revision through it.
 var adrNamedLater = map[string][]string{
-	"cec438de46da81cb7061c4c65d5808c3d96b6547": {"0015"},         // a /64 bounds a host, not a site
-	"c54b3411f6e4d90d9d03bca4914c3612a5fe5302": {"0001", "0004"}, // join.Merge becomes join.MergeJoin
-	"22fc38060976c103a43b559edb457110860262ec": {"0015"},         // the BBR draft cited by its revision
-	"cd0041d5ac43f5da13366b6bec8a779e99459ca8": {"0018"},         // IdleTimeout read by HTTP/3's own idle clock
-	"f9c05215c11336a298c0065ae1df0f7b246f933b": {"0015"},         // MaxConnsPerIP counts the addresses proved
+	"cec438de46da81cb7061c4c65d5808c3d96b6547": {"0015"},                 // a /64 bounds a host, not a site
+	"c54b3411f6e4d90d9d03bca4914c3612a5fe5302": {"0001", "0004"},         // join.Merge becomes join.MergeJoin
+	"22fc38060976c103a43b559edb457110860262ec": {"0015"},                 // the BBR draft cited by its revision
+	"cd0041d5ac43f5da13366b6bec8a779e99459ca8": {"0018"},                 // IdleTimeout read by HTTP/3's own idle clock
+	"f9c05215c11336a298c0065ae1df0f7b246f933b": {"0015"},                 // MaxConnsPerIP counts the addresses proved
+	"57431e70c9cf136a989bab295ec5e2517e0d7283": {"0008", "0015", "0017"}, // Rationale under subheadings, nothing decided anew
 }
 
 // unnamedADRChanges lists, for the git repository at dir, every commit after
