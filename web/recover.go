@@ -3,6 +3,7 @@ package web
 import (
 	"errors"
 	"net/http"
+	"slices"
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/diagnostics"
@@ -65,6 +66,19 @@ func Recover(observe func(any), next http.Handler) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tracked := &statusWriter{ResponseWriter: w}
+		// The names of the fields set before next ran, an outer
+		// middleware's, which the 500 keeps; those next adds are its failed
+		// answer's — a Cache-Control: public, a Content-Encoding, a
+		// Set-Cookie — and do not go out with the 500. Names only, on the
+		// stack for the usual handful: a copy of the values cost a
+		// pass-through request 40 % (BenchmarkRecoverPassThrough), and what
+		// it bought — an outer field the handler overwrote, put back — is
+		// the one case left as the handler wrote it.
+		var stack [8]string
+		before := stack[:0]
+		for k := range w.Header() {
+			before = append(before, k)
+		}
 		defer func() {
 			v := recover()
 			if v == nil {
@@ -87,6 +101,12 @@ func Recover(observe func(any), next http.Handler) http.Handler {
 				// take a truncated response for a complete one. Aborting is
 				// the truthful outcome: the connection (or stream) is reset.
 				panic(http.ErrAbortHandler)
+			}
+			h := tracked.Header()
+			for k := range h {
+				if !slices.Contains(before, k) {
+					delete(h, k)
+				}
 			}
 			_ = WriteJSON(tracked, http.StatusInternalServerError, InternalReport())
 		}()
