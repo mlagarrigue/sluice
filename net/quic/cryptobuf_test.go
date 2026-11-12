@@ -163,3 +163,26 @@ func TestCryptoBufferGrowsAroundASharedWord(t *testing.T) {
 		t.Fatalf("delivered %d of %d bytes, equal %v, %d bytes parked", len(out), len(src), bytes.Equal(out, src), b.held)
 	}
 }
+
+// A space whose keys are discarded receives no CRYPTO frame again: what it
+// had parked out of order goes with the keys, rather than staying for the
+// connection's life.
+func TestDiscardedSpaceReleasesItsCryptoBuffer(t *testing.T) {
+	c := assembleConn(&fuzzSink{addr: "crypto:self"}, fakeFuzzAddr("crypto:peer"), []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
+	t.Cleanup(func() { _ = c.Close() })
+	for off := uint64(1); off < 2000; off += 2 {
+		if err := c.handleCrypto(spaceHandshake, Frame{Type: frameCrypto, offset: off, Data: []byte{0x5a}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	sp := &c.spaces[spaceHandshake]
+	if sp.crypto.held == 0 || sp.crypto.ring == nil {
+		t.Fatalf("nothing parked behind the hole (held %d)", sp.crypto.held)
+	}
+	c.discardSpaceLocked(spaceHandshake)
+	if sp.crypto.held != 0 || sp.crypto.ring != nil || sp.crypto.have != nil {
+		t.Errorf("after the discard: %d bytes parked, ring %d bytes, bitmap %d words; want none", sp.crypto.held, len(sp.crypto.ring), len(sp.crypto.have))
+	}
+}
