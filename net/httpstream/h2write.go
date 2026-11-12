@@ -357,7 +357,11 @@ func (w *h2Writer) expire() {
 	now := time.Now()
 	kept := w.jobs[:0]
 	for _, j := range w.jobs {
-		if now.Before(j.deadline) {
+		// A job that can write is not stalled, its deadline passed or not:
+		// a grant that lands just after the deadline, before this look,
+		// is served, and the round's fill weighs its progress. Only a run
+		// that does not park can see one here (run).
+		if now.Before(j.deadline) || w.canWrite(j) {
 			kept = append(kept, j)
 			continue
 		}
@@ -378,18 +382,22 @@ func (w *h2Writer) expire() {
 // runnable reports whether any queued job can put a byte on the wire now.
 func (w *h2Writer) runnable() bool {
 	for _, j := range w.jobs {
-		if !j.headSent {
-			return true
-		}
-		left := len(j.data) - j.off
-		if left == 0 {
-			return true // the trailing END_STREAM costs no credit
-		}
-		if w.connWind > 0 && w.windows[j.id] > 0 {
+		if w.canWrite(j) {
 			return true
 		}
 	}
 	return false
+}
+
+// canWrite reports whether j can put a byte on the wire now.
+func (w *h2Writer) canWrite(j *h2Job) bool {
+	if !j.headSent {
+		return true
+	}
+	if len(j.data) == j.off {
+		return true // the trailing END_STREAM costs no credit
+	}
+	return w.connWind > 0 && w.windows[j.id] > 0
 }
 
 // fill appends one round of frames to w.out and returns the jobs it finished.

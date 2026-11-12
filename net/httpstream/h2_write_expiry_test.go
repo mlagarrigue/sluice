@@ -70,3 +70,43 @@ func TestH2StalledStreamExpiresUnderAWriterThatNeverParks(t *testing.T) {
 		time.Sleep(cfg.WriteTimeout / 5)
 	}
 }
+
+// The other side: a job whose credit arrived just after its deadline can
+// write, and is not stalled. The expiry a round runs without parking reset
+// it before its fill: a client granting a little at a time, each grant
+// landing as the deadline passed, saw its stream cancelled with credit in
+// hand (macOS CI, 2026-11-12).
+func TestH2JobWithCreditPastItsDeadlineIsWritten(t *testing.T) {
+	cfg := Config{WriteTimeout: 50 * time.Millisecond}.mustResolve()
+	conn := &busyConn{}
+	w := newH2Writer(conn, cfg)
+	conn.w = w
+	j := &h2Job{id: 1, headSent: true, data: []byte("credit for this"), deadline: time.Now().Add(-time.Millisecond), queued: true}
+	w.mu.Lock()
+	w.windows[1] = 1 << 10
+	w.jobs = append(w.jobs, j)
+	_ = w.appendCtrl32(frameWindowUpdate, 0, 1) // a round that does not park
+	w.mu.Unlock()
+	go w.run()
+	defer func() {
+		conn.over.Store(true)
+		<-w.done
+	}()
+
+	limit := time.Now().Add(2 * time.Second)
+	for {
+		w.mu.Lock()
+		done, err := j.done, j.err
+		w.mu.Unlock()
+		if done {
+			if err != nil {
+				t.Fatalf("a job with credit past its deadline ended with %v, want written", err)
+			}
+			return
+		}
+		if time.Now().After(limit) {
+			t.Fatal("the job was neither written nor reset")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
