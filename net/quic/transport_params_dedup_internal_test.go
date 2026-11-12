@@ -1,6 +1,7 @@
 package quic
 
 import (
+	"bytes"
 	"fmt"
 	"testing"
 
@@ -56,5 +57,40 @@ func BenchmarkParseParametersUnknownIDs(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+// The peer's parameters live as long as the connection, and the block they
+// were read from is a message of the peer's choosing, up to a handshake
+// message long: the four values kept as bytes are copies, so that 76 bytes
+// kept do not hold the block they came in.
+func TestParsedParametersDoNotHoldTheBlock(t *testing.T) {
+	var block []byte
+	block = appendParam(block, 0x7fff, make([]byte, 60_000)) // unknown, skipped
+	block = appendParam(block, paramOriginalDCID, []byte("original"))
+	block = appendParam(block, paramInitialSourceCID, []byte("initial"))
+	block = appendParam(block, paramRetrySourceCID, []byte("retry"))
+	block = appendParam(block, paramStatelessResetToken, make([]byte, 16))
+	p, err := parseParameters(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The block's array, reused for the next message: nothing read from it
+	// may change.
+	for i := range block {
+		block[i] = 0xff
+	}
+	for _, tc := range []struct {
+		name      string
+		got, want []byte
+	}{
+		{"original_destination_connection_id", p.originalDCID, []byte("original")},
+		{"initial_source_connection_id", p.initialSourceCID, []byte("initial")},
+		{"retry_source_connection_id", p.retrySourceCID, []byte("retry")},
+		{"stateless_reset_token", p.statelessResetToken, make([]byte, 16)},
+	} {
+		if !bytes.Equal(tc.got, tc.want) {
+			t.Errorf("%s reads %x once the block is overwritten, want %x: it shares the block's array", tc.name, tc.got, tc.want)
+		}
 	}
 }

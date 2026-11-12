@@ -1,6 +1,7 @@
 package quic
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net"
@@ -605,6 +606,10 @@ func parameterError(err error) error {
 // refused, though, known or not — RFC 9000 §7.4 makes it
 // TRANSPORT_PARAMETER_ERROR, because two values for one limit is a peer
 // this end cannot reason about.
+//
+// The values kept as bytes are copied out of b: the parameters live as long
+// as the connection, and b is a handshake message the peer sized. bytes.Clone
+// keeps a value present and empty apart from an absent one, nil.
 func parseParameters(b []byte) (TransportParameters, error) {
 	var p TransportParameters
 	// §7.4: no identifier twice, known or not — two values for one limit
@@ -651,20 +656,20 @@ func parseParameters(b []byte) (TransportParameters, error) {
 
 		switch id {
 		case paramOriginalDCID:
-			p.originalDCID = val
+			p.originalDCID = bytes.Clone(val)
 		case paramInitialSourceCID:
 			// Present and empty is a legal value for a peer whose own
 			// identifier is zero-length; absent is a §7.3 refusal. The
 			// slice alone cannot tell the two apart.
-			p.initialSourceCID, p.hasInitialSourceCID = val, true
+			p.initialSourceCID, p.hasInitialSourceCID = bytes.Clone(val), true
 		case paramRetrySourceCID:
-			p.retrySourceCID, p.hasRetrySourceCID = val, true
+			p.retrySourceCID, p.hasRetrySourceCID = bytes.Clone(val), true
 		case paramStatelessResetToken:
 			p.sawStatelessResetToken = true
 			if len(val) != 16 {
 				return p, parameterError(fmt.Errorf("%w: a stateless_reset_token of %d bytes", ErrQUIC, len(val)))
 			}
-			p.statelessResetToken = val
+			p.statelessResetToken = bytes.Clone(val)
 		case paramPreferredAddress:
 			p.sawPreferredAddress = true
 			pa, err := parsePreferredAddress(val)
