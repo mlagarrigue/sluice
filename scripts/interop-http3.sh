@@ -22,8 +22,8 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-H3SPEC_URL=https://github.com/kazu-yamamoto/h3spec/releases/download/v0.1.14/h3spec-linux-x86_64
-H3SPEC_SHA256=7f2e3232715a3f6ff5212d408b2a3e74d6aa3ca06f96efca9a4e5dc55f3c6860
+H3SPEC_URL=https://github.com/kazu-yamamoto/h3spec/releases/download/v0.1.15/h3spec-linux-x86_64
+H3SPEC_SHA256=c3c5f497153f4ba81f82023791ba7f9a4bc46d4141211e614196f141c5996830
 EXCLUSIONS=net/httpstream/testdata/h3spec-exclusions.txt
 IMAGE=sluice-interop-http3
 
