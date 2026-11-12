@@ -15,8 +15,10 @@ var (
 	// server operation this package cannot parse or will not hold. Every
 	// later call returns it; close the connection and open another.
 	ErrConnBroken = errors.New("nats: connection is out of sync and cannot be reused")
-	// ErrTooLarge reports a message past [Config.MaxPayloadBytes], or a
-	// control line past 64 KiB. It breaks the connection.
+	// ErrTooLarge reports a received message past
+	// [Config.MaxPayloadBytes], or a control line past 64 KiB, which break
+	// the connection; and a message to send past the server's max_payload,
+	// refused before anything is sent, the connection kept.
 	ErrTooLarge = errors.New("nats: message exceeds the bound")
 	// ErrProtocol reports bytes that are not a NATS server operation. It
 	// breaks the connection.

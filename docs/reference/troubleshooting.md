@@ -101,10 +101,14 @@ question for a CPU profile: no counter can answer it.
 | Error | When | What to do |
 |---|---|---|
 | `nats.ErrConnBroken` | The connection lost its place in the protocol: the context ended mid-call, a write or a read failed, the server sent what this package cannot parse or will not hold, or an `-ERR` the server closes the connection after. | Close it and open another; the error wraps the cause. |
-| `nats.ErrTooLarge` | A received message passed `Config.MaxPayloadBytes` (8 MiB by default), or a control line passed 64 KiB. It breaks the connection. | Raise `MaxPayloadBytes` if the messages are meant to be that large. |
+| `nats.ErrTooLarge` | A received message passed `Config.MaxPayloadBytes` (8 MiB by default), or a control line passed 64 KiB: it breaks the connection. Or a message to send passed the server's `max_payload` (1 MiB by default): refused before anything is sent, the connection kept. | Raise `MaxPayloadBytes` if the messages received are meant to be that large; cut what you send, or raise the server's `max_payload`. |
 | `nats.ErrProtocol` | The server sent bytes that are not a NATS operation — something else listens on the address. It breaks the connection. | Check what listens there. |
 | `*nats.Error` (a type) | The server's `-ERR`: an authorization violation at `Connect`, a permissions violation or an invalid subject later (those two leave the connection open). | Read the message: it is the server's. |
-| `*nats.StatusError` (a type) | A status the server sent instead of a message: 503 for a request no one answers (no JetStream, or no such consumer), 409 for a consumer deleted or push-based. | Create the stream and the durable pull consumer, with explicit acknowledgement, before reading. |
+| `nats: the server requires TLS and Config.TLS is nil` | The server's INFO says `tls_required`. | Set `Config.TLS`, with `ServerName` naming the server. |
+| `nats: Config.TLS is set and the server does not offer TLS` | The server has no certificate configured; the connection would go on in clear. | Configure TLS on the server, or leave `Config.TLS` nil on a network you trust. |
+| `nats: TLS handshake: …` | The certificate is not signed by a root you trust (`x509: certificate signed by unknown authority`), does not hold `ServerName`, or the server asks for a client certificate you did not give. | Put the signing root in `RootCAs`, set `ServerName` to a name the certificate holds, or give `Certificates`. |
+| `*nats.APIError` (a type) | In a `PubAck.Err`: the stream refused that message — `ErrCode` 10077 for its message limit reached with `discard: new`. The others in the batch may be stored. | Read `Description`; raise the stream's limit, or let it discard old messages. |
+| `*nats.StatusError` (a type) | A status the server sent instead of a message: 503 for a request no one answers (no JetStream, or no such consumer) or, in a `PubAck.Err`, a message no stream listens on, 409 for a consumer deleted or push-based. | Create the stream and the durable pull consumer, with explicit acknowledgement, before reading. |
 
 ## Files: `encoding/csvstream`, `encoding/jsonl`
 

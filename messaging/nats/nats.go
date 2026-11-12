@@ -28,8 +28,9 @@
 // connection is read only while a call waits for the server, which answers
 // its PINGs there. The stream and the durable consumer are the caller's to
 // create, as the Redis group and the PostgreSQL slot are ([Conn.Request]
-// sends the JetStream API's requests). TLS is not offered yet: a NATS server
-// sends its INFO in clear before the upgrade, which a dial recipe cannot do.
+// sends the JetStream API's requests). TLS is [Config.TLS]: a NATS server
+// sends its INFO in clear and the client upgrades the same connection after
+// it, so the upgrade is Connect's, not the dial recipe's.
 //
 // The guide: docs/guide/nats.md.
 package nats
@@ -38,6 +39,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -77,6 +79,16 @@ type Config struct {
 	// A message past it breaks the connection with [ErrTooLarge]. Zero means
 	// [DefaultMaxPayloadBytes]; a negative value is refused.
 	MaxPayloadBytes int
+	// TLS, when set, upgrades the connection after the server's INFO, which
+	// a NATS server sends in clear: the server must offer TLS
+	// (tls_required or tls_available), or Connect refuses rather than
+	// carry on in clear. ServerName must name the server, as the dial
+	// recipe's address does not reach the handshake. Nil connects in clear,
+	// and a server that requires TLS is refused before anything is sent.
+	// A server set to handshake_first, which waits for the client's TLS
+	// hello before its INFO, is not supported: Connect waits for the INFO
+	// until ctx ends.
+	TLS *tls.Config
 }
 
 // Conn is one connection to a NATS server. Its methods may be called from
@@ -89,11 +101,16 @@ type Conn struct {
 	broken error
 	inbox  string
 	sid    int
+	// maxPub is the server's max_payload: a message past it is refused
+	// before it is sent, as the server would close the connection on it.
+	maxPub int
 }
 
 type serverInfo struct {
-	Headers    bool `json:"headers"`
-	MaxPayload int  `json:"max_payload"`
+	Headers      bool `json:"headers"`
+	MaxPayload   int  `json:"max_payload"`
+	TLSRequired  bool `json:"tls_required"`
+	TLSAvailable bool `json:"tls_available"`
 }
 
 // Connect opens a connection with dial: it reads the server's INFO, sends
@@ -121,30 +138,40 @@ func Connect(ctx context.Context, dial DialFunc, cfg Config) (*Conn, error) {
 }
 
 func (c *Conn) handshake(ctx context.Context, cfg Config) error {
-	stop := c.bound(ctx)
-	defer stop()
-	o, err := c.r.read()
+	info, err := c.info(ctx)
 	if err != nil {
 		return err
-	}
-	if o.kind != opInfo {
-		return fmt.Errorf("%w: the server did not open with INFO", ErrProtocol)
-	}
-	var info serverInfo
-	if err := json.Unmarshal(o.arg, &info); err != nil {
-		return fmt.Errorf("%w: INFO: %w", ErrProtocol, err)
 	}
 	if !info.Headers {
 		return errors.New("nats: the server does not support headers, which JetStream's replies need")
 	}
+	c.maxPub = info.MaxPayload
+	switch {
+	case cfg.TLS != nil && !info.TLSRequired && !info.TLSAvailable:
+		return errors.New("nats: Config.TLS is set and the server does not offer TLS")
+	case cfg.TLS == nil && info.TLSRequired:
+		return errors.New("nats: the server requires TLS and Config.TLS is nil")
+	case cfg.TLS != nil:
+		if c.r.br.Buffered() > 0 {
+			return fmt.Errorf("%w: bytes after INFO, before the TLS handshake", ErrProtocol)
+		}
+		tc := tls.Client(c.nc, cfg.TLS)
+		if err := tc.HandshakeContext(ctx); err != nil {
+			return fmt.Errorf("nats: TLS handshake: %w", err)
+		}
+		c.nc = tc
+		c.r.br.Reset(tc)
+	}
 	connect, err := json.Marshal(map[string]any{
 		"verbose": false, "pedantic": false, "headers": true, "no_responders": true,
 		"protocol": 1, "lang": "go", "version": "sluice", "name": cfg.Name,
-		"user": cfg.User, "pass": cfg.Password,
+		"user": cfg.User, "pass": cfg.Password, "tls_required": cfg.TLS != nil,
 	})
 	if err != nil {
 		return err
 	}
+	stop := c.bound(ctx)
+	defer stop()
 	c.wb = append(append(append(c.wb[:0], "CONNECT "...), connect...), "\r\nPING\r\n"...)
 	if _, err := c.nc.Write(c.wb); err != nil {
 		return err
@@ -158,6 +185,25 @@ func (c *Conn) handshake(ctx context.Context, cfg Config) error {
 			return nil
 		}
 	}
+}
+
+// info reads the INFO a server opens with, bounded by ctx; the bound ends
+// before a TLS upgrade replaces the connection it was set on.
+func (c *Conn) info(ctx context.Context) (serverInfo, error) {
+	stop := c.bound(ctx)
+	defer stop()
+	o, err := c.r.read()
+	if err != nil {
+		return serverInfo{}, err
+	}
+	if o.kind != opInfo {
+		return serverInfo{}, fmt.Errorf("%w: the server did not open with INFO", ErrProtocol)
+	}
+	var info serverInfo
+	if err := json.Unmarshal(o.arg, &info); err != nil {
+		return serverInfo{}, fmt.Errorf("%w: INFO: %w", ErrProtocol, err)
+	}
+	return info, nil
 }
 
 // next reads the next operation that is not the connection's own business:
@@ -186,9 +232,10 @@ func (c *Conn) next() (op, error) {
 // bound sets the connection's deadline to ctx's, and to now once ctx ends,
 // until the returned stop.
 func (c *Conn) bound(ctx context.Context) func() bool {
+	nc := c.nc // not the field: a TLS upgrade replaces it after a stop
 	dl, _ := ctx.Deadline()
-	_ = c.nc.SetDeadline(dl)
-	return context.AfterFunc(ctx, func() { _ = c.nc.SetDeadline(time.Unix(1, 0)) })
+	_ = nc.SetDeadline(dl)
+	return context.AfterFunc(ctx, func() { _ = nc.SetDeadline(time.Unix(1, 0)) })
 }
 
 // begin takes the connection for one call.
@@ -239,14 +286,12 @@ type Message struct {
 // Publish sends msgs in one write, core NATS: the server takes them in
 // order and confirms nothing. A subject a JetStream stream listens on is
 // stored, without the stream's acknowledgement — enough for a test or a
-// feed whose loss the caller accepts; acknowledged publishing is not offered
-// yet. A subject that is empty or holds white space is refused before
-// anything is sent.
+// feed whose loss the caller accepts; [Conn.PublishAcked] waits for it. A
+// subject that is empty or holds white space, and a payload past the
+// server's max_payload, are refused before anything is sent.
 func (c *Conn) Publish(ctx context.Context, msgs []Message) error {
-	for i, m := range msgs {
-		if !validSubject(m.Subject) {
-			return fmt.Errorf("nats: message %d has the subject %q", i, m.Subject)
-		}
+	if err := c.check(msgs); err != nil {
+		return err
 	}
 	if err := c.begin(ctx); err != nil {
 		return err
@@ -264,13 +309,27 @@ func (c *Conn) Publish(ctx context.Context, msgs []Message) error {
 	return nil
 }
 
+// check refuses, before anything is sent, a message the server would
+// refuse by closing the connection, or whose subject would break the line.
+func (c *Conn) check(msgs []Message) error {
+	for i, m := range msgs {
+		if !validSubject(m.Subject) {
+			return fmt.Errorf("nats: message %d has the subject %q", i, m.Subject)
+		}
+		if c.maxPub > 0 && len(m.Data) > c.maxPub {
+			return fmt.Errorf("%w: message %d holds %d bytes, the server's max_payload is %d", ErrTooLarge, i, len(m.Data), c.maxPub)
+		}
+	}
+	return nil
+}
+
 // Request publishes data on subject and returns the first reply — the
 // JetStream API's way of being called ($JS.API.STREAM.CREATE.<name> and
 // the others). A subject no one answers on returns a [*StatusError] of
 // code 503 (no responders).
 func (c *Conn) Request(ctx context.Context, subject string, data []byte) (Msg, error) {
-	if !validSubject(subject) {
-		return Msg{}, fmt.Errorf("nats: the subject %q", subject)
+	if err := c.check([]Message{{Subject: subject, Data: data}}); err != nil {
+		return Msg{}, err
 	}
 	if err := c.begin(ctx); err != nil {
 		return Msg{}, err

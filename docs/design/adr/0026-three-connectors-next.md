@@ -1,7 +1,7 @@
 # ADR 0026 — The three connectors after PostgreSQL: CSV and JSON Lines, Redis, NATS JetStream
 
 - **Created:** 2026-11-12
-- **Revised:** 2026-11-12 (each protocol fact read in its published text and cited; Redis and NATS written, the acknowledged shape confirmed twice)
+- **Revised:** 2026-11-12 (each protocol fact read in its published text and cited; Redis and NATS written, the acknowledged shape confirmed twice; NATS over TLS and publishing acknowledged by the stream added)
 - **Theme:** core
 
 ## Problem
@@ -74,10 +74,26 @@ same shape a third time — `Conn.Consume`, `Consumer.Messages`,
 with the next pull in one write. A pull asks for one batch and the server
 answers with what it has, up to the batch, within `Expires`
 ([JetStream API, get next](https://docs.nats.io/reference/jetstream/api/consumer/get-next)):
-the batch is the protocol's own unit, as the ADR expected. Two things are
-left for later: TLS, since the server's first line comes in clear before
-the upgrade, which a dial recipe does not do; and publishing with the
-stream's acknowledgement, `Conn.Publish` being core NATS.
+the batch is the protocol's own unit, as the ADR expected.
+
+TLS is `Config.TLS`, not a dial recipe: the server's INFO comes in clear, says
+whether the client must perform the TLS handshake (`tls_required`), and the
+client upgrades the same connection after it
+([NATS protocol, INFO](https://docs.nats.io/reference/reference-protocols/nats-protocol));
+a server that requires TLS meets a client without it with a refusal before
+CONNECT, and a client that asks for TLS refuses a server that does not
+offer it, rather than carrying on in clear.
+
+Publishing acknowledged by the stream, `Conn.PublishAcked`, is the batch
+again: one write carries every message with a reply subject of its own
+under one wildcard subscription, which ends itself after as many replies as
+messages (UNSUB's `max_msgs`), and the acknowledgements are read after the
+write, one round trip for the batch. Each reply is returned in its place — a sequence in the stream, the
+503 of a subject no stream listens on, or the JetStream API's `error`
+object ([nats-io ADR-1](https://github.com/nats-io/nats-architecture-and-design/blob/main/adr/ADR-1.md)) —
+and the error the call returns names the first message not stored. Left
+out: the server's `handshake_first`, TLS before the INFO, until a deployment
+asks for it.
 
 ### What is not among them
 

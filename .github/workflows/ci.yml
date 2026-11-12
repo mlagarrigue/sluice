@@ -375,15 +375,38 @@ jobs:
           done
           docker logs nats
           exit 1
+      # A second server, which requires TLS, with a certificate made here,
+      # self-signed for 127.0.0.1: it is also the root the client trusts.
+      - name: Start nats-server with TLS required
+        run: |
+          dir="$RUNNER_TEMP/nats-tls"
+          mkdir -p "$dir"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
+            -keyout "$dir/server.key" -out "$dir/server.crt" \
+            -subj /CN=127.0.0.1 -addext subjectAltName=IP:127.0.0.1
+          chmod 644 "$dir/server.key"
+          docker run -d --name nats-tls -p 4223:4222 -v "$dir:/certs:ro" nats:2.12 -js \
+            --tlscert /certs/server.crt --tlskey /certs/server.key
+          for i in $(seq 30); do
+            if (exec 3<>/dev/tcp/127.0.0.1/4223) 2>/dev/null; then exit 0; fi
+            sleep 1
+          done
+          docker logs nats-tls
+          exit 1
       - name: Integration tests
         shell: bash
+        env:
+          SLUICE_NATS_TLS: 127.0.0.1:4223
+          SLUICE_NATS_TLS_CA: ${{ runner.temp }}/nats-tls/server.crt
         run: |
           go test -race -count=1 -v ./messaging/nats/... | tee test.log
-          if grep -E 'SLUICE_NATS is not set' test.log; then
+          if grep -E 'SLUICE_NATS is not set|SLUICE_NATS_TLS is not set' test.log; then
             echo "::error::integration tests skipped: no server" >&2
             exit 1
           fi
-          for name in TestConsumerReadsInBatchesAndAcknowledgesOnlyWhatItIsTold TestConsumerRedeliversWhatWasNotAcknowledged; do
+          for name in TestConsumerReadsInBatchesAndAcknowledgesOnlyWhatItIsTold TestConsumerRedeliversWhatWasNotAcknowledged \
+            TestPublishAckedBatch TestPublishAckedErrorsInTheirPlace \
+            TestTLSConnectsAndVerifiesTheServer TestTLSRequiredWithoutConfigIsRefused; do
             if ! grep -- "--- PASS: $name " test.log; then
               echo "::error::$name did not pass against nats-server" >&2
               exit 1

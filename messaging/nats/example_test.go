@@ -2,6 +2,7 @@ package nats_test
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 
 	"github.com/mlagarrigue/sluice/messaging/nats"
@@ -98,6 +99,43 @@ func ExampleConn_Request() {
 	reply, err := conn.Request(ctx, "$JS.API.STREAM.CREATE.ORDERS", []byte(`{"name":"ORDERS","subjects":["ORDERS.>"]}`))
 	if err == nil {
 		fmt.Println(string(reply.Data))
+	}
+	_ = conn.Close()
+}
+
+// Publish a batch and wait for the stream to store each message.
+func ExampleConn_PublishAcked() {
+	ctx := context.Background()
+	conn, err := nats.Connect(ctx, nats.DialTCP("127.0.0.1:4222"), nats.Config{})
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer conn.Close()
+	acks, err := conn.PublishAcked(ctx, []nats.Message{
+		{Subject: "ORDERS.created", Data: []byte(`{"id":1}`)},
+		{Subject: "ORDERS.created", Data: []byte(`{"id":2}`)},
+	})
+	for i, a := range acks {
+		if a.Err != nil {
+			fmt.Println(i, a.Err) // not stored: publish it again, or report it
+		}
+	}
+	if acks == nil && err != nil {
+		fmt.Println(err) // the connection broke: nothing is known
+	}
+}
+
+// Connect over TLS: the server sends its INFO in clear, then the connection
+// is upgraded.
+func ExampleConfig_tls() {
+	ctx := context.Background()
+	conn, err := nats.Connect(ctx, nats.DialTCP("nats.example.com:4222"), nats.Config{
+		TLS: &tls.Config{ServerName: "nats.example.com", MinVersion: tls.VersionTLS12},
+	})
+	if err != nil {
+		fmt.Println(err)
+		return
 	}
 	_ = conn.Close()
 }

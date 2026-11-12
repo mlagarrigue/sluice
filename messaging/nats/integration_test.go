@@ -68,18 +68,8 @@ func jetstream(t *testing.T, n int, ackWait time.Duration) (*nats.Conn, nats.Con
 	for i := range msgs {
 		msgs[i] = nats.Message{Subject: name + ".orders", Data: []byte(strconv.Itoa(i))}
 	}
-	if err := c.Publish(t.Context(), msgs); err != nil {
+	if _, err := c.PublishAcked(t.Context(), msgs); err != nil {
 		t.Fatal(err)
-	}
-	// Published without acknowledgement: wait until the stream holds them.
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		info := api(t, c, "$JS.API.STREAM.INFO."+name, nil)
-		if st, _ := info["state"].(map[string]any); st != nil && st["messages"] == float64(n) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the stream did not reach %d messages: %v", n, info["state"])
-		}
 	}
 	return c, nats.ConsumerConfig{Stream: name, Consumer: "work", BatchMessages: 1000, Expires: 200 * time.Millisecond}
 }
@@ -184,5 +174,71 @@ func TestConsumerThatDoesNotExist(t *testing.T) {
 	var se *nats.StatusError
 	if !errors.As(err, &se) {
 		t.Fatalf("err %v, want a status", err)
+	}
+}
+
+// stream creates a stream of the test's own on <name>.>, with extra settings
+// merged in, and removes it afterwards.
+func stream(t *testing.T, c *nats.Conn, extra map[string]any) string {
+	t.Helper()
+	name := "T" + strings.ToUpper(rand.Text())
+	cfg := map[string]any{"name": name, "subjects": []string{name + ".>"}}
+	for k, v := range extra {
+		cfg[k] = v
+	}
+	api(t, c, "$JS.API.STREAM.CREATE."+name, cfg)
+	t.Cleanup(func() {
+		admin := dial(t)
+		_, _ = admin.Request(context.Background(), "$JS.API.STREAM.DELETE."+name, nil)
+	})
+	return name
+}
+
+// 1,000 messages in one write, 1,000 acknowledgements in order.
+func TestPublishAckedBatch(t *testing.T) {
+	c := dial(t)
+	name := stream(t, c, nil)
+	msgs := make([]nats.Message, 1000)
+	for i := range msgs {
+		msgs[i] = nats.Message{Subject: name + ".orders", Data: []byte(strconv.Itoa(i))}
+	}
+	acks, err := c.PublishAcked(t.Context(), msgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, a := range acks {
+		if a.Err != nil || a.Stream != name || a.Sequence != uint64(i+1) {
+			t.Fatalf("acknowledgement %d: %+v", i, a)
+		}
+	}
+	if st, _ := api(t, c, "$JS.API.STREAM.INFO."+name, nil)["state"].(map[string]any); st["messages"] != float64(1000) {
+		t.Fatalf("the stream holds %v", st["messages"])
+	}
+}
+
+// A message no stream listens on, and one the stream refuses, each fail in
+// their place; the others are stored, and the connection stays usable.
+func TestPublishAckedErrorsInTheirPlace(t *testing.T) {
+	c := dial(t)
+	name := stream(t, c, map[string]any{"max_msgs": 2, "discard": "new"})
+	acks, err := c.PublishAcked(t.Context(), []nats.Message{
+		{Subject: name + ".a", Data: []byte("0")},
+		{Subject: "nowhere." + name, Data: []byte("1")},
+		{Subject: name + ".a", Data: []byte("2")},
+		{Subject: name + ".a", Data: []byte("3")},
+	})
+	var se *nats.StatusError
+	if !errors.As(err, &se) || se.Code != 503 || !strings.Contains(err.Error(), "2 of 4") {
+		t.Fatalf("err %v, want message 1's 503 named, 2 of 4", err)
+	}
+	if len(acks) != 4 || acks[0].Sequence != 1 || acks[2].Sequence != 2 || !errors.As(acks[1].Err, &se) {
+		t.Fatalf("acknowledgements %+v", acks)
+	}
+	var ae *nats.APIError
+	if !errors.As(acks[3].Err, &ae) || ae.ErrCode != 10077 {
+		t.Fatalf("past max_msgs with discard new: %+v", acks[3])
+	}
+	if _, err := c.Request(t.Context(), "$JS.API.INFO", nil); err != nil {
+		t.Fatalf("the connection after: %v", err)
 	}
 }
