@@ -35,11 +35,11 @@ claim. A deliberate update re-runs the comparison.
 | `github.com/jackc/pgx/v5` | v5.10.0 |
 | `github.com/lib/pq` | v1.12.3 |
 | `github.com/gin-gonic/gin` | v1.12.0 |
-| `github.com/labstack/echo/v4` | v4.16.1 |
+| `github.com/labstack/echo/v5` | v5.4.5 |
 | `github.com/go-chi/chi/v5` | v5.4.0 |
 | `github.com/gofiber/fiber/v2` | v2.52.15 |
 
-Six direct dependencies pull **51 modules** of transitive graph. That number is
+Six direct dependencies pull **49 modules** of transitive graph. That number is
 not an argument against any of them — it is what a comparison costs, and it is
 the reason it lives here rather than in the module that promises one.
 

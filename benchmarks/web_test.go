@@ -12,7 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-chi/chi/v5"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 
 	"github.com/mlagarrigue/sluice/diagnostics"
 	"github.com/mlagarrigue/sluice/web"
@@ -167,8 +167,7 @@ func ginHandler() http.Handler {
 
 func echoHandler() http.Handler {
 	e := echo.New()
-	e.HideBanner, e.HidePort = true, true
-	e.PATCH("/orders/:order/lines/:line", func(c echo.Context) error {
+	e.PATCH("/orders/:order/lines/:line", func(c *echo.Context) error {
 		order, err := strconv.ParseInt(c.Param("order"), 10, 64)
 		if err != nil {
 			return c.String(http.StatusBadRequest, "bad order")

@@ -1676,13 +1676,15 @@ No socket, no kernel. See the socket table below before drawing anything from
 the ordering here.
 
 <!-- consolidate: web -->
+Measured apart from the session above, by the same method: 2026-11-12 09:42 UTC, go1.26.10, load 1.72.
+
 | benchmark | median | spread | B/op | allocs/op |
 |---|---|---|---|---|
-| `BenchmarkWebChi` | 1927 ns | ±4% | 2584 B | 23 |
-| `BenchmarkWebEcho` | 1810 ns | ±2% | 1896 B | 21 |
-| `BenchmarkWebGin` | 1642 ns | ±0% | 1864 B | 19 |
-| `BenchmarkWebNetHTTP` | 1676 ns | ±1% | 1928 B | 21 |
-| `BenchmarkWebSluice` | 1764 ns | ±0% | 1952 B | 22 |
+| `BenchmarkWebChi` | 2015 ns | ±4% | 2584 B | 23 |
+| `BenchmarkWebEcho` | 1669 ns | ±6% | 1152 B | 18 |
+| `BenchmarkWebGin` | 1688 ns | ±2% | 1864 B | 19 |
+| `BenchmarkWebNetHTTP` | 1724 ns | ±4% | 1928 B | 21 |
+| `BenchmarkWebSluice` | 2002 ns | ±2% | 2032 B | 25 |
 <!-- /consolidate -->
 
 ### Web pipeline, over a socket
@@ -1691,17 +1693,19 @@ Not pinned: a socket benchmark needs a client and a server at once, and pinning
 both to one core measures their contention.
 
 <!-- consolidate: socket -->
+Measured apart from the session above, by the same method: 2026-11-12 09:43 UTC, go1.26.10, load 1.44.
+
 | benchmark | median | spread | B/op | allocs/op |
 |---|---|---|---|---|
-| `BenchmarkSocketChi` | 187419 ns | ±4% | 10902 B | 113 |
-| `BenchmarkSocketConcurrentFiberFasthttp` | 1024082 ns | ±3% | 214592 B | 2644 |
-| `BenchmarkSocketConcurrentNetHTTP` | 1179177 ns | ±4% | 353284 B | 3585 |
-| `BenchmarkSocketConcurrentSluice` | 1143356 ns | ±3% | 339770 B | 3613 |
-| `BenchmarkSocketEcho` | 185395 ns | ±2% | 10125 B | 111 |
-| `BenchmarkSocketFiberFasthttp` | 183669 ns | ±7% | 6707 B | 82 |
-| `BenchmarkSocketGin` | 183640 ns | ±1% | 10171 B | 109 |
-| `BenchmarkSocketNetHTTP` | 170371 ns | ±14% | 10113 B | 111 |
-| `BenchmarkSocketSluice` | 184708 ns | ±1% | 10120 B | 112 |
+| `BenchmarkSocketChi` | 197049 ns | ±3% | 10854 B | 113 |
+| `BenchmarkSocketConcurrentFiberFasthttp` | 1265271 ns | ±1% | 213205 B | 2676 |
+| `BenchmarkSocketConcurrentNetHTTP` | 1457714 ns | ±4% | 345410 B | 3616 |
+| `BenchmarkSocketConcurrentSluice` | 1427958 ns | ±6% | 348634 B | 3806 |
+| `BenchmarkSocketEcho` | 196407 ns | ±3% | 9337 B | 108 |
+| `BenchmarkSocketFiberFasthttp` | 203073 ns | ±4% | 6655 B | 82 |
+| `BenchmarkSocketGin` | 188412 ns | ±11% | 10131 B | 109 |
+| `BenchmarkSocketNetHTTP` | 196824 ns | ±12% | 10073 B | 111 |
+| `BenchmarkSocketSluice` | 198264 ns | ±3% | 10325 B | 117 |
 <!-- /consolidate -->
 
 #### The connection budget and the batch bound (2026-10-14)
