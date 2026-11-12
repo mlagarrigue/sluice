@@ -127,7 +127,7 @@ func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 	if !c.paceDeadline.IsZero() && !now.Before(c.paceDeadline) {
 		c.paceDeadline = time.Time{}
 		c.retransmitLocked()
-		c.wakeAllLocked()
+		c.wakeWindowLocked()
 	}
 
 	// A stream's read or write deadline (Stream.SetReadDeadline): the

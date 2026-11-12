@@ -1781,10 +1781,12 @@ func (o sendOpts) deadlineLocked() time.Time {
 	return *o.deadline
 }
 
-// waitForCreditLocked parks the caller until credit arrives, the connection
-// ends, or deadline passes (zero: never; os.ErrDeadlineExceeded when it
-// does). The read loop must never call it: the read loop is what delivers
-// the credit.
+// waitForCreditLocked parks the caller on cond until the congestion window
+// or the pacer lets a packet go, the connection ends, or deadline passes
+// (zero: never; os.ErrDeadlineExceeded when it does). A writer out of its
+// stream's credit waits on the stream instead (waitForStreamCreditLocked).
+// The read loop must never call it: the read loop is what delivers the
+// acknowledgements that open the window.
 //
 // The deadline is checked before parking, not after: the timer loop's
 // broadcast at the deadline wakes the writer, whose own loop comes back
@@ -1809,11 +1811,44 @@ func (c *Conn) passCreditLocked() {
 	}
 }
 
-// wakeAllLocked wakes every parked writer, whichever cond it waits on: the
-// wake-ups that are not a MAX_DATA's concern them all. Callers hold mu.
+// wakeAllLocked wakes every parked writer, whichever cond it waits on —
+// the connection's, its credit's, and each stream's credit — for what ends
+// or changes them all: a close, a refused 0-RTT, new keys. It walks the
+// stream table. Callers hold mu.
 func (c *Conn) wakeAllLocked() {
+	c.wakeWindowLocked()
+	for _, s := range c.streams {
+		s.wakeCreditLocked()
+	}
+}
+
+// wakeWindowLocked wakes the writers parked on cond and on connCredit — the
+// congestion window, the stream limit, the connection's credit — and not
+// the ones waiting for their stream's credit, which an acknowledgement or a
+// pacing tick cannot give: a peer that starves n streams of credit while it
+// acknowledges would otherwise wake the n writers with every ACK. Callers
+// hold mu.
+func (c *Conn) wakeWindowLocked() {
 	c.cond.Broadcast()
 	c.connCredit.Broadcast()
+}
+
+// waitForStreamCreditLocked parks a writer whose stream's credit is spent on
+// that stream's own cond, which a MAX_STREAM_DATA for the stream, its write
+// deadline, its reset and wakeAllLocked broadcast.
+func (c *Conn) waitForStreamCreditLocked(s *Stream, deadline time.Time) error {
+	if s.credit == nil {
+		s.credit = sync.NewCond(&c.mu)
+	}
+	return c.waitOnLocked(s.credit, deadline)
+}
+
+// wakeCreditLocked wakes the writer parked on s's credit, if any. Callers
+// hold mu.
+func (s *Stream) wakeCreditLocked() {
+	if s.credit != nil {
+		s.credit.Broadcast()
+	}
 }
 
 // waitOnLocked is the two waits' body, parking on cond.

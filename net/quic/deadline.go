@@ -113,12 +113,13 @@ func (c *Conn) expireStreamDeadlinesLocked(now time.Time) time.Time {
 		e := heap.Pop(&c.deadlines).(deadlineEntry)
 		if e.write {
 			wakeWriters = true
+			e.s.wakeCreditLocked()
 		} else {
 			e.s.signal()
 		}
 	}
 	if wakeWriters {
-		c.wakeAllLocked()
+		c.wakeWindowLocked() // a writer of a matured stream on the window
 	}
 	if len(c.deadlines) == 0 {
 		return time.Time{}

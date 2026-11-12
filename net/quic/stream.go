@@ -88,6 +88,9 @@ type Stream struct {
 	// dlIdx is where the read (0) and the write (1) deadline stand in
 	// Conn.deadlines, plus one; zero while that deadline is not armed.
 	dlIdx [2]int
+	// credit is where a Write waits for this stream's credit
+	// (waitForStreamCreditLocked), on conn.mu; nil until the first wait.
+	credit *sync.Cond
 
 	// rejected says the stream was opened in 0-RTT and the server refused
 	// it (rejectEarlyLocked): every Read and Write returns
@@ -478,7 +481,7 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 			// is entitled to know it is the bottleneck (§4.1) — then wait
 			// for MAX_DATA / MAX_STREAM_DATA to arrive on the read loop.
 			c.sendBlockedFramesLocked(s)
-			wait := c.waitForCreditLocked
+			wait := func(dl time.Time) error { return c.waitForStreamCreditLocked(s, dl) }
 			if s.sendQ.avail() > 0 {
 				wait = c.waitForConnCreditLocked // the connection's credit alone is spent
 			}
@@ -574,7 +577,8 @@ func (s *Stream) Reset(code uint64) error {
 	frame := appendStreamFrame(nil, FrameResetStream, s.id, code, s.writeOff)
 	err := c.sendPacketLocked(spaceApplication, frame, sendOpts{}) // ungated: see sendOpts.waitCwnd
 	c.maybeRemoveLocked(s)
-	c.wakeAllLocked() // a writer blocked on credit for this stream gives up
+	c.wakeWindowLocked() // a writer of this stream on the window gives up
+	s.wakeCreditLocked() // and one on its credit
 	return sentOrRecorded(err)
 }
 
@@ -737,6 +741,7 @@ func (s *Stream) onStopSendingLocked(code uint64) (stopped bool) {
 	// see handleStopSending.
 	_ = s.conn.sendPacketLocked(spaceApplication, frame, sendOpts{})
 	s.conn.cond.Broadcast()
+	s.wakeCreditLocked()
 	return true
 }
 
@@ -952,7 +957,7 @@ func (c *Conn) localStreamCountersLocked(uni bool) (opened, limit *uint64) {
 func (c *Conn) waitStreamCreditLocked(ctx context.Context, uni bool) error {
 	stop := context.AfterFunc(ctx, func() {
 		c.mu.Lock()
-		c.wakeAllLocked()
+		c.wakeWindowLocked() // the openers wait on cond
 		c.mu.Unlock()
 	})
 	defer stop()

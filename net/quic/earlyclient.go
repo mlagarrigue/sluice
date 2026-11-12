@@ -270,6 +270,7 @@ func (c *Conn) rejectEarlyLocked() {
 	for id, s := range c.streams {
 		s.rejected.Store(true)
 		s.signal()
+		s.wakeCreditLocked() // gone from the table before wakeAllLocked below
 		delete(c.streams, id)
 		c.dropStreamDeadlinesLocked(s)
 	}

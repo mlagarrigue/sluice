@@ -1454,6 +1454,25 @@ measured 2026-11-12 in the devcontainer, on mains power.
 BINDIR=<dir> internal/bench/scripts/ab.sh StreamDeadlinesMature 11
 ```
 
+**Writers parked on their stream's credit.** A peer can starve n streams of
+credit and still acknowledge what the connection sends. Every
+acknowledgement that acknowledged something woke every parked writer, those
+waiting for MAX_STREAM_DATA included, to take the connection's lock and
+park again; each stream's credit is now waited on apart, and only its own
+MAX_STREAM_DATA, deadline, reset or the connection's end wakes it
+(`BenchmarkAckWithWritersParkedOnStreamCredit`, `net/quic`: one op is one
+ACK through `handleAck`, with n real writers parked). The cost is the
+scheduler's, so the pairing ran unpinned (`CORE=`); eleven rounds,
+2026-11-12, medians per ACK: 279 ns before and 282 ns after with no writer,
+1,579 ns before and 287 ns after with 64, 50,257 ns before and 293 ns after
+with 1,024. Pinned to one core the two read alike: the woken writers run
+only when the benchmark is preempted, and their cost spreads over thousands
+of ACKs.
+
+```
+CORE= BINDIR=<dir> internal/bench/scripts/ab.sh AckWithWritersParked 11
+```
+
 ## Credit a byte at a time
 
 What one MAX_DATA frame costs when it raises a spent connection window by a
