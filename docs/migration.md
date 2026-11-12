@@ -100,6 +100,13 @@ signatures — a value now refused — come last.
 - **A Retry token binds the client's address by its digest**: a token a
   server issued before the upgrade does not verify after it, and its client
   is sent a new Retry, within `RetryTokenTTL` of the restart.
+- **`MaxIdleTimeout` at zero is refused**
+  ("fix(quic)!: MaxIdleTimeout zero is refused, ADR 0018"):
+  `TransportParameters.Validate`, and so `Dial`, accept and `NewListener`,
+  refuse it as they refused a negative value. Zero announced no idle
+  timeout, and against a peer announcing none a connection whose peer
+  vanished was held until the application closed it. A configuration that
+  wanted connections to live long sets a long duration (`24 * time.Hour`).
 
 ## From v0.3.0 to v0.4.0
 

@@ -1,7 +1,7 @@
 # ADR 0018 — Zero is the safe default, the bound is mandatory
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-11-12 (`MaxConcurrentStreams` at most 4096 for HTTP/2 as well); 8 earlier, from 2026-10-21, in its `git log`
+- **Revised:** 2026-11-12 (QUIC's `MaxIdleTimeout` refused at zero; `MaxConcurrentStreams` at most 4096 for HTTP/2 as well); 8 earlier, from 2026-10-21, in its `git log`
 - **Theme:** httpstream
 
 ## Problem
@@ -77,7 +77,13 @@ never removed.**
    share of it one client may take, and a default would be a guess; the
    per-connection bounds hold without them, and their godoc says a public
    socket sets them. `TestADR0018ListsMatchConfig` holds this list and the
-   next one to the fields' own documentation.
+   next one to the fields' own documentation. QUIC's transport parameters
+   carry the protocol's zero as is — a credit of zero grants nothing —
+   except `MaxIdleTimeout`, whose zero RFC 9000 §10.1 reads as no timeout:
+   against a peer announcing none, a connection whose peer vanished would
+   be held for good, in a Listener's tables too. It is refused at zero, as
+   a negative value is; a connection meant to live long sets a long
+   duration.
 
 ### Where the defaults live
 

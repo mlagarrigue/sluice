@@ -25,7 +25,7 @@ announces.
 
 | Field | Default | Unit, bound | What it bounds |
 |---|---|---|---|
-| `MaxIdleTimeout` | 30 s | duration; zero is no timeout, which this package never announces of its own | a connection nobody is using |
+| `MaxIdleTimeout` | 30 s | duration; zero and negative refused (zero would announce no timeout) | a connection nobody is using |
 | `MaxUDPPayloadSize` | 1452 | bytes; 1200 to 65527, otherwise refused | the largest datagram read, and what the peer probes for |
 | `InitialMaxData` | 1 MiB | bytes | everything the peer may send, all streams together |
 | `InitialMaxStreamDataBidiLocal` | 256 KiB | bytes | one bidirectional stream this end opened |

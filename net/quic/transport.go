@@ -47,9 +47,12 @@ const (
 // transport parameter can carry (RFC 9000 §16, §18.2) — and a stream count
 // past 2^60 (§4.6).
 type TransportParameters struct {
-	// MaxIdleTimeout ends a connection nobody is using. Zero means no
-	// timeout, which is the one default the RFC allows and this package does
-	// not: [DefaultConfig] fills it in.
+	// MaxIdleTimeout ends a connection nobody is using. Zero, which RFC 9000
+	// §10.1 reads as no timeout, is refused by [Dial], accept and
+	// [NewListener], as a negative value is: with a peer that announces none
+	// either, a connection whose peer vanished would hold its place — in a
+	// Listener's tables too — until the application closed it. A connection
+	// meant to live long sets a long duration. [DefaultConfig] says 30 s.
 	MaxIdleTimeout time.Duration
 
 	// MaxUDPPayloadSize is the largest datagram this endpoint will read.
@@ -409,8 +412,8 @@ func (p TransportParameters) check() error {
 	// announce zero — no timeout — while this end kept the negative value
 	// and ended the connection at the floor its idle deadline is raised
 	// to, three PTOs of silence.
-	if p.MaxIdleTimeout < 0 {
-		return fmt.Errorf("quic: MaxIdleTimeout %v is negative; zero means no timeout", p.MaxIdleTimeout)
+	if p.MaxIdleTimeout <= 0 {
+		return fmt.Errorf("quic: MaxIdleTimeout %v is not positive: zero would announce no idle timeout, and a connection whose peer vanished would be held until the application closes it — set a long duration instead", p.MaxIdleTimeout)
 	}
 	// Every identifier this end keeps or issues is a routing entry its
 	// Listener holds for the connection, so the figure is bounded here.
