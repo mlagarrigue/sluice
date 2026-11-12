@@ -7,26 +7,27 @@ body:
     attributes:
       label: Component
       description: >-
-        Where the bug is. "core" is the root package (Stream, Batch and the
-        operators); the next names are packages; bench, docs, ci,
-        devcontainer and audit are the repository around the library.
+        Where the bug is: the commit scope, then the paths it covers. The
+        last six are the repository around the library. If you are not
+        sure, pick "other".
       options:
-        - core
+        - core — the root package (Stream, Batch, the operators)
         - join
         - window
         - parallel
         - distinct
-        - postgres
-        - quic
-        - httpstream
-        - web
+        - postgres — database/postgres, database/postgres/pgtype, cmd/sluicegen
+        - quic — net/quic, net/quic/udp
+        - httpstream — net/httpstream
+        - web — web, web/stream
         - gateway
-        - diagnostics
-        - bench
-        - docs
-        - ci
-        - devcontainer
-        - audit
+        - diagnostics — diagnostics, probe, pushdown
+        - bench — benchmarks, comparison, the measurements
+        - docs — docs, README, CONTRIBUTING
+        - ci — scripts, workflows, templates
+        - devcontainer — .devcontainer
+        - audit — the audit module
+        - other — not sure
     validations:
       required: true
 

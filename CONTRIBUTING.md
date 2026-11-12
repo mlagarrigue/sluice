@@ -227,7 +227,15 @@ is deliberate, for two reasons:
 
 `.devcontainer/local/` is ignored by git. A `devcontainer.json` placed there
 shows up as a second configuration when VS Code reopens the folder in a
-container. Three files are enough.
+container. Three files are enough. Two services of the overlay build the
+image you work in, beside the database:
+
+```text
+.devcontainer/Dockerfile        ──build──▶  dev-public   built, never started
+                                                 │  FROM public
+.devcontainer/local/Dockerfile  ──build──▶  dev          your container
+                                            postgres     the test database
+```
 
 `.devcontainer/local/devcontainer.json` takes the public service and adds a
 Compose file:

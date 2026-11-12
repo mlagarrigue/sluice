@@ -20,8 +20,9 @@
 //
 // # Why this is not in the core
 //
-// The core is `Stream` and `Batch` and the operators that need nothing else.
-// A `Take` that published its remaining count would make the core know about
+// The core is `Stream` and `Batch` and the operators that need nothing else;
+// the dependency test of CONTRIBUTING.md (rule 5, "The core stays small")
+// keeps the rest out. A `Take` that published its remaining count would make the core know about
 // pushdown, and a core that knows its extensions can no longer evolve. So the
 // demand-aware operators live here and **compose** with the core ones: a
 // source consults a [Demand], an operator publishes to it, and neither of them

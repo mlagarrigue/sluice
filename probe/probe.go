@@ -34,9 +34,9 @@
 // The subtraction is the whole method; rendering it is the application's
 // business, not this package's.
 //
-// This package lives outside the core deliberately. Apply the dependency
-// test: remove it and nothing stops compiling — so it must not be in the
-// core, whose rule is that it never knows its extensions.
+// This package lives outside the core deliberately: removed, nothing else
+// stops compiling, so the dependency test of CONTRIBUTING.md (rule 5, "The
+// core stays small") keeps it out.
 //
 // The guide: docs/guide/deployments.md (What to watch in production).
 package probe

@@ -48,8 +48,9 @@ the functions cited here. Until that release, install `main`:
 go get github.com/mlagarrigue/sluice@main
 ```
 
-Go 1.26 or newer: that is the `go` line of the module, and the oldest
-version CI builds. See CONTRIBUTING.md for how the floor moves.
+Go 1.26 or newer. That minimum — the *floor* — is the `go` line of the
+module, and the oldest version CI builds. See CONTRIBUTING.md for how the
+floor moves.
 
 ## A first program
 

@@ -26,6 +26,13 @@
 // diagnostics attached to the entity, which is what the architecture means by "an element
 // can be valid, carry three warnings, and keep moving forward" — and each
 // diagnostic carries the affordance that says how to fix it.
+//
+// # Run it
+//
+// `go test ./example/orders/` runs it on the in-memory store. With
+// SLUICE_PG set — the devcontainer sets it; CONTRIBUTING.md says how to
+// start a server elsewhere — TestIntegration runs the same path against
+// PostgreSQL.
 package orders
 
 import (

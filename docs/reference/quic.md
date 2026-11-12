@@ -20,10 +20,12 @@ for them.
 
 ## `net/quic` settings
 
-`DefaultConfig()` fills in the "Default" column. The fields marked
-*local* are `quic.Config`'s own, beside the `TransportParameters` it
-embeds: they never go on the wire, and set what this end does, not what it
-announces.
+`DefaultConfig()` fills in the "Default" column. The fields fall in three
+groups: the transport parameters this end announces to the peer, two that
+are only read from the peer, and `quic.Config`'s own fields, beside the
+`TransportParameters` it embeds, which never go on the wire.
+
+### Announced to the peer
 
 | Field | Default | Unit, bound | What it bounds |
 |---|---|---|---|
@@ -35,13 +37,25 @@ announces.
 | `InitialMaxStreamDataUni` | 64 KiB | bytes | one unidirectional stream of the peer |
 | `InitialMaxStreamsBidi` | 100 | streams | how many bidirectional streams the peer may open (RFC 9114 §6.1 asks for 100); each is memory this end holds, `MaxConns` times |
 | `InitialMaxStreamsUni` | 8 | streams; 3 to 32 under `ServeH3Conn` | how many unidirectional streams; each stream the peer may open is memory this end holds, `MaxConns` times |
-| `AckDelayExponent` | — | exponent; *read from the peer*, never announced (this end uses 3) | the scale of the peer's ACK delays |
-| `MaxAckDelay` | — | duration; *read from the peer*, never announced (this end uses 25 ms) | how long the peer may sit on an acknowledgement |
 | `ActiveConnIDLimit` | 4 | identifiers; 0 or 1 become 4 | the peer's connection IDs kept active, and the ones this end issues |
 | `DisableActiveMigration` | false | boolean | announces that this end does not follow a peer that changes address |
-| `Congestion` | NewReno | *local* | the congestion controller this end sends with ([the guide](../guide/experimental.md#choosing-a-congestion-controller)) |
-| `HoldClosing` | false | *local* | whether a connection from `Dial` holds the closing states of RFC 9000 §10.2 |
-| `MaxDatagramSize` | 1452 | bytes, *local*; 1200 to 65527, otherwise refused | the largest datagram sent, once the path is probed |
+
+### Read from the peer, never announced
+
+| Field | This end uses | Unit | What it bounds |
+|---|---|---|---|
+| `AckDelayExponent` | 3 | exponent | the scale of the peer's ACK delays |
+| `MaxAckDelay` | 25 ms | duration | how long the peer may sit on an acknowledgement |
+
+### Local, never on the wire
+
+These set what this end does, not what it announces.
+
+| Field | Default | Unit, bound | What it sets |
+|---|---|---|---|
+| `Congestion` | NewReno | controller | the congestion controller this end sends with ([the guide](../guide/experimental.md#choosing-a-congestion-controller)) |
+| `HoldClosing` | false | boolean | whether a connection from `Dial` holds the closing states of RFC 9000 §10.2 |
+| `MaxDatagramSize` | 1452 | bytes; 1200 to 65527, otherwise refused | the largest datagram sent, once the path is probed |
 
 ## Listener settings
 

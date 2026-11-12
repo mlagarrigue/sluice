@@ -365,7 +365,7 @@ Every type the codec covers has the same pair in `pgtype`, `AppendX`/`DecodeX`,
 named after the PostgreSQL type, and its codec, `XCodec()`, which opens the
 containers ([below](#containers-arrays-ranges-composites)). The table of
 every type, its Go type, its arrays and its column scanner:
-[reference](../reference/postgres.md#the-codecs-in-one-table). What is
+[reference](../reference/postgres.md#the-codecs). What is
 missing is listed in [Limits](limits.md), not discovered at use.
 
 Each type's OID — the number the server names it by — is `OIDX` in `pgtype`,

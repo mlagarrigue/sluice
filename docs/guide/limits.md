@@ -96,7 +96,7 @@ The figures are a laptop's ([measurements](#measurements-what-is-missing)).
   `Config.MinSCRAMIterations`, `MaxSCRAMIterations` and `MinSCRAMSaltLen`.
   Where this departs from RFC 5802 and RFC 4013, and why:
   [Authentication, in detail](../reference/protocol-positions.md#authentication-in-detail).
-- **Types**: the [PostgreSQL reference's table](../reference/postgres.md#the-codecs-in-one-table)
+- **Types**: the [PostgreSQL reference's tables](../reference/postgres.md#the-codecs)
   says which has what; [the types not covered](postgres.md#the-types-not-covered)
   names every other built-in type, by family. Arrays of any shape, ranges,
   multiranges and composites go through the
@@ -142,12 +142,6 @@ The figures are a laptop's ([measurements](#measurements-what-is-missing)).
   changes ([ADR 0023](../design/adr/0023-logical-replication.md)). Physical
   replication is not spoken, transactions arrive only once committed (no
   `streaming`), and the slot and publication are the caller's to create.
-- **NegotiateProtocolVersion is read as a whole version word.** The
-  PostgreSQL documentation (§54.7) calls its first field the newest minor
-  version the server supports; the server writes the whole word, major in
-  the high half, and this connector reads it that way. A server that sent
-  a bare minor would be refused as a malformed message, and none exists;
-  `TestStartupFollowsANegotiatedDowngrade` pins the reading.
 - **No automatic resumption of an interrupted COPY.** Delivery is
   at-least-once and idempotence is yours; a resumption watermark should
   live in your schema, not in the library.
@@ -353,4 +347,5 @@ written decision first.
 The longest limits are argued in full — how each was measured, and where the
 library departs from a specification — in
 [Protocol positions](../reference/protocol-positions.md): the platforms,
-authentication, the interop runner, the datagram size and TLS.
+authentication, the PostgreSQL protocol, the interop runner, the datagram
+size, the QUIC transport and TLS.

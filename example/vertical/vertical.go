@@ -32,6 +32,13 @@
 // what exists. Deleting a filter from here could not weaken it, because there
 // is none to delete. That is asserted in vertical_test.go by pointing a second
 // principal at the same rows.
+//
+// # Run it
+//
+// `go test ./example/vertical/` runs the internal tests on a fake server.
+// The tests that check row-level security need a real one: they run when
+// SLUICE_PG is set — the devcontainer sets it; CONTRIBUTING.md says how to
+// start a server elsewhere — and skip otherwise.
 package vertical
 
 import (

@@ -27,7 +27,8 @@ bullet per package, each condition in it checkable:
   - *Measurement*: throughput and latency against a real third-party
     client, over a network between two machines, in
     [Benchmarks](../benchmarks.md#http2-and-http3-from-a-real-client)
-    with date and machines. Missing: see "Measurements: what is missing".
+    with date and machines. Missing: see
+    [Measurements: what is missing](../guide/limits.md#measurements-what-is-missing).
 
 What `net/quic` does today, and within which bounds — the limits it keeps
 whichever way the conditions go — is in the QUIC reference,

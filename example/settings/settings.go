@@ -16,6 +16,11 @@
 // In plain words: the environment says "APP_GATEWAY_WITHIN=2ms"; this
 // package turns it into gateway.Config.Within, and refuses "-2ms" before
 // anything runs.
+//
+// # Run it
+//
+// `go test ./example/settings/` runs it, ExampleFromEnv included; no
+// server is needed.
 package settings
 
 import (

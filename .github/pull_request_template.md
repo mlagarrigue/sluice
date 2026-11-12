@@ -12,7 +12,7 @@
 ## Checks
 
 - [ ] `go vet ./...` passes
-- [ ] `go test -race ./...` passes
+- [ ] `go test -race -shuffle=on ./...` passes
 - [ ] `gofumpt -l .` and `golangci-lint run ./...` print nothing
 - [ ] Commits follow `<type>(<scope>): <subject>`, one line, in English
 - [ ] An API break carries `!` and says so in the description

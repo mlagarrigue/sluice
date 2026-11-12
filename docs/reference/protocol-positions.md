@@ -1,8 +1,9 @@
 # Protocol positions
 
 How the longest limits were measured or argued, and where the library
-departs from a specification: the platforms, authentication, the interop
-runner, the datagram size, the QUIC transport and TLS. [Limits](../guide/limits.md) says each
+departs from a specification: the platforms, authentication, the
+PostgreSQL protocol, the interop runner, the datagram size, the QUIC
+transport and TLS. [Limits](../guide/limits.md) says each
 limit in a line and links here.
 
 ## Platforms, in detail
@@ -50,6 +51,16 @@ the field to set in the message — `Config.MinSCRAMIterations`,
 `scram_iterations = 1000` (a fast test fixture) or at two million (a
 hardened server). Zero means the default; a negative value is refused
 before anything is sent.
+
+## The PostgreSQL protocol, in detail
+
+**NegotiateProtocolVersion is read as a whole version word.** A server
+sends this message at startup when it speaks an older protocol than the
+one asked for. The PostgreSQL documentation (§54.7) calls its first field
+the newest minor version the server supports; the server writes the whole
+word, major in the high half, and this connector reads it that way. A
+server that sent a bare minor would be refused as a malformed message, and
+none exists; `TestStartupFollowsANegotiatedDowngrade` pins the reading.
 
 ## The interop runner, in detail
 

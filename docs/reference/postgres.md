@@ -9,7 +9,7 @@ what is refused, and the types its codec reads and writes. The
 - [Connection settings](#connection-settings)
 - [Query settings](#query-settings)
 - [Logical replication settings](#logical-replication-settings)
-- [The codecs, in one table](#the-codecs-in-one-table)
+- [The codecs](#the-codecs)
 - [Ranges and multiranges](#ranges-and-multiranges)
 
 ## Connection settings
@@ -62,7 +62,7 @@ Each field left at zero takes the value of the "Zero" column; what
 | `BatchBytes` | 64 MiB | 0 to 1 GiB | bytes of messages per batch |
 | `StatusInterval` | 10 s | ≥ 0 | how often, at most, the acknowledged position is reported |
 
-## The codecs, in one table
+## The codecs
 
 Every type below has the same pair in `pgtype`, `AppendX`/`DecodeX`, named
 after the PostgreSQL type, and its codec, `XCodec()`, which opens the
@@ -73,6 +73,11 @@ same array with NULL elements
 (`AppendNullableXArray`/`DecodeNullableXArray`, over `[]Null[T]`), and a
 column scanner (`ScanX`). What is missing is listed in
 [Limits](../guide/limits.md), not discovered at use.
+
+The types fall in three groups: the thirteen with arrays and a scanner,
+the other everyday types, and the system catalogue's own.
+
+**With arrays and a column scanner.**
 
 | PostgreSQL | Go | X | Array | Array with NULLs | Scan |
 |---|---|---|---|---|---|
@@ -89,6 +94,11 @@ column scanner (`ScanX`). What is missing is listed in
 | `timestamp` | `time.Time` (no zone) | `Timestamp` | yes | yes | yes |
 | `date` | `time.Time` (midnight UTC) | `Date` | yes | yes | yes |
 | `numeric` | `Numeric` (exact) | `Numeric` | yes | yes | yes |
+
+**Other everyday types: the pair and the codec.**
+
+| PostgreSQL | Go | X | Array | Array with NULLs | Scan |
+|---|---|---|---|---|---|
 | `json` | `[]byte` | `JSON` | — | — | as text |
 | `jsonb` | `[]byte` | `JSONB` | — | — | — |
 | `inet`, `cidr` | `netip.Prefix` | `Inet`, `CIDR` (one decoder) | — | — | — |
@@ -100,6 +110,15 @@ column scanner (`ScanX`). What is missing is listed in
 | `point`, `line`, `lseg`, `box`, `circle` | `Point`, `Line`, `LSeg`, `Box`, `Circle` | `Point`, `Line`, `LSeg`, `Box`, `Circle` | — | — | — |
 | `path`, `polygon` | `Path`, `[]Point` | `Path`, `Polygon` | — | — | — |
 | `money` | `int64` (units) | `Money` | — | — | — |
+| `xml`, `refcursor` | `string` | `Text` | — | — | as text |
+| `jsonpath` | `string` | `JSONPath` | — | — | — |
+| `tsvector` | `[]Lexeme` | `TSVector` | — | — | — |
+| `tsquery` | `[]TSQueryItem` | `TSQuery` | — | — | — |
+
+**The system catalogue's types: the pair and the codec.**
+
+| PostgreSQL | Go | X | Array | Array with NULLs | Scan |
+|---|---|---|---|---|---|
 | `oid` and the `reg*` aliases (`regclass`, `regtype`…, `regdatabase` in 19) | `uint32` | `OID` | — | — | — |
 | `oid8` (19), `xid8` | `uint64` | `OID8`, `XID8` | — | — | — |
 | `xid`, `cid` | `uint32` | `XID`, `CID` | — | — | — |
@@ -108,10 +127,6 @@ column scanner (`ScanX`). What is missing is listed in
 | `pg_snapshot`, `txid_snapshot` | `Snapshot` | `Snapshot` | — | — | — |
 | `int2vector`, `oidvector` | `[]int16`, `[]uint32` | `Int2Vector`, `OIDVector` | — | — | — |
 | `char`, the quoted `"char"` (not `char(n)`) | `byte` | `Char` | — | — | — |
-| `xml`, `refcursor` | `string` | `Text` | — | — | as text |
-| `jsonpath` | `string` | `JSONPath` | — | — | — |
-| `tsvector` | `[]Lexeme` | `TSVector` | — | — | — |
-| `tsquery` | `[]TSQueryItem` | `TSQuery` | — | — | — |
 
 ## Ranges and multiranges
 
