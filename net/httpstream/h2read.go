@@ -87,19 +87,26 @@ func (s *h2Conn) handOver(ready []Request, ids []uint32) (reqs []Request, stream
 }
 
 // expireAssembly resets every stream whose request has been assembling for
-// longer than ReadTimeout.
+// ReadTimeout or longer, and notes in assemblyDue when the next one will
+// have.
 //
-// It runs once per frame batch, which is exactly often enough: the only way a
-// stalled stream's memory is held is by the peer sending *something* — a PING,
-// a WINDOW_UPDATE, a byte of another stream — to keep the frame-level clock
-// alive, and each of those somethings arrives through consume. A peer that
-// sends nothing at all is the frame reader's own timeout's to end.
+// It runs once per frame batch, and the frame reader ends a read at
+// assemblyDue with an empty batch (framesWith's due), so it runs both when
+// the peer keeps the connection alive with something else — a PING, a
+// WINDOW_UPDATE, a byte of another stream — and when the peer goes silent
+// mid-request. Before the reader was told, silence never reached it: a
+// header block left open, or a body never sent, held its stream slot until
+// IdleTimeout, which the request's own HEADERS had just re-armed. The
+// connection stays: a block left open is handed to late on the reset
+// (retire), so that its remaining fragments still reach the HPACK decoder
+// when the peer resumes.
 //
 // A stream handed over with its body streaming has no such deadline — each
 // wait for its bytes has ReadTimeout, on the handler's side — and is
 // forgotten here once its handler has returned: nobody reads it, and its
 // response resets it if the peer is still sending.
 func (s *h2Conn) expireAssembly() error {
+	s.assemblyDue = time.Time{}
 	if s.open.Load() == 0 && s.handed == 0 {
 		return nil
 	}
@@ -112,8 +119,11 @@ func (s *h2Conn) expireAssembly() error {
 			}
 			continue
 		}
-		if now.After(st.deadline) {
+		switch {
+		case !now.Before(st.deadline):
 			s.expired = append(s.expired, id)
+		case s.assemblyDue.IsZero() || st.deadline.Before(s.assemblyDue):
+			s.assemblyDue = st.deadline
 		}
 	}
 	for _, id := range s.expired {

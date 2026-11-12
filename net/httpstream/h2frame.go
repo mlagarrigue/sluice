@@ -113,7 +113,7 @@ var ErrH2Protocol = errors.New("httpstream: HTTP/2 protocol error")
 // Payloads borrow the read buffer and are valid for the duration of the call
 // that received the batch.
 func h2Frames(c net.Conn, cfg Config) sluice.Source[h2Frame] {
-	return framesWith(c, cfg, nil, nil)
+	return framesWith(c, cfg, nil, nil, nil)
 }
 
 // framesWith is Frames with the server's view of whether the connection is
@@ -126,9 +126,15 @@ func h2Frames(c net.Conn, cfg Config) sluice.Source[h2Frame] {
 // a DATA frame that advances one counts as use of the connection; a nil
 // live counts every DATA frame.
 //
+// due is the earliest moment a request still assembling runs out of
+// ReadTimeout, zero when none is: a read that reaches it with nothing to
+// show ends in an empty batch rather than waiting on, so that the consumer
+// resets the stream whose peer went silent (h2Conn.expireAssembly). A nil
+// due is a reader with no assembly above it.
+//
 // cfg is resolved: every caller has been through Config.resolve.
-func framesWith(c net.Conn, cfg Config, busy func() bool, live func(id uint32) bool) sluice.Source[h2Frame] {
-	r := &frameReader{conn: c, cfg: cfg, busy: busy, live: live}
+func framesWith(c net.Conn, cfg Config, busy func() bool, live func(id uint32) bool, due func() time.Time) sluice.Source[h2Frame] {
+	r := &frameReader{conn: c, cfg: cfg, busy: busy, live: live, due: due}
 	return sluice.NewSource(sluice.Stream[h2Frame](r.stream), func() error { return r.err })
 }
 
@@ -178,6 +184,9 @@ type frameReader struct {
 	streamActivity bool
 	streamSeen     bool
 	live           func(id uint32) bool
+	// due is framesWith's: the earliest assembly deadline, which bounds
+	// every read along with the frame's and the idle clock's.
+	due func() time.Time
 
 	// continuations and headerBlock track an open header block across
 	// CONTINUATION frames, which is where the flood defence lives.
@@ -231,11 +240,20 @@ func (r *frameReader) next() ([]h2Frame, bool) {
 			continue
 		}
 		if err := r.fill(); err != nil {
+			if errors.Is(err, errAssemblyDue) {
+				// Nothing arrived by a request's assembly deadline: an empty
+				// batch, for the consumer to reset it, then reading on.
+				return r.batch[:0], true
+			}
 			r.err = err
 			return nil, false
 		}
 	}
 }
+
+// errAssemblyDue ends a read that reached the earliest assembly deadline
+// with nothing to show (see framesWith's due). It never leaves the reader.
+var errAssemblyDue = errors.New("httpstream: a request's assembly deadline passed")
 
 // usesStream reports whether f is use of the connection for the idle clock:
 // a HEADERS, CONTINUATION or DATA on a stream that is open or not yet opened
@@ -397,6 +415,15 @@ func (r *frameReader) fill() error {
 		default:
 			deadline = r.idleClock()
 		}
+		// A request assembling whose deadline comes first: the read ends
+		// there, so that a peer that went silent mid-request has the stream
+		// reset at ReadTimeout rather than when it next sends something.
+		dueCut := false
+		if r.due != nil {
+			if due := r.due(); !due.IsZero() && due.Before(deadline) {
+				deadline, dueCut, idleCut = due, true, false
+			}
+		}
 		if err := r.conn.SetReadDeadline(deadline); err != nil {
 			return err
 		}
@@ -410,6 +437,9 @@ func (r *frameReader) fill() error {
 		}
 		if errors.Is(err, io.EOF) {
 			return fmt.Errorf("%w: the connection closed mid-frame", ErrH2Protocol)
+		}
+		if dueCut && isTimeout(err) {
+			return errAssemblyDue
 		}
 		if idleCut && isTimeout(err) {
 			return fmt.Errorf("%w: %w", errIdleTimeout, err)

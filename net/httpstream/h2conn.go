@@ -358,6 +358,11 @@ type h2Conn struct {
 	// as DATA is buffered, so this, not flow control, is what bounds the
 	// memory a peer can park by never finishing its uploads.
 	assembling int
+	// assemblyDue is the earliest deadline of a request still assembling,
+	// zero when none is: computed by expireAssembly at the end of each frame
+	// batch, read by the frame reader to bound its next read. Both on the
+	// reader's goroutine.
+	assemblyDue time.Time
 	// pending is the streams whose head completed in this frame batch with
 	// their body still to come, when bodies stream: at the end of the batch
 	// each one still open is handed over with a streamed body. handed counts
@@ -649,10 +654,13 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 	// well-behaved client has nothing to send, and killing it for silence
 	// would be this server refusing what it just built. A half-finished
 	// request is a different matter and stays on ReadTimeout, which is the
-	// slowloris bound.
-	// live is asked by the reader on this goroutine, between two batches:
-	// the stream table is the one consume keeps.
-	src := framesWith(c, cfg, func() bool { return s.inFlight.Load() > 0 }, func(id uint32) bool { return s.streams[id] != nil || id > s.lastID })
+	// slowloris bound: the reader's reads end at the earliest assembly
+	// deadline too (due), silence or not, and the stream is reset there.
+	// live and due are asked by the reader on this goroutine, between two
+	// batches: the stream table is the one consume keeps.
+	src := framesWith(c, cfg, func() bool { return s.inFlight.Load() > 0 },
+		func(id uint32) bool { return s.streams[id] != nil || id > s.lastID },
+		func() time.Time { return s.assemblyDue })
 	var fatal error
 	greeted := false
 	src.Stream()(func(b sluice.Batch[h2Frame]) bool {
