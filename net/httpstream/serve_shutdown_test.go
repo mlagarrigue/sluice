@@ -452,3 +452,42 @@ func readRawFrame(t *testing.T, c net.Conn) (byte, []byte) {
 	}
 	return hdr[3], payload
 }
+
+// closeBlocks is a connection whose Close waits for release, as a tls.Conn's
+// does while its close_notify cannot be written.
+type closeBlocks struct {
+	net.Conn
+	closing chan struct{}
+	release chan struct{}
+}
+
+func (c *closeBlocks) Close() error {
+	close(c.closing)
+	<-c.release
+	return c.Conn.Close()
+}
+
+// A Close that blocks during the drain holds nothing else: the connection
+// set still takes a remove while it waits.
+func TestDrainClosesOutsideTheLock(t *testing.T) {
+	a, b := net.Pipe()
+	defer b.Close()
+	c := &closeBlocks{Conn: a, closing: make(chan struct{}), release: make(chan struct{})}
+	s := newConnSet(Config{})
+	if s.add(c) == nil {
+		t.Fatal("add refused the connection")
+	}
+	go s.drain()
+	<-c.closing
+	removed := make(chan struct{})
+	go func() {
+		s.remove(c)
+		close(removed)
+	}()
+	select {
+	case <-removed:
+	case <-time.After(5 * time.Second):
+		t.Error("remove waited for a Close in progress")
+	}
+	close(c.release)
+}

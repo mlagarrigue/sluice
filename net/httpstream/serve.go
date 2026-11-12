@@ -419,25 +419,40 @@ func (s *connSet) busy() int {
 // cancellation runs its GOAWAY pair, and it closes itself once the PING is
 // acknowledged and every stream answered — one round trip for an idle one,
 // where closing it here raced the GOAWAY its own goroutine was queuing.
+//
+// The connections are closed after mu is released, as closeAll closes its
+// own: a Close that blocks — a tls.Conn's sends its close_notify, up to the
+// connection's write deadline — would otherwise hold add, remove and the
+// stop behind it.
 func (s *connSet) drain() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.closed = true
 	s.beginDrain()
+	var idle []net.Conn
 	for c, st := range s.conns {
 		if st.phase.Load() != connBusy && !st.h2.Load() {
-			_ = c.Close()
+			idle = append(idle, c)
 		}
+	}
+	s.mu.Unlock()
+	for _, c := range idle {
+		_ = c.Close()
 	}
 }
 
-// closeAll closes what the grace did not drain. The map is kept: remove
-// still runs for each connection when its goroutine ends.
+// closeAll closes what the grace did not drain, outside mu as drain does.
+// The map is kept: remove still runs for each connection when its
+// goroutine ends.
 func (s *connSet) closeAll() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	all := make([]net.Conn, 0, len(s.conns))
+	cut := make([]bool, 0, len(s.conns))
 	for c, st := range s.conns {
-		if st.cutBody() {
+		all, cut = append(all, c), append(cut, st.cutBody())
+	}
+	s.mu.Unlock()
+	for i, c := range all {
+		if cut[i] {
 			closeCut(c)
 			continue
 		}
