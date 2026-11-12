@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/netip"
+	"strconv"
 )
 
 // Header is one field of a request or a response.
@@ -185,8 +186,8 @@ func withAuthority(regular []Header, authority []byte, protocolErr error) ([]Hea
 			continue
 		}
 		if !bytes.EqualFold(h.Value, authority) {
-			return nil, fmt.Errorf("%w: host %q and :authority %q name different hosts",
-				protocolErr, h.Value, authority)
+			return nil, fmt.Errorf("%w: host %s and :authority %s name different hosts",
+				protocolErr, cite(h.Value), cite(authority))
 		}
 		return regular, nil
 	}
@@ -225,13 +226,13 @@ func checkRequestTrailer(h Header, protocolErr error) error {
 		return fmt.Errorf("%w: the pseudo-header %s in a trailer section", protocolErr, h.Name)
 	}
 	if !isToken(h.Name) || !lowerASCII(h.Name) {
-		return fmt.Errorf("%w: %q is not a trailer field name", protocolErr, h.Name)
+		return fmt.Errorf("%w: %s is not a trailer field name", protocolErr, cite(h.Name))
 	}
 	if !validFieldValue(h.Value) {
-		return fmt.Errorf("%w: the trailer %q holds a control character", protocolErr, h.Name)
+		return fmt.Errorf("%w: the trailer %s holds a control character", protocolErr, cite(h.Name))
 	}
 	if connectionSpecific(h.Name) {
-		return fmt.Errorf("%w: the connection-specific field %q in a trailer section", protocolErr, h.Name)
+		return fmt.Errorf("%w: the connection-specific field %s in a trailer section", protocolErr, cite(h.Name))
 	}
 	if string(h.Name) == "te" && !equalFold(h.Value, "trailers") {
 		return fmt.Errorf("%w: TE may only be \"trailers\"", protocolErr)
@@ -298,7 +299,7 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 		}
 		seenRegular = true
 		if !lowerASCII(h.Name) {
-			return req, 0, fmt.Errorf("%w: %q is not lowercase", protocolErr, h.Name)
+			return req, 0, fmt.Errorf("%w: %s is not lowercase", protocolErr, cite(h.Name))
 		}
 		// The h1 parser's octet rules, applied to what HPACK or QPACK decoded
 		// (RFC 9113 §8.2.1, RFC 9114 §4.1.2). Either can carry any byte, so
@@ -306,15 +307,15 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 		// reaches the handler — and the first hop that re-serialises the
 		// request toward HTTP/1.1 turns that value into a second request.
 		if !isToken(h.Name) {
-			return req, 0, fmt.Errorf("%w: %q is not a header name", protocolErr, h.Name)
+			return req, 0, fmt.Errorf("%w: %s is not a header name", protocolErr, cite(h.Name))
 		}
 		if !validFieldValue(h.Value) {
-			return req, 0, fmt.Errorf("%w: the value of %q holds a control character", protocolErr, h.Name)
+			return req, 0, fmt.Errorf("%w: the value of %s holds a control character", protocolErr, cite(h.Name))
 		}
 		if connectionSpecific(h.Name) {
 			// Connection-specific fields have no meaning here and are how
 			// one request becomes two HTTP/1.1 requests at the next hop.
-			return req, 0, fmt.Errorf("%w: the connection-specific field %q", protocolErr, h.Name)
+			return req, 0, fmt.Errorf("%w: the connection-specific field %s", protocolErr, cite(h.Name))
 		}
 		switch string(h.Name) {
 		case "host":
@@ -329,7 +330,7 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 			}
 			hostSeen = true
 			if !validAuthority(h.Value) {
-				return req, 0, fmt.Errorf("%w: host %q is not an authority", protocolErr, h.Value)
+				return req, 0, fmt.Errorf("%w: host %s is not an authority", protocolErr, cite(h.Value))
 			}
 		case "te":
 			// RFC 9113 §8.2.2: no value other than "trailers" — compared
@@ -347,9 +348,9 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 			n, over, ok := decimalLength(h.Value, math.MaxInt) // the caller's bound decides the rest
 			switch {
 			case !ok:
-				return req, 0, fmt.Errorf("%w: content-length %q is not a length", protocolErr, h.Value)
+				return req, 0, fmt.Errorf("%w: content-length %s is not a length", protocolErr, cite(h.Value))
 			case over:
-				return req, 0, fmt.Errorf("%w: content-length %q", ErrTooLarge, h.Value)
+				return req, 0, fmt.Errorf("%w: content-length %s", ErrTooLarge, cite(h.Value))
 			}
 			declared = n
 		case "cookie":
@@ -382,7 +383,7 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 		if authority == nil {
 			return req, 0, fmt.Errorf("%w: a CONNECT without :authority", protocolErr)
 		}
-		return req, 0, fmt.Errorf("%w: a tunnel to %q", errConnect, authority)
+		return req, 0, fmt.Errorf("%w: a tunnel to %s", errConnect, cite(authority))
 	}
 	if method == nil || path == nil || scheme == nil {
 		return req, 0, fmt.Errorf("%w: a request without :method, :path and :scheme", protocolErr)
@@ -401,7 +402,7 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 		return req, 0, err
 	}
 	if authority != nil && !validAuthority(authority) {
-		return req, 0, fmt.Errorf("%w: :authority %q is not an authority", protocolErr, authority)
+		return req, 0, fmt.Errorf("%w: :authority %s is not an authority", protocolErr, cite(authority))
 	}
 	// RFC 9110 §4.2.1, RFC 9114 §4.3.1: a scheme with a mandatory authority
 	// component needs :authority or host, as HTTP/1.1 needs Host (400).
@@ -409,7 +410,7 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 	// three protocols only. Other schemes, which may have no authority at
 	// all, are delivered as they came.
 	if authority == nil && !hostSeen && (equalFold(scheme, "http") || equalFold(scheme, "https")) {
-		return req, 0, fmt.Errorf("%w: no :authority or host for scheme %q", protocolErr, scheme)
+		return req, 0, fmt.Errorf("%w: no :authority or host for scheme %s", protocolErr, cite(scheme))
 	}
 	regular, err = withAuthority(regular, authority, protocolErr)
 	if err != nil {
@@ -490,7 +491,7 @@ func absoluteForm(target []byte) (authority, path []byte, err error) {
 		return nil, nil, fmt.Errorf("%w: the target is neither origin-form nor absolute-form", ErrMalformed)
 	}
 	if scheme := target[:sep]; !equalFold(scheme, "http") && !equalFold(scheme, "https") {
-		return nil, nil, fmt.Errorf("%w: the target's scheme %q is not http or https", ErrMalformed, scheme)
+		return nil, nil, fmt.Errorf("%w: the target's scheme %s is not http or https", ErrMalformed, cite(scheme))
 	}
 	rest := target[sep+3:]
 	end := len(rest)
@@ -975,7 +976,7 @@ func splitRequestLine(line []byte) (method, target, version, authority []byte, e
 		// absolute-form". The target is not
 		// parsed: an empty or invalid port is rejected with the rest
 		// (RFC 9110 §9.3.6 asks for the rejection, not the status).
-		return nil, nil, nil, nil, fmt.Errorf("%w: a tunnel to %q", errConnect, target)
+		return nil, nil, nil, nil, fmt.Errorf("%w: a tunnel to %s", errConnect, cite(target))
 	}
 	if authority, target, err = absoluteForm(target); err != nil {
 		return nil, nil, nil, nil, err
@@ -989,10 +990,10 @@ func splitRequestLine(line []byte) (method, target, version, authority []byte, e
 	// any minor of 1 is served.
 	v := string(version)
 	if len(v) != 8 || v[:5] != "HTTP/" || v[5] < '0' || v[5] > '9' || v[6] != '.' || v[7] < '0' || v[7] > '9' {
-		return nil, nil, nil, nil, fmt.Errorf("%w: %q is not an HTTP version", ErrMalformed, version)
+		return nil, nil, nil, nil, fmt.Errorf("%w: %s is not an HTTP version", ErrMalformed, cite(version))
 	}
 	if v[5] != '1' {
-		return nil, nil, nil, nil, fmt.Errorf("%w: %q", errVersionUnsupported, version)
+		return nil, nil, nil, nil, fmt.Errorf("%w: %s", errVersionUnsupported, cite(version))
 	}
 	return method, target, version, authority, nil
 }
@@ -1036,6 +1037,21 @@ func parseHeaders(arena []Header, buf []byte, cfg Config) ([]Header, int, error)
 	}
 }
 
+// cite quotes a value the peer sent for an error, cut to citeBytes: enough
+// to name the field or the token at fault, not enough for the peer to choose
+// the size of the warn record reportConnEnd writes — %q spells a byte that is
+// not UTF-8 in four, so a header name of MaxHeaderBytes quoted whole would
+// make a record four times what the peer sent.
+func cite[T ~string | ~[]byte](v T) string {
+	if len(v) > citeBytes {
+		return strconv.Quote(string(v[:citeBytes])) + fmt.Sprintf("… (%d bytes)", len(v))
+	}
+	return strconv.Quote(string(v))
+}
+
+// citeBytes is how much of a peer's value an error quotes.
+const citeBytes = 64
+
 func parseHeaderLine(line []byte) (Header, error) {
 	colon := indexByte(line, ':')
 	if colon < 0 {
@@ -1045,7 +1061,7 @@ func parseHeaderLine(line []byte) (Header, error) {
 	// No space before the colon. RFC 9112 §5.1 requires the rejection, and
 	// tolerating it is exactly how one hop reads a header the next does not.
 	if !isToken(name) {
-		return Header{}, fmt.Errorf("%w: %q is not a header name", ErrMalformed, name)
+		return Header{}, fmt.Errorf("%w: %s is not a header name", ErrMalformed, cite(name))
 	}
 	value := trimOWS(line[colon+1:])
 	for _, c := range value {
@@ -1112,7 +1128,7 @@ func checkFraming(req Request, http11 bool) (chunked bool, err error) {
 			// RFC 9112 §3.2: a Host with an invalid value is answered 400,
 			// and the value is valid by the rule :authority is held to.
 			if !validAuthority(h.Value) {
-				return false, fmt.Errorf("%w: Host %q is not an authority", ErrMalformed, h.Value)
+				return false, fmt.Errorf("%w: Host %s is not an authority", ErrMalformed, cite(h.Value))
 			}
 			hosts++
 		}
@@ -1136,7 +1152,7 @@ func checkFraming(req Request, http11 bool) (chunked bool, err error) {
 	case !lastChunked && unknown == nil:
 		return false, fmt.Errorf("%w: Transfer-Encoding names no coding", ErrMalformed)
 	case unknown != nil:
-		return false, fmt.Errorf("%w: %q", errUnsupportedCoding, unknown)
+		return false, fmt.Errorf("%w: %s", errUnsupportedCoding, cite(unknown))
 	}
 	return true, nil
 }
@@ -1525,10 +1541,10 @@ digits:
 		n = n*16 + d
 	}
 	if i == 0 {
-		return 0, fmt.Errorf("%w: chunk size %q is not hexadecimal", ErrMalformed, line)
+		return 0, fmt.Errorf("%w: chunk size %s is not hexadecimal", ErrMalformed, cite(line))
 	}
 	if !validChunkExt(line[i:]) {
-		return 0, fmt.Errorf("%w: chunk size line %q is not a size and extensions", ErrMalformed, line)
+		return 0, fmt.Errorf("%w: chunk size line %s is not a size and extensions", ErrMalformed, cite(line))
 	}
 	return n, nil
 }
@@ -1638,7 +1654,7 @@ func contentLength(req Request, cfg Config) (int, error) {
 	n, over, ok := decimalLength(raw, bound)
 	switch {
 	case !ok:
-		return 0, fmt.Errorf("%w: Content-Length %q is not a number", ErrMalformed, raw)
+		return 0, fmt.Errorf("%w: Content-Length %s is not a number", ErrMalformed, cite(raw))
 	case over:
 		return 0, fmt.Errorf("%w: a body over %d bytes", ErrTooLarge, bound)
 	}
