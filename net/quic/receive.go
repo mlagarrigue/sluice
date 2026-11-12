@@ -66,6 +66,14 @@ func (c *Conn) readLoop() {
 			if c.rebound(pc) {
 				continue // the error belongs to a socket this end has left
 			}
+			// A Close that ran first owns the ending: the caller may then
+			// close the socket, and its error is not the connection's —
+			// Err stays nil after this end closed it.
+			select {
+			case <-c.closed:
+				return
+			default:
+			}
 			c.fail(err)
 			_ = c.Close()
 			return
