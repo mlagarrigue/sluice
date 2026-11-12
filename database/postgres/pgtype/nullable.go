@@ -6,24 +6,21 @@ import (
 )
 
 // Null carries a value that may be absent, without spending a pointer on
-// saying so.
+// saying so: a nullable column of an entity, a nullable bound of a range.
 //
-//	vals, err := DecodeNullableInt8Array(vals[:0], raw)
-//	for _, v := range vals {
-//	    if !v.Valid {
-//	        continue // SQL NULL
-//	    }
-//	    use(v.Value)
+//	type Product struct {
+//	    Weight pgtype.Null[float64] `db:"weight"` // NULL when !Weight.Valid
 //	}
 //
-// # Why not []*int64
+// An array marks its NULL elements apart, in [Array.Nulls], so that an
+// array without one is a plain slice.
 //
-// Because a pointer per element is an allocation per element, and the whole
-// point of the array codecs is that a thousand keys travel without a thousand
-// allocations. A `[]Null[int64]` is one contiguous block, `Valid` sits beside
-// the value, and the batch stays flat — which is the same reason the
-// connector's Rows decodes into one buffer plus offsets rather than a slice
-// per row.
+// # Why not *int64
+//
+// Because a pointer per value is an allocation per value, and a batch of a
+// thousand rows would pay a thousand of them. A Null sits beside its value,
+// and the batch stays flat — which is the same reason the connector's Rows
+// decodes into one buffer plus offsets rather than a slice per row.
 //
 // # Valid, not IsNull
 //
@@ -42,31 +39,8 @@ type Null[T any] struct {
 // the header's flags word is 1 when any element is NULL, and each NULL element
 // carries a length of -1 instead of its bytes. There is no bitmap — that
 // belongs to the on-disk representation, not to what travels on the wire.
-//
-// This package's encoders wrote flags = 0 unconditionally, which was true only
-// because they refused NULLs. Now that they do not, the two halves are written
-// in one place so they cannot drift apart.
-
-// appendNullableArrayHeader is [appendArrayHeader] with the flags word told
-// the truth.
-func appendNullableArrayHeader(dst []byte, elem uint32, n int, hasNull bool) []byte {
-	if n == 0 {
-		// Still zero dimensions: an empty array has no elements to be NULL,
-		// whatever the caller's slice type says.
-		dst = binary.BigEndian.AppendUint32(dst, 0)
-		dst = binary.BigEndian.AppendUint32(dst, 0)
-		return binary.BigEndian.AppendUint32(dst, elem)
-	}
-	var flags uint32
-	if hasNull {
-		flags = 1
-	}
-	dst = binary.BigEndian.AppendUint32(dst, 1)         // one dimension
-	dst = binary.BigEndian.AppendUint32(dst, flags)     // NULLs present
-	dst = binary.BigEndian.AppendUint32(dst, elem)      // element type
-	dst = binary.BigEndian.AppendUint32(dst, uint32(n)) //nolint:gosec // G115: a list's length
-	return binary.BigEndian.AppendUint32(dst, 1)        // lower bound
-}
+// [AppendArray] writes both from [Array.Nulls], and [DecodeArray] reads both
+// back into it.
 
 // nullElement is the length a NULL element carries: -1, as an unsigned word.
 const nullElement = ^uint32(0)
@@ -90,197 +64,6 @@ func nextElement(body []byte, i int) (value, rest []byte, isNull bool, err error
 		return nil, nil, false, fmt.Errorf("%w: array element %d declares %d bytes, %d remain", ErrCodec, i, size, len(body))
 	}
 	return body[:size], body[size:], false, nil
-}
-
-// AppendNullableInt8Array appends a one-dimensional int8[] whose elements may
-// be NULL.
-//
-// [AppendInt8Array] stays the one to reach for when they cannot be: it takes a
-// plain []int64 and costs nothing to call. This is for the column that has
-// NULLs in it, which is most columns.
-func AppendNullableInt8Array(dst []byte, values []Null[int64]) []byte {
-	dst = appendNullableArrayHeader(dst, OIDInt8, len(values), anyNull(values))
-	for _, v := range values {
-		if !v.Valid {
-			dst = binary.BigEndian.AppendUint32(dst, nullElement)
-			continue
-		}
-		dst = binary.BigEndian.AppendUint32(dst, 8)
-		dst = AppendInt8(dst, v.Value)
-	}
-	return dst
-}
-
-// DecodeNullableInt8Array decodes a one-dimensional int8[], NULLs included.
-func DecodeNullableInt8Array(dst []Null[int64], b []byte) ([]Null[int64], error) {
-	body, n, err := arrayBody(b, OIDInt8)
-	if err != nil || n == 0 {
-		return dst[:0], err
-	}
-	dst = dst[:0]
-	for i := range n {
-		val, rest, isNull, err := nextElement(body, i)
-		if err != nil {
-			return dst[:0], err
-		}
-		body = rest
-		if isNull {
-			dst = append(dst, Null[int64]{})
-			continue
-		}
-		v, err := DecodeInt8(val)
-		if err != nil {
-			return dst[:0], fmt.Errorf("array element %d: %w", i, err)
-		}
-		dst = append(dst, Null[int64]{Value: v, Valid: true})
-	}
-	if err := trailing(body); err != nil {
-		return dst[:0], err
-	}
-	return dst, nil
-}
-
-// AppendNullableInt4Array appends a one-dimensional int4[] whose elements may
-// be NULL.
-func AppendNullableInt4Array(dst []byte, values []Null[int32]) []byte {
-	dst = appendNullableArrayHeader(dst, OIDInt4, len(values), anyNull(values))
-	for _, v := range values {
-		if !v.Valid {
-			dst = binary.BigEndian.AppendUint32(dst, nullElement)
-			continue
-		}
-		dst = binary.BigEndian.AppendUint32(dst, 4)
-		dst = AppendInt4(dst, v.Value)
-	}
-	return dst
-}
-
-// DecodeNullableInt4Array decodes a one-dimensional int4[], NULLs included.
-func DecodeNullableInt4Array(dst []Null[int32], b []byte) ([]Null[int32], error) {
-	body, n, err := arrayBody(b, OIDInt4)
-	if err != nil || n == 0 {
-		return dst[:0], err
-	}
-	dst = dst[:0]
-	for i := range n {
-		val, rest, isNull, err := nextElement(body, i)
-		if err != nil {
-			return dst[:0], err
-		}
-		body = rest
-		if isNull {
-			dst = append(dst, Null[int32]{})
-			continue
-		}
-		v, err := DecodeInt4(val)
-		if err != nil {
-			return dst[:0], fmt.Errorf("array element %d: %w", i, err)
-		}
-		dst = append(dst, Null[int32]{Value: v, Valid: true})
-	}
-	if err := trailing(body); err != nil {
-		return dst[:0], err
-	}
-	return dst, nil
-}
-
-// AppendNullableTextArray appends a one-dimensional text[] whose elements may
-// be NULL.
-//
-// This is the one where the distinction earns its keep: an empty string and a
-// NULL are the same zero value in Go and different values in SQL, and a codec
-// that collapsed them would turn `WHERE name = ”` and `WHERE name IS NULL`
-// into the same query without saying so.
-func AppendNullableTextArray(dst []byte, values []Null[string]) []byte {
-	dst = appendNullableArrayHeader(dst, OIDText, len(values), anyNull(values))
-	for _, v := range values {
-		if !v.Valid {
-			dst = binary.BigEndian.AppendUint32(dst, nullElement)
-			continue
-		}
-		dst = binary.BigEndian.AppendUint32(dst, uint32(len(v.Value))) //nolint:gosec // G115: bounded by the caller's value
-		dst = append(dst, v.Value...)
-	}
-	return dst
-}
-
-// DecodeNullableTextArray decodes a one-dimensional text[], NULLs included.
-// Elements are copied out, for the reason [DecodeTextArray] gives.
-func DecodeNullableTextArray(dst []Null[string], b []byte) ([]Null[string], error) {
-	body, n, err := arrayBody(b, OIDText)
-	if err != nil || n == 0 {
-		return dst[:0], err
-	}
-	dst = dst[:0]
-	for i := range n {
-		val, rest, isNull, err := nextElement(body, i)
-		if err != nil {
-			return dst[:0], err
-		}
-		body = rest
-		if isNull {
-			dst = append(dst, Null[string]{})
-			continue
-		}
-		dst = append(dst, Null[string]{Value: string(val), Valid: true})
-	}
-	if err := trailing(body); err != nil {
-		return dst[:0], err
-	}
-	return dst, nil
-}
-
-// AppendNullableUUIDArray appends a one-dimensional uuid[] whose elements may
-// be NULL.
-func AppendNullableUUIDArray(dst []byte, values []Null[[16]byte]) []byte {
-	dst = appendNullableArrayHeader(dst, OIDUUID, len(values), anyNull(values))
-	for _, v := range values {
-		if !v.Valid {
-			dst = binary.BigEndian.AppendUint32(dst, nullElement)
-			continue
-		}
-		dst = binary.BigEndian.AppendUint32(dst, 16)
-		dst = append(dst, v.Value[:]...)
-	}
-	return dst
-}
-
-// DecodeNullableUUIDArray decodes a one-dimensional uuid[], NULLs included.
-func DecodeNullableUUIDArray(dst []Null[[16]byte], b []byte) ([]Null[[16]byte], error) {
-	body, n, err := arrayBody(b, OIDUUID)
-	if err != nil || n == 0 {
-		return dst[:0], err
-	}
-	dst = dst[:0]
-	for i := range n {
-		val, rest, isNull, err := nextElement(body, i)
-		if err != nil {
-			return dst[:0], err
-		}
-		body = rest
-		if isNull {
-			dst = append(dst, Null[[16]byte]{})
-			continue
-		}
-		u, err := DecodeUUID(val)
-		if err != nil {
-			return dst[:0], fmt.Errorf("array element %d: %w", i, err)
-		}
-		dst = append(dst, Null[[16]byte]{Value: u, Valid: true})
-	}
-	if err := trailing(body); err != nil {
-		return dst[:0], err
-	}
-	return dst, nil
-}
-
-func anyNull[T any](values []Null[T]) bool {
-	for _, v := range values {
-		if !v.Valid {
-			return true
-		}
-	}
-	return false
 }
 
 func trailing(body []byte) error {

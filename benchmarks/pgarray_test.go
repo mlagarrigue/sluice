@@ -45,7 +45,7 @@ func BenchmarkPGEncodeInt8ArraySluice(b *testing.B) {
 	buf := make([]byte, 0, arrayLen*12+64)
 	b.ReportAllocs()
 	for b.Loop() {
-		buf = pgtype.AppendInt8Array(buf[:0], src)
+		buf = pgtype.AppendArray(buf[:0], pgtype.Array[int64]{Elems: src}, pgtype.Int8Codec())
 	}
 	sink = len(buf)
 }
@@ -66,21 +66,22 @@ func BenchmarkPGEncodeInt8ArrayPgx(b *testing.B) {
 }
 
 func BenchmarkPGDecodeInt8ArraySluice(b *testing.B) {
-	wire := pgtype.AppendInt8Array(nil, keys())
-	dst := make([]int64, 0, arrayLen)
+	wire := pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: keys()}, pgtype.Int8Codec())
+	dst := pgtype.Array[int64]{Elems: make([]int64, 0, arrayLen)}
+	c := pgtype.Int8Codec()
 	b.ReportAllocs()
 	for b.Loop() {
-		out, err := pgtype.DecodeInt8Array(dst[:0], wire)
+		out, err := pgtype.DecodeArray(dst, wire, c)
 		if err != nil {
 			b.Fatal(err)
 		}
 		dst = out
 	}
-	sink = len(dst)
+	sink = len(dst.Elems)
 }
 
 func BenchmarkPGDecodeInt8ArrayPgx(b *testing.B) {
-	wire := pgtype.AppendInt8Array(nil, keys())
+	wire := pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: keys()}, pgtype.Int8Codec())
 	m := pgxtype.NewMap()
 	var dst []int64
 	b.ReportAllocs()
@@ -106,7 +107,7 @@ func TestInt8ArrayWireCompatibility(t *testing.T) {
 	src := keys()
 	m := pgxtype.NewMap()
 
-	ours := pgtype.AppendInt8Array(nil, src)
+	ours := pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: src}, pgtype.Int8Codec())
 	theirs, err := m.Encode(pgxtype.Int8ArrayOID, pgxtype.BinaryFormatCode, src, nil)
 	if err != nil {
 		t.Fatalf("pgx failed to encode: %v", err)
@@ -116,11 +117,11 @@ func TestInt8ArrayWireCompatibility(t *testing.T) {
 	}
 
 	// And each decodes the other's bytes back to the input.
-	back, err := pgtype.DecodeInt8Array(nil, theirs)
+	back, err := pgtype.DecodeArray(pgtype.Array[int64]{}, theirs, pgtype.Int8Codec())
 	if err != nil {
 		t.Fatalf("decoding pgx's bytes: %v", err)
 	}
-	if !slices.Equal(back, src) {
+	if !slices.Equal(back.Elems, src) || len(back.Nulls) != 0 {
 		t.Error("this package did not read pgx's array back")
 	}
 
@@ -154,7 +155,7 @@ func BenchmarkPGEncodeInt8ArrayPgxFlat(b *testing.B) {
 
 // And the same for decoding, into the type pgx prefers.
 func BenchmarkPGDecodeInt8ArrayPgxFlat(b *testing.B) {
-	wire := pgtype.AppendInt8Array(nil, keys())
+	wire := pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: keys()}, pgtype.Int8Codec())
 	m := pgxtype.NewMap()
 	var dst pgxtype.FlatArray[int64]
 	b.ReportAllocs()

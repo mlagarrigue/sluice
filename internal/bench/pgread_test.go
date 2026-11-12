@@ -158,17 +158,18 @@ func BenchmarkPGDecodeInt8Array(b *testing.B) {
 	for i := range values {
 		values[i] = int64(i)
 	}
-	encoded := pgtype.AppendInt8Array(nil, values)
+	encoded := pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: values}, pgtype.Int8Codec())
 
-	dst := make([]int64, 0, n)
+	dst := pgtype.Array[int64]{Elems: make([]int64, 0, n)}
+	c := pgtype.Int8Codec()
 	var acc int64
 	for b.Loop() {
 		var err error
-		dst, err = pgtype.DecodeInt8Array(dst, encoded)
+		dst, err = pgtype.DecodeArray(dst, encoded, c)
 		if err != nil {
 			b.Fatal(err)
 		}
-		acc += dst[n-1]
+		acc += dst.Elems[n-1]
 	}
 	sink = acc
 	reportPerElem(b, n)
@@ -184,7 +185,7 @@ func BenchmarkPGEncodeInt8Array(b *testing.B) {
 
 	buf := make([]byte, 0, 8*n+32)
 	for b.Loop() {
-		buf = pgtype.AppendInt8Array(buf[:0], values)
+		buf = pgtype.AppendArray(buf[:0], pgtype.Array[int64]{Elems: values}, pgtype.Int8Codec())
 	}
 	sink = int64(len(buf))
 	reportPerElem(b, n)

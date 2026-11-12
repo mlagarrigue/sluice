@@ -29,7 +29,8 @@
 //	conn, err := postgres.Connect(ctx, postgres.DialTCP("127.0.0.1:5432"),
 //		postgres.Config{User: "orders", Database: "orders"})
 //	src := conn.Query(ctx, "SELECT id, total FROM orders WHERE id = ANY($1)",
-//		[]postgres.Param{{OID: pgtype.OIDInt8Array, Value: pgtype.AppendInt8Array(nil, keys)}},
+//		[]postgres.Param{{OID: pgtype.OIDInt8Array,
+//			Value: pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: keys}, pgtype.Int8Codec())}},
 //		postgres.QueryConfig{BatchRows: 1024})
 //	for b := range src.Stream() {
 //		for _, row := range b.Items {

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"math"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 )
@@ -173,7 +172,7 @@ func TestTimestampTZIsZoneIndependent(t *testing.T) {
 // The array header is what `= ANY($1)` rides on, and it is fixed enough to
 // state byte for byte.
 func TestGoldenVectorInt8Array(t *testing.T) {
-	got := AppendInt8Array(nil, []int64{1, -1})
+	got := appendSlice(Int8Codec(), nil, []int64{1, -1})
 	want := []byte{
 		0, 0, 0, 1, // one dimension
 		0, 0, 0, 0, // no NULL bitmap
@@ -308,7 +307,7 @@ func TestInt8ArrayRoundTrip(t *testing.T) {
 		{math.MinInt64, -1, 0, 1, math.MaxInt64},
 	}
 	for _, want := range tests {
-		got, err := DecodeInt8Array(nil, AppendInt8Array(nil, want))
+		got, err := decodeSlice(Int8Codec(), nil, appendSlice(Int8Codec(), nil, want))
 		if err != nil {
 			t.Fatalf("%v: %v", want, err)
 		}
@@ -332,32 +331,32 @@ func TestDecodeArrayRefusesBytesAfterAnEmptyArray(t *testing.T) {
 		}
 	}
 	both := func(name string, enc func([]byte) []byte, dec func([]byte) error) { check(name, enc(nil), dec) }
-	both("Bool", func(d []byte) []byte { return AppendBoolArray(d, nil) }, func(b []byte) error { _, err := DecodeBoolArray(nil, b); return err })
-	both("NullableBool", func(d []byte) []byte { return AppendNullableBoolArray(d, nil) }, func(b []byte) error { _, err := DecodeNullableBoolArray(nil, b); return err })
-	both("Int2", func(d []byte) []byte { return AppendInt2Array(d, nil) }, func(b []byte) error { _, err := DecodeInt2Array(nil, b); return err })
-	both("NullableInt2", func(d []byte) []byte { return AppendNullableInt2Array(d, nil) }, func(b []byte) error { _, err := DecodeNullableInt2Array(nil, b); return err })
-	both("Int4", func(d []byte) []byte { return AppendInt4Array(d, nil) }, func(b []byte) error { _, err := DecodeInt4Array(nil, b); return err })
-	both("NullableInt4", func(d []byte) []byte { return AppendNullableInt4Array(d, nil) }, func(b []byte) error { _, err := DecodeNullableInt4Array(nil, b); return err })
-	both("Int8", func(d []byte) []byte { return AppendInt8Array(d, nil) }, func(b []byte) error { _, err := DecodeInt8Array(nil, b); return err })
-	both("NullableInt8", func(d []byte) []byte { return AppendNullableInt8Array(d, nil) }, func(b []byte) error { _, err := DecodeNullableInt8Array(nil, b); return err })
-	both("Float4", func(d []byte) []byte { return AppendFloat4Array(d, nil) }, func(b []byte) error { _, err := DecodeFloat4Array(nil, b); return err })
-	both("NullableFloat4", func(d []byte) []byte { return AppendNullableFloat4Array(d, nil) }, func(b []byte) error { _, err := DecodeNullableFloat4Array(nil, b); return err })
-	both("Float8", func(d []byte) []byte { return AppendFloat8Array(d, nil) }, func(b []byte) error { _, err := DecodeFloat8Array(nil, b); return err })
-	both("NullableFloat8", func(d []byte) []byte { return AppendNullableFloat8Array(d, nil) }, func(b []byte) error { _, err := DecodeNullableFloat8Array(nil, b); return err })
-	both("Text", func(d []byte) []byte { return AppendTextArray(d, nil) }, func(b []byte) error { _, err := DecodeTextArray(nil, b); return err })
-	both("NullableText", func(d []byte) []byte { return AppendNullableTextArray(d, nil) }, func(b []byte) error { _, err := DecodeNullableTextArray(nil, b); return err })
-	both("Bytea", func(d []byte) []byte { return AppendByteaArray(d, nil) }, func(b []byte) error { _, err := DecodeByteaArray(nil, b); return err })
-	both("NullableBytea", func(d []byte) []byte { return AppendNullableByteaArray(d, nil) }, func(b []byte) error { _, err := DecodeNullableByteaArray(nil, b); return err })
-	both("UUID", func(d []byte) []byte { return AppendUUIDArray(d, nil) }, func(b []byte) error { _, err := DecodeUUIDArray(nil, b); return err })
-	both("NullableUUID", func(d []byte) []byte { return AppendNullableUUIDArray(d, nil) }, func(b []byte) error { _, err := DecodeNullableUUIDArray(nil, b); return err })
-	both("TimestampTZ", func(d []byte) []byte { return AppendTimestampTZArray(d, nil) }, func(b []byte) error { _, err := DecodeTimestampTZArray(nil, b); return err })
-	both("NullableTimestampTZ", func(d []byte) []byte { return AppendNullableTimestampTZArray(d, nil) }, func(b []byte) error { _, err := DecodeNullableTimestampTZArray(nil, b); return err })
-	both("Timestamp", func(d []byte) []byte { return AppendTimestampArray(d, nil) }, func(b []byte) error { _, err := DecodeTimestampArray(nil, b); return err })
-	both("NullableTimestamp", func(d []byte) []byte { return AppendNullableTimestampArray(d, nil) }, func(b []byte) error { _, err := DecodeNullableTimestampArray(nil, b); return err })
-	both("Date", func(d []byte) []byte { return AppendDateArray(d, nil) }, func(b []byte) error { _, err := DecodeDateArray(nil, b); return err })
-	both("NullableDate", func(d []byte) []byte { return AppendNullableDateArray(d, nil) }, func(b []byte) error { _, err := DecodeNullableDateArray(nil, b); return err })
-	both("Numeric", func(d []byte) []byte { return AppendNumericArray(d, nil) }, func(b []byte) error { _, err := DecodeNumericArray(nil, b); return err })
-	both("NullableNumeric", func(d []byte) []byte { return AppendNullableNumericArray(d, nil) }, func(b []byte) error { _, err := DecodeNullableNumericArray(nil, b); return err })
+	both("Bool", func(d []byte) []byte { return appendSlice(BoolCodec(), d, nil) }, func(b []byte) error { _, err := decodeSlice(BoolCodec(), nil, b); return err })
+	both("NullableBool", func(d []byte) []byte { return appendNulls(BoolCodec(), d, nil) }, func(b []byte) error { _, err := decodeNulls(BoolCodec(), nil, b); return err })
+	both("Int2", func(d []byte) []byte { return appendSlice(Int2Codec(), d, nil) }, func(b []byte) error { _, err := decodeSlice(Int2Codec(), nil, b); return err })
+	both("NullableInt2", func(d []byte) []byte { return appendNulls(Int2Codec(), d, nil) }, func(b []byte) error { _, err := decodeNulls(Int2Codec(), nil, b); return err })
+	both("Int4", func(d []byte) []byte { return appendSlice(Int4Codec(), d, nil) }, func(b []byte) error { _, err := decodeSlice(Int4Codec(), nil, b); return err })
+	both("NullableInt4", func(d []byte) []byte { return appendNulls(Int4Codec(), d, nil) }, func(b []byte) error { _, err := decodeNulls(Int4Codec(), nil, b); return err })
+	both("Int8", func(d []byte) []byte { return appendSlice(Int8Codec(), d, nil) }, func(b []byte) error { _, err := decodeSlice(Int8Codec(), nil, b); return err })
+	both("NullableInt8", func(d []byte) []byte { return appendNulls(Int8Codec(), d, nil) }, func(b []byte) error { _, err := decodeNulls(Int8Codec(), nil, b); return err })
+	both("Float4", func(d []byte) []byte { return appendSlice(Float4Codec(), d, nil) }, func(b []byte) error { _, err := decodeSlice(Float4Codec(), nil, b); return err })
+	both("NullableFloat4", func(d []byte) []byte { return appendNulls(Float4Codec(), d, nil) }, func(b []byte) error { _, err := decodeNulls(Float4Codec(), nil, b); return err })
+	both("Float8", func(d []byte) []byte { return appendSlice(Float8Codec(), d, nil) }, func(b []byte) error { _, err := decodeSlice(Float8Codec(), nil, b); return err })
+	both("NullableFloat8", func(d []byte) []byte { return appendNulls(Float8Codec(), d, nil) }, func(b []byte) error { _, err := decodeNulls(Float8Codec(), nil, b); return err })
+	both("Text", func(d []byte) []byte { return appendSlice(TextCodec(), d, nil) }, func(b []byte) error { _, err := decodeSlice(TextCodec(), nil, b); return err })
+	both("NullableText", func(d []byte) []byte { return appendNulls(TextCodec(), d, nil) }, func(b []byte) error { _, err := decodeNulls(TextCodec(), nil, b); return err })
+	both("Bytea", func(d []byte) []byte { return appendSlice(ByteaCodec(), d, nil) }, func(b []byte) error { _, err := decodeSlice(ByteaCodec(), nil, b); return err })
+	both("NullableBytea", func(d []byte) []byte { return appendNulls(ByteaCodec(), d, nil) }, func(b []byte) error { _, err := decodeNulls(ByteaCodec(), nil, b); return err })
+	both("UUID", func(d []byte) []byte { return appendSlice(UUIDCodec(), d, nil) }, func(b []byte) error { _, err := decodeSlice(UUIDCodec(), nil, b); return err })
+	both("NullableUUID", func(d []byte) []byte { return appendNulls(UUIDCodec(), d, nil) }, func(b []byte) error { _, err := decodeNulls(UUIDCodec(), nil, b); return err })
+	both("TimestampTZ", func(d []byte) []byte { return appendSlice(TimestampTZCodec(), d, nil) }, func(b []byte) error { _, err := decodeSlice(TimestampTZCodec(), nil, b); return err })
+	both("NullableTimestampTZ", func(d []byte) []byte { return appendNulls(TimestampTZCodec(), d, nil) }, func(b []byte) error { _, err := decodeNulls(TimestampTZCodec(), nil, b); return err })
+	both("Timestamp", func(d []byte) []byte { return appendSlice(TimestampCodec(), d, nil) }, func(b []byte) error { _, err := decodeSlice(TimestampCodec(), nil, b); return err })
+	both("NullableTimestamp", func(d []byte) []byte { return appendNulls(TimestampCodec(), d, nil) }, func(b []byte) error { _, err := decodeNulls(TimestampCodec(), nil, b); return err })
+	both("Date", func(d []byte) []byte { return appendSlice(DateCodec(), d, nil) }, func(b []byte) error { _, err := decodeSlice(DateCodec(), nil, b); return err })
+	both("NullableDate", func(d []byte) []byte { return appendNulls(DateCodec(), d, nil) }, func(b []byte) error { _, err := decodeNulls(DateCodec(), nil, b); return err })
+	both("Numeric", func(d []byte) []byte { return appendSlice(NumericCodec(), d, nil) }, func(b []byte) error { _, err := decodeSlice(NumericCodec(), nil, b); return err })
+	both("NullableNumeric", func(d []byte) []byte { return appendNulls(NumericCodec(), d, nil) }, func(b []byte) error { _, err := decodeNulls(NumericCodec(), nil, b); return err })
 }
 
 // An empty array arrives as zero dimensions, not one dimension of length zero.
@@ -369,7 +368,7 @@ func TestDecodeEmptyArrayFromServerForm(t *testing.T) {
 		0, 0, 0, 0, // no NULL bitmap
 		0, 0, 0, 20, // element type int8
 	}
-	got, err := DecodeInt8Array(nil, serverEmpty)
+	got, err := decodeSlice(Int8Codec(), nil, serverEmpty)
 	if err != nil {
 		t.Fatalf("decoding the server's empty array: %v", err)
 	}
@@ -379,7 +378,7 @@ func TestDecodeEmptyArrayFromServerForm(t *testing.T) {
 }
 
 func TestDecodeInt8ArrayRejectsMalformed(t *testing.T) {
-	valid := AppendInt8Array(nil, []int64{1, 2})
+	valid := appendSlice(Int8Codec(), nil, []int64{1, 2})
 	tests := []struct {
 		name string
 		b    []byte
@@ -397,16 +396,10 @@ func TestDecodeInt8ArrayRejectsMalformed(t *testing.T) {
 		}()},
 		{"element shorter than declared", valid[:len(valid)-4]},
 		{"trailing bytes", append(slices.Clone(valid), 0)},
-		{"null element", func() []byte {
-			b := AppendInt8Array(nil, []int64{1})
-			// Rewrite the element's length as -1.
-			copy(b[arrayHeaderSize:], []byte{0xFF, 0xFF, 0xFF, 0xFF})
-			return b[:arrayHeaderSize+4]
-		}()},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := DecodeInt8Array(nil, tt.b); !errors.Is(err, ErrCodec) {
+			if _, err := decodeSlice(Int8Codec(), nil, tt.b); !errors.Is(err, ErrCodec) {
 				t.Errorf("got %v, want ErrCodec", err)
 			}
 		})
@@ -429,10 +422,10 @@ func TestCodecsReuseBuffers(t *testing.T) {
 	}
 
 	dst := make([]int64, 0, 64)
-	wire := AppendInt8Array(nil, make([]int64, 64))
+	wire := appendSlice(Int8Codec(), nil, make([]int64, 64))
 	for range 3 {
 		var err error
-		dst, err = DecodeInt8Array(dst, wire)
+		dst, err = decodeSlice(Int8Codec(), dst, wire)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -446,7 +439,7 @@ func TestCodecsReuseBuffers(t *testing.T) {
 // round trip each is what covers them: the element encoding is the scalar
 // codec already checked above.
 func TestGoldenVectorInt4Array(t *testing.T) {
-	got := AppendInt4Array(nil, []int32{7, -1})
+	got := appendSlice(Int4Codec(), nil, []int32{7, -1})
 	want := []byte{
 		0, 0, 0, 1, // one dimension
 		0, 0, 0, 0, // no NULL bitmap
@@ -462,7 +455,7 @@ func TestGoldenVectorInt4Array(t *testing.T) {
 }
 
 func TestGoldenVectorTextArray(t *testing.T) {
-	got := AppendTextArray(nil, []string{"a", ""})
+	got := appendSlice(TextCodec(), nil, []string{"a", ""})
 	want := []byte{
 		0, 0, 0, 1,
 		0, 0, 0, 0,
@@ -480,7 +473,7 @@ func TestGoldenVectorTextArray(t *testing.T) {
 func TestInt4AndTextArrayRoundTrip(t *testing.T) {
 	t.Run("int4", func(t *testing.T) {
 		for _, want := range [][]int32{{}, {0}, {1, -1, math.MaxInt32, math.MinInt32}} {
-			got, err := DecodeInt4Array(nil, AppendInt4Array(nil, want))
+			got, err := decodeSlice(Int4Codec(), nil, appendSlice(Int4Codec(), nil, want))
 			if err != nil {
 				t.Fatalf("%v: %v", want, err)
 			}
@@ -491,7 +484,7 @@ func TestInt4AndTextArrayRoundTrip(t *testing.T) {
 	})
 	t.Run("text", func(t *testing.T) {
 		for _, want := range [][]string{{}, {""}, {"a", "héllo", "with\x00nul"}} {
-			got, err := DecodeTextArray(nil, AppendTextArray(nil, want))
+			got, err := decodeSlice(TextCodec(), nil, appendSlice(TextCodec(), nil, want))
 			if err != nil {
 				t.Fatalf("%v: %v", want, err)
 			}
@@ -506,22 +499,22 @@ func TestInt4AndTextArrayRoundTrip(t *testing.T) {
 // reinterpreted: int4 and int8 both decode from four or eight bytes, and
 // guessing would produce plausible numbers that are not the stored ones.
 func TestArrayDecodersCheckElementType(t *testing.T) {
-	ints := AppendInt8Array(nil, []int64{1})
-	if _, err := DecodeInt4Array(nil, ints); !errors.Is(err, ErrCodec) {
+	ints := appendSlice(Int8Codec(), nil, []int64{1})
+	if _, err := decodeSlice(Int4Codec(), nil, ints); !errors.Is(err, ErrCodec) {
 		t.Errorf("an int8[] decoded as int4[] gave %v, want ErrCodec", err)
 	}
-	if _, err := DecodeTextArray(nil, ints); !errors.Is(err, ErrCodec) {
+	if _, err := decodeSlice(TextCodec(), nil, ints); !errors.Is(err, ErrCodec) {
 		t.Errorf("an int8[] decoded as text[] gave %v, want ErrCodec", err)
 	}
-	texts := AppendTextArray(nil, []string{"x"})
-	if _, err := DecodeInt8Array(nil, texts); !errors.Is(err, ErrCodec) {
+	texts := appendSlice(TextCodec(), nil, []string{"x"})
+	if _, err := decodeSlice(Int8Codec(), nil, texts); !errors.Is(err, ErrCodec) {
 		t.Errorf("a text[] decoded as int8[] gave %v, want ErrCodec", err)
 	}
 }
 
-// A NULL element has nowhere to go in a slice of values, so it is refused
-// rather than turned into a zero.
-func TestArrayDecodersRejectNullElements(t *testing.T) {
+// A NULL element is marked in Nulls rather than turned into a zero, for a
+// fixed-width type and a variable-width one alike.
+func TestArrayDecodersMarkNullElements(t *testing.T) {
 	withNull := func(elem uint32) []byte {
 		b := []byte{0, 0, 0, 1, 0, 0, 0, 1}
 		b = binary.BigEndian.AppendUint32(b, elem)
@@ -529,12 +522,8 @@ func TestArrayDecodersRejectNullElements(t *testing.T) {
 		b = binary.BigEndian.AppendUint32(b, 1)
 		return binary.BigEndian.AppendUint32(b, ^uint32(0))
 	}
-	if _, err := DecodeInt4Array(nil, withNull(OIDInt4)); !errors.Is(err, ErrCodec) {
-		t.Errorf("int4[]: got %v, want ErrCodec", err)
-	}
-	if _, err := DecodeTextArray(nil, withNull(OIDText)); !errors.Is(err, ErrCodec) {
-		t.Errorf("text[]: got %v, want ErrCodec", err)
-	}
+	wantNulls(t, "int4[]", Int4Codec(), withNull(OIDInt4), []bool{true})
+	wantNulls(t, "text[]", TextCodec(), withNull(OIDText), []bool{true})
 }
 
 // PostgreSQL's infinity and -infinity are the extreme int64 values, and the
@@ -603,19 +592,19 @@ func TestArrayHeaderRefusals(t *testing.T) {
 		{"header far too short", []byte{0, 0, 0}},
 		{"one dimension but no dimension header", []byte{0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 20}},
 		{"negative element count", func() []byte {
-			b := AppendInt8Array(nil, []int64{1})
+			b := appendSlice(Int8Codec(), nil, []int64{1})
 			copy(b[12:16], []byte{0xFF, 0xFF, 0xFF, 0xFF})
 			return b
 		}()},
 		{"three dimensions", func() []byte {
-			b := AppendInt8Array(nil, []int64{1})
+			b := appendSlice(Int8Codec(), nil, []int64{1})
 			b[3] = 3
 			return b
 		}()},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := DecodeInt8Array(nil, tt.b); !errors.Is(err, ErrCodec) {
+			if _, err := decodeSlice(Int8Codec(), nil, tt.b); !errors.Is(err, ErrCodec) {
 				t.Errorf("got %v, want ErrCodec", err)
 			}
 		})
@@ -687,35 +676,35 @@ func TestUUIDArrayAgainstServerVector(t *testing.T) {
 		{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
 		{255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255},
 	}
-	if got := AppendUUIDArray(nil, values); !bytes.Equal(got, want) {
-		t.Errorf("AppendUUIDArray = %x,\n                want %x", got, want)
+	if got := appendSlice(UUIDCodec(), nil, values); !bytes.Equal(got, want) {
+		t.Errorf("AppendArray = %x,\n                want %x", got, want)
 	}
-	back, err := DecodeUUIDArray(nil, want)
+	back, err := decodeSlice(UUIDCodec(), nil, want)
 	if err != nil {
-		t.Fatalf("DecodeUUIDArray: %v", err)
+		t.Fatalf("DecodeArray: %v", err)
 	}
 	if len(back) != 2 || back[0] != values[0] || back[1] != values[1] {
-		t.Errorf("DecodeUUIDArray = %x, want %x", back, values)
+		t.Errorf("DecodeArray = %x, want %x", back, values)
 	}
 }
 
 func TestDecodeUUIDArrayRefusals(t *testing.T) {
 	// An empty array is zero dimensions, which is the ordinary result of a
 	// query that matched nothing rather than an error.
-	empty, err := DecodeUUIDArray(nil, AppendUUIDArray(nil, nil))
+	empty, err := decodeSlice(UUIDCodec(), nil, appendSlice(UUIDCodec(), nil, nil))
 	if err != nil || len(empty) != 0 {
-		t.Errorf("DecodeUUIDArray(empty) = %v, %v; want an empty result", empty, err)
+		t.Errorf("DecodeArray(empty) = %v, %v; want an empty result", empty, err)
 	}
 	// Empty still names its element type, and the wrong one is refused: the
 	// type check must not depend on whether the array holds anything.
-	if _, err := DecodeUUIDArray(nil, AppendInt8Array(nil, nil)); !errors.Is(err, ErrCodec) {
-		t.Errorf("DecodeUUIDArray accepted an empty int8[]: %v", err)
+	if _, err := decodeSlice(UUIDCodec(), nil, appendSlice(Int8Codec(), nil, nil)); !errors.Is(err, ErrCodec) {
+		t.Errorf("DecodeArray accepted an empty int8[]: %v", err)
 	}
 	// An array of the wrong element type is a column read as something it is
 	// not, and every value after it would be plausible nonsense.
-	wrong := AppendInt8Array(nil, []int64{1})
-	if _, err := DecodeUUIDArray(nil, wrong); err == nil {
-		t.Error("DecodeUUIDArray accepted an int8[]")
+	wrong := appendSlice(Int8Codec(), nil, []int64{1})
+	if _, err := decodeSlice(UUIDCodec(), nil, wrong); err == nil {
+		t.Error("DecodeArray accepted an int8[]")
 	}
 }
 
@@ -791,55 +780,43 @@ func TestTimestampSurvivesTheWholeRange(t *testing.T) {
 // An array the server numbers from something other than 1.
 //
 // `'[5:7]={10,20,30}'::bigint[]` is legal, and `arr[5]` is its first value.
-// These decoders return a Go slice, numbered from zero, so accepting it would
-// hand back every index shifted by four with nothing to say so — a caller
-// computing a position from the result would be wrong by a constant it cannot
-// see. Refused for the same reason a NULL element is: there is nowhere honest
-// to put it.
+// The named decoders returned a Go slice, numbered from zero, and refused it
+// rather than hand back every index shifted by four with nothing to say so.
+// DecodeArray keeps the number in Dims, where a caller computing a position
+// finds it.
 //
 // Vector from the server: SELECT encode(array_send('[5:7]={10,20,30}'::bigint[]), 'hex').
-func TestArrayRefusesANonStandardLowerBound(t *testing.T) {
+func TestArrayKeepsANonStandardLowerBound(t *testing.T) {
 	shifted := mustHex(t, "000000010000000000000014000000030000000500000008000000000000000a"+
 		"00000008000000000000001400000008000000000000001e")
 	ordinary := mustHex(t, "000000010000000000000014000000030000000100000008000000000000000a"+
 		"00000008000000000000001400000008000000000000001e")
 
 	// The two differ in one word, which is the point: everything else about
-	// them is identical, so nothing but this check separates them.
-	got, err := DecodeInt8Array(nil, ordinary)
-	if err != nil {
-		t.Fatalf("the ordinary array was refused: %v", err)
+	// them is identical, so nothing but Dims separates them.
+	for _, tc := range []struct {
+		name  string
+		b     []byte
+		lower int32
+	}{{"ordinary", ordinary, 1}, {"shifted", shifted, 5}} {
+		got, err := DecodeArray(Array[int64]{}, tc.b, Int8Codec())
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if !slices.Equal(got.Elems, []int64{10, 20, 30}) || !slices.Equal(got.Dims, []ArrayDim{{Len: 3, Lower: tc.lower}}) {
+			t.Errorf("%s = %+v, want [10 20 30] numbered from %d", tc.name, got, tc.lower)
+		}
 	}
-	if !slices.Equal(got, []int64{10, 20, 30}) {
-		t.Fatalf("ordinary array = %v, want [10 20 30]", got)
-	}
-
-	_, err = DecodeInt8Array(nil, shifted)
-	if err == nil {
-		t.Fatal("DecodeInt8Array accepted an array numbered from 5")
-	}
-	if !errors.Is(err, ErrCodec) {
-		t.Errorf("error = %v, want it to wrap ErrCodec", err)
-	}
-	if !strings.Contains(err.Error(), "numbered from 5") {
-		t.Errorf("error = %v, want it to name the lower bound", err)
-	}
-
-	// Every array decoder shares the header rules, so every one refuses it.
-	if _, err := DecodeInt4Array(nil, shifted); err == nil {
-		t.Error("DecodeInt4Array accepted it")
-	}
-	if _, err := DecodeTextArray(nil, shifted); err == nil {
-		t.Error("DecodeTextArray accepted it")
-	}
-	if _, err := DecodeUUIDArray(nil, shifted); err == nil {
-		t.Error("DecodeUUIDArray accepted it")
+	// Written back, the number is the one the server sent.
+	back := AppendArray(nil, Array[int64]{Dims: []ArrayDim{{Len: 3, Lower: 5}}, Elems: []int64{10, 20, 30}}, Int8Codec())
+	if !bytes.Equal(back, shifted) {
+		t.Errorf("AppendArray = %x, want %x", back, shifted)
 	}
 }
 
 // An empty array is zero dimensions, and the encoder must say so.
 //
-// The decoders here have always known it — `arrayBody` returns the empty
+// The decoders here have always known it — they return the empty
 // result for ndim 0 and its doc says the server sends it that way — while the
 // encoders wrote a one-dimensional header with a count of zero. Twenty bytes
 // where the server sends twelve, accepted by the server and produced by
@@ -849,29 +826,29 @@ func TestEmptyArrayIsZeroDimensions(t *testing.T) {
 	// From the server: SELECT encode(array_send(ARRAY[]::bigint[]), 'hex').
 	want := mustHex(t, "000000000000000000000014")
 
-	if got := AppendInt8Array(nil, nil); !bytes.Equal(got, want) {
-		t.Errorf("AppendInt8Array(nil) = %x, want %x", got, want)
+	if got := appendSlice(Int8Codec(), nil, nil); !bytes.Equal(got, want) {
+		t.Errorf("AppendArray(nil) = %x, want %x", got, want)
 	}
-	if got := AppendInt8Array(nil, []int64{}); !bytes.Equal(got, want) {
-		t.Errorf("AppendInt8Array(empty) = %x, want %x", got, want)
+	if got := appendSlice(Int8Codec(), nil, []int64{}); !bytes.Equal(got, want) {
+		t.Errorf("AppendArray(empty) = %x, want %x", got, want)
 	}
 
 	// And it decodes back to nothing, which is the ordinary result of a query
 	// that matched nothing rather than an error.
-	back, err := DecodeInt8Array(nil, want)
+	back, err := decodeSlice(Int8Codec(), nil, want)
 	if err != nil {
-		t.Fatalf("DecodeInt8Array: %v", err)
+		t.Fatalf("DecodeArray: %v", err)
 	}
 	if len(back) != 0 {
-		t.Errorf("DecodeInt8Array = %v, want empty", back)
+		t.Errorf("DecodeArray = %v, want empty", back)
 	}
 
 	// Every array encoder shares the header, so every one produces twelve
 	// bytes for an empty list.
 	for name, got := range map[string][]byte{
-		"int4[]": AppendInt4Array(nil, nil),
-		"text[]": AppendTextArray(nil, nil),
-		"uuid[]": AppendUUIDArray(nil, nil),
+		"int4[]": appendSlice(Int4Codec(), nil, nil),
+		"text[]": appendSlice(TextCodec(), nil, nil),
+		"uuid[]": appendSlice(UUIDCodec(), nil, nil),
 	} {
 		if len(got) != 12 {
 			t.Errorf("Append%s(nil) is %d bytes, want 12", name, len(got))
@@ -903,10 +880,10 @@ func TestAppendDateUsesTheCivilDateInItsZone(t *testing.T) {
 			t.Errorf("AppendDate(%v) = %v, want 2024-01-01", in, d.Format(time.DateOnly))
 		}
 	}
-	arr := AppendDateArray(nil, []time.Time{time.Date(2024, 1, 1, 0, 0, 0, 0, paris)})
-	back, err := DecodeDateArray(nil, arr)
+	arr := appendSlice(DateCodec(), nil, []time.Time{time.Date(2024, 1, 1, 0, 0, 0, 0, paris)})
+	back, err := decodeSlice(DateCodec(), nil, arr)
 	if err != nil || len(back) != 1 || back[0].Format(time.DateOnly) != "2024-01-01" {
-		t.Errorf("AppendDateArray in Paris = %v, %v, want [2024-01-01]", back, err)
+		t.Errorf("AppendArray in Paris = %v, %v, want [2024-01-01]", back, err)
 	}
 }
 
@@ -973,10 +950,10 @@ func TestArrayRefusesUnknownFlags(t *testing.T) {
 		full := mustHex(t, "00000001"+flags+"000000140000000100000001"+"00000008000000000000000a")
 		empty := mustHex(t, "00000000"+flags+"00000014")
 		for name, b := range map[string][]byte{"one element": full, "empty": empty} {
-			if _, err := DecodeInt8Array(nil, b); !errors.Is(err, ErrCodec) {
+			if _, err := decodeSlice(Int8Codec(), nil, b); !errors.Is(err, ErrCodec) {
 				t.Errorf("flags %s, %s: error = %v, want ErrCodec", flags, name, err)
 			}
-			if _, err := DecodeNullableInt8Array(nil, b); !errors.Is(err, ErrCodec) {
+			if _, err := decodeNulls(Int8Codec(), nil, b); !errors.Is(err, ErrCodec) {
 				t.Errorf("flags %s, %s (nullable): error = %v, want ErrCodec", flags, name, err)
 			}
 		}
@@ -984,7 +961,7 @@ func TestArrayRefusesUnknownFlags(t *testing.T) {
 	// Both values the server writes still decode.
 	for _, flags := range []string{"00000000", "00000001"} {
 		b := mustHex(t, "00000001"+flags+"000000140000000100000001"+"00000008000000000000000a")
-		if got, err := DecodeInt8Array(nil, b); err != nil || !slices.Equal(got, []int64{10}) {
+		if got, err := decodeSlice(Int8Codec(), nil, b); err != nil || !slices.Equal(got, []int64{10}) {
 			t.Errorf("flags %s: %v, %v; want [10]", flags, got, err)
 		}
 	}

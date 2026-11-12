@@ -102,16 +102,16 @@ func FuzzDecodeJSONB(f *testing.F) {
 }
 
 func FuzzDecodeUUIDArray(f *testing.F) {
-	f.Add(AppendUUIDArray(nil, [][16]byte{{1}, {2}}))
-	f.Add(AppendUUIDArray(nil, nil))
+	f.Add(appendSlice(UUIDCodec(), nil, [][16]byte{{1}, {2}}))
+	f.Add(appendSlice(UUIDCodec(), nil, nil))
 	f.Add(make([]byte, 12))
-	f.Add(AppendInt8Array(nil, []int64{1}))
+	f.Add(appendSlice(Int8Codec(), nil, []int64{1}))
 	// A header claiming far more elements than the body can hold: the loop
 	// must stop at the bytes, not at the count.
 	f.Add([]byte{0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 11, 134, 127, 255, 255, 255, 0, 0, 0, 1})
 
 	f.Fuzz(func(t *testing.T, b []byte) {
-		ids, err := DecodeUUIDArray(nil, b)
+		ids, err := decodeSlice(UUIDCodec(), nil, b)
 		if err != nil {
 			if !errors.Is(err, ErrCodec) {
 				t.Fatalf("unclassified error %v for %x", err, b)
@@ -127,16 +127,16 @@ func FuzzDecodeUUIDArray(f *testing.F) {
 		// so a re-encoding is allowed to normalise it. What must not change is
 		// the values, and decoding twice is what proves that without also
 		// asserting a header detail the type does not depend on.
-		again, err := DecodeUUIDArray(nil, AppendUUIDArray(nil, ids))
+		again, err := decodeSlice(UUIDCodec(), nil, appendSlice(UUIDCodec(), nil, ids))
 		if err != nil {
-			t.Fatalf("DecodeUUIDArray(%x) -> %x, which then failed to decode: %v", b, ids, err)
+			t.Fatalf("DecodeArray(%x) -> %x, which then failed to decode: %v", b, ids, err)
 		}
 		if len(again) != len(ids) {
-			t.Fatalf("DecodeUUIDArray(%x) is not idempotent: %d elements then %d", b, len(ids), len(again))
+			t.Fatalf("DecodeArray(%x) is not idempotent: %d elements then %d", b, len(ids), len(again))
 		}
 		for i := range ids {
 			if again[i] != ids[i] {
-				t.Fatalf("DecodeUUIDArray(%x): element %d changed on a second pass", b, i)
+				t.Fatalf("DecodeArray(%x): element %d changed on a second pass", b, i)
 			}
 		}
 	})

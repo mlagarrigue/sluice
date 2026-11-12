@@ -104,7 +104,7 @@ func AppendFieldNull(dst []byte) []byte {
 // returns the offset [EndField] needs.
 //
 //	buf, at := BeginField(buf)
-//	buf = pgtype.AppendNullableInt8Array(buf, tags)
+//	buf = pgtype.AppendArray(buf, tags, pgtype.Int8Codec())
 //	buf = EndField(buf, at)
 //
 // [AppendField] takes bytes that already exist, so an array field costs an

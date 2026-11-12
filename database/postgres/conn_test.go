@@ -217,7 +217,7 @@ func TestConnQuery(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{first, beReadyForQuery()}}
 	conn := NewConn(srv, Config{})
 
-	keys := pgtype.AppendInt8Array(nil, []int64{1, 2})
+	keys := pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: []int64{1, 2}}, pgtype.Int8Codec())
 	src := conn.Query(t.Context(), "SELECT id, total FROM orders WHERE id = ANY($1)",
 		[]Param{{Value: keys}}, QueryConfig{BatchRows: 16})
 
@@ -596,7 +596,7 @@ func TestConnQueryBatchOfKeysIsOneParameter(t *testing.T) {
 		keys[i] = int64(i)
 	}
 	src := conn.Query(t.Context(), "SELECT id FROM orders WHERE id = ANY($1)",
-		[]Param{{Value: pgtype.AppendInt8Array(nil, keys)}}, QueryConfig{})
+		[]Param{{Value: pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: keys}, pgtype.Int8Codec())}}, QueryConfig{})
 	src.Stream()(func(sluice.Batch[Row]) bool { return true })
 	if err := src.Err(); err != nil {
 		t.Fatalf("Err = %v", err)

@@ -27,6 +27,7 @@ figure that differs, to the character, from the median of its row.
 - [Web pipeline, from a real client](#web-pipeline-from-a-real-client)
 - [Request bodies, whole or streamed](#request-bodies-whole-or-streamed)
 - [Authentication, in a request](#authentication-in-a-request)
+- [Arrays, one way to write them](#arrays-one-way-to-write-them)
 - [Two changes read as noise, paired](#two-changes-read-as-noise-paired)
 - [A streamed HTTP/2 response on a goroutine of its own](#a-streamed-http2-response-on-a-goroutine-of-its-own)
 - [HTTP/3 without a socket](#http3-without-a-socket)
@@ -783,6 +784,52 @@ out faster. A request that crosses a real network or reaches a database
 makes the share smaller still. The 49 allocations are the JSON decoding of
 the claims; they are where a cheaper check would start, and nothing above
 asks for one.
+
+## Arrays, one way to write them
+
+Before the 52 named array functions of `pgtype` (`AppendInt4Array`,
+`DecodeNullableTextArray`…) were removed, `AppendArray` and `DecodeArray`,
+which replace them, were measured against them by
+`internal/bench/scripts/ab.sh`: a copy of
+`database/postgres/pgtype/array_types_bench_test.go` whose every benchmark
+calls the named function, made by script on the same tree, against the
+file as it is. Twelve rounds of `-benchtime 300ms` on one core under
+`GOMAXPROCS=1`, a thousand elements and no NULL, the ratio taken inside
+each round, the verdict from the sign test, which needs 10 rounds of 11 to
+call a side faster. Measured 2026-11-12, go1.26.10.
+
+| benchmark | named, ns per op | generic, ns per op | rounds won by generic | verdict |
+|---|---|---|---|---|
+| `BenchmarkArrayAppendBool1000` | 1,732 | 573 | 11 of 11 | faster −66.8% |
+| `BenchmarkArrayAppendInt21000` | 1,613 | 493 | 11 of 11 | faster −69.4% |
+| `BenchmarkArrayAppendInt41000` | 504 | 510 | 4 of 10 | noise |
+| `BenchmarkArrayAppendInt81000` | 513 | 510 | 6 of 11 | noise |
+| `BenchmarkArrayAppendFloat41000` | 1,635 | 598 | 11 of 11 | faster −63.2% |
+| `BenchmarkArrayAppendFloat81000` | 1,609 | 663 | 11 of 11 | faster −58.7% |
+| `BenchmarkArrayAppendUUID1000` | 872 | 517 | 11 of 11 | faster −40.4% |
+| `BenchmarkArrayAppendText1000` | 2,075 | 1,789 | 11 of 11 | faster −13.5% |
+| `BenchmarkArrayAppendBytea1000` | 2,968 | 1,636 | 11 of 11 | faster −44.9% |
+| `BenchmarkArrayAppendNumeric1000` | 3,631 | 3,369 | 11 of 11 | faster −7.9% |
+| `BenchmarkArrayAppendTimestampTZ1000` | 6,041 | 5,093 | 11 of 11 | faster −16.5% |
+| `BenchmarkArrayAppendTimestamp1000` | 32,433 | 32,411 | 6 of 11 | noise |
+| `BenchmarkArrayAppendDate1000` | 22,588 | 22,278 | 8 of 11 | noise |
+| `BenchmarkArrayDecodeBool1000` | 3,260 | 1,973 | 11 of 11 | faster −39.3% |
+| `BenchmarkArrayDecodeInt21000` | 3,201 | 936 | 11 of 11 | faster −71.1% |
+| `BenchmarkArrayDecodeInt41000` | 858 | 735 | 11 of 11 | faster −14.4% |
+| `BenchmarkArrayDecodeInt81000` | 887 | 727 | 10 of 11 | faster −18.1% |
+| `BenchmarkArrayDecodeFloat41000` | 3,125 | 1,931 | 11 of 11 | faster −37.9% |
+| `BenchmarkArrayDecodeFloat81000` | 3,241 | 1,950 | 11 of 11 | faster −39.8% |
+| `BenchmarkArrayDecodeUUID1000` | 902 | 825 | 11 of 11 | faster −8.8% |
+| `BenchmarkArrayDecodeText1000` | 13,227 | 13,112 | 6 of 11 | noise |
+| `BenchmarkArrayDecodeBytea1000` | 9,012 | 7,095 | 11 of 11 | faster −21.2% |
+| `BenchmarkArrayDecodeNumeric1000` | 11,935 | 12,100 | 5 of 11 | noise |
+| `BenchmarkArrayDecodeTimestampTZ1000` | 6,606 | 6,770 | 3 of 11 | noise |
+| `BenchmarkArrayDecodeTimestamp1000` | 6,511 | 6,678 | 3 of 11 | noise |
+| `BenchmarkArrayDecodeDate1000` | 20,826 | 20,787 | 6 of 11 | noise |
+
+Medians of the rounds. No benchmark is slower; 17 are faster, up to 71%;
+9 read as noise, among them the decoding of the two timestamps (+2.5%,
+won in 3 rounds of 11), where both sides run the same loop.
 
 ## Two changes read as noise, paired
 

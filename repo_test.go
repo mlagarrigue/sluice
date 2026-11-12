@@ -411,8 +411,8 @@ func TestDecisionRecordsDateTheirLastRevision(t *testing.T) {
 
 // Every exported name of database/postgres/pgtype is one a reader can find:
 // derived from the reference's table of codecs (AppendX and DecodeX for each
-// X, the array and the array with NULLs where the table says yes, and the OID
-// constants of the same types), named in the PostgreSQL guide or reference,
+// X, and the OID constants of the same types), named in the PostgreSQL guide
+// or reference,
 // or used outside the package. A codec is the caller's to call, so a consumer
 // in the tree is not required of it; a name nothing documents and nothing
 // uses is.
@@ -430,18 +430,12 @@ func TestPgtypeNamesAreDocumentedOrUsed(t *testing.T) {
 		guide = append(guide, b...)
 	}
 	documented := map[string]bool{}
-	row := regexp.MustCompile("(?m)^\\| `([a-z0-9_]+)`.*\\| `([A-Za-z0-9]+)`[^|]*\\| (yes|—) \\| (yes|—) \\|")
+	row := regexp.MustCompile("(?m)^\\| `([a-z0-9_]+)`.*\\| `([A-Za-z0-9]+)`[^|]*\\| (?:yes|—|as text) \\|$")
 	for _, m := range row.FindAllStringSubmatch(string(guide), -1) {
 		for _, x := range regexp.MustCompile("`([A-Z][A-Za-z0-9]*)`").FindAllStringSubmatch(m[0][strings.Index(m[0], m[2])-1:], -1) {
 			name := x[1]
 			documented["Append"+name], documented["Decode"+name] = true, true
 			documented["OID"+name], documented["OID"+name+"Array"] = true, true
-			if m[3] == "yes" {
-				documented["Append"+name+"Array"], documented["Decode"+name+"Array"] = true, true
-			}
-			if m[4] == "yes" {
-				documented["AppendNullable"+name+"Array"], documented["DecodeNullable"+name+"Array"] = true, true
-			}
 		}
 	}
 	for _, w := range regexp.MustCompile(`\b[A-Z][A-Za-z0-9]*\b`).FindAllString(string(guide), -1) {

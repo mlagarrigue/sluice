@@ -34,11 +34,20 @@ func ExampleAppendText() {
 
 // An int8[] parameter, whole: header, dimensions, then each element with its
 // length. DecodeArray reads it back with the type's codec.
-func ExampleAppendInt8Array() {
-	b := pgtype.AppendInt8Array(nil, []int64{1, 2, 3})
+func ExampleAppendArray() {
+	b := pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: []int64{1, 2, 3}}, pgtype.Int8Codec())
 	arr, err := pgtype.DecodeArray(pgtype.Array[int64]{}, b, pgtype.Int8Codec())
 	fmt.Println(len(b), len(arr.Elems), arr.Elems[2], err)
 	// Output: 56 3 3 <nil>
+}
+
+// A batch of keys as one int8[] parameter, the form `= ANY($1)` takes: the
+// codec of bigint is what AppendArray writes each element with.
+func ExampleInt8Codec() {
+	keys := []int64{7, 11, 13}
+	b := pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: keys}, pgtype.Int8Codec())
+	fmt.Println(pgtype.Int8Codec().ArrayOID == pgtype.OIDInt8Array, len(b))
+	// Output: true 56
 }
 
 // Any array of any type the package encodes, through its codec: the values

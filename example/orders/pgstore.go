@@ -65,8 +65,8 @@ func (s *PGStore) LoadLines(ctx context.Context, keys []LineKey) (map[LineKey]Li
 
 	src := s.conn.Query(ctx, loadSQL,
 		[]postgres.Param{
-			{OID: pgtype.OIDInt8Array, Value: pgtype.AppendInt8Array(nil, s.orderIDs)},
-			{OID: pgtype.OIDInt4Array, Value: pgtype.AppendInt4Array(nil, s.indexes)},
+			{OID: pgtype.OIDInt8Array, Value: pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: s.orderIDs}, pgtype.Int8Codec())},
+			{OID: pgtype.OIDInt4Array, Value: pgtype.AppendArray(nil, pgtype.Array[int32]{Elems: s.indexes}, pgtype.Int4Codec())},
 		},
 		postgres.QueryConfig{
 			BatchRows: len(keys),
@@ -169,9 +169,9 @@ func (s *PGStore) SaveLines(ctx context.Context, lines []Line) error {
 
 	src := s.conn.Query(ctx, saveSQL,
 		[]postgres.Param{
-			{OID: pgtype.OIDInt8Array, Value: pgtype.AppendInt8Array(nil, s.orderIDs)},
-			{OID: pgtype.OIDInt4Array, Value: pgtype.AppendInt4Array(nil, s.indexes)},
-			{OID: pgtype.OIDInt8Array, Value: pgtype.AppendInt8Array(nil, qty)},
+			{OID: pgtype.OIDInt8Array, Value: pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: s.orderIDs}, pgtype.Int8Codec())},
+			{OID: pgtype.OIDInt4Array, Value: pgtype.AppendArray(nil, pgtype.Array[int32]{Elems: s.indexes}, pgtype.Int4Codec())},
+			{OID: pgtype.OIDInt8Array, Value: pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: qty}, pgtype.Int8Codec())},
 		},
 		postgres.QueryConfig{
 			BatchRows: 1,

@@ -131,7 +131,7 @@ func (s *sluiceStore) createWriteTable(ctx context.Context) error {
 // key of the batch leaves as one array parameter and comes back in one round
 // trip.
 func (s *sluiceStore) unit(ctx context.Context, ids []int64, found map[int64]orderRow) error {
-	s.buf = pgtype.AppendInt8Array(s.buf[:0], ids)
+	s.buf = pgtype.AppendArray(s.buf[:0], pgtype.Array[int64]{Elems: ids}, pgtype.Int8Codec())
 	src := s.gwConn.Query(ctx, unitQuery, []postgres.Param{{OID: pgtype.OIDInt8Array, Value: s.buf}},
 		postgres.QueryConfig{BatchRows: s.size + 1})
 	src.Stream()(func(rows sluice.Batch[postgres.Row]) bool {

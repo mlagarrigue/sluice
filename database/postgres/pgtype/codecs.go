@@ -92,6 +92,15 @@ func ByteaCodec() Codec[[]byte] {
 	return Codec[[]byte]{OID: OIDBytea, ArrayOID: OIDByteaArray, Append: AppendBytea, Decode: cloneBytes, decodeElems: decodeByteaElems, appendElems: appendByteaElems}
 }
 
+// cloneBytes is the decoder of a bytea element: a copy, never the wire
+// buffer, which is reused per batch and would change under whoever kept a
+// borrowed slice.
+func cloneBytes(v []byte) ([]byte, error) {
+	out := make([]byte, len(v))
+	copy(out, v)
+	return out, nil
+}
+
 // CharCodec returns the Codec of "char", the one-byte type ([AppendChar]).
 func CharCodec() Codec[byte] {
 	return Codec[byte]{OID: OIDChar, ArrayOID: OIDCharArray, Append: AppendChar, Decode: DecodeChar}

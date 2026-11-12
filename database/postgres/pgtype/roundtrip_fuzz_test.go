@@ -184,13 +184,13 @@ func FuzzRoundTripDate(f *testing.F) {
 }
 
 func FuzzRoundTripInt8Array(f *testing.F) {
-	f.Add(AppendInt8Array(nil, []int64{1, 2, 3}))
-	f.Add(AppendInt8Array(nil, nil))
+	f.Add(appendSlice(Int8Codec(), nil, []int64{1, 2, 3}))
+	f.Add(appendSlice(Int8Codec(), nil, nil))
 	f.Add(make([]byte, 12))
 	f.Add([]byte{})
 
 	f.Fuzz(func(t *testing.T, b []byte) {
-		v, err := DecodeInt8Array(nil, b)
+		v, err := decodeSlice(Int8Codec(), nil, b)
 		if err != nil {
 			if !errors.Is(err, ErrCodec) {
 				t.Fatalf("unclassified error %v for %x", err, b)
@@ -205,21 +205,21 @@ func FuzzRoundTripInt8Array(f *testing.F) {
 		// decoders have no use for — a NULL element is refused per element,
 		// with a better message — so a re-encoding normalises it. The values
 		// are what must not change.
-		again, err := DecodeInt8Array(nil, AppendInt8Array(nil, v))
+		again, err := decodeSlice(Int8Codec(), nil, appendSlice(Int8Codec(), nil, v))
 		if err != nil || !slices.Equal(again, v) {
-			t.Fatalf("DecodeInt8Array(%x) is not idempotent: %v then %v (%v)", b, v, again, err)
+			t.Fatalf("DecodeArray(%x) is not idempotent: %v then %v (%v)", b, v, again, err)
 		}
 	})
 }
 
 func FuzzRoundTripTextArray(f *testing.F) {
-	f.Add(AppendTextArray(nil, []string{"a", "", "ccc"}))
-	f.Add(AppendTextArray(nil, nil))
+	f.Add(appendSlice(TextCodec(), nil, []string{"a", "", "ccc"}))
+	f.Add(appendSlice(TextCodec(), nil, nil))
 	f.Add(make([]byte, 12))
 	f.Add([]byte{})
 
 	f.Fuzz(func(t *testing.T, b []byte) {
-		v, err := DecodeTextArray(nil, b)
+		v, err := decodeSlice(TextCodec(), nil, b)
 		if err != nil {
 			if !errors.Is(err, ErrCodec) {
 				t.Fatalf("unclassified error %v for %x", err, b)
@@ -234,9 +234,9 @@ func FuzzRoundTripTextArray(f *testing.F) {
 		// decoders have no use for — a NULL element is refused per element,
 		// with a better message — so a re-encoding normalises it. The values
 		// are what must not change.
-		again, err := DecodeTextArray(nil, AppendTextArray(nil, v))
+		again, err := decodeSlice(TextCodec(), nil, appendSlice(TextCodec(), nil, v))
 		if err != nil || !slices.Equal(again, v) {
-			t.Fatalf("DecodeTextArray(%x) is not idempotent: %q then %q (%v)", b, v, again, err)
+			t.Fatalf("DecodeArray(%x) is not idempotent: %q then %q (%v)", b, v, again, err)
 		}
 	})
 }

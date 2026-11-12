@@ -1,6 +1,7 @@
 package postgres_test
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/mlagarrigue/sluice"
@@ -140,9 +141,9 @@ func TestIntegrationNullBearingArrays(t *testing.T) {
 	conn := dial(t)
 
 	t.Run("int8[] with a NULL", func(t *testing.T) {
-		v := pgtype.AppendNullableInt8Array(nil, []pgtype.Null[int64]{
-			{Value: 1, Valid: true}, {}, {Value: 3, Valid: true},
-		})
+		v := pgtype.AppendArray(nil, pgtype.Array[int64]{
+			Elems: []int64{1, 0, 3}, Nulls: []bool{false, true, false},
+		}, pgtype.Int8Codec())
 		if !serverAgrees(t, conn, "SELECT $1::bigint[] = ARRAY[1, NULL, 3]::bigint[] IS NOT FALSE",
 			pgtype.OIDInt8Array, v) {
 			t.Error("the server disagrees about an int8[] carrying a NULL")
@@ -157,9 +158,9 @@ func TestIntegrationNullBearingArrays(t *testing.T) {
 	})
 
 	t.Run("text[] keeps empty distinct from NULL", func(t *testing.T) {
-		v := pgtype.AppendNullableTextArray(nil, []pgtype.Null[string]{
-			{Value: "", Valid: true}, {},
-		})
+		v := pgtype.AppendArray(nil, pgtype.Array[string]{
+			Elems: []string{"", ""}, Nulls: []bool{false, true},
+		}, pgtype.TextCodec())
 		if !serverAgrees(t, conn,
 			"SELECT ($1::text[])[1] = '' AND ($1::text[])[2] IS NULL",
 			pgtype.OIDTextArray, v) {
@@ -168,9 +169,9 @@ func TestIntegrationNullBearingArrays(t *testing.T) {
 	})
 
 	t.Run("all NULL", func(t *testing.T) {
-		v := pgtype.AppendNullableInt8Array(nil, []pgtype.Null[int64]{
-			{}, {},
-		})
+		v := pgtype.AppendArray(nil, pgtype.Array[int64]{
+			Elems: []int64{0, 0}, Nulls: []bool{true, true},
+		}, pgtype.Int8Codec())
 		if !serverAgrees(t, conn,
 			"SELECT cardinality($1::bigint[]) = 2 AND $1::bigint[] IS NOT NULL",
 			pgtype.OIDInt8Array, v) {
@@ -183,11 +184,11 @@ func TestIntegrationNullBearingArrays(t *testing.T) {
 	t.Run("decoding what the server sends", func(t *testing.T) {
 		src := conn.Query(t.Context(), "SELECT ARRAY[1, NULL, 3]::bigint[]", nil,
 			postgres.QueryConfig{BatchRows: 1})
-		var got []pgtype.Null[int64]
+		var got pgtype.Array[int64]
 		src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
 			for _, row := range b.Items {
 				v, _ := row.Value(0)
-				out, err := pgtype.DecodeNullableInt8Array(nil, v)
+				out, err := pgtype.DecodeArray(pgtype.Array[int64]{}, v, pgtype.Int8Codec())
 				if err != nil {
 					t.Errorf("decoding the server's array: %v", err)
 					continue
@@ -199,11 +200,8 @@ func TestIntegrationNullBearingArrays(t *testing.T) {
 		if err := src.Err(); err != nil {
 			t.Fatal(err)
 		}
-		if len(got) != 3 {
-			t.Fatalf("decoded %d elements, want 3", len(got))
-		}
-		if !got[0].Valid || got[0].Value != 1 || got[1].Valid || !got[2].Valid || got[2].Value != 3 {
-			t.Errorf("decoded %v, want [1 NULL 3]", got)
+		if !slices.Equal(got.Elems, []int64{1, 0, 3}) || !slices.Equal(got.Nulls, []bool{false, true, false}) {
+			t.Errorf("decoded %+v, want [1 NULL 3]", got)
 		}
 	})
 }

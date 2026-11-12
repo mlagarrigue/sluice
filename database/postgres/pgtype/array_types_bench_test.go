@@ -7,10 +7,13 @@ import (
 )
 
 // The array benchmarks of the common types, a thousand elements and no
-// NULL, through DecodeArray and AppendArray. The named per-type functions
-// (DecodeInt4Array and the others) are what these are held to: a copy of
-// this file calling them, built from the tree before a change, gives a
-// paired A/B under the same names. Numeric values are parsed once, outside
+// NULL, through DecodeArray and AppendArray. Before AppendArray and
+// DecodeArray became the one way to write and read an array, they were held
+// to the named per-type functions they replaced (AppendInt4Array and the
+// others) by a copy of this file calling those, built on the same tree: a
+// paired A/B under the same names, docs/benchmarks.md, "Arrays". A change to
+// the element loops (array_fast.go) is held to these the same way, the tree
+// before it against the tree after. Numeric values are parsed once, outside
 // the loop.
 
 var benchBase = time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)

@@ -36,11 +36,11 @@ func (m *memTable) exec(t *testing.T) func(string, [][]byte, map[string]string) 
 		}
 		switch {
 		case strings.Contains(sql, "SELECT"):
-			ids, err := pgtype.DecodeInt8Array(nil, params[0])
+			ids, err := elems(params[0], pgtype.Int8Codec())
 			if err != nil {
 				t.Errorf("order ids: %v", err)
 			}
-			idx, err := pgtype.DecodeInt4Array(nil, params[1])
+			idx, err := elems(params[1], pgtype.Int4Codec())
 			if err != nil {
 				t.Errorf("line indexes: %v", err)
 			}
@@ -66,9 +66,9 @@ func (m *memTable) exec(t *testing.T) func(string, [][]byte, map[string]string) 
 			}
 			return res
 		case strings.Contains(sql, "UPDATE"):
-			ids, _ := pgtype.DecodeInt8Array(nil, params[0])
-			idx, _ := pgtype.DecodeInt4Array(nil, params[1])
-			qty, _ := pgtype.DecodeInt8Array(nil, params[2])
+			ids, _ := elems(params[0], pgtype.Int8Codec())
+			idx, _ := elems(params[1], pgtype.Int4Codec())
+			qty, _ := elems(params[2], pgtype.Int8Codec())
 			for i := range ids {
 				k := orders.LineKey{OrderID: ids[i], Index: int(idx[i])}
 				if l, ok := m.lines[k]; ok {
@@ -196,4 +196,11 @@ func TestVerticalOverPGStore(t *testing.T) {
 	if m.lines[orders.LineKey{OrderID: 1, Index: 0}].SaleQty != 6 || m.lines[orders.LineKey{OrderID: 2, Index: 0}].SaleQty != 8 {
 		t.Errorf("table after the vertical: %+v", m.lines)
 	}
+}
+
+// elems reads an array parameter the store sent, its values only: the store
+// sends no NULL.
+func elems[T any](b []byte, c pgtype.Codec[T]) ([]T, error) {
+	a, err := pgtype.DecodeArray(pgtype.Array[T]{}, b, c)
+	return a.Elems, err
 }

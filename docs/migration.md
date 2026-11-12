@@ -34,7 +34,29 @@ behavior that keep the signatures — a value now refused — come last.
   `Array[T]{Elems: []T{v}}`; an element read as `e.Value, e.Valid` is read
   as `a.Elems[i]`, NULL when `i < len(a.Nulls) && a.Nulls[i]`. An array
   with no NULL is then a plain slice, written and read as fast as the
-  named functions (`AppendInt4Array` and the others) write and read it.
+  named functions (`AppendInt4Array` and the others, removed since: next
+  entry) write and read it.
+- **The named array functions are gone: `AppendArray` and `DecodeArray`
+  write and read every array**
+  (`feat(postgres)!: one way to write an array, AppendArray`): the 52
+  `Append[Nullable]<T>Array` and `Decode[Nullable]<T>Array` are removed.
+  `pgtype.AppendInt8Array(dst, v)` becomes
+  `pgtype.AppendArray(dst, pgtype.Array[int64]{Elems: v}, pgtype.Int8Codec())`;
+  `vals, err := pgtype.DecodeInt8Array(vals[:0], b)` becomes
+  `a, err := pgtype.DecodeArray(pgtype.Array[int64]{Elems: vals}, b, pgtype.Int8Codec())`,
+  the values in `a.Elems`. The `Nullable` forms go through `Array.Nulls`
+  (the entry above). The same holds for every type, with its codec
+  (`BoolCodec()`, `TextCodec()`…). They run as fast as the removed
+  functions or faster:
+  [benchmarks](benchmarks.md#arrays-one-way-to-write-them).
+- **`DecodeArray` returns what the named decoders refused**
+  (`feat(postgres)!: one way to write an array, AppendArray`): a NULL
+  element, marked in `Nulls` with the zero value in `Elems`; an array of
+  more than one dimension, or numbered from anything but 1, with its shape
+  in `Dims`. Code that relied on the refusal checks `len(a.Nulls) == 0`,
+  and `a.Dims` where it expects one dimension numbered from 1. A dimension
+  of length zero, which the server never sends (the empty array has no
+  dimension), is refused.
 - **`Copier.Close` takes a context**
   (`a534fe5`): `cp.Close(ctx)`.
   It bounds the commit of the last

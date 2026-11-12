@@ -58,19 +58,19 @@ func TestArrayTwoDimensionsMatchesArraySend(t *testing.T) {
 // sends the same bytes.
 func TestArrayOneDimensionMatchesTheNamedEncoders(t *testing.T) {
 	plain := AppendArray(nil, Array[int32]{Elems: valid[int32](1, -2, 3)}, Int4Codec())
-	if want := AppendInt4Array(nil, []int32{1, -2, 3}); !bytes.Equal(plain, want) {
+	if want := appendSlice(Int4Codec(), nil, []int32{1, -2, 3}); !bytes.Equal(plain, want) {
 		t.Errorf("one dimension, no NULL:\n generic % x\n named   % x", plain, want)
 	}
 	withNull := AppendArray(nil, Array[int64]{Elems: []int64{7, 0}, Nulls: []bool{false, true}}, Int8Codec())
-	if want := AppendNullableInt8Array(nil, []Null[int64]{{7, true}, {}}); !bytes.Equal(withNull, want) {
+	if want := appendNulls(Int8Codec(), nil, []Null[int64]{{7, true}, {}}); !bytes.Equal(withNull, want) {
 		t.Errorf("one dimension, a NULL:\n generic % x\n named   % x", withNull, want)
 	}
 	text := AppendArray(nil, Array[string]{Elems: valid("a", "", "ccc")}, TextCodec())
-	if want := AppendTextArray(nil, []string{"a", "", "ccc"}); !bytes.Equal(text, want) {
+	if want := appendSlice(TextCodec(), nil, []string{"a", "", "ccc"}); !bytes.Equal(text, want) {
 		t.Errorf("text:\n generic % x\n named   % x", text, want)
 	}
 	empty := AppendArray(nil, Array[int64]{}, Int8Codec())
-	if want := AppendInt8Array(nil, nil); !bytes.Equal(empty, want) {
+	if want := appendSlice(Int8Codec(), nil, nil); !bytes.Equal(empty, want) {
 		t.Errorf("empty:\n generic % x\n named   % x", empty, want)
 	}
 }

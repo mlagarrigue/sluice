@@ -140,15 +140,15 @@ func FuzzDecodeBits(f *testing.F) {
 // have to agree. A decoder that read -1 as unsigned would take it for four
 // billion bytes and index with it.
 func FuzzDecodeNullableInt8Array(f *testing.F) {
-	f.Add(AppendNullableInt8Array(nil, []Null[int64]{present(int64(1)), {}}))
-	f.Add(AppendNullableInt8Array(nil, nil))
-	f.Add(AppendInt8Array(nil, []int64{1, 2}))
+	f.Add(appendNulls(Int8Codec(), nil, []Null[int64]{present(int64(1)), {}}))
+	f.Add(appendNulls(Int8Codec(), nil, nil))
+	f.Add(appendSlice(Int8Codec(), nil, []int64{1, 2}))
 	f.Add(make([]byte, 12))
 	// A header claiming more elements than the body holds.
 	f.Add([]byte{0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 20, 127, 255, 255, 255, 0, 0, 0, 1})
 
 	f.Fuzz(func(t *testing.T, b []byte) {
-		vals, err := DecodeNullableInt8Array(nil, b)
+		vals, err := decodeNulls(Int8Codec(), nil, b)
 		if err != nil {
 			if !errors.Is(err, ErrCodec) {
 				t.Fatalf("unclassified error %v for %x", err, b)
@@ -160,9 +160,9 @@ func FuzzDecodeNullableInt8Array(f *testing.F) {
 		}
 		// Decoding twice rather than comparing bytes: the flags word is
 		// normalised on re-encoding, and what must not change is the values.
-		again, err := DecodeNullableInt8Array(nil, AppendNullableInt8Array(nil, vals))
+		again, err := decodeNulls(Int8Codec(), nil, appendNulls(Int8Codec(), nil, vals))
 		if err != nil {
-			t.Fatalf("DecodeNullableInt8Array(%x) -> %v, which failed to decode: %v", b, vals, err)
+			t.Fatalf("DecodeArray(%x) -> %v, which failed to decode: %v", b, vals, err)
 		}
 		if len(again) != len(vals) {
 			t.Fatalf("not idempotent: %d elements then %d", len(vals), len(again))
@@ -175,7 +175,7 @@ func FuzzDecodeNullableInt8Array(f *testing.F) {
 
 		// And the plain decoder must refuse exactly the arrays that carry a
 		// NULL, rather than turning one into a zero.
-		_, plainErr := DecodeInt8Array(nil, b)
+		_, plainErr := decodeSlice(Int8Codec(), nil, b)
 		hasNull := false
 		for _, v := range vals {
 			if !v.Valid {
@@ -184,18 +184,18 @@ func FuzzDecodeNullableInt8Array(f *testing.F) {
 			}
 		}
 		if hasNull && plainErr == nil {
-			t.Fatalf("DecodeInt8Array accepted an array containing a NULL: %x", b)
+			t.Fatalf("DecodeArray accepted an array containing a NULL: %x", b)
 		}
 	})
 }
 
 func FuzzDecodeNullableTextArray(f *testing.F) {
-	f.Add(AppendNullableTextArray(nil, []Null[string]{present(""), {}, present("x")}))
-	f.Add(AppendTextArray(nil, []string{"a"}))
+	f.Add(appendNulls(TextCodec(), nil, []Null[string]{present(""), {}, present("x")}))
+	f.Add(appendSlice(TextCodec(), nil, []string{"a"}))
 	f.Add(make([]byte, 12))
 
 	f.Fuzz(func(t *testing.T, b []byte) {
-		vals, err := DecodeNullableTextArray(nil, b)
+		vals, err := decodeNulls(TextCodec(), nil, b)
 		if err != nil {
 			if !errors.Is(err, ErrCodec) {
 				t.Fatalf("unclassified error %v for %x", err, b)
@@ -206,7 +206,7 @@ func FuzzDecodeNullableTextArray(f *testing.F) {
 		// a decoder must never do is produce a present empty string where the
 		// wire said absent. Nothing here can check that from the outside; what
 		// it can check is that the pair survives re-encoding, below.
-		again, err := DecodeNullableTextArray(nil, AppendNullableTextArray(nil, vals))
+		again, err := decodeNulls(TextCodec(), nil, appendNulls(TextCodec(), nil, vals))
 		if err != nil {
 			t.Fatalf("re-encoding %v failed to decode: %v", vals, err)
 		}

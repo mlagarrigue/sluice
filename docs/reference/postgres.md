@@ -66,67 +66,67 @@ Each field left at zero takes the value of the "Zero" column; what
 
 Every type below has the same pair in `pgtype`, `AppendX`/`DecodeX`, named
 after the PostgreSQL type, and its codec, `XCodec()`, which opens the
-containers (arrays of any shape, ranges, composites:
-[in the guide](../guide/postgres.md#containers-arrays-ranges-composites)). The first thirteen also
-have a named one-dimensional array (`AppendXArray`/`DecodeXArray`), the
-same array with NULL elements
-(`AppendNullableXArray`/`DecodeNullableXArray`, over `[]Null[T]`), and a
-column scanner (`ScanX`). What is missing is listed in
+containers (arrays, ranges, composites:
+[in the guide](../guide/postgres.md#containers-arrays-ranges-composites)):
+its arrays, of any shape and NULLs included, are written by `AppendArray`
+and read by `DecodeArray` over that codec. The first thirteen also carry a
+fast element loop, which those two take on their own, and a column scanner
+(`ScanX`). What is missing is listed in
 [Limits](../guide/limits.md), not discovered at use.
 
-The types fall in three groups: the thirteen with arrays and a scanner,
+The types fall in three groups: the thirteen with a scanner,
 the other everyday types, and the system catalogue's own.
 
-**With arrays and a column scanner.**
+**With a column scanner.**
 
-| PostgreSQL | Go | X | Array | Array with NULLs | Scan |
-|---|---|---|---|---|---|
-| `bool` | `bool` | `Bool` | yes | yes | yes |
-| `int2` | `int16` | `Int2` | yes | yes | yes |
-| `int4` | `int32` | `Int4` | yes | yes | yes |
-| `int8` | `int64` | `Int8` | yes | yes | yes |
-| `float4` | `float32` | `Float4` | yes | yes | yes |
-| `float8` | `float64` | `Float8` | yes | yes | yes |
-| `text`, `varchar`, `char(n)`, `name` | `string` | `Text` | yes | yes | yes |
-| `bytea` | `[]byte` | `Bytea` | yes | yes | yes |
-| `uuid` | `[16]byte` | `UUID` | yes | yes | yes |
-| `timestamptz` | `time.Time` (UTC) | `TimestampTZ` | yes | yes | yes |
-| `timestamp` | `time.Time` (no zone) | `Timestamp` | yes | yes | yes |
-| `date` | `time.Time` (midnight UTC) | `Date` | yes | yes | yes |
-| `numeric` | `Numeric` (exact) | `Numeric` | yes | yes | yes |
+| PostgreSQL | Go | X | Scan |
+|---|---|---|---|
+| `bool` | `bool` | `Bool` | yes |
+| `int2` | `int16` | `Int2` | yes |
+| `int4` | `int32` | `Int4` | yes |
+| `int8` | `int64` | `Int8` | yes |
+| `float4` | `float32` | `Float4` | yes |
+| `float8` | `float64` | `Float8` | yes |
+| `text`, `varchar`, `char(n)`, `name` | `string` | `Text` | yes |
+| `bytea` | `[]byte` | `Bytea` | yes |
+| `uuid` | `[16]byte` | `UUID` | yes |
+| `timestamptz` | `time.Time` (UTC) | `TimestampTZ` | yes |
+| `timestamp` | `time.Time` (no zone) | `Timestamp` | yes |
+| `date` | `time.Time` (midnight UTC) | `Date` | yes |
+| `numeric` | `Numeric` (exact) | `Numeric` | yes |
 
 **Other everyday types: the pair and the codec.**
 
-| PostgreSQL | Go | X | Array | Array with NULLs | Scan |
-|---|---|---|---|---|---|
-| `json` | `[]byte` | `JSON` | — | — | as text |
-| `jsonb` | `[]byte` | `JSONB` | — | — | — |
-| `inet`, `cidr` | `netip.Prefix` | `Inet`, `CIDR` (one decoder) | — | — | — |
-| `interval` | `Interval` | `Interval` | — | — | — |
-| `time` | `TimeOfDay` | `Time` | — | — | — |
-| `timetz` | `TimeTZ` | `TimeTZ` | — | — | — |
-| `macaddr`, `macaddr8` | `[6]byte`, `[8]byte` | `Macaddr`, `Macaddr8` | — | — | — |
-| `bit`, `varbit` | `Bits` | `Bits` | — | — | — |
-| `point`, `line`, `lseg`, `box`, `circle` | `Point`, `Line`, `LSeg`, `Box`, `Circle` | `Point`, `Line`, `LSeg`, `Box`, `Circle` | — | — | — |
-| `path`, `polygon` | `Path`, `[]Point` | `Path`, `Polygon` | — | — | — |
-| `money` | `int64` (units) | `Money` | — | — | — |
-| `xml`, `refcursor` | `string` | `Text` | — | — | as text |
-| `jsonpath` | `string` | `JSONPath` | — | — | — |
-| `tsvector` | `[]Lexeme` | `TSVector` | — | — | — |
-| `tsquery` | `[]TSQueryItem` | `TSQuery` | — | — | — |
+| PostgreSQL | Go | X | Scan |
+|---|---|---|---|
+| `json` | `[]byte` | `JSON` | as text |
+| `jsonb` | `[]byte` | `JSONB` | — |
+| `inet`, `cidr` | `netip.Prefix` | `Inet`, `CIDR` (one decoder) | — |
+| `interval` | `Interval` | `Interval` | — |
+| `time` | `TimeOfDay` | `Time` | — |
+| `timetz` | `TimeTZ` | `TimeTZ` | — |
+| `macaddr`, `macaddr8` | `[6]byte`, `[8]byte` | `Macaddr`, `Macaddr8` | — |
+| `bit`, `varbit` | `Bits` | `Bits` | — |
+| `point`, `line`, `lseg`, `box`, `circle` | `Point`, `Line`, `LSeg`, `Box`, `Circle` | `Point`, `Line`, `LSeg`, `Box`, `Circle` | — |
+| `path`, `polygon` | `Path`, `[]Point` | `Path`, `Polygon` | — |
+| `money` | `int64` (units) | `Money` | — |
+| `xml`, `refcursor` | `string` | `Text` | as text |
+| `jsonpath` | `string` | `JSONPath` | — |
+| `tsvector` | `[]Lexeme` | `TSVector` | — |
+| `tsquery` | `[]TSQueryItem` | `TSQuery` | — |
 
 **The system catalogue's types: the pair and the codec.**
 
-| PostgreSQL | Go | X | Array | Array with NULLs | Scan |
-|---|---|---|---|---|---|
-| `oid` and the `reg*` aliases (`regclass`, `regtype`…, `regdatabase` in 19) | `uint32` | `OID` | — | — | — |
-| `oid8` (19), `xid8` | `uint64` | `OID8`, `XID8` | — | — | — |
-| `xid`, `cid` | `uint32` | `XID`, `CID` | — | — | — |
-| `tid` | `TID` | `TID` | — | — | — |
-| `pg_lsn` | `uint64` (`postgres.LSN(v)`) | `PGLSN` | — | — | — |
-| `pg_snapshot`, `txid_snapshot` | `Snapshot` | `Snapshot` | — | — | — |
-| `int2vector`, `oidvector` | `[]int16`, `[]uint32` | `Int2Vector`, `OIDVector` | — | — | — |
-| `char`, the quoted `"char"` (not `char(n)`) | `byte` | `Char` | — | — | — |
+| PostgreSQL | Go | X | Scan |
+|---|---|---|---|
+| `oid` and the `reg*` aliases (`regclass`, `regtype`…, `regdatabase` in 19) | `uint32` | `OID` | — |
+| `oid8` (19), `xid8` | `uint64` | `OID8`, `XID8` | — |
+| `xid`, `cid` | `uint32` | `XID`, `CID` | — |
+| `tid` | `TID` | `TID` | — |
+| `pg_lsn` | `uint64` (`postgres.LSN(v)`) | `PGLSN` | — |
+| `pg_snapshot`, `txid_snapshot` | `Snapshot` | `Snapshot` | — |
+| `int2vector`, `oidvector` | `[]int16`, `[]uint32` | `Int2Vector`, `OIDVector` | — |
+| `char`, the quoted `"char"` (not `char(n)`) | `byte` | `Char` | — |
 
 ## Ranges and multiranges
 

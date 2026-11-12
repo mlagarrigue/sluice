@@ -115,7 +115,8 @@ to consult afterwards (see [Getting started](getting-started.md) for
 keys := []int64{1, 2, 3 /* … a thousand */}
 src := conn.Query(ctx,
     "SELECT id, total FROM orders WHERE id = ANY($1)",
-    []postgres.Param{{OID: pgtype.OIDInt8Array, Value: pgtype.AppendInt8Array(nil, keys)}}, // the parameter: its type, its encoded value
+    []postgres.Param{{OID: pgtype.OIDInt8Array, // the parameter: its type, its encoded value
+        Value: pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: keys}, pgtype.Int8Codec())}},
     postgres.QueryConfig{BatchRows: 1024},
 )
 for b := range src.Stream() {
@@ -455,10 +456,12 @@ A range's codec puts a range in a container: an `int4range[]` is
 multirange —, the OIDs returned by `conn.LookupType` (next section); build
 it once and keep it.
 
-The table's named arrays (`DecodeInt4Array`…) stay the fast path for their
-shape, one dimension numbered from 1. Over 1,000 `int4` elements,
-`DecodeArray` takes 3.4 times as long as `DecodeInt4Array`: an indirect
-call per element, the price of code written once for every type.
+Over the thirteen types of the table, `AppendArray` and `DecodeArray` run
+as fast as loops written for each type, or faster: the codec of each of
+those types carries its own element loop, which the two take when the
+array has no NULL. A codec built outside the package — an extension's, a
+range's — goes through its `Decode` for each element: an indirect call per
+element, the price of code written once for every type.
 
 > **In plain words: a codec.** It is a type's record card: its number at
 > PostgreSQL, and how to write and read it as bytes. A container knows
@@ -883,8 +886,8 @@ The design is in [ADR 0024](../design/adr/0024-listen-notify.md).
 - **No `COPY ... TO STDOUT`**.
 - **`md5` authentication is refused.**
 - **Types**: the table above, its containers and four extensions'
-  types, nothing else ([the full list](#the-types-not-covered)); named
-  arrays and column scanners for its first thirteen types only.
+  types, nothing else ([the full list](#the-types-not-covered)); column
+  scanners for its first thirteen types only.
 
 The detail: [Limits](limits.md).
 

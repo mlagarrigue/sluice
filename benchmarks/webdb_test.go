@@ -74,7 +74,7 @@ func sluiceDBHandlerCounted(tb testing.TB) (http.Handler, *atomic.Int64) {
 	return dbGatewayHandler(tb, func(ids []int64, found map[int64]int64) error {
 		// The whole thesis, in one statement: every id in the batch leaves
 		// as one array parameter and comes back in one result.
-		buf = pgtype.AppendInt8Array(buf[:0], ids)
+		buf = pgtype.AppendArray(buf[:0], pgtype.Array[int64]{Elems: ids}, pgtype.Int8Codec())
 		src := conn.Query(context.Background(), dbQuery, []postgres.Param{{OID: pgtype.OIDInt8Array, Value: buf}},
 			postgres.QueryConfig{
 				BatchRows: 128, Fetch: postgres.FetchAll,

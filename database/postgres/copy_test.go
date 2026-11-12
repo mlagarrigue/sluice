@@ -442,14 +442,14 @@ func TestCopyWithNullBearingArray(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tags := []pgtype.Null[int64]{{Value: 10, Valid: true}, {}, {Value: 30, Valid: true}}
+	tags := pgtype.Array[int64]{Elems: []int64{10, 0, 30}, Nulls: []bool{false, true, false}}
 
 	var buf []byte
 	// Row one: an array with a NULL inside it, written straight into the tuple.
 	buf = AppendTupleHeader(buf, 2)
 	buf = AppendField(buf, pgtype.AppendInt8(nil, 1))
 	buf, at := BeginField(buf)
-	buf = pgtype.AppendNullableInt8Array(buf, tags)
+	buf = pgtype.AppendArray(buf, tags, pgtype.Int8Codec())
 	buf = EndField(buf, at)
 	// Row two: the whole array column is NULL.
 	buf = AppendTupleHeader(buf, 2)
@@ -468,7 +468,7 @@ func TestCopyWithNullBearingArray(t *testing.T) {
 
 	// Row one, field two must be the array, byte for byte, with its length in
 	// front of it. A wrong back-patch here would corrupt every field after.
-	wantArray := pgtype.AppendNullableInt8Array(nil, tags)
+	wantArray := pgtype.AppendArray(nil, tags, pgtype.Int8Codec())
 	wantRow1 := AppendTupleHeader(nil, 2)
 	wantRow1 = AppendField(wantRow1, pgtype.AppendInt8(nil, 1))
 	wantRow1 = AppendField(wantRow1, wantArray)

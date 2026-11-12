@@ -4,14 +4,16 @@
 // Each type has an Append function, which writes a value at the end of a
 // buffer the caller owns, and a Decode function, which reads one from the
 // bytes the server sent; the OID constants name the types a Parse message
-// carries and a RowDescription reports. Arrays have their own pair, and a
-// column that may hold NULL decodes into a [Null] of its type. [Numeric],
+// carries and a RowDescription reports. An array of any type is written by
+// [AppendArray] and read by [DecodeArray], over the [Codec] of its elements,
+// and a column that may hold NULL decodes into a [Null] of its type. [Numeric],
 // [Interval], [Bits], [TimeOfDay] and [TimeTZ] hold what no Go type holds
 // exactly.
 //
-//	buf := pgtype.AppendInt8(nil, 42)                     // int8's eight bytes, big-endian
-//	n, err := pgtype.DecodeInt8(buf)                      // 42
-//	keys := pgtype.AppendInt8Array(nil, []int64{1, 2, 3}) // an int8[], sent as OIDInt8Array
+//	buf := pgtype.AppendInt8(nil, 42) // int8's eight bytes, big-endian
+//	n, err := pgtype.DecodeInt8(buf)  // 42
+//	keys := pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: []int64{1, 2, 3}},
+//		pgtype.Int8Codec()) // an int8[], sent as OIDInt8Array
 //
 // The package is the codec of github.com/mlagarrigue/sluice/database/postgres
 // and imports nothing of it: building a COPY payload, testing an encoding or

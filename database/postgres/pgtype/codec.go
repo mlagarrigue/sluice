@@ -372,53 +372,10 @@ func DecodeUUID(b []byte) ([16]byte, error) {
 // in one round trip, with zero injection surface because no value ever touches
 // SQL text (architecture, "Security by construction").
 
-// arrayHeaderSize is ndim + flags + element OID, then one dimension's length
-// and lower bound. This package writes one-dimensional arrays only, which is
-// what a key list is.
+// arrayHeaderSize is the header of a one-dimensional array: ndim + flags +
+// element OID, then the dimension's length and lower bound. Arrays of any
+// shape are [AppendArray]'s and [DecodeArray]'s; the vectors read this one.
 const arrayHeaderSize = 20
-
-// AppendInt8Array appends a one-dimensional int8[] with no NULLs.
-//
-// The lower bound is 1, PostgreSQL's default: an array written with any other
-// lower bound is a different array to the server, and `= ANY` over it still
-// works but the indices a caller reads back would not be the ones it wrote.
-func AppendInt8Array(dst []byte, values []int64) []byte {
-	dst = appendArrayHeader(dst, OIDInt8, len(values))
-	for _, v := range values {
-		dst = binary.BigEndian.AppendUint32(dst, 8) // each element's length
-		dst = AppendInt8(dst, v)
-	}
-	return dst
-}
-
-// DecodeInt8Array decodes a one-dimensional int8[], appending to dst so the
-// caller's slice is reused across batches.
-//
-// An empty array is zero dimensions, not one dimension of length zero — the
-// server sends it that way, and a decoder that expected a dimension header
-// would fail on the ordinary result of a query that matched nothing.
-func DecodeInt8Array(dst []int64, b []byte) ([]int64, error) {
-	body, n, err := arrayBody(b, OIDInt8)
-	if err != nil || n == 0 {
-		return dst[:0], err
-	}
-	dst = dst[:0]
-	for i := range n {
-		// The length and the width are checked together and the value is read
-		// inline: this loop is the connector's claim — a thousand values out
-		// of one array — and it is watched by the regression gate. The error
-		// path is a call, the success path is not.
-		if len(body) < 12 || int32(binary.BigEndian.Uint32(body)) != 8 { //nolint:gosec // G115: the protocol field is int32
-			return dst[:0], arrayElementError(body, i, 8)
-		}
-		dst = append(dst, int64(binary.BigEndian.Uint64(body[4:12]))) //nolint:gosec // G115: the protocol field is int64
-		body = body[12:]
-	}
-	if len(body) != 0 {
-		return dst[:0], fmt.Errorf("%w: %d bytes after the last array element", ErrCodec, len(body))
-	}
-	return dst, nil
-}
 
 // # numeric lives in numeric.go
 //
@@ -428,188 +385,10 @@ func DecodeInt8Array(dst []int64, b []byte) ([]int64, error) {
 // below a crash. [Numeric] keeps the value exactly as the wire holds it, and
 // every lossy reading of it has to be named.
 
-// AppendInt4Array appends a one-dimensional int4[] with no NULLs.
-func AppendInt4Array(dst []byte, values []int32) []byte {
-	dst = appendArrayHeader(dst, OIDInt4, len(values))
-	for _, v := range values {
-		dst = binary.BigEndian.AppendUint32(dst, 4)
-		dst = AppendInt4(dst, v)
-	}
-	return dst
-}
-
-// DecodeInt4Array decodes a one-dimensional int4[], appending to dst.
-func DecodeInt4Array(dst []int32, b []byte) ([]int32, error) {
-	body, n, err := arrayBody(b, OIDInt4)
-	if err != nil || n == 0 {
-		return dst[:0], err
-	}
-	dst = dst[:0]
-	for i := range n {
-		if len(body) < 8 || int32(binary.BigEndian.Uint32(body)) != 4 { //nolint:gosec // G115: the protocol field is int32
-			return dst[:0], arrayElementError(body, i, 4)
-		}
-		dst = append(dst, int32(binary.BigEndian.Uint32(body[4:8]))) //nolint:gosec // G115: the protocol field is int32
-		body = body[8:]
-	}
-	if len(body) != 0 {
-		return dst[:0], fmt.Errorf("%w: %d bytes after the last array element", ErrCodec, len(body))
-	}
-	return dst, nil
-}
-
-// AppendTextArray appends a one-dimensional text[] with no NULLs.
-//
-// text[] is what turns a batch of string keys into one parameter, which is the
-// same trick int8[] does for identifiers and the reason both are here rather
-// than only the one this package needed first.
-func AppendTextArray(dst []byte, values []string) []byte {
-	dst = appendArrayHeader(dst, OIDText, len(values))
-	for _, v := range values {
-		dst = binary.BigEndian.AppendUint32(dst, uint32(len(v))) //nolint:gosec // G115: bounded by the caller's value
-		dst = append(dst, v...)
-	}
-	return dst
-}
-
-// DecodeTextArray decodes a one-dimensional text[], appending to dst.
-//
-// Elements are copied out: a string is immutable in Go and the wire buffer is
-// not, so borrowing would hand back values that change at the next read.
-func DecodeTextArray(dst []string, b []byte) ([]string, error) {
-	body, n, err := arrayBody(b, OIDText)
-	if err != nil || n == 0 {
-		return dst[:0], err
-	}
-	dst = dst[:0]
-	for i := range n {
-		if len(body) < 4 {
-			return dst[:0], fmt.Errorf("%w: array element %d has no length", ErrCodec, i)
-		}
-		size := int(int32(binary.BigEndian.Uint32(body))) //nolint:gosec // G115: the protocol field is int32
-		body = body[4:]
-		if size == -1 {
-			return dst[:0], fmt.Errorf("%w: array element %d is NULL", ErrCodec, i)
-		}
-		if size < 0 || size > len(body) {
-			return dst[:0], fmt.Errorf("%w: array element %d declares %d bytes, %d remain", ErrCodec, i, size, len(body))
-		}
-		dst, body = append(dst, string(body[:size])), body[size:]
-	}
-	if len(body) != 0 {
-		return dst[:0], fmt.Errorf("%w: %d bytes after the last array element", ErrCodec, len(body))
-	}
-	return dst, nil
-}
-
-// AppendUUIDArray appends a one-dimensional uuid[] with no NULLs, the form a
-// batch of identifiers takes to travel as one parameter of `= ANY($1)`. An
-// array that holds NULLs is [AppendNullableUUIDArray]'s.
-func AppendUUIDArray(dst []byte, values [][16]byte) []byte {
-	dst = appendArrayHeader(dst, OIDUUID, len(values))
-	for _, v := range values {
-		dst = binary.BigEndian.AppendUint32(dst, 16)
-		dst = append(dst, v[:]...)
-	}
-	return dst
-}
-
-// DecodeUUIDArray decodes a one-dimensional uuid[], appending to dst.
-func DecodeUUIDArray(dst [][16]byte, b []byte) ([][16]byte, error) {
-	body, n, err := arrayBody(b, OIDUUID)
-	if err != nil || n == 0 {
-		return dst[:0], err
-	}
-	dst = dst[:0]
-	for i := range n {
-		if len(body) < 20 || int32(binary.BigEndian.Uint32(body)) != 16 { //nolint:gosec // G115: the protocol field is int32
-			return dst[:0], arrayElementError(body, i, 16)
-		}
-		dst = append(dst, [16]byte(body[4:20]))
-		body = body[20:]
-	}
-	if len(body) != 0 {
-		return dst[:0], fmt.Errorf("%w: %d bytes after the last array element", ErrCodec, len(body))
-	}
-	return dst, nil
-}
-
-// appendArrayHeader writes the five words every one-dimensional array starts
-// with, so the three encoders cannot disagree about them.
-func appendArrayHeader(dst []byte, elem uint32, n int) []byte {
-	if n == 0 {
-		// An empty array is **zero dimensions**, not one dimension of length
-		// zero, and the header stops after the element type — twelve bytes
-		// rather than twenty.
-		//
-		// The decoders here have always known this; the encoders wrote a
-		// one-dimensional header with a count of zero, which the server
-		// accepts and never produces. That asymmetry is the same shape as
-		// every other defect found in this package: a rule written once for a
-		// conversion that needs it on both sides.
-		dst = binary.BigEndian.AppendUint32(dst, 0)
-		dst = binary.BigEndian.AppendUint32(dst, 0)
-		return binary.BigEndian.AppendUint32(dst, elem)
-	}
-	dst = binary.BigEndian.AppendUint32(dst, 1)         // one dimension
-	dst = binary.BigEndian.AppendUint32(dst, 0)         // no NULL bitmap
-	dst = binary.BigEndian.AppendUint32(dst, elem)      // element type
-	dst = binary.BigEndian.AppendUint32(dst, uint32(n)) //nolint:gosec // G115: a list's length
-	return binary.BigEndian.AppendUint32(dst, 1)        // lower bound
-}
-
-// arrayBody validates an array header against an expected element type and
-// returns what follows it, with the element count.
-func arrayBody(b []byte, elem uint32) (body []byte, n int, err error) {
-	if len(b) < 12 {
-		return nil, 0, fmt.Errorf("%w: array header is %d bytes, want at least 12", ErrCodec, len(b))
-	}
-	ndim := int32(binary.BigEndian.Uint32(b[0:4])) //nolint:gosec // G115: the protocol field is int32
-	flags := binary.BigEndian.Uint32(b[4:8])
-	got := binary.BigEndian.Uint32(b[8:12])
-	// The element type is checked before the empty case: an empty array still
-	// names its element type, and an empty text[] read as int8[] is the same
-	// mismatch as a full one — accepting it made the check depend on the data.
-	switch {
-	case got != elem:
-		return nil, 0, fmt.Errorf("%w: array element type is OID %d, want %d", ErrCodec, got, elem)
-	case flags > 1:
-		// The server writes 0 or 1 (has NULLs) and rejects anything else on
-		// input; any other value means the stream is being read at the wrong
-		// offset, and the rest of the header would be believed from there.
-		return nil, 0, fmt.Errorf("%w: array flags are %#x, want 0 or 1", ErrCodec, flags)
-	case ndim == 0 && len(b) != 12:
-		// A byte past an empty array's header means the stream is read at the
-		// wrong offset, as a byte past any other value does.
-		return nil, 0, fmt.Errorf("%w: %d bytes after an empty array's header", ErrCodec, len(b)-12)
-	case ndim == 0:
-		return nil, 0, nil // the empty array, which the server sends as zero dimensions
-	case ndim != 1:
-		return nil, 0, fmt.Errorf("%w: array has %d dimensions, this decoder reads one", ErrCodec, ndim)
-	case len(b) < arrayHeaderSize:
-		return nil, 0, fmt.Errorf("%w: one-dimensional array header is %d bytes, want %d", ErrCodec, len(b), arrayHeaderSize)
-	}
-	count := int32(binary.BigEndian.Uint32(b[12:16])) //nolint:gosec // G115: the protocol field is int32
-	if count < 0 {
-		return nil, 0, fmt.Errorf("%w: array length is %d", ErrCodec, count)
-	}
-	// The lower bound is where the server numbers the first element, and it is
-	// not always 1: `'[5:7]={10,20,30}'::bigint[]` sends 5, and `arr[5]` is the
-	// first value. These decoders return a Go slice, which is always numbered
-	// from zero, so an array with any other lower bound would come back with
-	// every index shifted and nothing to say so — a caller computing a
-	// position from it would be wrong by a constant it cannot see. Refused
-	// rather than silently renumbered, for the same reason a NULL element is.
-	if lbound := int32(binary.BigEndian.Uint32(b[16:20])); lbound != 1 { //nolint:gosec // G115: the protocol field is int32
-		return nil, 0, fmt.Errorf("%w: array is numbered from %d, and this decoder returns a slice numbered from 0", ErrCodec, lbound)
-	}
-	return b[arrayHeaderSize:], int(count), nil
-}
-
 // arrayElementError explains why a fixed-width element could not be read.
 //
 // It is called only once a decoder has already found the element wanting, so
-// it costs nothing on the path that succeeds — which is why the loops above
+// it costs nothing on the path that succeeds — which is why the vector loops
 // check inline and come here only to say what went wrong.
 func arrayElementError(body []byte, i, width int) error {
 	if len(body) < 4 {
@@ -617,9 +396,8 @@ func arrayElementError(body []byte, i, width int) error {
 	}
 	size := int(int32(binary.BigEndian.Uint32(body))) //nolint:gosec // G115: the protocol field is int32
 	if size == -1 {
-		// A NULL element in an array of a type this decoder returns by value
-		// has nowhere to go. Refusing is the only honest answer — the nullable
-		// decoders exist for callers who need the other one.
+		// A vector holds no NULL: the server never writes one, and a
+		// []int16 has nowhere to put it.
 		return fmt.Errorf("%w: array element %d is NULL", ErrCodec, i)
 	}
 	if size != width {

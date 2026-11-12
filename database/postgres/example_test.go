@@ -30,7 +30,7 @@ func Example_anyArray() {
 	// injection surface this removes rather than guards.
 	src := conn.Query(context.Background(),
 		"SELECT id, total FROM orders WHERE id = ANY($1)",
-		[]postgres.Param{{OID: pgtype.OIDInt8Array, Value: pgtype.AppendInt8Array(nil, keys)}},
+		[]postgres.Param{{OID: pgtype.OIDInt8Array, Value: pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: keys}, pgtype.Int8Codec())}},
 		postgres.QueryConfig{BatchRows: 1024},
 	)
 

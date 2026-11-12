@@ -211,7 +211,7 @@ func BenchmarkPGAnySluiceFetchAll(b *testing.B) {
 	var seen int
 	b.ReportAllocs()
 	for b.Loop() {
-		buf = pgtype.AppendInt8Array(buf[:0], keys)
+		buf = pgtype.AppendArray(buf[:0], pgtype.Array[int64]{Elems: keys}, pgtype.Int8Codec())
 		src := conn.Query(b.Context(), anySQL, []postgres.Param{{OID: pgtype.OIDInt8Array, Value: buf}},
 			postgres.QueryConfig{BatchRows: 1024, Fetch: postgres.FetchAll})
 		src.Stream()(func(batch sluice.Batch[postgres.Row]) bool {
@@ -280,7 +280,7 @@ func BenchmarkPGAnySluice(b *testing.B) {
 	var seen int
 	b.ReportAllocs()
 	for b.Loop() {
-		buf = pgtype.AppendInt8Array(buf[:0], keys)
+		buf = pgtype.AppendArray(buf[:0], pgtype.Array[int64]{Elems: keys}, pgtype.Int8Codec())
 		src := conn.Query(b.Context(), anySQL, []postgres.Param{{OID: pgtype.OIDInt8Array, Value: buf}},
 			postgres.QueryConfig{BatchRows: 1024})
 		src.Stream()(func(batch sluice.Batch[postgres.Row]) bool {
@@ -301,7 +301,7 @@ func BenchmarkPGAnySluiceCached(b *testing.B) {
 	var seen int
 	b.ReportAllocs()
 	for b.Loop() {
-		buf = pgtype.AppendInt8Array(buf[:0], keys)
+		buf = pgtype.AppendArray(buf[:0], pgtype.Array[int64]{Elems: keys}, pgtype.Int8Codec())
 		src := conn.Query(b.Context(), anySQL, []postgres.Param{{OID: pgtype.OIDInt8Array, Value: buf}},
 			postgres.QueryConfig{BatchRows: 1024})
 		src.Stream()(func(batch sluice.Batch[postgres.Row]) bool {
@@ -605,7 +605,7 @@ func TestPGContendersAgree(t *testing.T) {
 
 	sc := sluiceConn(t)
 	got := map[int64]int64{}
-	src := sc.Query(t.Context(), anySQL, []postgres.Param{{OID: pgtype.OIDInt8Array, Value: pgtype.AppendInt8Array(nil, keys)}},
+	src := sc.Query(t.Context(), anySQL, []postgres.Param{{OID: pgtype.OIDInt8Array, Value: pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: keys}, pgtype.Int8Codec())}},
 		postgres.QueryConfig{BatchRows: 1024})
 	src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
 		for _, r := range b.Items {

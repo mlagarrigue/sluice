@@ -3,6 +3,7 @@ package postgres
 import (
 	"bytes"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
@@ -122,13 +123,14 @@ func FuzzDecoders(f *testing.F) {
 // The array decoder walks a header it did not write, so it is the one with
 // offsets to get wrong.
 func FuzzDecodeInt8Array(f *testing.F) {
-	f.Add(pgtype.AppendInt8Array(nil, []int64{1, 2, 3}))
-	f.Add(pgtype.AppendInt8Array(nil, nil))
+	f.Add(pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: []int64{1, 2, 3}}, pgtype.Int8Codec()))
+	f.Add(pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: nil}, pgtype.Int8Codec()))
 	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 20})
 	f.Add([]byte{})
 
 	f.Fuzz(func(t *testing.T, b []byte) {
-		got, err := pgtype.DecodeInt8Array(nil, b)
+		c := pgtype.Int8Codec()
+		got, err := pgtype.DecodeArray(pgtype.Array[int64]{}, b, c)
 		if err != nil {
 			if !errors.Is(err, pgtype.ErrCodec) {
 				t.Fatalf("unclassified error %v", err)
@@ -136,19 +138,14 @@ func FuzzDecodeInt8Array(f *testing.F) {
 			return
 		}
 		// Whatever it accepted must be re-encodable to something it accepts
-		// again with the same values: a decoder that read a length from the
-		// wrong offset would not survive that.
-		again, err := pgtype.DecodeInt8Array(nil, pgtype.AppendInt8Array(nil, got))
+		// again with the same values, shape and NULLs: a decoder that read a
+		// length from the wrong offset would not survive that.
+		again, err := pgtype.DecodeArray(pgtype.Array[int64]{}, pgtype.AppendArray(nil, got, c), c)
 		if err != nil {
 			t.Fatalf("re-decoding what was accepted: %v", err)
 		}
-		if len(again) != len(got) {
-			t.Fatalf("re-decode gave %d elements, first pass gave %d", len(again), len(got))
-		}
-		for i := range got {
-			if again[i] != got[i] {
-				t.Fatalf("element %d: %d then %d", i, got[i], again[i])
-			}
+		if !slices.Equal(again.Elems, got.Elems) || !slices.Equal(again.Nulls, got.Nulls) || !slices.Equal(again.Dims, got.Dims) {
+			t.Fatalf("re-decode gave %+v, first pass gave %+v", again, got)
 		}
 	})
 }

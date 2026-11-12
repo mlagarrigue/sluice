@@ -150,7 +150,7 @@ func TestIntegrationAnyArray(t *testing.T) {
 
 	src := conn.Query(t.Context(),
 		"SELECT k FROM unnest($1::bigint[]) AS k WHERE k = ANY($1) ORDER BY k",
-		[]postgres.Param{{OID: pgtype.OIDInt8Array, Value: pgtype.AppendInt8Array(nil, keys)}},
+		[]postgres.Param{{OID: pgtype.OIDInt8Array, Value: pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: keys}, pgtype.Int8Codec())}},
 		postgres.QueryConfig{BatchRows: 256},
 	)
 
@@ -603,7 +603,7 @@ func TestIntegrationCodecsMeanWhatTheyShould(t *testing.T) {
 		},
 		{
 			"uuid[]", `ARRAY['00000000-0000-0000-0000-000000000001']::uuid[]`, pgtype.OIDUUIDArray,
-			pgtype.AppendUUIDArray(nil, [][16]byte{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}}),
+			pgtype.AppendArray(nil, pgtype.Array[[16]byte]{Elems: [][16]byte{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}}}, pgtype.UUIDCodec()),
 		},
 	}
 
@@ -752,9 +752,9 @@ func TestIntegrationCodecsDecodeWhatTheServerSends(t *testing.T) {
 				t.Errorf("inet = %v, %v", p, err)
 			}
 			v, _ = row.Value(4)
-			ids, err := pgtype.DecodeUUIDArray(nil, v)
-			if err != nil || len(ids) != 1 || ids[0][15] != 1 {
-				t.Errorf("uuid[] = %x, %v", ids, err)
+			ids, err := pgtype.DecodeArray(pgtype.Array[[16]byte]{}, v, pgtype.UUIDCodec())
+			if err != nil || len(ids.Elems) != 1 || ids.Elems[0][15] != 1 {
+				t.Errorf("uuid[] = %x, %v", ids.Elems, err)
 			}
 		}
 		return true
@@ -1084,38 +1084,31 @@ func TestIntegrationInetAndArrayEdgeCases(t *testing.T) {
 		}
 	})
 
-	t.Run("an array numbered from something other than one is refused", func(t *testing.T) {
-		src := conn.Query(t.Context(), `SELECT '[5:7]={10,20,30}'::bigint[]`, nil, postgres.QueryConfig{})
-
-		var decodeErr error
-		src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
-			for _, row := range b.Items {
-				v, _ := row.Value(0)
-				_, decodeErr = pgtype.DecodeInt8Array(nil, v)
+	t.Run("an array numbered from something other than one keeps its number", func(t *testing.T) {
+		for _, tc := range []struct {
+			sql   string
+			lower int32
+		}{
+			{`SELECT '[5:7]={10,20,30}'::bigint[]`, 5},
+			{`SELECT ARRAY[10,20,30]::bigint[]`, 1},
+		} {
+			var got pgtype.Array[int64]
+			var decodeErr error
+			src := conn.Query(t.Context(), tc.sql, nil, postgres.QueryConfig{})
+			src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
+				for _, row := range b.Items {
+					v, _ := row.Value(0)
+					got, decodeErr = pgtype.DecodeArray(got, v, pgtype.Int8Codec())
+				}
+				return true
+			})
+			if err := src.Err(); err != nil {
+				t.Fatalf("Err = %v", err)
 			}
-			return true
-		})
-		if err := src.Err(); err != nil {
-			t.Fatalf("Err = %v", err)
-		}
-		if decodeErr == nil {
-			t.Fatal("the decoder accepted an array the server numbers from 5")
-		}
-		// The ordinary array must still decode, or the check is a wall.
-		var got []int64
-		ok := conn.Query(t.Context(), `SELECT ARRAY[10,20,30]::bigint[]`, nil, postgres.QueryConfig{})
-		ok.Stream()(func(b sluice.Batch[postgres.Row]) bool {
-			for _, row := range b.Items {
-				v, _ := row.Value(0)
-				got, _ = pgtype.DecodeInt8Array(nil, v)
+			if decodeErr != nil || !slices.Equal(got.Elems, []int64{10, 20, 30}) ||
+				!slices.Equal(got.Dims, []pgtype.ArrayDim{{Len: 3, Lower: tc.lower}}) {
+				t.Errorf("%s decoded to %+v, %v; want [10 20 30] numbered from %d", tc.sql, got, decodeErr, tc.lower)
 			}
-			return true
-		})
-		if err := ok.Err(); err != nil {
-			t.Fatalf("Err = %v", err)
-		}
-		if len(got) != 3 || got[0] != 10 {
-			t.Errorf("the ordinary array decoded to %v, want [10 20 30]", got)
 		}
 	})
 }
@@ -1299,23 +1292,23 @@ func TestIntegrationEveryCodecMatchesTheServersEncoding(t *testing.T) {
 		},
 		{
 			"int4[]", `ARRAY[1,-2,3]::int[]`,
-			pgtype.AppendInt4Array(nil, []int32{1, -2, 3}),
+			pgtype.AppendArray(nil, pgtype.Array[int32]{Elems: []int32{1, -2, 3}}, pgtype.Int4Codec()),
 		},
 		{
 			"int8[]", `ARRAY[1,-2,3]::bigint[]`,
-			pgtype.AppendInt8Array(nil, []int64{1, -2, 3}),
+			pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: []int64{1, -2, 3}}, pgtype.Int8Codec()),
 		},
 		{
 			"text[]", `ARRAY['a','','ccc']::text[]`,
-			pgtype.AppendTextArray(nil, []string{"a", "", "ccc"}),
+			pgtype.AppendArray(nil, pgtype.Array[string]{Elems: []string{"a", "", "ccc"}}, pgtype.TextCodec()),
 		},
 		{
 			"uuid[]", `ARRAY['00000000-0000-0000-0000-000000000001']::uuid[]`,
-			pgtype.AppendUUIDArray(nil, [][16]byte{{15: 1}}),
+			pgtype.AppendArray(nil, pgtype.Array[[16]byte]{Elems: [][16]byte{{15: 1}}}, pgtype.UUIDCodec()),
 		},
 		{
 			"empty int8[]", `ARRAY[]::bigint[]`,
-			pgtype.AppendInt8Array(nil, nil),
+			pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: nil}, pgtype.Int8Codec()),
 		},
 	}
 
@@ -1392,7 +1385,7 @@ func TestIntegrationAnyOverAnEmptyArray(t *testing.T) {
 	conn := dial(t)
 
 	src := conn.Query(t.Context(), "SELECT k FROM unnest($1::bigint[]) AS k WHERE k = ANY($1)",
-		[]postgres.Param{{OID: pgtype.OIDInt8Array, Value: pgtype.AppendInt8Array(nil, nil)}},
+		[]postgres.Param{{OID: pgtype.OIDInt8Array, Value: pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: nil}, pgtype.Int8Codec())}},
 		postgres.QueryConfig{BatchRows: 16})
 
 	rows := 0
@@ -1451,7 +1444,7 @@ func TestIntegrationCopyVariableWidthTypes(t *testing.T) {
 		buf = postgres.AppendField(buf, pgtype.AppendJSONB(nil, []byte(`{"i": 1}`)))
 		buf = postgres.AppendField(buf, pgtype.AppendInet(nil, netip.MustParsePrefix("192.168.1.1/24")))
 		buf = postgres.AppendField(buf, pgtype.AppendUUID(nil, ref))
-		buf = postgres.AppendField(buf, pgtype.AppendInt8Array(nil, []int64{int64(i), -1}))
+		buf = postgres.AppendField(buf, pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: []int64{int64(i), -1}}, pgtype.Int8Codec()))
 		// Every other row leaves the last column NULL, so the marker travels
 		// beside real values rather than only on its own.
 		if i%2 == 0 {
@@ -1504,8 +1497,8 @@ func TestIntegrationCopyVariableWidthTypes(t *testing.T) {
 				t.Errorf("row %d ref = %x (%v)", i, gotRef, err)
 			}
 			v, _ = row.Value(6)
-			tags, err := pgtype.DecodeInt8Array(nil, v)
-			if err != nil || len(tags) != 2 || tags[0] != int64(i) || tags[1] != -1 {
+			tags, err := pgtype.DecodeArray(pgtype.Array[int64]{}, v, pgtype.Int8Codec())
+			if err != nil || !slices.Equal(tags.Elems, []int64{int64(i), -1}) || len(tags.Nulls) != 0 {
 				t.Errorf("row %d tags = %v (%v)", i, tags, err)
 			}
 			v, isNull := row.Value(7)

@@ -83,7 +83,7 @@ func TestIdentifiersRoundTrip(t *testing.T) {
 // any allocation — and a vector header other than the one the server
 // builds (one dimension, no NULLs, its element type, numbered from 0).
 func TestIdentifiersRefuseMalformedValues(t *testing.T) {
-	ordinary := AppendInt2Array(nil, []int16{1})
+	ordinary := appendSlice(Int2Codec(), nil, []int16{1})
 	tests := []struct {
 		name string
 		err  error

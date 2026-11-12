@@ -259,8 +259,8 @@ func (s *Service) serveGroup(ctx context.Context, tx *postgres.Tx, tenant string
 	s.roundTrips.Add(1)
 	lines := make(map[[2]int64]Line, len(group))
 	src := tx.Query(ctx, readLines, []postgres.Param{
-		{OID: pgtype.OIDInt8Array, Value: pgtype.AppendInt8Array(nil, orderIDs)},
-		{OID: pgtype.OIDInt4Array, Value: pgtype.AppendInt4Array(nil, indexes)},
+		{OID: pgtype.OIDInt8Array, Value: pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: orderIDs}, pgtype.Int8Codec())},
+		{OID: pgtype.OIDInt4Array, Value: pgtype.AppendArray(nil, pgtype.Array[int32]{Elems: indexes}, pgtype.Int4Codec())},
 	}, postgres.QueryConfig{
 		BatchRows: 256, Fetch: postgres.FetchAll,
 	})
