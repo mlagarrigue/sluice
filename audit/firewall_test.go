@@ -118,3 +118,99 @@ func TestARulesetMustBeOneOfTheTwo(t *testing.T) {
 		t.Error("iptables -L output was read as a ruleset")
 	}
 }
+
+// ufw keeps every rule in chains of its own, under a DROP policy: INPUT
+// only jumps (trimmed from what ufw 0.36 writes).
+const ufwOpen = `*filter
+:INPUT DROP [0:0]
+:ufw-before-input - [0:0]
+:ufw-user-input - [0:0]
+:ufw-after-input - [0:0]
+:ufw-skip-to-policy-input - [0:0]
+:ufw-logging-deny - [0:0]
+-A INPUT -j ufw-before-input
+-A INPUT -j ufw-after-input
+-A ufw-before-input -i lo -j ACCEPT
+-A ufw-before-input -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+-A ufw-before-input -m conntrack --ctstate INVALID -j ufw-logging-deny
+-A ufw-before-input -m conntrack --ctstate INVALID -j DROP
+-A ufw-before-input -m addrtype --dst-type BROADCAST -j ufw-skip-to-policy-input
+-A ufw-before-input -j ufw-user-input
+-A ufw-user-input -p tcp -m tcp --dport 22 -j ACCEPT
+-A ufw-user-input -p tcp -m tcp --dport 5432 -j ACCEPT
+-A ufw-after-input -p udp -m udp --dport 137 -j ufw-skip-to-policy-input
+-A ufw-logging-deny -j LOG --log-prefix "[UFW BLOCK] "
+-A ufw-skip-to-policy-input -j DROP
+COMMIT
+`
+
+// firewalld keeps its zones in chains jumped to from its input chain
+// (trimmed from what firewalld 1.3 writes).
+const firewalldOpen = `table inet firewalld {
+	chain filter_INPUT {
+		type filter hook input priority filter + 10; policy accept;
+		ct state { established, related } accept
+		ct status dnat accept
+		iifname "lo" accept
+		ct state invalid drop
+		jump filter_INPUT_POLICIES
+		reject with icmpx admin-prohibited
+	}
+
+	chain filter_INPUT_POLICIES {
+		iifname "eth0" jump filter_IN_public
+		iifname "eth0" reject with icmpx admin-prohibited
+		jump filter_IN_public
+		reject with icmpx admin-prohibited
+	}
+
+	chain filter_IN_public {
+		jump filter_IN_public_pre
+		jump filter_IN_public_allow
+		meta l4proto { icmp, ipv6-icmp } accept
+	}
+
+	chain filter_IN_public_pre {
+	}
+
+	chain filter_IN_public_allow {
+		tcp dport 22 accept
+		tcp dport 5432 accept
+	}
+}
+`
+
+func TestUfwAndFirewalldChainsAreFollowed(t *testing.T) {
+	for _, c := range []struct {
+		name, ruleset, want string
+	}{
+		{"ufw, 5432 allowed", ufwOpen, "line 17"},
+		{"ufw, 5432 not allowed", strings.Replace(ufwOpen, "-A ufw-user-input -p tcp -m tcp --dport 5432 -j ACCEPT\n", "", 1), ""},
+		{"firewalld, 5432 in the zone", firewalldOpen, "line 30"},
+		{"firewalld, 5432 not in the zone", strings.Replace(firewalldOpen, "\t\ttcp dport 5432 accept\n", "", 1), ""},
+	} {
+		got := firewallFindings(t, c.ruleset, "")
+		switch {
+		case c.want == "" && len(got) != 0:
+			t.Errorf("%s: %+v", c.name, got)
+		case c.want == "":
+		case len(got) != 1 || got[0].Verdict != "" || !strings.Contains(got[0].Current, c.want):
+			t.Errorf("%s: %+v, want the rule of %s named", c.name, got, c.want)
+		}
+	}
+}
+
+// TestAJumpNotFollowedIsSaidNotSilenced: a target the ruleset does not
+// define, a loop, and an acceptance behind a condition the reader does not
+// interpret each leave the answer undetermined, never a closed port.
+func TestAJumpNotFollowedIsSaidNotSilenced(t *testing.T) {
+	missing := "table inet filter {\n\tchain input {\n\t\ttype filter hook input priority 0; policy drop;\n\t\tjump elsewhere\n\t}\n}\n"
+	loop := "*filter\n:INPUT DROP [0:0]\n:a - [0:0]\n:b - [0:0]\n-A INPUT -j a\n-A a -j b\n-A b -j a\nCOMMIT\n"
+	condition := "*filter\n:INPUT DROP [0:0]\n:allow - [0:0]\n-A INPUT -m recent --rcheck -j allow\n-A allow -p tcp --dport 5432 -j ACCEPT\nCOMMIT\n"
+	for name, ruleset := range map[string]string{"missing": missing, "loop": loop, "condition": condition} {
+		got := firewallFindings(t, ruleset, "")
+		if len(got) != 1 || got[0].Verdict != VerdictUndetermined || !strings.Contains(got[0].Current, "not known") {
+			t.Errorf("%s: %+v", name, got)
+		}
+	}
+}

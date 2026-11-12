@@ -69,7 +69,7 @@ sets one.
 | `postgres/superusers`, `postgres/cve` | `pg_roles` saved as CSV; `server_version` and `pg_hba.conf` | more than one superuser that logs in; each PostgreSQL advisory the audit knows, judged on the release and on the configuration it needs |
 | `proxy/*` | `nginx.conf` or `haproxy.cfg`, saved; the release `nginx -v` printed | connections to the application not kept alive, nginx buffering a streamed response, HAProxy waits left infinite, TLS older than 1.2, `X-Forwarded-For` not set; nginx advisories judged on the release and the directive that reaches them |
 | `app/*` | how the comparison's Sluice.go server was started, saved: its `NAME=value` environment and its command line | a connection closed every few requests, a remote database reached in clear and unauthenticated, more connections than the database's slots, TLS off on the internet, session resumption in a comparison; the server's flags in the system table |
-| `firewall/postgres-exposed` | `nft list ruleset` or `iptables-save`, saved | PostgreSQL's port reachable from any address: accepted by an input chain or its policy, or published by a DNAT — Docker's `-p`, which never crosses INPUT |
+| `firewall/postgres-exposed` | `nft list ruleset` or `iptables-save`, saved | PostgreSQL's port reachable from any address: accepted by an input chain — the chains it jumps to followed, ufw's and firewalld's — or by its policy, or published by a DNAT (Docker's `-p`, which never crosses INPUT); "undetermined" when a jump cannot be followed |
 | `go/*` | the cgroup, the module's `go` directive, the environment | whether the runtime will read the CPU quota, or use every core of the machine; a `GODEBUG` that restores an older behaviour |
 | `-sbom` | the binary | the bill of materials: the main module, the toolchain, every dependency linked |
 
@@ -102,9 +102,13 @@ module the flaw is in: CVE-2024-7347 needs `mp4`.
 
 **The firewall is asked one question, the kernel's way.** Would a new
 connection from anywhere reach the server's port: the first rule that
-decides, chain by chain, then the chain's policy. A rule matching on a
-connection state or a mark is taken as not deciding, and a jump to a chain
-of your own is not followed; a server whose `listen_addresses` is the
+decides, chain by chain, the jumps into chains of your own followed —
+ufw and firewalld keep every acceptance there, under a drop policy — then
+the chain's policy. A rule matching on a connection state or a mark is
+taken as not deciding. A jump the audit cannot follow — a chain the
+ruleset does not define, a loop, a condition it does not read in front of a
+chain that would accept — makes the answer *undetermined*, never a silence
+that would read as a closed port. A server whose `listen_addresses` is the
 loopback alone is not asked about.
 
 Every reason says where the value shows up under load, because that is
