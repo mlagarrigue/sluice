@@ -86,14 +86,30 @@ type h3Frame struct {
 // that size: a peer that greases with a long frame is conforming, and
 // §7.2.8 says to ignore it.
 func parseH3Frames(dst []h3Frame, buf []byte, maxFrame int) (frames []h3Frame, rest []byte, skip uint64, err error) {
+	frames, rest, skip, _, err = parseH3FramesUpTo(dst, buf, maxFrame, 0)
+	return frames, rest, skip, err
+}
+
+// parseH3FramesUpTo is parseH3Frames stopping once dst holds count frames
+// (count zero: no stop), with more reporting that it stopped there: rest
+// then starts at the next frame, whole or not, and the caller parses again
+// from it once it has acted on these. A delivery of three-byte frames is a
+// frame per three bytes; collected all at once, its scratch grew to 32
+// bytes per frame and, past h3FramesKept, was let go and grown again at
+// every delivery — some 25 bytes allocated per byte received. In passes of
+// h3FramesKept, the scratch is the one the connection keeps.
+func parseH3FramesUpTo(dst []h3Frame, buf []byte, maxFrame, count int) (frames []h3Frame, rest []byte, skip uint64, more bool, err error) {
 	for len(buf) > 0 {
+		if count > 0 && len(dst) >= count {
+			return dst, buf, 0, true, nil
+		}
 		typ, after, err := varint.Read(buf)
 		if err != nil {
-			return dst, buf, 0, nil //nolint:nilerr // not yet a whole varint: the rest waits for more bytes
+			return dst, buf, 0, false, nil //nolint:nilerr // not yet a whole varint: the rest waits for more bytes
 		}
 		length, after, err := varint.Read(after)
 		if err != nil {
-			return dst, buf, 0, nil //nolint:nilerr // not yet a whole varint: the rest waits for more bytes
+			return dst, buf, 0, false, nil //nolint:nilerr // not yet a whole varint: the rest waits for more bytes
 		}
 		if h3ReservedH2(typ) {
 			// RFC 9114 §7.2.8: the HTTP/2 frame types with no HTTP/3
@@ -103,14 +119,14 @@ func parseH3Frames(dst []h3Frame, buf []byte, maxFrame int) (frames []h3Frame, r
 			// type alone, before the payload is waited for: there is nothing
 			// in it this layer would read. Not skipped with the GREASE
 			// types, which the same section wants ignored.
-			return dst, nil, 0, fmt.Errorf("%w: frame type %#x is an HTTP/2 type with no HTTP/3 meaning",
+			return dst, nil, 0, false, fmt.Errorf("%w: frame type %#x is an HTTP/2 type with no HTTP/3 meaning",
 				errH3FrameUnexpected, typ)
 		}
 		if !h3Known(typ) {
 			// The one exception is the four above, which §7.2.8 reserves by
 			// name.
 			if length > uint64(len(after)) {
-				return dst, nil, length - uint64(len(after)), nil
+				return dst, nil, length - uint64(len(after)), false, nil
 			}
 			buf = after[length:]
 			continue
@@ -119,10 +135,10 @@ func parseH3Frames(dst []h3Frame, buf []byte, maxFrame int) (frames []h3Frame, r
 			// ErrTooLarge as well as ErrH3Protocol: a frame too long to read is the
 			// peer asking for more than it may, which a request stream answers
 			// with H3_EXCESSIVE_LOAD rather than H3_MESSAGE_ERROR.
-			return dst, buf, 0, fmt.Errorf("%w: %w: a frame of %d bytes, over the %d bound", ErrH3Protocol, ErrTooLarge, length, maxFrame)
+			return dst, buf, 0, false, fmt.Errorf("%w: %w: a frame of %d bytes, over the %d bound", ErrH3Protocol, ErrTooLarge, length, maxFrame)
 		}
 		if length > uint64(len(after)) {
-			return dst, buf, 0, nil // the payload has not all arrived
+			return dst, buf, 0, false, nil // the payload has not all arrived
 		}
 		if typ == h3Data && length == 0 && len(dst) > 0 && dst[len(dst)-1].Type == h3Data {
 			// An empty DATA frame behind a DATA frame adds no byte, and no
@@ -133,10 +149,18 @@ func parseH3Frames(dst []h3Frame, buf []byte, maxFrame int) (frames []h3Frame, r
 			buf = after
 			continue
 		}
+		if count > 0 && len(dst) == cap(dst) {
+			// Grown by hand, never past count: append rounds a 32-byte
+			// element up to its size classes (151, then 303 entries), and a
+			// scratch past h3FramesKept is let go after the parse.
+			grown := make([]h3Frame, len(dst), min(max(2*cap(dst), 8), count))
+			copy(grown, dst)
+			dst = grown
+		}
 		dst = append(dst, h3Frame{Type: typ, Payload: after[:length]})
 		buf = after[length:]
 	}
-	return dst, nil, 0, nil
+	return dst, nil, 0, false, nil
 }
 
 // skipAhead discards, off the front of a delivery, what is left of an

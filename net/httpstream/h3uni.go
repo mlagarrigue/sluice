@@ -126,60 +126,68 @@ func (a *h3Assembler) controlFrames(u *h3Uni) error {
 				"%w: the control stream opened with frame %#x, not SETTINGS", ErrH3Protocol, typ)}
 		}
 	}
-	prev := len(a.frames)
-	frames, rest, skip, err := parseH3Frames(a.frames[:0], u.buf, a.cfg.MaxHeaderBytes)
-	// Added, not set: a skip still owed emptied the buffer before the parse,
-	// which then started none; a parse that started one found none owed.
-	a.frames, u.skip = keepFrames(frames, prev), u.skip+skip
-	if err != nil {
-		// A frame too long is a layout fault (H3_FRAME_ERROR) — unless its
-		// type has no place here at any length, which is judged first: the
-		// frame refused is the one at rest, and a SETTINGS ahead of it in
-		// this delivery (frames) counts as the first. An HTTP/2 frame type
-		// is §7.2.8's H3_FRAME_UNEXPECTED.
-		if typ, _, e := varint.Read(rest); e == nil && errors.Is(err, ErrTooLarge) {
-			if fault := controlTypeFault(typ, a.controlSettings || len(frames) > 0); fault != nil {
+	// In passes of h3FramesKept frames, as drain parses a request stream:
+	// a delivery of three-byte frames regrows no scratch.
+	var rest []byte
+	for buf, more := u.buf, true; more; buf = rest {
+		prev := len(a.frames)
+		var frames []h3Frame
+		var skip uint64
+		var err error
+		frames, rest, skip, more, err = parseH3FramesUpTo(a.frames[:0], buf, a.cfg.MaxHeaderBytes, h3FramesKept)
+		// Added, not set: a skip still owed emptied the buffer before the parse,
+		// which then started none; a parse that started one found none owed.
+		a.frames, u.skip = keepFrames(frames, prev), u.skip+skip
+		if err != nil {
+			// A frame too long is a layout fault (H3_FRAME_ERROR) — unless its
+			// type has no place here at any length, which is judged first: the
+			// frame refused is the one at rest, and a SETTINGS ahead of it in
+			// this delivery (frames) counts as the first. An HTTP/2 frame type
+			// is §7.2.8's H3_FRAME_UNEXPECTED.
+			if typ, _, e := varint.Read(rest); e == nil && errors.Is(err, ErrTooLarge) {
+				if fault := controlTypeFault(typ, a.controlSettings || len(frames) > 0); fault != nil {
+					return fault
+				}
+			}
+			code := uint64(h3FrameError)
+			if errors.Is(err, errH3FrameUnexpected) {
+				code = h3FrameUnexpected
+			}
+			return h3ConnectionError{Code: code, Err: err}
+		}
+		for _, fr := range frames {
+			if !a.controlSettings {
+				if fr.Type != h3Settings {
+					return h3ConnectionError{Code: h3MissingSettings, Err: fmt.Errorf(
+						"%w: the control stream opened with frame %#x, not SETTINGS", ErrH3Protocol, fr.Type)}
+				}
+				if err := a.settings(fr.Payload); err != nil {
+					// A payload that ends inside a pair fails the frame's layout,
+					// which §7.1 makes H3_FRAME_ERROR; what the pairs say is
+					// §7.2.4's H3_SETTINGS_ERROR.
+					code := uint64(h3SettingsError)
+					if errors.Is(err, errH3FrameLayout) {
+						code = h3FrameError
+					}
+					return h3ConnectionError{Code: code, Err: err}
+				}
+				a.controlSettings = true
+				continue
+			}
+			if fault := controlTypeFault(fr.Type, true); fault != nil {
 				return fault
 			}
-		}
-		code := uint64(h3FrameError)
-		if errors.Is(err, errH3FrameUnexpected) {
-			code = h3FrameUnexpected
-		}
-		return h3ConnectionError{Code: code, Err: err}
-	}
-	for _, fr := range frames {
-		if !a.controlSettings {
-			if fr.Type != h3Settings {
-				return h3ConnectionError{Code: h3MissingSettings, Err: fmt.Errorf(
-					"%w: the control stream opened with frame %#x, not SETTINGS", ErrH3Protocol, fr.Type)}
-			}
-			if err := a.settings(fr.Payload); err != nil {
-				// A payload that ends inside a pair fails the frame's layout,
-				// which §7.1 makes H3_FRAME_ERROR; what the pairs say is
-				// §7.2.4's H3_SETTINGS_ERROR.
-				code := uint64(h3SettingsError)
-				if errors.Is(err, errH3FrameLayout) {
-					code = h3FrameError
+			switch fr.Type {
+			case h3GoAway, h3MaxPushID, h3CancelPush:
+				// Legal here, and inert: this server never pushes and announces
+				// its own shutdown by closing, so there is nothing to act on.
+				// Their payloads are still held to their layout (§7.1, §10.8:
+				// exactly one identifier) and to the identifier rules of §5.2,
+				// §7.2.3 and §7.2.7 — each a MUST for a connection error, and
+				// each a peer whose framer or push state is wrong.
+				if err := a.controlIdentifier(fr); err != nil {
+					return err
 				}
-				return h3ConnectionError{Code: code, Err: err}
-			}
-			a.controlSettings = true
-			continue
-		}
-		if fault := controlTypeFault(fr.Type, true); fault != nil {
-			return fault
-		}
-		switch fr.Type {
-		case h3GoAway, h3MaxPushID, h3CancelPush:
-			// Legal here, and inert: this server never pushes and announces
-			// its own shutdown by closing, so there is nothing to act on.
-			// Their payloads are still held to their layout (§7.1, §10.8:
-			// exactly one identifier) and to the identifier rules of §5.2,
-			// §7.2.3 and §7.2.7 — each a MUST for a connection error, and
-			// each a peer whose framer or push state is wrong.
-			if err := a.controlIdentifier(fr); err != nil {
-				return err
 			}
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"weak"
 
+	"github.com/mlagarrigue/sluice/internal/varint"
 	"github.com/mlagarrigue/sluice/net/quic"
 )
 
@@ -154,5 +155,58 @@ func TestH3EmptyDataFramesCostNoScratchPerFrame(t *testing.T) {
 	t.Logf("%d bytes of empty DATA frames in %d deliveries: %.2f bytes allocated per byte received", received, deliveries, perByte)
 	if perByte > 4 {
 		t.Errorf("%.2f bytes allocated per byte of empty DATA frames received, want at most 4", perByte)
+	}
+}
+
+// The two other dense shapes a peer may send at no cost to itself: DATA
+// frames of one byte each on a request stream, and MAX_PUSH_ID frames
+// repeating the same identifier on the control stream (legal, §7.2.7).
+// Each frame is three bytes; each must cost the server no more than the
+// bound the empty DATA frames are held to.
+func TestH3DenseSmallFramesCostAtMostFourBytesPerByte(t *testing.T) {
+	const deliveries, frames = 50, 1000
+	for _, tt := range []struct {
+		name   string
+		stream uint64
+		open   []byte
+		frame  []byte
+	}{
+		{
+			name:   "one-byte DATA",
+			stream: 0,
+			open:   h3Request("POST", "/upload"),
+			frame:  appendH3Frame(nil, h3Data, []byte{'x'}),
+		},
+		{
+			name:   "repeated MAX_PUSH_ID",
+			stream: 2,
+			open:   append(uniOpen(h3StreamControl), settingsFrame(h3SettingMaxFieldSection, 64)...),
+			frame:  appendH3Frame(nil, h3MaxPushID, varint.Append(nil, 4)),
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			a := testAssembler(Config{MaxBodyBytes: 4 * deliveries * frames})
+			if _, _, _, err := a.Frames([]quic.Frame{streamFrame(tt.stream, tt.open, false)}); err != nil {
+				t.Fatal(err)
+			}
+			var delivery []byte
+			for range frames {
+				delivery = append(delivery, tt.frame...)
+			}
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			for range deliveries {
+				if _, _, _, err := a.Frames([]quic.Frame{streamFrame(tt.stream, delivery, false)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			runtime.ReadMemStats(&after)
+			received := deliveries * len(delivery)
+			perByte := float64(after.TotalAlloc-before.TotalAlloc) / float64(received)
+			t.Logf("%d bytes in %d deliveries: %.2f bytes allocated per byte received", received, deliveries, perByte)
+			if perByte > 4 {
+				t.Errorf("%.2f bytes allocated per byte received, want at most 4", perByte)
+			}
+		})
 	}
 }

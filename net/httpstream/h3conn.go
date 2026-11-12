@@ -1247,7 +1247,8 @@ func (a *h3Assembler) truncated(st *h3Stream, length uint64, payload []byte) err
 //
 // drain runs in this order: skip what an ignored frame still owes and stream
 // what a DATA frame still owes (dataLeft); parse the whole frames in the
-// buffer, refusing one past its bound; then one case per frame type — HEADERS
+// buffer, refusing one past its bound, in passes of h3FramesKept; for each,
+// requestFrame, one case per frame type — HEADERS
 // (the head, or the trailers once the head is in), DATA (into the body, whole
 // or streamed), a control-stream frame on a request stream (refused),
 // PUSH_PROMISE (refused); and last, keep the start of a frame not yet arrived,
@@ -1280,156 +1281,39 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 			return nil
 		}
 	}
-	prev := len(a.frames)
-	frames, rest, skip, err := parseH3Frames(a.frames[:0], st.buf, a.cfg.MaxBodyBytes)
-	st.skip += skip // one of the two is zero: a skip owed empties the buffer first
-	// A frame over the bound leaves rest at its start. A DATA frame there is
-	// judged below, after the frames ahead of it, as a body over
-	// MaxBodyBytes: h1 and h2 answer that with a 413, and the declared length
-	// says so before any of the payload is buffered. A frame of a type a
-	// request stream never carries is judged on its type first — the
-	// connection error the switch below gives it under the bound — so its
-	// declared length cannot buy it the lesser stream error. Any other type
-	// keeps the refusal parseH3Frames gave it.
-	if err != nil {
-		typ, _, e := varint.Read(rest)
-		switch {
-		case e == nil && (typ == h3Settings || typ == h3GoAway || typ == h3MaxPushID || typ == h3CancelPush || typ == h3PushPromise):
-			return fmt.Errorf("%w: frame type %#x does not belong on a request stream", errH3FrameUnexpected, typ)
-		case e != nil || typ != h3Data:
-			return err
+	// Parsed in passes of h3FramesKept frames, each acted on before the
+	// next: the scratch stays the one the connection keeps however dense the
+	// delivery (parseH3FramesUpTo).
+	var (
+		rest []byte
+		err  error
+	)
+	for buf, more := st.buf, true; more; buf = rest {
+		prev := len(a.frames)
+		var frames []h3Frame
+		var skip uint64
+		frames, rest, skip, more, err = parseH3FramesUpTo(a.frames[:0], buf, a.cfg.MaxBodyBytes, h3FramesKept)
+		st.skip += skip // one of the two is zero: a skip owed empties the buffer first
+		// A frame over the bound leaves rest at its start. A DATA frame there is
+		// judged below, after the frames ahead of it, as a body over
+		// MaxBodyBytes: h1 and h2 answer that with a 413, and the declared length
+		// says so before any of the payload is buffered. A frame of a type a
+		// request stream never carries is judged on its type first — the
+		// connection error requestFrame gives it under the bound — so its
+		// declared length cannot buy it the lesser stream error. Any other type
+		// keeps the refusal parseH3Frames gave it.
+		if err != nil {
+			typ, _, e := varint.Read(rest)
+			switch {
+			case e == nil && (typ == h3Settings || typ == h3GoAway || typ == h3MaxPushID || typ == h3CancelPush || typ == h3PushPromise):
+				return fmt.Errorf("%w: frame type %#x does not belong on a request stream", errH3FrameUnexpected, typ)
+			case e != nil || typ != h3Data:
+				return err
+			}
 		}
-	}
-	a.frames = keepFrames(frames, prev)
-	for _, f := range frames {
-		switch f.Type {
-		case h3Headers:
-			// A HEADERS frame answers to the header bound, not the body one
-			// ParseH3Frames enforced: MaxBodyBytes is 32× the advertised
-			// MAX_FIELD_SECTION_SIZE, and a frame that large bought a QPACK
-			// decode far past the budget the server announced.
-			if len(f.Payload) > a.cfg.MaxHeaderBytes {
-				return fmt.Errorf("%w: a HEADERS frame of %d bytes, over the %d header bound",
-					ErrTooLarge, len(f.Payload), a.cfg.MaxHeaderBytes)
-			}
-			// An empty payload ends before the field section's prefix, the
-			// field §7.2.2 identifies: §7.1 makes that a frame error, not a
-			// decompression failure.
-			if len(f.Payload) == 0 {
-				return h3ConnectionError{Code: h3FrameError, Err: fmt.Errorf(
-					"%w: a HEADERS frame with no field section", ErrH3Protocol)}
-			}
-			if st.gotTrailers {
-				return fmt.Errorf("%w: a HEADERS frame after the trailers", errH3FrameUnexpected)
-			}
-			if st.gotHead {
-				// Trailers: held to the head's bounds and delivered in
-				// Request.Trailers — and their bytes are held to the same
-				// octet rules as everything else that could be
-				// re-serialised toward an HTTP/1.1 hop (§4.1.2, §10.3).
-				// Decoded behind the head's fields in the same storage:
-				// Request.Headers is capped at its own length, so neither
-				// overwrites the other.
-				dst := st.headers[len(st.headers):]
-				if st.handed {
-					// The handler is reading the head's storage: the
-					// trailers of a streamed body are decoded apart and
-					// copied into it (setTrailers below).
-					dst = nil
-				}
-				trailers, err := a.qpack.Decode(dst, f.Payload)
-				if err != nil {
-					return sectionRefused(err)
-				}
-				// Same field-count bound as the request block below.
-				if len(trailers) > a.cfg.MaxHeaders {
-					return h3StatusFail(431, st.req.Method, "%w: over %d trailer fields",
-						ErrTooLarge, a.cfg.MaxHeaders)
-				}
-				// The rules the head's fields passed, connection-specific
-				// fields included (checkRequestTrailer says why).
-				for _, h := range trailers {
-					if err := checkRequestTrailer(h, ErrH3Protocol); err != nil {
-						return err
-					}
-				}
-				switch {
-				case st.body != nil:
-					// A streamed body: the trailers go with it, read
-					// through Request.Trailers once it has ended.
-					st.body.setTrailers(trailers)
-				case len(trailers) > 0:
-					st.req.trailers = trailers
-				}
-				st.gotTrailers = true
-				continue
-			}
-			if st.headers, err = a.qpack.Decode(st.headers[:0], f.Payload); err != nil {
-				return sectionRefused(err)
-			}
-			// The field-count bound the h1 parser applies as it reads and h2
-			// applies after its HPACK decode, applied here at the first
-			// moment the count exists: the byte bound is not this bound — a
-			// block of near-empty fields fits the bytes while making every
-			// [Request.Get] walk hundreds of entries.
-			if fieldCount(st.headers) > a.cfg.MaxHeaders {
-				return h3StatusFail(431, nil, "%w: over %d header fields",
-					ErrTooLarge, a.cfg.MaxHeaders)
-			}
-			req, declared, err := buildRequest(st.headers, ErrH3Protocol)
-			if err != nil {
-				if errors.Is(err, errConnect) {
-					// Well formed and not served: a status on the stream,
-					// as the bounds get one, where H3_MESSAGE_ERROR would
-					// call a conforming request malformed.
-					return h3StatusFail(501, nil, "%w", err)
-				}
-				if errors.Is(err, ErrTooLarge) {
-					// A content-length past the machine word: well
-					// formed and too large, 413 as below.
-					return h3StatusFail(413, nil, "%w", err)
-				}
-				return err
-			}
-			st.headers, st.declared, st.req = req.Headers, declared, req
-			st.req.Headers = req.Headers[:len(req.Headers):len(req.Headers)]
-			st.gotHead = true
-			// The streamed bound only where a body may stream: on windows too
-			// small for manual credit bodies arrive whole, under MaxBodyBytes
-			// alone, whatever BodyDelivery asks.
-			bound := a.cfg.MaxBodyBytes
-			if a.streaming() {
-				bound = max(bound, a.cfg.MaxStreamedBodyBytes)
-			}
-			if declared > bound {
-				// A content-length past every bound a body is held to:
-				// refused before any of it is read, and before the 100 the
-				// client may be waiting for, as on HTTP/1.1 and HTTP/2.
-				return h3StatusFail(413, req.Method, "%w: a body over %d bytes", ErrTooLarge, bound)
-			}
-			if a.streaming() {
-				// The body may stream: handOver decides at the end of the
-				// delivery. Every head that completes while bodies stream is
-				// pending until then, so a stream with a head is pending or
-				// handed, and a DATA frame on it may be taken in part.
-				a.pending = append(a.pending, st.id)
-			}
-		case h3Data:
-			if !st.gotHead {
-				return fmt.Errorf("%w: DATA before HEADERS", errH3FrameUnexpected)
-			}
-			if st.gotTrailers {
-				return fmt.Errorf("%w: DATA after the trailers", errH3FrameUnexpected)
-			}
-			// The unparsed buffer is bounded on arrival, but DATA moves out
-			// of it as it drains — without appendBody's bound a client
-			// streaming DATA frames would grow the body without limit,
-			// bounded buffer notwithstanding.
-			if err := a.appendBody(st, f.Payload); err != nil {
-				return err
-			}
-		default:
-			if err := requestTypeFault(f.Type); err != nil {
+		a.frames = keepFrames(frames, prev)
+		for _, f := range frames {
+			if err := a.requestFrame(st, f); err != nil {
 				return err
 			}
 		}
@@ -1485,6 +1369,146 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 		return err // unreachable: a DATA frame over the bound is refused above
 	}
 	st.buf = keepStreamRest(st.buf, rest)
+	return nil
+}
+
+// requestFrame acts on one whole frame of a request stream, in the order
+// drain parsed it: HEADERS (the head, or the trailers once the head is in),
+// DATA (into the body), and the types a request stream never carries,
+// refused.
+func (a *h3Assembler) requestFrame(st *h3Stream, f h3Frame) error {
+	switch f.Type {
+	case h3Headers:
+		// A HEADERS frame answers to the header bound, not the body one
+		// ParseH3Frames enforced: MaxBodyBytes is 32× the advertised
+		// MAX_FIELD_SECTION_SIZE, and a frame that large bought a QPACK
+		// decode far past the budget the server announced.
+		if len(f.Payload) > a.cfg.MaxHeaderBytes {
+			return fmt.Errorf("%w: a HEADERS frame of %d bytes, over the %d header bound",
+				ErrTooLarge, len(f.Payload), a.cfg.MaxHeaderBytes)
+		}
+		// An empty payload ends before the field section's prefix, the
+		// field §7.2.2 identifies: §7.1 makes that a frame error, not a
+		// decompression failure.
+		if len(f.Payload) == 0 {
+			return h3ConnectionError{Code: h3FrameError, Err: fmt.Errorf(
+				"%w: a HEADERS frame with no field section", ErrH3Protocol)}
+		}
+		if st.gotTrailers {
+			return fmt.Errorf("%w: a HEADERS frame after the trailers", errH3FrameUnexpected)
+		}
+		if st.gotHead {
+			// Trailers: held to the head's bounds and delivered in
+			// Request.Trailers — and their bytes are held to the same
+			// octet rules as everything else that could be
+			// re-serialised toward an HTTP/1.1 hop (§4.1.2, §10.3).
+			// Decoded behind the head's fields in the same storage:
+			// Request.Headers is capped at its own length, so neither
+			// overwrites the other.
+			dst := st.headers[len(st.headers):]
+			if st.handed {
+				// The handler is reading the head's storage: the
+				// trailers of a streamed body are decoded apart and
+				// copied into it (setTrailers below).
+				dst = nil
+			}
+			trailers, err := a.qpack.Decode(dst, f.Payload)
+			if err != nil {
+				return sectionRefused(err)
+			}
+			// Same field-count bound as the request block below.
+			if len(trailers) > a.cfg.MaxHeaders {
+				return h3StatusFail(431, st.req.Method, "%w: over %d trailer fields",
+					ErrTooLarge, a.cfg.MaxHeaders)
+			}
+			// The rules the head's fields passed, connection-specific
+			// fields included (checkRequestTrailer says why).
+			for _, h := range trailers {
+				if err := checkRequestTrailer(h, ErrH3Protocol); err != nil {
+					return err
+				}
+			}
+			switch {
+			case st.body != nil:
+				// A streamed body: the trailers go with it, read
+				// through Request.Trailers once it has ended.
+				st.body.setTrailers(trailers)
+			case len(trailers) > 0:
+				st.req.trailers = trailers
+			}
+			st.gotTrailers = true
+			return nil
+		}
+		var err error
+		if st.headers, err = a.qpack.Decode(st.headers[:0], f.Payload); err != nil {
+			return sectionRefused(err)
+		}
+		// The field-count bound the h1 parser applies as it reads and h2
+		// applies after its HPACK decode, applied here at the first
+		// moment the count exists: the byte bound is not this bound — a
+		// block of near-empty fields fits the bytes while making every
+		// [Request.Get] walk hundreds of entries.
+		if fieldCount(st.headers) > a.cfg.MaxHeaders {
+			return h3StatusFail(431, nil, "%w: over %d header fields",
+				ErrTooLarge, a.cfg.MaxHeaders)
+		}
+		req, declared, err := buildRequest(st.headers, ErrH3Protocol)
+		if err != nil {
+			if errors.Is(err, errConnect) {
+				// Well formed and not served: a status on the stream,
+				// as the bounds get one, where H3_MESSAGE_ERROR would
+				// call a conforming request malformed.
+				return h3StatusFail(501, nil, "%w", err)
+			}
+			if errors.Is(err, ErrTooLarge) {
+				// A content-length past the machine word: well
+				// formed and too large, 413 as below.
+				return h3StatusFail(413, nil, "%w", err)
+			}
+			return err
+		}
+		st.headers, st.declared, st.req = req.Headers, declared, req
+		st.req.Headers = req.Headers[:len(req.Headers):len(req.Headers)]
+		st.gotHead = true
+		// The streamed bound only where a body may stream: on windows too
+		// small for manual credit bodies arrive whole, under MaxBodyBytes
+		// alone, whatever BodyDelivery asks.
+		bound := a.cfg.MaxBodyBytes
+		if a.streaming() {
+			bound = max(bound, a.cfg.MaxStreamedBodyBytes)
+		}
+		if declared > bound {
+			// A content-length past every bound a body is held to:
+			// refused before any of it is read, and before the 100 the
+			// client may be waiting for, as on HTTP/1.1 and HTTP/2.
+			return h3StatusFail(413, req.Method, "%w: a body over %d bytes", ErrTooLarge, bound)
+		}
+		if a.streaming() {
+			// The body may stream: handOver decides at the end of the
+			// delivery. Every head that completes while bodies stream is
+			// pending until then, so a stream with a head is pending or
+			// handed, and a DATA frame on it may be taken in part.
+			a.pending = append(a.pending, st.id)
+		}
+	case h3Data:
+		if !st.gotHead {
+			return fmt.Errorf("%w: DATA before HEADERS", errH3FrameUnexpected)
+		}
+		if st.gotTrailers {
+			return fmt.Errorf("%w: DATA after the trailers", errH3FrameUnexpected)
+		}
+		// The unparsed buffer is bounded on arrival, but DATA moves out
+		// of it as it drains — without appendBody's bound a client
+		// streaming DATA frames would grow the body without limit,
+		// bounded buffer notwithstanding.
+		if err := a.appendBody(st, f.Payload); err != nil {
+			return err
+		}
+	default:
+		if err := requestTypeFault(f.Type); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
