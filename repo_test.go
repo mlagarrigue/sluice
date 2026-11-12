@@ -533,7 +533,6 @@ func unnamedADRChanges(dir string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	record := regexp.MustCompile(`^diff --git a/\S*docs/design/adr/(\d{4})-\S+ b/`)
 	var faults []string
 	for rec := range strings.SplitSeq(string(out), "\x1e") {
 		parts := strings.SplitN(rec, "\x00", 4)
@@ -541,44 +540,74 @@ func unnamedADRChanges(dir string) ([]string, error) {
 			continue
 		}
 		hash, msg, diff := parts[0], parts[2], parts[3]
-		num, fresh, section, inHunk := "", false, "", false
-		changed := map[string]bool{}
-		for l := range strings.SplitSeq(diff, "\n") {
-			if m := record.FindStringSubmatch(l); m != nil {
-				num, fresh, section, inHunk = m[1], false, "", false
+		for _, n := range adrRecordsChanged(diff) {
+			if slices.Contains(namedLater(hash), n) || namesADR(msg, n) {
 				continue
 			}
-			if num == "" || fresh {
-				continue
-			}
-			switch {
-			case strings.HasPrefix(l, "new file mode "):
-				fresh = true
-				continue
-			case strings.HasPrefix(l, "@@"):
-				inHunk = true
-				continue
-			case !inHunk || l == "":
-				continue
-			}
-			if text := l[1:]; strings.HasPrefix(text, "## ") && l[0] != '-' {
-				section = strings.TrimPrefix(text, "## ")
-			}
-			if (l[0] == '+' || l[0] == '-') && (section == "Decision" || section == "Rationale") {
-				changed[num] = true
-			}
-		}
-		for n := range changed {
-			if slices.Contains(namedLater(hash), n) {
-				continue
-			}
-			if !strings.Contains(msg, "ADR "+n) && !strings.Contains(msg, "adr/"+n) {
-				faults = append(faults, fmt.Sprintf("%s changes ADR %s's Decision or Rationale and does not name it", hash, n))
-			}
+			faults = append(faults, fmt.Sprintf("%s changes ADR %s's Decision or Rationale and does not name it", hash, n))
 		}
 	}
 	slices.Sort(faults)
 	return faults, nil
+}
+
+// stagedUnnamedADRChanges is unnamedADRChanges for the commit being made:
+// the records whose Decision or Rationale the staged changes of the
+// repository at dir change and that msg, its message, does not name.
+func stagedUnnamedADRChanges(dir, msg string) ([]string, error) {
+	out, err := exec.Command("git", "-C", dir, "diff", "--cached", "-U100000", "--", "docs/design/adr/").Output() //nolint:gosec // G204: a repository path, not input
+	if err != nil {
+		return nil, err
+	}
+	var faults []string
+	for _, n := range adrRecordsChanged(string(out)) {
+		if !namesADR(msg, n) {
+			faults = append(faults, fmt.Sprintf("the staged changes change ADR %s's Decision or Rationale and the message does not name it", n))
+		}
+	}
+	return faults, nil
+}
+
+// adrRecordsChanged reads a diff of docs/design/adr/ taken with the whole
+// file as context (-U100000), so that every changed line sits under its
+// section's heading, and returns, sorted, the records whose Decision or
+// Rationale it changes. A record the diff brings in is not a change.
+func adrRecordsChanged(diff string) []string {
+	record := regexp.MustCompile(`^diff --git a/\S*docs/design/adr/(\d{4})-\S+ b/`)
+	num, fresh, section, inHunk := "", false, "", false
+	changed := map[string]bool{}
+	for l := range strings.SplitSeq(diff, "\n") {
+		if m := record.FindStringSubmatch(l); m != nil {
+			num, fresh, section, inHunk = m[1], false, "", false
+			continue
+		}
+		if num == "" || fresh {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(l, "new file mode "):
+			fresh = true
+			continue
+		case strings.HasPrefix(l, "@@"):
+			inHunk = true
+			continue
+		case !inHunk || l == "":
+			continue
+		}
+		if text := l[1:]; strings.HasPrefix(text, "## ") && l[0] != '-' {
+			section = strings.TrimPrefix(text, "## ")
+		}
+		if (l[0] == '+' || l[0] == '-') && (section == "Decision" || section == "Rationale") {
+			changed[num] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(changed))
+}
+
+// namesADR reports whether a commit message names record n, as "ADR 0007"
+// or "adr/0007".
+func namesADR(msg, n string) bool {
+	return strings.Contains(msg, "ADR "+n) || strings.Contains(msg, "adr/"+n)
 }
 
 // namedLater is the records adrNamedLater names for an abbreviated hash.
@@ -604,6 +633,27 @@ func TestCommitsNameTheDecisionRecordTheyChange(t *testing.T) {
 	faults, err := unnamedADRChanges(".")
 	if err != nil {
 		t.Skipf("not a git checkout: %v", err)
+	}
+	for _, f := range faults {
+		t.Error(f)
+	}
+}
+
+// The same rule before the commit exists: a pre-commit hook passes the
+// message it is about to commit in SLUICE_COMMIT_MESSAGE, and the staged
+// changes are read against it. The history check above sees a fault only
+// once it is committed, and a published commit is not rewritten.
+func TestStagedChangesNameTheDecisionRecordTheyChange(t *testing.T) {
+	msg, ok := os.LookupEnv("SLUICE_COMMIT_MESSAGE")
+	if !ok {
+		t.Skip("no commit in progress: SLUICE_COMMIT_MESSAGE is unset")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	faults, err := stagedUnnamedADRChanges(".", msg)
+	if err != nil {
+		t.Fatalf("reading the staged changes: %v", err)
 	}
 	for _, f := range faults {
 		t.Error(f)
@@ -654,6 +704,38 @@ func TestUnnamedADRChangesAreFound(t *testing.T) {
 	}
 	if len(faults) != 1 || !strings.Contains(faults[0], "ADR 0007") {
 		t.Fatalf("faults = %q, want one, for the quiet change", faults)
+	}
+
+	// Staged and not yet committed: a Rationale change is found against a
+	// message that does not name the record, and passes one that does; a
+	// Problem change passes either.
+	stagedFaults := func(msg string) []string {
+		t.Helper()
+		f, err := stagedUnnamedADRChanges(dir, msg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	write("Another problem, staged.", "Third.")
+	git("2026-11-05", "add", "-A")
+	if f := stagedFaults("docs: a quiet change"); len(f) != 0 {
+		t.Fatalf("a staged Problem change: faults = %q, want none", f)
+	}
+	p := filepath.Join(dir, "docs", "design", "adr", "0007-x.md")
+	body, err := os.ReadFile(p) //nolint:gosec // G304: a file of the test's own repository
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(strings.Replace(string(body), "Because.", "Because of the staged reason.", 1)), 0o600); err != nil { //nolint:gosec // G703: a file of the test's own repository
+		t.Fatal(err)
+	}
+	git("2026-11-05", "add", "-A")
+	if f := stagedFaults("docs: a quiet change"); len(f) != 1 || !strings.Contains(f[0], "ADR 0007") {
+		t.Fatalf("a staged Rationale change: faults = %q, want one naming ADR 0007", f)
+	}
+	if f := stagedFaults("docs: ADR 0007 gives its reason anew"); len(f) != 0 {
+		t.Fatalf("a staged Rationale change named in the message: faults = %q, want none", f)
 	}
 }
 
