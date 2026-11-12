@@ -241,7 +241,7 @@ type Batch[T any] struct {
 > they change its contents. A `Ctx` field would have to be copied at each of
 > those sites and at every one added later; the omission would compile, run,
 > and silently drop the context from that stage onward — the failure mode the
-> [merge join](#joinmergejoin--the-central-primitive) went out of its way to turn
+> [merge join](#joinmergejoin--the-merge-the-sorted-set-operations-derive-from) went out of its way to turn
 > into a panic.
 >
 > Cost was measured and is not the reason: a `context.Context` is an interface,
@@ -678,7 +678,7 @@ inputs in lockstep and retain only the current equal-key run; `join.MergeJoin`
 is O(1) while keys repeat on at most one side — a key repeated on both buffers
 its right run to emit the cross product, O(m) over that run, so a stream that
 is one long many-to-many run materializes its right input
-([the merge join](#joinmergejoin--the-central-primitive)). `join.Interval`
+([the merge join](#joinmergejoin--the-merge-the-sorted-set-operations-derive-from)). `join.Interval`
 retains a bounded window of both sides; `join.StreamTable` materializes its
 build side entirely, under a required bound.
 
@@ -914,9 +914,9 @@ joining pairs elements on a key, merging combines sequences.
 Unsorted `Union`, `Intersect` and `Except` **do not exist** as stream
 operators: an unbounded HashSet
 violates S1. They are provided only in a sorted variant, derived from
-`join.MergeJoin` ([join.MergeJoin](#joinmergejoin--the-central-primitive)) — this is the sort-merge strategy of SQL engines.
+`join.MergeJoin` ([join.MergeJoin](#joinmergejoin--the-merge-the-sorted-set-operations-derive-from)) — this is the sort-merge strategy of SQL engines.
 
-### `join.MergeJoin` — the central primitive
+### `join.MergeJoin` — the merge the sorted set operations derive from
 
 A single operator subsumes six semantics, in O(1) memory — with the equal-key
 caveat below — over **potentially infinite** streams provided they are sorted
@@ -1099,7 +1099,7 @@ wins.
 
 ### Errors and diagnostics at merge time
 
-Rx explicitly distinguishes two strategies, and the distinction is the right one:
+Rx (ReactiveX, a family of libraries for asynchronous event streams) explicitly distinguishes two strategies, and the distinction is the right one:
 
 | Strategy | Behavior |
 |---|---|
@@ -1246,6 +1246,12 @@ for the best effort-to-gain ratio in the project.
 > connector cannot do it for the caller, since only the caller knows which
 > indexes may be dropped — but the sentence belongs here, where it costs one
 > line and otherwise costs a rediscovery.
+
+### The connector, part by part
+
+What the connector holds to beyond pipelining and COPY: how it cuts the
+byte stream into messages, how it reads results, how its codecs are
+checked, and two types that ask for a decision.
 
 #### The framing layer
 
@@ -1454,7 +1460,8 @@ construction.
 ### Hash join — the build side is a table
 
 The build side **is** a table, the probe side drives the join and alone produces
-the outputs (Kafka Streams' stream/table duality). Naming both sides in the API
+the outputs (the stream/table duality of Kafka Streams, the stream
+processing library of Apache Kafka, a distributed log). Naming both sides in the API
 removes the ambiguity about which one is materialized.
 
 ```go
@@ -1469,7 +1476,8 @@ func StreamTable[A, B any, K comparable, R any](   // package join
 ```
 
 **`limit` is required, not an option.** Making unbounded state *inexpressible* is
-better than detecting it at runtime. Spark **refuses at planning time** a
+better than detecting it at runtime. Spark (Apache Spark, a distributed
+engine for batch and stream processing) **refuses at planning time** a
 stream-stream outer join without a watermark; Kafka **deprecated** its implicit
 24 h grace period (KIP-633). The safe default is zero tolerance, widened on
 request.
@@ -1488,7 +1496,8 @@ every operator consults, which a library with no global state does not have
 ([ADR 0016](adr/0016-hash-join-bound.md)).
 
 **Storage is in memory.** Never hardwire a persistence policy into an operator
-for its own sake: Kafka Streams ended up mandating RocksDB in its foreign-key
+for its own sake: Kafka Streams ended up mandating RocksDB (a key-value
+store embedded on disk) in its foreign-key
 join, in contradiction with its own agnosticism goal. The day spill
 (continuing on disk when memory is full) has a consumer, the reference is
 radix partitioning with recursive bit increase (DuckDB), with its known
@@ -1524,7 +1533,7 @@ thrashing*.
 | Strategy | Condition | Memory |
 |---|---|---|
 | Hash join | `comparable` keys | O(build) |
-| Merge join ([join.MergeJoin](#joinmergejoin--the-central-primitive)) | both streams sorted on the key | O(1), O(m) per run repeated on both sides |
+| Merge join ([join.MergeJoin](#joinmergejoin--the-merge-the-sorted-set-operations-derive-from)) | both streams sorted on the key | O(1), O(m) per run repeated on both sides |
 | Interval join | ordered temporal streams | O(throughput × interval) |
 | Nested loop | last resort, replayable right side | O(1), CPU O(n·m) |
 
@@ -1557,7 +1566,8 @@ func Interval[L, R any, K comparable, Out any](    // package join
 ) Stream[Out]
 ```
 
-**Accepted restrictions, taken from Flink: inner join and event time only.** A
+**Accepted restrictions, taken from Flink (Apache Flink, a distributed
+stream processing engine): inner join and event time only.** A
 windowed outer join requires knowing *when to give up finding a partner*, hence a
 watermark — a moving mark that says "nothing older than this will arrive". Without one the semantics is **undefined**, and exposing it would be
 lying to the user.
@@ -1616,7 +1626,8 @@ bound, never silently.
 
 Three accumulation modes exist (Dataflow Model); *accumulating & retracting* — the
 revision of an already-emitted result, "what I told you before was wrong" — is by far the most expensive. **This
-library does `discarding` only.** That is what blows up Beam's complexity, and
+library does `discarding` only.** That is what blows up the complexity of
+Beam (Apache Beam, a pipeline model that other engines run), and
 it is out of reach for a single-process engine without durable state.
 
 *Caveat: no source shows the Beam team calling retractions a design error. It is
