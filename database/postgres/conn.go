@@ -800,11 +800,12 @@ type QueryConfig struct {
 	// for every row — but the first execution still falls into it.
 	BatchRows int
 
-	// BatchBytes bounds the values a batch holds, in bytes. BatchRows bounds
+	// BatchBytes bounds what a batch holds, in bytes: its values, and the
+	// four bytes of offset each field takes, a NULL's included. BatchRows bounds
 	// a batch in rows, which says nothing about its size: a thousand rows of
 	// a megabyte each are a gigabyte, held until the batch is delivered — and
 	// a server, pooler or man in the middle can make every row that wide. A
-	// batch whose values reach BatchBytes is delivered with the row that
+	// batch that reaches BatchBytes is delivered with the row that
 	// crossed the bound in it, and the next row opens the next batch; nothing
 	// fails, the consumer sees more and smaller batches, and [Config.Logger]
 	// receives one warning per result. A single row wider than the bound

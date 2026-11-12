@@ -384,15 +384,21 @@ func (r *Rows) NumFields() int { return r.fields }
 // bound, which is what a caller polls after each Rows.appendRow to decide when
 // to hand the batch downstream.
 //
-// The byte bound is a threshold, not a refusal: the row that takes the values
+// The byte bound is a threshold, not a refusal: the row that takes the batch
 // past it is accepted, and the batch is full with it in. So a batch holds at
 // most maxBytes plus one row, and a single row wider than the bound still
-// travels, in a batch of its own.
-func (r *Rows) full() bool { return r.rows >= r.maxRows || len(r.buf) >= r.maxBytes }
+// travels, in a batch of its own. What it counts is what the batch holds
+// (held): the values, and the offset every field takes in ends, a NULL's
+// included — on the values alone, rows of NULLs never reached the bound.
+func (r *Rows) full() bool { return r.rows >= r.maxRows || r.held() >= r.maxBytes }
 
 // fullOnBytes reports whether the byte bound, not the row limit, is what
 // filled the batch: the cut a reader logs.
-func (r *Rows) fullOnBytes() bool { return r.rows < r.maxRows && len(r.buf) >= r.maxBytes }
+func (r *Rows) fullOnBytes() bool { return r.rows < r.maxRows && r.held() >= r.maxBytes }
+
+// held is what the batch holds against its byte bound: the values' bytes
+// and four per field for its offset.
+func (r *Rows) held() int { return len(r.buf) + 4*len(r.ends) }
 
 // largestRow returns the size of the widest row held, in bytes of values.
 // Cold: it walks the offsets, and is called once per result, when the byte

@@ -40,8 +40,9 @@ type ReplicationConfig struct {
 	// names more than the batch has room for.
 	BatchChanges int
 
-	// BatchBytes bounds the message payloads one batch keeps, in bytes.
-	// Zero means 64 MiB, the default of [QueryConfig.BatchBytes]; a negative
+	// BatchBytes bounds what one batch keeps, in bytes: the message
+	// payloads, and the [Value] each decoded column takes, a NULL's or an
+	// unchanged one's included. Zero means 64 MiB, the default of [QueryConfig.BatchBytes]; a negative
 	// value, or one above its ceiling of 1 GiB, is refused.
 	//
 	// It is the bound that makes a batch end: the values a change carries
@@ -432,7 +433,12 @@ func (r *Replication) copyData(p []byte) error {
 		at := LSN(binary.BigEndian.Uint64(p[1:9]))
 		r.serverEnd.Store(binary.BigEndian.Uint64(p[9:17]))
 		var err error
+		decoded := len(r.vals)
 		r.changes, r.spans, r.vals, err = r.dec.decode(r.keep(p[25:]), at, r.changes, r.spans, r.vals)
+		// The batch also holds a Value per column decoded, NULL or
+		// unchanged ones included, which carry no payload: counted on the
+		// payloads alone, wide rows of NULLs never reached BatchBytes.
+		r.kept += (len(r.vals) - decoded) * valueBytes
 		return err
 	case 'k':
 		if len(p) != 18 {
@@ -446,6 +452,11 @@ func (r *Replication) copyData(p []byte) error {
 	}
 	return fmt.Errorf("%w: CopyData %q during replication", ErrProtocol, p[0])
 }
+
+// valueBytes is what one decoded column costs a batch, unsafe.Sizeof(Value{})
+// on a 64-bit platform (TestValueBytesIsTheSizeOfAValue): its status and the
+// slice header of its data.
+const valueBytes = 32
 
 // arenaChunk is the size of one arena chunk; a payload larger than it gets a
 // chunk of its own.
