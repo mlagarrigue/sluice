@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"os"
 	"slices"
@@ -281,6 +282,7 @@ func h3Credit(c *quic.Conn, cfg Config, a *h3Assembler) quic.Credit {
 	if cfg.BodyDelivery == BodyStreamed {
 		a.CreditConn = c.ReleaseConnectionCredit
 		a.CreditStream = c.ReleaseStreamCredit
+		a.streamWindow = int(min(c.LocalParameters().InitialMaxStreamDataBidiRemote, math.MaxInt)) //nolint:gosec // G115: capped at MaxInt
 		a.Interim = func(id, fieldSection uint64) { writeH3Interim(c, id, fieldSection, writeBoundOf(cfg)) }
 	}
 	return quic.CreditOnRelease

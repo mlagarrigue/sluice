@@ -408,3 +408,40 @@ func TestH3ControlStreamFrameTooLong(t *testing.T) {
 		}
 	}
 }
+
+// A streamed body's ring stops at what the stream's window lets the peer
+// have in hand, as over HTTP/2: doubling past a window that is not a power
+// of two allocated up to twice what limits.md counts per stream.
+func TestH3StreamedBodyRingStopsAtTheStreamWindow(t *testing.T) {
+	cfg := Config{MaxBodyBytes: 1 << 10, MaxStreamedBodyBytes: 1 << 20}.mustResolve()
+	const window = 100_000
+	params := quic.DefaultConfig()
+	params.InitialMaxStreamDataBidiRemote, params.InitialMaxData = window, 1<<20
+	a := newH3Assembler(cfg)
+	if got := h3Credit(serverConnWith(t, params), cfg, a); got != quic.CreditOnRelease {
+		t.Fatalf("credit %v: bodies would not stream", got)
+	}
+	delivery := h3Request("POST", "/upload")
+	for range 9 {
+		delivery = appendH3Frame(delivery, h3Data, make([]byte, 10_000))
+	}
+	if len(delivery) > window {
+		t.Fatalf("the delivery is %d bytes, more than the window of %d lets the peer send", len(delivery), window)
+	}
+	if _, _, _, err := a.Frames([]quic.Frame{streamFrame(0, delivery, false)}); err != nil {
+		t.Fatal(err)
+	}
+	st := a.streams[0]
+	if st == nil || st.body == nil {
+		t.Fatal("precondition lost: the body did not stream")
+	}
+	st.body.mu.Lock()
+	held, ring := st.body.n, cap(st.body.buf)
+	st.body.mu.Unlock()
+	if held != 90_000 {
+		t.Fatalf("precondition lost: %d bytes held, want 90000", held)
+	}
+	if ring > window {
+		t.Errorf("the ring holding %d bytes is %d bytes, past the stream window of %d", held, ring, window)
+	}
+}

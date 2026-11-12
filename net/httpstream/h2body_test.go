@@ -190,7 +190,7 @@ func TestH2UnreadStreamedBodyIsResetAfterTheResponse(t *testing.T) {
 // handler's return is still refused.
 func TestAnUnreadStreamedBodyIsCountedToItsEnd(t *testing.T) {
 	t.Run("queue", func(t *testing.T) {
-		q := newBodyQueue(Config{MaxBodyBytes: 1 << 10, MaxStreamedBodyBytes: 1 << 20}, 1, nil, 2000, false)
+		q := newBodyQueue(Config{MaxBodyBytes: 1 << 10, MaxStreamedBodyBytes: 1 << 20}, 1, nil, 2000, false, 0)
 		q.window, q.initial = 1<<20, 1<<20
 		q.add(make([]byte, 1000))
 		q.close() // the handler returned without reading
@@ -200,7 +200,7 @@ func TestAnUnreadStreamedBodyIsCountedToItsEnd(t *testing.T) {
 		}
 	})
 	t.Run("queue still checks the sum", func(t *testing.T) {
-		q := newBodyQueue(Config{MaxBodyBytes: 1 << 10, MaxStreamedBodyBytes: 1 << 20}, 1, nil, 2000, false)
+		q := newBodyQueue(Config{MaxBodyBytes: 1 << 10, MaxStreamedBodyBytes: 1 << 20}, 1, nil, 2000, false, 0)
 		q.window, q.initial = 1<<20, 1<<20
 		q.add(make([]byte, 1000))
 		q.close()

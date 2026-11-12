@@ -133,6 +133,9 @@ type h3Assembler struct {
 	CreditConn   func(n uint64)
 	CreditStream func(streamID, n uint64)
 	Interim      func(streamID, fieldSection uint64)
+	// streamWindow is the QUIC stream window a request stream's peer may
+	// fill, the ceiling of a streamed body's ring (bodyQueue.ring).
+	streamWindow int
 
 	// pending lists the request streams whose head completed in this
 	// delivery, when bodies stream: at its end each one still assembling is
@@ -763,7 +766,7 @@ func (a *h3Assembler) creditConn(n int) {
 // into a streamed body, with st's body so far as its first bytes. The caller
 // moves those bytes' accounting.
 func (a *h3Assembler) newH3Body(st *h3Stream) *bodyQueue {
-	b := newBodyQueue(a.cfg, st.id, st.req.Body, st.declared, expectsContinue(st.req))
+	b := newBodyQueue(a.cfg, st.id, st.req.Body, st.declared, expectsContinue(st.req), a.streamWindow)
 	id, credit := st.id, a.CreditStream
 	b.release = func(n int) { credit(id, uint64(n)) } //nolint:gosec // G115: a byte count
 	if interim := a.Interim; interim != nil {

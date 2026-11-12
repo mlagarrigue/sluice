@@ -50,6 +50,10 @@ type bodyQueue struct {
 	// initial is the window it grants, InitialWindowSize.
 	h2      *h2Conn
 	initial int32
+	// ring is the most the ring grows to: what the stream's window lets
+	// the peer have in hand — InitialWindowSize and its grace over HTTP/2,
+	// the QUIC stream window over HTTP/3. Zero leaves it unbounded.
+	ring int
 	// release gives n bytes of stream-level credit back to the QUIC
 	// transport, nil over HTTP/2.
 	release func(n int)
@@ -97,11 +101,12 @@ var errBodyReset = fmt.Errorf("%w: the client reset the stream mid-body", ErrMal
 var errBodyConnClosed = fmt.Errorf("%w: the connection closed mid-body", ErrMalformed)
 
 // newBodyQueue starts a streamed body with what was buffered before it began
-// to stream as its first bytes.
-func newBodyQueue(cfg Config, id uint64, first []byte, declared int, expect bool) *bodyQueue {
+// to stream as its first bytes; window is what the stream's window lets the
+// peer have in hand, the ring's ceiling (zero: none).
+func newBodyQueue(cfg Config, id uint64, first []byte, declared int, expect bool, window int) *bodyQueue {
 	b := &bodyQueue{
 		id: id, limit: max(cfg.MaxBodyBytes, cfg.MaxStreamedBodyBytes), timeout: cfg.ReadTimeout, need: cfg.ReadProgressBytes,
-		wake: make(chan struct{}, 1), total: len(first), declared: declared, expect: expect,
+		wake: make(chan struct{}, 1), total: len(first), declared: declared, expect: expect, ring: window,
 	}
 	if len(first) > 0 {
 		b.buf = append(make([]byte, 0, max(len(first), bodyMinRing)), first...)
@@ -117,7 +122,8 @@ func newBodyQueue(cfg Config, id uint64, first []byte, declared int, expect bool
 // newH2Body turns st, whose head is complete and whose body has not ended,
 // into a streamed body. Called by the reader.
 func (s *h2Conn) newH2Body(st *h2Stream) *bodyQueue {
-	b := newBodyQueue(s.cfg, uint64(st.id), st.body, st.declared, expectsContinue(st.req))
+	window := s.cfg.InitialWindowSize + int(st.windowGrace)
+	b := newBodyQueue(s.cfg, uint64(st.id), st.body, st.declared, expectsContinue(st.req), window)
 	b.h2 = s
 	b.initial = int32(s.cfg.InitialWindowSize) //nolint:gosec // G115: capped by resolve
 	b.window, b.grace = st.recvWind, st.windowGrace
@@ -200,10 +206,11 @@ func (b *bodyQueue) addLocked(data []byte) (dropped int) {
 // ring is a new one, and the old one stays as it is for as long as the
 // handler's slice keeps it.
 //
-// The ring doubles, and over HTTP/2 stops at what the stream's window lets
-// the peer have in hand, InitialWindowSize and its grace: held bytes never
-// pass it (grantLocked tops the window up to it, no further), and a ring
-// doubled past it would allocate up to twice the window limits.md counts.
+// The ring doubles, and stops at what the stream's window lets the peer
+// have in hand (ring): held bytes never pass it — over HTTP/2 grantLocked
+// tops the window up to it, no further; over HTTP/3 the transport holds the
+// peer to it — and a ring doubled past it would allocate up to twice the
+// window limits.md counts.
 func (b *bodyQueue) push(data []byte) {
 	if len(data) == 0 {
 		return
@@ -213,8 +220,8 @@ func (b *bodyQueue) push(data []byte) {
 		for size < b.n+len(data) {
 			size *= 2
 		}
-		if b.h2 != nil {
-			size = max(min(size, int(b.initial)+int(b.grace)), b.n+len(data))
+		if b.ring > 0 {
+			size = max(min(size, b.ring), b.n+len(data))
 		}
 		grown := make([]byte, size)
 		k := copy(grown, b.buf[b.head:min(b.head+b.n, len(b.buf))])

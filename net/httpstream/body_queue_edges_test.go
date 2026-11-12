@@ -11,16 +11,16 @@ import (
 // more is refused.
 func TestABodyQueueOfTheBound(t *testing.T) {
 	cfg := Config{MaxBodyBytes: 8}.mustResolve()
-	q := newBodyQueue(cfg, 1, []byte("12345678"), -1, false)
+	q := newBodyQueue(cfg, 1, []byte("12345678"), -1, false, 0)
 	if data, err := q.next(); err != nil || string(data) != "12345678" {
 		t.Errorf("buffered at the bound: %q, %v", data, err)
 	}
-	q = newBodyQueue(cfg, 1, []byte("123456789"), -1, false)
+	q = newBodyQueue(cfg, 1, []byte("123456789"), -1, false, 0)
 	if _, err := q.next(); !errors.Is(err, ErrTooLarge) {
 		t.Errorf("buffered one byte over: %v, want ErrTooLarge", err)
 	}
 
-	q = newBodyQueue(cfg, 1, nil, -1, false)
+	q = newBodyQueue(cfg, 1, nil, -1, false, 0)
 	q.add([]byte("1234"))
 	q.add([]byte("5678"))
 	if err := q.end(); err != nil {
@@ -44,7 +44,7 @@ func TestABodyQueueOfTheBound(t *testing.T) {
 // given back when there is nothing to give.
 func TestABodyQueueGivesBackWhatItDrops(t *testing.T) {
 	var given []int
-	q := newBodyQueue(Config{MaxBodyBytes: 8}.mustResolve(), 1, nil, -1, false)
+	q := newBodyQueue(Config{MaxBodyBytes: 8}.mustResolve(), 1, nil, -1, false, 0)
 	q.release = func(n int) { given = append(given, n) }
 	q.add([]byte("123"))
 	q.add([]byte("456789"))
@@ -53,7 +53,7 @@ func TestABodyQueueGivesBackWhatItDrops(t *testing.T) {
 	}
 
 	given = nil
-	q = newBodyQueue(Config{}.mustResolve(), 1, nil, -1, false)
+	q = newBodyQueue(Config{}.mustResolve(), 1, nil, -1, false, 0)
 	q.release = func(n int) { given = append(given, n) }
 	q.close()
 	if len(given) != 0 {
@@ -66,7 +66,7 @@ func TestABodyQueueGivesBackWhatItDrops(t *testing.T) {
 func TestABodyQueueWindowAndItsGrace(t *testing.T) {
 	cfg := Config{}.mustResolve()
 	for used, ok := range map[int32]bool{15: true, 16: false} {
-		q := newBodyQueue(cfg, 1, nil, -1, false)
+		q := newBodyQueue(cfg, 1, nil, -1, false, 0)
 		q.window, q.grace = 10, 5
 		err := q.receive(used, make([]byte, used), false)
 		if ok != (err == nil) {
@@ -86,7 +86,7 @@ func TestABodyQueueGrantsAtHalfTheWindow(t *testing.T) {
 		{11, 6, 0},
 		{11, 5, 6},
 	} {
-		q := newBodyQueue(Config{}.mustResolve(), 1, nil, -1, false)
+		q := newBodyQueue(Config{}.mustResolve(), 1, nil, -1, false, 0)
 		q.h2 = &h2Conn{}
 		q.initial, q.window = tt.initial, tt.window
 		if got := q.grantLocked(); got != tt.want {
@@ -97,7 +97,7 @@ func TestABodyQueueGrantsAtHalfTheWindow(t *testing.T) {
 
 // A declared length of zero is held to like any other.
 func TestABodyQueueDeclaredEmpty(t *testing.T) {
-	q := newBodyQueue(Config{}.mustResolve(), 1, nil, 0, false)
+	q := newBodyQueue(Config{}.mustResolve(), 1, nil, 0, false, 0)
 	q.add([]byte("abc"))
 	if err := q.end(); !errors.Is(err, ErrMalformed) {
 		t.Errorf("three bytes against a content-length of 0: %v, want ErrMalformed", err)
@@ -106,7 +106,7 @@ func TestABodyQueueDeclaredEmpty(t *testing.T) {
 
 // Bytes that wrap around the ring come out in order, in two pieces.
 func TestABodyQueueAcrossTheRingsEnd(t *testing.T) {
-	q := newBodyQueue(Config{MaxBodyBytes: 1 << 20}.mustResolve(), 1, nil, -1, false)
+	q := newBodyQueue(Config{MaxBodyBytes: 1 << 20}.mustResolve(), 1, nil, -1, false, 0)
 	a := bytes.Repeat([]byte("a"), 12<<10)
 	b := bytes.Repeat([]byte("b"), 2<<10)
 	c := append(bytes.Repeat([]byte("c"), 2<<10), bytes.Repeat([]byte("d"), 4<<10)...)
