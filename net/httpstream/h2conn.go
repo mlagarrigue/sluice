@@ -897,8 +897,13 @@ const maxStreamID = 1<<31 - 1
 // for its first frame; with none by then, refuseSilent takes the connection.
 func (s *h2Conn) beginDrain() {
 	s.goAwayWith(maxStreamID, errNoError)
-	_ = s.w.control(h2Frame{Type: framePing, Payload: []byte(drainPing)})
+	// Begun before the PING is queued, not after: the reader takes the
+	// PING's acknowledgement only in this step, and a peer that answers as
+	// soon as it reads could otherwise be heard before the Store — the
+	// acknowledgement dropped, no second GOAWAY, the connection held to the
+	// grace.
 	s.drainStep.Store(drainBegun)
+	_ = s.w.control(h2Frame{Type: framePing, Payload: []byte(drainPing)})
 	if s.greeted.Load() == greetPending {
 		s.greetWait.Store(time.AfterFunc(s.cfg.LingerTimeout, s.refuseSilent))
 	}
