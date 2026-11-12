@@ -442,7 +442,7 @@
       "keyupdate": "succeeded",
       "ecn": "succeeded",
       "amplificationlimit": "succeeded",
-      "handshakeloss": "failed: held by the anti-amplification limit, the server waits for the client (RFC 9002 §6.2.2.1), and quinn's client stays silent for 25 s or never resends a lost Finished; every attempt of the four passes from 2026-10-30 to 2026-11-10 failed",
+      "handshakeloss": "random: held by the anti-amplification limit, the server waits for the client (RFC 9002 §6.2.2.1), and quinn's client stays silent for 25 s or never resends a lost Finished; every attempt of the four passes from 2026-10-30 to 2026-11-10 failed, and the second attempt of 2026-11-12 passed",
       "transferloss": "succeeded",
       "handshakecorruption": "random: held by the anti-amplification limit, the server waits for the client (RFC 9002 §6.2.2.1), and quinn's client stays silent for 25 s or never resends a lost Finished",
       "transfercorruption": "succeeded",
