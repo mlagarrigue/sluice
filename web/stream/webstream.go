@@ -68,6 +68,8 @@
 // diagnostic each, so a batch's diagnostics are bounded by its stage count
 // plus whatever the caller's own stages append — bounding those is the
 // caller's, exactly as with [diagnostics.Collector].
+//
+// The guide: docs/guide/httpstream.md, "web/stream".
 package stream
 
 import (

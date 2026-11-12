@@ -9,6 +9,10 @@
 // [Interval], [Bits], [TimeOfDay] and [TimeTZ] hold what no Go type holds
 // exactly.
 //
+//	buf := pgtype.AppendInt8(nil, 42)                     // int8's eight bytes, big-endian
+//	n, err := pgtype.DecodeInt8(buf)                      // 42
+//	keys := pgtype.AppendInt8Array(nil, []int64{1, 2, 3}) // an int8[], sent as OIDInt8Array
+//
 // The package is the codec of github.com/mlagarrigue/sluice/database/postgres
 // and imports nothing of it: building a COPY payload, testing an encoding or
 // writing a code generator needs no connection. What needs one stays there —

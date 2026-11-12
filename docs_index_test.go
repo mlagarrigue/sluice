@@ -2,6 +2,8 @@ package sluice_test
 
 import (
 	"bytes"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -356,5 +358,69 @@ func TestGlossaryDefinesTheGuidesTerms(t *testing.T) {
 		if !bytes.Contains(bytes.ToLower(others), bytes.ToLower([]byte(term))) {
 			t.Errorf("%q is used by no page of docs/ but the glossary: drop it from glossaryTerms", term)
 		}
+	}
+}
+
+// Every public package's comment ends on the guide that teaches it — "The
+// guide: docs/…" — so that a reader of the godoc knows where the prose is;
+// web/stream put it in parentheses, net/quic in the middle of a list.
+func TestEveryPackageCommentEndsOnItsGuide(t *testing.T) {
+	guide := regexp.MustCompile(`^The guides?: (docs/[a-z/-]+\.md)`)
+	err := filepath.WalkDir(".", func(p string, d os.DirEntry, err error) error {
+		if err != nil || !d.IsDir() {
+			return err
+		}
+		if p != "." {
+			name := d.Name()
+			if strings.HasPrefix(name, ".") || name == "testdata" || name == "internal" || name == "example" || name == "cmd" {
+				return filepath.SkipDir
+			}
+			if _, err := os.Stat(filepath.Join(p, "go.mod")); err == nil {
+				return filepath.SkipDir // a nested module
+			}
+		}
+		files, err := filepath.Glob(filepath.Join(p, "*.go"))
+		if err != nil {
+			return err
+		}
+		docs := map[string]string{} // package name → its package comment
+		for _, f := range files {
+			if strings.HasSuffix(f, "_test.go") {
+				continue
+			}
+			file, err := parser.ParseFile(token.NewFileSet(), f, nil, parser.PackageClauseOnly|parser.ParseComments)
+			if err != nil {
+				return err
+			}
+			name := file.Name.Name
+			if _, ok := docs[name]; !ok {
+				docs[name] = ""
+			}
+			if file.Doc != nil {
+				docs[name] = file.Doc.Text()
+			}
+		}
+		for name, doc := range docs {
+			if name == "main" {
+				continue
+			}
+			if doc == "" {
+				t.Errorf("%s: package %s has no package comment", p, name)
+				continue
+			}
+			paragraphs := strings.Split(strings.TrimSpace(doc), "\n\n")
+			m := guide.FindStringSubmatch(paragraphs[len(paragraphs)-1])
+			if m == nil {
+				t.Errorf("%s: the package comment does not end on \"The guide: docs/….md\"", p)
+				continue
+			}
+			if _, err := os.Stat(m[1]); err != nil {
+				t.Errorf("%s: the package comment's guide %s: %v", p, m[1], err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

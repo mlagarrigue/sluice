@@ -26,6 +26,19 @@
 // [Config.StatementCacheSize] sizes or turns off; through it, a statement
 // known to fit in one batch is read in one round trip ([FetchAuto]).
 //
+//	conn, err := postgres.Connect(ctx, postgres.DialTCP("127.0.0.1:5432"),
+//		postgres.Config{User: "orders", Database: "orders"})
+//	src := conn.Query(ctx, "SELECT id, total FROM orders WHERE id = ANY($1)",
+//		[]postgres.Param{{OID: pgtype.OIDInt8Array, Value: pgtype.AppendInt8Array(nil, keys)}},
+//		postgres.QueryConfig{BatchRows: 1024})
+//	for b := range src.Stream() {
+//		for _, row := range b.Items {
+//			idBytes, isNull := row.Value(0) // column 0, as bytes, and whether it is NULL
+//			// …
+//		}
+//	}
+//	err = src.Err() // what could not travel inside the stream
+//
 // # Authentication
 //
 // SCRAM-SHA-256 is the default and needs nothing turned on. Cleartext

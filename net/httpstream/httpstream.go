@@ -37,14 +37,15 @@
 //	}
 //	err := httpstream.Serve(ctx, ln, httpstream.Config{}, handle) // HTTP/1.1 and HTTP/2
 //
-// Where to read on:
-//   - docs/guide/httpstream.md — the guide: serving, bodies, streamed
-//     responses, stopping in two steps;
+// Where to read on, past the guide:
 //   - docs/reference/httpstream.md — every Config setting, the three
 //     goroutines of a connection, HTTP/2 and HTTP/3, what the parser
 //     refuses;
 //   - docs/guide/deployments.md — HTTP/1.1 exposed directly, cleartext only
 //     behind a terminating proxy, clients with a reduced HPACK table.
+//
+// The guide: docs/guide/httpstream.md — serving, bodies, streamed responses,
+// stopping in two steps.
 package httpstream
 
 import (

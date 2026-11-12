@@ -1,9 +1,16 @@
-// Package quic is an experimental QUIC version 1 implementation: the packet
-// layer — variable-length integers, frames, headers, RFC 9001 packet
-// protection — and a connection on top of it, with the transport machinery
-// of RFC 9002: acknowledgements, loss detection, retransmission, congestion
-// control (NewReno by default, CUBIC and the IETF draft of BBR to choose),
-// and flow control enforced in both directions.
+// Package quic is an experimental implementation of QUIC version 1, the
+// transport over UDP that HTTP/3 runs on.
+//
+// Why it is here: a QUIC datagram carries frames for several streams at
+// once, so one UDP read is a batch by construction — the library's thesis
+// at the transport level. [Conn.OnStreamFrames] hands it over as the
+// transport formed it, with the byte streams already reordered.
+//
+// What it holds: the packet layer — variable-length integers, frames,
+// headers, RFC 9001 packet protection — and a connection on top of it, with
+// the transport machinery of RFC 9002: acknowledgements, loss detection,
+// retransmission, congestion control (NewReno by default, CUBIC and the IETF
+// draft of BBR to choose), and flow control enforced in both directions.
 //
 // Interoperability is proven against quic-go, on each side of the
 // handshake, in continuous integration (the interop/ module), and weekly
@@ -11,11 +18,6 @@
 // quic-go, ngtcp2 and msquic — are judged case by case; treat the others as
 // untested. A section number with no RFC named, in this package, is RFC
 // 9000's.
-//
-// Why it is here: a QUIC datagram carries frames for several streams at
-// once, so one UDP read is a batch by construction — the library's thesis
-// at the transport level. [Conn.OnStreamFrames] hands it over as the
-// transport formed it, with the byte streams already reordered.
 //
 //	client, err := quic.Dial(ctx, pc, addr, tlsConfig, quic.DefaultConfig())
 //	s, err := client.OpenStream(ctx)
@@ -32,15 +34,16 @@
 // that mode refuses the AES-GCM nonces and the Initial keys RFC 9001
 // prescribes.
 //
-// Where to read on:
-//   - docs/guide/experimental.md — what the package is for, and what
-//     "experimental" means here;
+// Where to read on, past the guide:
 //   - docs/reference/quic.md — the settings, what is implemented and what
 //     is not, the socket and the TLS callbacks in detail;
 //   - docs/guide/deployments.md — a client behind a NAT that rebinds, a
 //     server with several addresses;
 //   - docs/reference/protocol-positions.md — where the package departs from
 //     an RFC, and the cryptography it borrows from crypto/tls.
+//
+// The guide: docs/guide/experimental.md — what the package is for, and what
+// "experimental" means here.
 package quic
 
 import (

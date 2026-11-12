@@ -12,6 +12,12 @@
 // here affordable: the demand is read **once per batch**, so the hot path pays
 // one atomic load per thousand elements rather than a lock per row.
 //
+//	var d pushdown.Demand // the zero value means "everything"
+//	src := conn.Query(ctx, "SELECT id, total FROM orders WHERE id > $1 ORDER BY id",
+//		[]postgres.Param{{OID: pgtype.OIDInt8, Value: pgtype.AppendInt8(nil, 0)}},
+//		postgres.QueryConfig{Demand: &d, KeyParam: 1})
+//	rows := pushdown.AdvanceBy(src.Stream(), &d, keyOf) // publishes the key reached
+//
 // # Why this is not in the core
 //
 // The core is `Stream` and `Batch` and the operators that need nothing else.
