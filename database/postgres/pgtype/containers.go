@@ -65,19 +65,26 @@ func AppendArray[T any](dst []byte, a Array[T], c Codec[T]) []byte {
 	if len(dims) == 0 && len(a.Elems) > 0 {
 		dims = []ArrayDim{{Len: int32(len(a.Elems)), Lower: 1}} //nolint:gosec // G115: a slice's length
 	}
-	var flags uint32
-	if anyNull(a.Elems) {
-		flags = 1
-	}
+	// The NULL flag is written once the elements say whether one is NULL.
 	dst = binary.BigEndian.AppendUint32(dst, uint32(len(dims))) //nolint:gosec // G115: a slice's length
-	dst = binary.BigEndian.AppendUint32(dst, flags)
+	flags := len(dst)
+	dst = binary.BigEndian.AppendUint32(dst, 0)
 	dst = binary.BigEndian.AppendUint32(dst, c.OID)
 	for _, d := range dims {
 		dst = binary.BigEndian.AppendUint32(dst, uint32(d.Len))   //nolint:gosec // G115: the protocol field is int32
 		dst = binary.BigEndian.AppendUint32(dst, uint32(d.Lower)) //nolint:gosec // G115: the protocol field is int32
 	}
-	for _, v := range a.Elems {
-		dst = appendNullValue(dst, v, c.Append)
+	hasNull := false
+	if c.appendElems != nil {
+		dst, hasNull = c.appendElems(dst, a.Elems)
+	} else {
+		for _, v := range a.Elems {
+			hasNull = hasNull || !v.Valid
+			dst = appendNullValue(dst, v, c.Append)
+		}
+	}
+	if hasNull {
+		binary.BigEndian.PutUint32(dst[flags:], 1)
 	}
 	return dst
 }
@@ -150,21 +157,16 @@ func DecodeArray[T any](dst Array[T], b []byte, c Codec[T]) (Array[T], error) {
 		n *= int(d.Len)
 		dst.Dims = append(dst.Dims, d)
 	}
-	for i := range n {
-		val, rest, isNull, err := nextElement(body, i)
-		if err != nil {
+	if c.decodeElems != nil {
+		var err error
+		if dst.Elems, body, err = c.decodeElems(dst.Elems, body, n); err != nil {
 			return dst.reset(), err
 		}
-		body = rest
-		if isNull {
-			dst.Elems = append(dst.Elems, Null[T]{})
-			continue
+	} else {
+		var err error
+		if dst.Elems, body, err = otherElements(dst.Elems, body, 0, n, c.Decode); err != nil {
+			return dst.reset(), err
 		}
-		v, err := c.Decode(val)
-		if err != nil {
-			return dst.reset(), fmt.Errorf("array element %d: %w", i, err)
-		}
-		dst.Elems = append(dst.Elems, Null[T]{Value: v, Valid: true})
 	}
 	if err := trailing(body); err != nil {
 		return dst.reset(), err
