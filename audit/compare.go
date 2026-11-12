@@ -55,7 +55,7 @@ var (
 // identity is what a finding is called from one report to the next: its
 // rule, its documentation, and its text with every number but an
 // advisory's identifier set aside.
-func identity(f Finding) string {
+func identity(f *Finding) string {
 	ids := advisoryID.FindAllString(f.Current, -1)
 	text := numbers.ReplaceAllString(advisoryID.ReplaceAllString(f.Current, "\x01"), "#")
 	return f.Rule + "\x00" + f.Doc + "\x00" + text + "\x00" + strings.Join(ids, ",")
@@ -65,12 +65,13 @@ func identity(f Finding) string {
 func Compare(was, is Report) Diff {
 	d := Diff{Appeared: []Finding{}, Resolved: []Finding{}, Modified: []Modified{}}
 	pending := map[string][]Finding{}
-	for _, f := range was.Findings {
-		k := identity(f)
-		pending[k] = append(pending[k], f)
+	for i := range was.Findings {
+		k := identity(&was.Findings[i])
+		pending[k] = append(pending[k], was.Findings[i])
 	}
-	for _, f := range is.Findings {
-		k := identity(f)
+	for i := range is.Findings {
+		f := is.Findings[i]
+		k := identity(&f)
 		olds := pending[k]
 		if len(olds) == 0 {
 			d.Appeared = append(d.Appeared, f)
@@ -87,8 +88,8 @@ func Compare(was, is Report) Diff {
 		}
 		pending[k] = slices.Delete(olds, i, i+1)
 	}
-	for _, f := range was.Findings {
-		k := identity(f)
+	for i := range was.Findings {
+		k := identity(&was.Findings[i])
 		if len(pending[k]) > 0 {
 			d.Resolved = append(d.Resolved, pending[k][0])
 			pending[k] = pending[k][1:]

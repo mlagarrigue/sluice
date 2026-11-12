@@ -182,6 +182,12 @@ type Finding struct {
 	Verdict string `json:"verdict,omitempty"`
 	Why     string `json:"why"`
 	Doc     string `json:"doc"`
+
+	// Fix is the setting that would remove the finding, when the value to
+	// set is sure without asking: [Propose] writes it to a file for a
+	// person to apply. Nil when the fix needs a judgment — a certificate,
+	// a memory size — the report's Proposed then says it.
+	Fix *Fix `json:"fix,omitempty"`
 }
 
 // A Rule reads a target and says what it would change. Needs are the axis
@@ -254,7 +260,9 @@ func Run(sel Selection, answers Answers, t *Target) ([]Finding, error) {
 		if !sel.Covers(r.Needs) {
 			continue
 		}
-		for _, f := range r.Check(t, answers) {
+		found := r.Check(t, answers)
+		for i := range found {
+			f := &found[i]
 			f.Rule = r.Name
 			if f.Doc == "" {
 				// The rule's link is the default, not the law: an advisory
@@ -267,7 +275,7 @@ func Run(sel Selection, answers Answers, t *Target) ([]Finding, error) {
 			if f.Goal == "" {
 				f.Goal = r.Needs[Goals][0]
 			}
-			out = append(out, f)
+			out = append(out, *f)
 		}
 	}
 	return out, nil

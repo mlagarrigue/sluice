@@ -169,6 +169,20 @@ go run -C audit ./cmd/audit -module . -cve yes -sources tools -output json > bef
 go run -C audit ./cmd/audit -module . -cve yes -sources tools -compare before.json -fail-on cve
 ```
 
+## Fixes, written and never applied
+
+`-propose <directory>` writes the fixes whose value is sure without
+asking: `99-sluice-audit.conf` for the kernel's bounds, a `sysctl.d` file,
+and `sluice-audit.sql` for PostgreSQL's settings, `ALTER SYSTEM`
+statements that every installation accepts whichever file its
+configuration lives in. Each file starts with the command that applies it,
+each line with the rule that asked for it and its documentation. The audit
+runs neither command, and does not write over a file that is there. A fix
+that needs a judgment — a certificate for `ssl`, the machine's memory for
+`shared_buffers` — is not written; the finding says what to decide. Once a
+file is applied, the next report no longer has the finding, which is how a
+fix is checked.
+
 ## What it does not do
 
 It proposes; a person decides. A finding is not a failure: the interop

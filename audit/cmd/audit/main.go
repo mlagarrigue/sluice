@@ -26,6 +26,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/mlagarrigue/sluice/audit"
@@ -56,6 +57,11 @@ func (g gateError) Error() string { return strings.Join(g, "; ") }
 // axisFlags binds one flag per axis, so a new axis needs no new flag.
 type axisFlags map[audit.Axis]*string
 
+// run is one invocation, in this order: the flags, one per input and one
+// per axis; -axes, which prints and stops; the selection checked; the
+// target opened; -sbom, which prints the bill of materials and stops; the
+// rules run; then -compare, -propose and -fail-on on their findings, the
+// report printed before the gate decides the exit.
 func run(args []string, out *os.File) error {
 	fs := flag.NewFlagSet("audit", flag.ContinueOnError)
 	binary := fs.String("binary", "", "the Go binary to read")
@@ -82,6 +88,7 @@ func run(args []string, out *os.File) error {
 	appArgs := fs.String("app-args", "", "a file holding how the comparison's server was started: NAME=value lines (env), then its command line")
 	compare := fs.String("compare", "", "an earlier JSON report (-output json) of the same target: report what appeared, went and changed since")
 	failOn := fs.String("fail-on", "", "comma-separated: new (any new finding), cve (a new advisory that applies), security (a new security finding); exit 2 when one trips")
+	propose := fs.String("propose", "", "a directory to write the fixes in: a sysctl.d file, ALTER SYSTEM statements; written, never applied")
 	sbom := fs.Bool("sbom", false, "print the binary's bill of materials instead of the findings")
 	axesOnly := fs.Bool("axes", false, "print the axes and their values, and stop")
 	var answers answerFlag
@@ -187,6 +194,11 @@ func run(args []string, out *os.File) error {
 		d := audit.Compare(earlier, current)
 		diff = &d
 	}
+	if *propose != "" {
+		if err := writeFixes(*propose, findings); err != nil {
+			return err
+		}
+	}
 	var tripped []string
 	if *failOn != "" {
 		if tripped, err = audit.Gate(strings.Split(*failOn, ","), findings, diff); err != nil {
@@ -239,6 +251,26 @@ func printReport(out *os.File, asJSON bool, current audit.Report, diff *audit.Di
 		}
 		_, _ = fmt.Fprintf(out, "%s\n  found:    %s\n  proposed: %s\n  why:      %s\n  doc:      %s\n\n",
 			head, f.Current, f.Proposed, wrap(f.Why, 72, "            "), f.Doc)
+	}
+	return nil
+}
+
+// writeFixes writes the proposed files in dir, refusing to replace one
+// that is there: a file a person edited is theirs.
+func writeFixes(dir string, findings []audit.Finding) error {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return err
+	}
+	for _, f := range audit.Propose(findings) {
+		path := filepath.Join(dir, f.Name)
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // G304: under the directory the caller named
+		if err != nil {
+			return fmt.Errorf("-propose: %w", err)
+		}
+		_, werr := file.WriteString(f.Text)
+		if err := errors.Join(werr, file.Close()); err != nil {
+			return err
+		}
 	}
 	return nil
 }

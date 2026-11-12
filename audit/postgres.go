@@ -305,6 +305,7 @@ func init() {
 			return []Finding{{
 				Current:  "autovacuum = off for the whole server",
 				Proposed: "autovacuum = on; switched off per table (autovacuum_enabled = off) where a measurement needs it",
+				Fix:      &Fix{Kind: FixPostgres, Name: "autovacuum", Value: "on"},
 				Why: "dead rows then accumulate in every table that is written, the tables grow " +
 					"and slow down, and past two billion transactions the server stops accepting " +
 					"writes to protect itself from wraparound. A table frozen for a benchmark is " +
@@ -322,6 +323,7 @@ func init() {
 			return []Finding{{
 				Current:  "password_encryption = " + s.Value,
 				Proposed: "password_encryption = scram-sha-256, then each password set again",
+				Fix:      &Fix{Kind: FixPostgres, Name: "password_encryption", Value: "scram-sha-256"},
 				Why: "an MD5 hash stored by the server is enough to log in as the role, without the " +
 					"password: whoever reads it — a backup, a replica — has the account. SCRAM " +
 					"stores what cannot be replayed, and is the default since PostgreSQL 14",

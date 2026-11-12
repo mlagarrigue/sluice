@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"cmp"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -30,9 +31,11 @@ type floor struct {
 	goal  string
 	doc   string
 	least int64
-	unit  string
-	why   string
-	fix   string
+	// target is the value proposed; zero means least.
+	target int64
+	unit   string
+	why    string
+	fix    string
 }
 
 var floors = []floor{
@@ -55,7 +58,7 @@ var floors = []floor{
 	},
 	{
 		name: "netdev-backlog", path: "proc/sys/net/core/netdev_max_backlog", goal: "performance",
-		doc: "https://docs.kernel.org/admin-guide/sysctl/net.html#netdev-max-backlog", least: 1000, unit: "packets",
+		doc: "https://docs.kernel.org/admin-guide/sysctl/net.html#netdev-max-backlog", least: 1000, target: 4096, unit: "packets",
 		why: "packets taken off the card queue here before a core processes them. Too short and " +
 			"they are dropped under a burst — which a UDP server, so QUIC, pays in loss and the " +
 			"congestion controller reads as congestion",
@@ -80,7 +83,7 @@ var floors = []floor{
 	},
 	{
 		name: "conntrack", path: "proc/sys/net/netfilter/nf_conntrack_max", goal: "reliability",
-		doc: "https://docs.kernel.org/networking/nf_conntrack-sysctl.html", least: 65536, unit: "flows",
+		doc: "https://docs.kernel.org/networking/nf_conntrack-sysctl.html", least: 65536, target: 262144, unit: "flows",
 		why: "when a firewall or a container network tracks connections, every one of them takes a " +
 			"slot: the table full drops new connections and writes nf_conntrack: table full in " +
 			"dmesg, while the application only sees timeouts. A host that tracks nothing has no " +
@@ -94,7 +97,8 @@ var floors = []floor{
 // linux/swap, linux/transparent-hugepages, linux/cpu-governor, linux/nofile
 // and go/gomaxprocs. Each is one Register call, read on its own.
 func init() {
-	for _, f := range floors {
+	for i := range floors {
+		f := floors[i] // each rule keeps its own
 		Register(Rule{
 			Name:  "linux/" + f.name,
 			Needs: Selection{Components: {"linux"}, Goals: {f.goal}, Sources: {"config"}},
@@ -108,6 +112,7 @@ func init() {
 					Current:  fmt.Sprintf("%s = %d %s", f.path, got, f.unit),
 					Proposed: fmt.Sprintf("%d %s at least (%s)", f.least, f.unit, f.fix),
 					Why:      f.why,
+					Fix:      &Fix{Kind: FixSysctl, Name: sysctlName(f.path), Value: strconv.FormatInt(cmp.Or(f.target, f.least), 10)},
 				}}
 			},
 		})

@@ -83,3 +83,20 @@ func TestTheComparisonReadsAsText(t *testing.T) {
 		t.Error("a file that is not a report was compared")
 	}
 }
+
+// TestProposeWritesAndNeverReplaces: the files land in the directory
+// named, and a second run refuses to write over them.
+func TestProposeWritesAndNeverReplaces(t *testing.T) {
+	settings := write(t, "settings.csv", "name,setting,unit\npassword_encryption,md5,\n")
+	dir := filepath.Join(t.TempDir(), "fixes")
+	if _, err := runTo(t, "-pg-settings", settings, "-propose", dir); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "sluice-audit.sql")) //nolint:gosec // G304: the test's own directory
+	if err != nil || !strings.Contains(string(b), "password_encryption = 'scram-sha-256'") {
+		t.Fatalf("%v\n%s", err, b)
+	}
+	if _, err := runTo(t, "-pg-settings", settings, "-propose", dir); err == nil {
+		t.Error("a proposed file was replaced")
+	}
+}
