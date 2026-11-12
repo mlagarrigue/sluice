@@ -367,7 +367,12 @@ type Conn struct {
 	// as its receiving side ends, an HTTP/3 cancellation's usual order — so
 	// the record is this map, pruned once nothing sent before the mark is
 	// in flight (pruneResetIDsLocked). Nil until the first reset.
-	resetIDs map[uint64]uint64
+	// resetMinMark is at or below every mark the map holds, so that the
+	// prune skips its walk while the oldest packet in flight is below it;
+	// resetWalks counts the walks, which is how a test sees them skipped.
+	resetIDs     map[uint64]uint64
+	resetMinMark uint64
+	resetWalks   int
 	// acceptQ holds the streams the peer opened that AcceptStream has not
 	// handed out yet, in identifier order per kind; acceptReady wakes a
 	// waiting AcceptStream. MAX_STREAMS bounds it, not a capacity.

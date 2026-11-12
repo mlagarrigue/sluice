@@ -313,3 +313,82 @@ func TestAPathResponseHeldByAFullWindowLeavesWhenItOpens(t *testing.T) {
 		t.Errorf("the challenge met a full window and the window opened: still no PATH_RESPONSE in %d datagrams", len(pc.recorded()))
 	}
 }
+
+// BenchmarkPruneResetIDsBehindAnOldPacket is the end of every packet a peer
+// sends while it leaves a thousand RESET_STREAMs and an older packet
+// unacknowledged: nothing can be forgotten.
+func BenchmarkPruneResetIDsBehindAnOldPacket(b *testing.B) {
+	c := assembleConn(&fuzzSink{addr: "prune:self"}, fakeFuzzAddr("prune:peer"), []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
+	b.Cleanup(func() { _ = c.Close() })
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	sp := &c.spaces[spaceApplication]
+	sp.sent.packets = []sentPacket{{pn: 0, ackEliciting: true}}
+	sp.nextPN = 1
+	for id := range uint64(1000) {
+		c.noteResetLocked(4 * id)
+		sp.nextPN++
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		c.pruneResetIDsLocked()
+	}
+	if len(c.resetIDs) != 1000 {
+		b.Fatalf("%d reset streams remembered, want the 1000", len(c.resetIDs))
+	}
+}
+
+// A peer that leaves its RESET_STREAMs and an older packet unacknowledged
+// keeps up to its stream limit of reset records, and every packet it sends
+// ends with a prune. The prune walked every record each time, though
+// nothing could be forgotten until the oldest packet in flight moved; it
+// walks only once that packet reaches the lowest mark, and forgets one
+// record at least when it does.
+func TestPruneSkipsTheResetRecordsWhileTheOldestPacketStays(t *testing.T) {
+	c := unackedResetServer(t)
+	c.OnStreamFrames(CreditOnDelivery, func([]Frame) error { return nil })
+	unackedResetDrive(t, c, nil)
+	c.mu.Lock()
+	records, walks := len(c.resetIDs), c.resetWalks
+	c.mu.Unlock()
+	if records < 2 {
+		t.Fatalf("%d reset records after the drive, want many", records)
+	}
+
+	now := time.Now()
+	for range 1000 {
+		if err := c.frames(spaceApplication, []byte{framePing}, now); err != nil {
+			t.Fatal(err)
+		}
+		c.mu.Lock()
+		c.retransmitLocked()
+		c.mu.Unlock()
+	}
+	c.mu.Lock()
+	sp := &c.spaces[spaceApplication]
+	oldest, least, left := sp.sent.packets[0].pn, c.resetMinMark, len(c.resetIDs)
+	walked := c.resetWalks - walks
+	for _, mark := range c.resetIDs {
+		if mark < least {
+			t.Errorf("a record at %d under resetMinMark %d", mark, least)
+		}
+	}
+	c.mu.Unlock()
+	if left != records {
+		t.Fatalf("%d reset records after a thousand PINGs, want the %d", left, records)
+	}
+	if walked != 0 {
+		t.Errorf("%d walks of the %d reset records over a thousand PINGs that moved nothing, want none", walked, records)
+	}
+	if oldest >= least {
+		t.Fatalf("the oldest packet in flight %d is at or past the lowest mark %d: every packet walks the records", oldest, least)
+	}
+
+	ackInFlight(t, c)
+	c.mu.Lock()
+	left = len(c.resetIDs)
+	c.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("%d reset records after everything was acknowledged, want none", left)
+	}
+}

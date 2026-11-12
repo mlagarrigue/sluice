@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"time"
@@ -1460,7 +1461,11 @@ func (c *Conn) noteResetLocked(id uint64) {
 	if c.resetIDs == nil {
 		c.resetIDs = make(map[uint64]uint64)
 	}
-	c.resetIDs[id] = c.spaces[spaceApplication].nextPN
+	mark := c.spaces[spaceApplication].nextPN
+	if len(c.resetIDs) == 0 || mark < c.resetMinMark {
+		c.resetMinMark = mark
+	}
+	c.resetIDs[id] = mark
 	c.control = c.pruneStaleLocked(c.control)
 }
 
@@ -1554,6 +1559,12 @@ func (c *Conn) staleLocked(f *Frame) bool {
 // stream that finished while its record stood kept its slot
 // (maybeRemoveLocked) and retires now; the read loop sends the MAX_STREAMS
 // that earns.
+//
+// It runs at the end of every packet received, and the table can hold as
+// many streams as the peer may open: the walk happens only once the oldest
+// packet in flight has reached resetMinMark, so each walk forgets one
+// stream at least, and a peer that leaves an old packet unacknowledged buys
+// no walk at all with the packets it sends meanwhile.
 func (c *Conn) pruneResetIDsLocked() {
 	sp := &c.spaces[spaceApplication]
 	if len(c.resetIDs) == 0 || len(sp.retrans) > 0 {
@@ -1563,14 +1574,22 @@ func (c *Conn) pruneResetIDsLocked() {
 	if len(sp.sent.packets) > 0 {
 		oldest = sp.sent.packets[0].pn
 	}
+	if oldest < c.resetMinMark {
+		return
+	}
+	c.resetWalks++
+	least := uint64(math.MaxUint64)
 	for id, mark := range c.resetIDs {
 		if mark <= oldest {
 			delete(c.resetIDs, id)
 			if s := c.streams[id]; s != nil {
 				c.maybeRemoveLocked(s)
 			}
+			continue
 		}
+		least = min(least, mark)
 	}
+	c.resetMinMark = least
 }
 
 // fitFrames cuts payload, frames this end encoded, so that the first part
