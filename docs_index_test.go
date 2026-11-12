@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"unicode"
@@ -422,5 +423,43 @@ func TestEveryPackageCommentEndsOnItsGuide(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// docs/benchmarks.md's contents list every section and subsection in the
+// order the page has them, each under its own: the list once grouped by
+// subject ranked a section of the page's end among its first, and left
+// another out.
+func TestBenchmarksContentsFollowThePage(t *testing.T) {
+	page, err := os.ReadFile("docs/benchmarks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rest, ok := strings.Cut(string(page), "\n## Contents\n")
+	if !ok {
+		t.Fatal(`docs/benchmarks.md has no "## Contents"; update this test`)
+	}
+	contents, body, _ := strings.Cut(rest, "\n## ")
+	entry := regexp.MustCompile(`(?m)^( *)- \[[^\]]+\]\(#([^)]+)\)$`)
+	var listed []string
+	for _, m := range entry.FindAllStringSubmatch(contents, -1) {
+		listed = append(listed, m[1]+m[2])
+	}
+	var headings []string
+	fenced := false
+	for _, line := range strings.Split("## "+body, "\n") {
+		if strings.HasPrefix(line, "```") {
+			fenced = !fenced
+		}
+		switch {
+		case fenced:
+		case strings.HasPrefix(line, "## "):
+			headings = append(headings, slugOf(strings.TrimPrefix(line, "## ")))
+		case strings.HasPrefix(line, "### "):
+			headings = append(headings, "  "+slugOf(strings.TrimPrefix(line, "### ")))
+		}
+	}
+	if !slices.Equal(listed, headings) {
+		t.Errorf("docs/benchmarks.md's contents are not its headings in order:\nlisted   %q\nheadings %q", listed, headings)
 	}
 }

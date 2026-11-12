@@ -17,35 +17,33 @@ figure that differs, to the character, from the median of its row.
 
 ## Contents
 
-- **What each operator costs**
-  - [The ceiling and the budget](#the-ceiling-and-the-budget)
-  - [The architecture's figures](#the-architectures-figures)
-  - [Joins and hydration, in isolation](#joins-and-hydration-in-isolation)
-- **How to read this page**
-  - [Measuring on a laptop](#measuring-on-a-laptop)
-  - [Reading the tables](#reading-the-tables)
-  - [Not yet measured](#not-yet-measured)
-- **HTTP servers**
-  - [HTTP/2 and HTTP/3, from a real client](#http2-and-http3-from-a-real-client)
-  - [Web pipeline, from a real client](#web-pipeline-from-a-real-client)
-  - [Request bodies, whole or streamed](#request-bodies-whole-or-streamed)
-  - [Authentication, in a request](#authentication-in-a-request)
-  - [Two changes read as noise, paired](#two-changes-read-as-noise-paired)
-  - [HTTP/3 without a socket](#http3-without-a-socket)
-  - [HTTP/1.1, watching for a client that leaves](#http11-watching-for-a-client-that-leaves)
+- [The ceiling and the budget](#the-ceiling-and-the-budget)
+- [The architecture's figures](#the-architectures-figures)
+  - [The designs turned down](#the-designs-turned-down)
+- [Measuring on a laptop](#measuring-on-a-laptop)
+- [Reading the tables](#reading-the-tables)
+- [Not yet measured](#not-yet-measured)
+- [HTTP/2 and HTTP/3, from a real client](#http2-and-http3-from-a-real-client)
+- [Web pipeline, from a real client](#web-pipeline-from-a-real-client)
+- [Request bodies, whole or streamed](#request-bodies-whole-or-streamed)
+- [Authentication, in a request](#authentication-in-a-request)
+- [Two changes read as noise, paired](#two-changes-read-as-noise-paired)
+- [HTTP/3 without a socket](#http3-without-a-socket)
+- [HTTP/1.1, watching for a client that leaves](#http11-watching-for-a-client-that-leaves)
+- [QUIC, on an emulated path](#quic-on-an-emulated-path)
+- [A QUIC socket in a burst](#a-quic-socket-in-a-burst)
+- [Joins and hydration, in isolation](#joins-and-hydration-in-isolation)
+- [Measured in one session](#measured-in-one-session)
+  - [Conditions](#conditions)
+  - [Connector, against pgx / lib/pq / database/sql](#connector-against-pgx--libpq--databasesql)
+  - [Remote reads](#remote-reads)
+  - [Codec, in isolation](#codec-in-isolation)
   - [Web pipeline, in process](#web-pipeline-in-process)
   - [Web pipeline, over a socket](#web-pipeline-over-a-socket)
   - [The gateway, with a database behind it](#the-gateway-with-a-database-behind-it)
   - [Partitioning by principal](#partitioning-by-principal)
-  - [Paired verdicts](#paired-verdicts)
-- **QUIC**
-  - [QUIC, on an emulated path](#quic-on-an-emulated-path)
-  - [A QUIC socket in a burst](#a-quic-socket-in-a-burst)
-- **The PostgreSQL connector**
-  - [Connector, against pgx / lib/pq / database/sql](#connector-against-pgx--libpq--databasesql)
-  - [Remote reads](#remote-reads)
-  - [Codec, in isolation](#codec-in-isolation)
   - [Statement cache](#statement-cache)
+  - [Paired verdicts](#paired-verdicts)
 
 `consolidate.sh` regenerates the tables under
 [Measured in one session](#measured-in-one-session); the sections before it
@@ -72,8 +70,8 @@ stays flat up to a million; 1024 by default is safe, not critical.
 The figures [the architecture](design/architecture.md) quotes for its
 decisions, each from the benchmark named beside it. Six runs of one second,
 median, 2026-10-23, go1.26.9, 15 cores, under WSL2, not pinned. Each table
-counts in the unit its header names; the spread is the lowest and highest of
-the six runs.
+counts in the unit its header names; its [spread](#reading-the-tables) is
+the fastest and slowest of the six runs.
 
 Per element, over 1,048,576 `int64` (`internal/bench`). `BaselineLoop` is
 the ceiling, a native `for range`; `SeqStages/stages=0` is the same traversal
@@ -376,7 +374,11 @@ Windows; `autoMemoryReclaim=disabled` and `pageReporting=false` in
 
 - **Read ratios, not absolutes.** Nanoseconds do not transfer between
   sessions or machines; ratios within a session do.
-- **A spread above 15% is flagged `**`** and the row must not be quoted.
+- **The spread** says how far apart a row's runs fall, in one of three
+  forms its column shows: two figures (`8,063–8,395`), the fastest and the
+  slowest run; a percentage, (slowest − fastest) / median; a ±, the run
+  farthest from the median. **A spread above 15% is flagged `**`** and the
+  row must not be quoted.
 - **Prefer the paired verdicts** at the end of the document to any single
   row above them: a row is an order that invites ranking; the sign test says
   which differences survive interleaving.
@@ -684,7 +686,7 @@ cd interop && go test -run '^$' -bench 'WebStream' -count 6
 On 2026-10-19, on the same machine as the rest of this document (laptop, AMD
 Ryzen AI 9 465, WSL2, `GOMAXPROCS` 15, not pinned: a socket bench cannot be
 pinned), six passes of `-benchtime 1s`, one connection, requests in sequence.
-Median and spread (fastest to slowest, over the median) are computed as in
+Median and [spread](#reading-the-tables), a percentage here, are computed as in
 `internal/bench/scripts/consolidate.sh`. `bare` and `stages` run back to back
 on each protocol, so that a machine drifting during the series moves both
 figures of a pair together.
@@ -918,8 +920,8 @@ benchstat before.txt after.txt
 
 **These rows are ceilings.** Eight rounds on 2026-10-14, medians, go1.26.9,
 the same laptop as the rest of this document, not pinned: an emulation that
-sleeps on timers in several goroutines must not be. The spread is the
-farthest round from the median; where one round of eight sits far above
+sleeps on timers in several goroutines must not be. The
+[spread](#reading-the-tables) is the farthest round from the median; where one round of eight sits far above
 it, the row says so, and that is why the statistic is the median. A change
 to `net/quic` that puts a median more than **15% below** its row is a
 regression until it is explained; one that puts it above replaces the row.
