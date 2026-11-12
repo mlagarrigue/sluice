@@ -200,158 +200,6 @@ for a date with a time zone, `DecodeNumeric` for an exact amount. The `Scan*` fu
 (`ScanInt8(dst, rows, col)`) — the shape that produces the next array of
 keys to send as `= ANY`.
 
-### The codecs
-
-Every type the codec covers has the same pair in `pgtype`, `AppendX`/`DecodeX`,
-named after the PostgreSQL type, and its codec, `XCodec()`, which opens the
-containers ([below](#containers-arrays-ranges-composites)). The table of
-every type, its Go type, its arrays and its column scanner:
-[reference](../reference/postgres.md#the-codecs-in-one-table). What is
-missing is listed in [Limits](limits.md), not discovered at use.
-
-Each type's OID — the number the server names it by — is `OIDX` in `pgtype`,
-`OIDXArray` for its array and `XCodec()` for its codec, after the same X;
-the types that share an X have one each — `OIDVarchar`, `OIDBPChar`
-(char(n)) and `OIDName` beside `OIDText`, `OIDBit` and `OIDVarbit` for
-`Bits`, `OIDRegclass` and the other `reg*` beside `OIDOID`, so
-`VarcharCodec()` or `RegclassCodec()`. A few values are
-special. A timestamp, timestamptz or date of `infinity` or `-infinity`
-decodes to `pgtype.InfinityTime()` or `NegInfinityTime()`, and those two
-encode back to it; compare them with `Equal`. A `money` is a count of the
-currency's smallest unit: its scale is the server's `lc_monetary` setting
-(two digits under `C`, so 1234 is 12.34), which the binary form does not
-carry and this package does not read — the scale is yours, and
-`money::numeric` in the query gives a `Numeric` where it must not depend on
-a setting. A `box` arrives upper-right corner first (`High`), whatever order
-it was given in.
-
-An enum value is its label, as text, under the OID its database gave the
-type: `ScanText` reads it (it takes any type a database created), and it is
-written as text with OID 0 where the query names the type (`$1::mood`).
-A `tsvector` is its lexemes in the server's order, each with its
-`TSPosition`s (`Pos`, `Weight`); a `tsquery` is its nodes in prefix order,
-the operators `TSNot`, `TSAnd`, `TSOr` and `TSPhrase` (at `Distance`). A `Numeric` carries a
-`NumericSign`: `NumericPositive`, `NumericNegative`, or one of the
-non-numbers `NumericNaN`, `NumericPosInf`, `NumericNegInf`. `TimeOfDayFrom`
-builds a `TimeOfDay` from a `time.Time`, dropping the date and the zone and
-truncating to the server's microsecond. And `JSONBVersion` is the version
-byte a binary `jsonb` starts with; any other is refused.
-
-**NULL has one form in the connector: `pgtype.Null[T]`** — the value beside a
-`Valid` bit, no pointer, so no allocation. The nullable arrays carry
-`[]Null[T]`, and a generated hydrator (next section) fills a
-`pgtype.Null[T]` field. A `Scan*` refuses a NULL rather than writing a
-zero; `ScanNulls` gives the mask of a column that may hold one. In your own
-structs, `*T` is accepted too, because the struct is yours; it costs the
-allocation `Null[T]` does not.
-
-> **In plain words: `numeric`.** A `numeric(12,2)` column is chosen
-> precisely when a floating-point number would lose something (cents).
-> Sluice.go keeps those values **exact**, and every lossy conversion is
-> named: `n.Float64()` says what it does; `n.String()` renders `10.00`, not
-> `10`, because that is what an invoice prints.
-
-### Containers: arrays, ranges, composites
-
-An array, a range of values (`[1,10)`, a period), a multirange (several
-disjoint ranges, since PostgreSQL 14) and a composite (a row of a
-`CREATE TYPE … AS` type, or the `ROW(…)` of a query) wrap values of other
-types. `pgtype` writes each of them once, over the **codec** of what it
-wraps: `Codec[T]` carries the type's OID, its array's, and its
-`Append`/`Decode` pair. Every type in the table has its own.
-
-```go
-arr, err := pgtype.DecodeArray(arr, raw, pgtype.Int4Codec()) // an int4[] of any shape
-r, err := pgtype.DecodeRange(raw, pgtype.DateCodec())         // a daterange
-```
-
-- `Array[T]`: `Dims` — for each dimension, `Len` and `Lower`, the index of
-  the first element (1 unless stated otherwise) — and `Elems`, the elements
-  as `Null[T]`, row after row. `Array[T]{Elems: e}` without `Dims` is the
-  one-dimensional array. An array of any type in the table, up to six
-  dimensions, goes through `AppendArray`/`DecodeArray`; its parameter OID
-  is `OIDXArray`.
-- `Range[T]`: two `RangeBound[T]` (`Value`, `Inclusive`, and `Unbounded`
-  for the absent bound of `(,5]`, which is not an `infinity` value) and
-  `Empty`. The server returns the canonical form: an `int4range` written
-  `[1,5]` comes back `[1,6)`.
-- `Multirange[T]`: its ranges, merged and in order, as the server returns
-  them.
-- `Record`: the fields as they arrive, each a `RecordField` (OID and bytes);
-  `DecodeRecordField(rec[i], pgtype.Int8Codec())` decodes one field and
-  refuses a field of another type. As a parameter, the server reads only a
-  named composite (`$1::my_type`, OID 0); the anonymous `record` is read
-  and cannot be sent.
-
-The six built-in ranges and their multiranges have their codecs and OIDs,
-arrays included: [reference](../reference/postgres.md#ranges-and-multiranges).
-
-A range's codec puts a range in a container: an `int4range[]` is
-`DecodeArray` over `Int4RangeCodec()`. A range type a database created
-(`CREATE TYPE … AS RANGE`) is read the same way with
-`RangeCodec(Float8Codec(), oid, arrayOID)` — and `MultirangeCodec` for its
-multirange —, the OIDs returned by `conn.LookupType` (next section); build
-it once and keep it.
-
-The table's named arrays (`DecodeInt4Array`…) stay the fast path for their
-shape, one dimension numbered from 1. Over 1,000 `int4` elements,
-`DecodeArray` takes 3.4 times as long as `DecodeInt4Array`: an indirect
-call per element, the price of code written once for every type.
-
-> **In plain words: a codec.** It is a type's record card: its number at
-> PostgreSQL, and how to write and read it as bytes. A container knows
-> nothing of what it holds; it is handed the card of its contents.
-
-### Types an extension creates
-
-`hstore`, `citext`, `ltree` and pgvector's `vector` have no fixed OID: each
-database that runs `CREATE EXTENSION` gives them the next free one.
-`conn.LookupType(ctx, name)` returns the type's OID and its array's,
-resolved as a cast would be (the search path, or `schema.type`), and
-`ErrUnknownType` when the database does not know it. The codec is built on
-those OIDs, once per database:
-
-```go
-oid, arrayOID, err := conn.LookupType(ctx, "hstore")
-hstore := pgtype.HstoreCodec(oid, arrayOID)
-param := postgres.Param{OID: hstore.OID, Value: hstore.Append(nil, pgtype.Hstore{
-	"color": {Value: "red", Valid: true},
-})}
-```
-
-| Extension | Type | Go | Codec |
-|---|---|---|---|
-| citext | `citext` | `string` | `CitextCodec` |
-| hstore | `hstore` | `Hstore` (`map[string]Null[string]`) | `HstoreCodec` (`AppendHstore`, `DecodeHstore`) |
-| ltree | `ltree`, `lquery`, `ltxtquery` | `string` | `LtreeCodec`, `LqueryCodec`, `LtxtqueryCodec` (`AppendLtree`, `DecodeLtree`) |
-| pgvector | `vector` | `[]float32` | `VectorCodec` (`AppendVector`, `DecodeVector`) |
-
-PostGIS's types (`geometry`, `geography`) stay bytes: their binary form is
-EWKB, a geometry format that a geometry library decodes, not a connector.
-`Rows.Value` returns it as it is, or `ST_AsText` and `ST_AsGeoJSON` convert
-it in the query. pgvector's `halfvec` and `sparsevec` have no codec: cast
-them with `::vector` in the query.
-
-### The types not covered
-
-Every other built-in type of PostgreSQL 14 to 19, by family. A column of
-one of them still arrives: `Rows.Value` gives its raw binary bytes, for
-you to decode, or the query casts it to `text`.
-
-| Family | Types |
-|---|---|
-| Extensions | PostGIS's types (EWKB, [above](#types-an-extension-creates)), pgvector's `halfvec` and `sparsevec`, any other extension's |
-| Internal | `pg_node_tree`, `pg_ndistinct`, `pg_dependencies`, `pg_mcv_list`, the BRIN summaries: the planner's and the statistics' own |
-
-`aclitem` and `gtsvector` have no binary form at all: the server refuses to
-send them to a driver that asks for binary results, as this one does for
-every column. Cast them to `text` in the query.
-
-An error returned by the server is a `*postgres.Error` with its
-**SQLSTATE** (`Code`), a standardised five-character code, the only part
-stable across versions and languages, and the constraint concerned:
-`e.Code == "23505"` means "duplicate key" whatever the server's language.
-
 ## Hydrating: from rows to structs, without reflection
 
 **Hydrating** a struct means filling its fields from a row. Doing it field
@@ -502,6 +350,166 @@ in `database/postgres` puts the four together.
 | `Isolation` | the server's default (`IsolationDefault`) | `IsolationReadCommitted`, `IsolationRepeatableRead`, `IsolationSerializable` | the isolation level |
 | `ReadOnly` | read-write | | opens the transaction READ ONLY |
 | `StatementTimeout` | no bound | > 0 to bound | statement_timeout for the transaction's lifetime |
+
+## Types, one codec at a time
+
+What follows is for the day a column is not of a common type: the table
+of codecs, the containers, the types an extension creates, and those not
+covered. The path above needs nothing of it beyond `DecodeInt8` and its
+neighbours.
+
+### The codecs
+
+Every type the codec covers has the same pair in `pgtype`, `AppendX`/`DecodeX`,
+named after the PostgreSQL type, and its codec, `XCodec()`, which opens the
+containers ([below](#containers-arrays-ranges-composites)). The table of
+every type, its Go type, its arrays and its column scanner:
+[reference](../reference/postgres.md#the-codecs-in-one-table). What is
+missing is listed in [Limits](limits.md), not discovered at use.
+
+Each type's OID — the number the server names it by — is `OIDX` in `pgtype`,
+`OIDXArray` for its array and `XCodec()` for its codec, after the same X;
+the types that share an X have one each — `OIDVarchar`, `OIDBPChar`
+(char(n)) and `OIDName` beside `OIDText`, `OIDBit` and `OIDVarbit` for
+`Bits`, `OIDRegclass` and the other `reg*` beside `OIDOID`, so
+`VarcharCodec()` or `RegclassCodec()`.
+
+A few values are special. A timestamp, timestamptz or date of `infinity` or `-infinity`
+decodes to `pgtype.InfinityTime()` or `NegInfinityTime()`, and those two
+encode back to it; compare them with `Equal`. A `money` is a count of the
+currency's smallest unit: its scale is the server's `lc_monetary` setting
+(two digits under `C`, so 1234 is 12.34), which the binary form does not
+carry and this package does not read — the scale is yours, and
+`money::numeric` in the query gives a `Numeric` where it must not depend on
+a setting. A `box` arrives upper-right corner first (`High`), whatever order
+it was given in.
+
+An enum value is its label, as text, under the OID its database gave the
+type: `ScanText` reads it (it takes any type a database created), and it is
+written as text with OID 0 where the query names the type (`$1::mood`).
+A `tsvector` is its lexemes in the server's order, each with its
+`TSPosition`s (`Pos`, `Weight`); a `tsquery` is its nodes in prefix order,
+the operators `TSNot`, `TSAnd`, `TSOr` and `TSPhrase` (at `Distance`). A `Numeric` carries a
+`NumericSign`: `NumericPositive`, `NumericNegative`, or one of the
+non-numbers `NumericNaN`, `NumericPosInf`, `NumericNegInf`. `TimeOfDayFrom`
+builds a `TimeOfDay` from a `time.Time`, dropping the date and the zone and
+truncating to the server's microsecond. And `JSONBVersion` is the version
+byte a binary `jsonb` starts with; any other is refused.
+
+**NULL has one form in the connector: `pgtype.Null[T]`** — the value beside a
+`Valid` bit, no pointer, so no allocation. The nullable arrays carry
+`[]Null[T]`, and a generated hydrator (next section) fills a
+`pgtype.Null[T]` field. A `Scan*` refuses a NULL rather than writing a
+zero; `ScanNulls` gives the mask of a column that may hold one. In your own
+structs, `*T` is accepted too, because the struct is yours; it costs the
+allocation `Null[T]` does not.
+
+> **In plain words: `numeric`.** A `numeric(12,2)` column is chosen
+> precisely when a floating-point number would lose something (cents).
+> Sluice.go keeps those values **exact**, and every lossy conversion is
+> named: `n.Float64()` says what it does; `n.String()` renders `10.00`, not
+> `10`, because that is what an invoice prints.
+
+### Containers: arrays, ranges, composites
+
+An array, a range of values (`[1,10)`, a period), a multirange (several
+disjoint ranges, since PostgreSQL 14) and a composite (a row of a
+`CREATE TYPE … AS` type, or the `ROW(…)` of a query) wrap values of other
+types. `pgtype` writes each of them once, over the **codec** of what it
+wraps: `Codec[T]` carries the type's OID, its array's, and its
+`Append`/`Decode` pair. Every type in the table has its own.
+
+```go
+arr, err := pgtype.DecodeArray(arr, raw, pgtype.Int4Codec()) // an int4[] of any shape
+r, err := pgtype.DecodeRange(raw, pgtype.DateCodec())         // a daterange
+```
+
+- `Array[T]`: `Dims` — for each dimension, `Len` and `Lower`, the index of
+  the first element (1 unless stated otherwise) — and `Elems`, the elements
+  as `Null[T]`, row after row. `Array[T]{Elems: e}` without `Dims` is the
+  one-dimensional array. An array of any type in the table, up to six
+  dimensions, goes through `AppendArray`/`DecodeArray`; its parameter OID
+  is `OIDXArray`.
+- `Range[T]`: two `RangeBound[T]` (`Value`, `Inclusive`, and `Unbounded`
+  for the absent bound of `(,5]`, which is not an `infinity` value) and
+  `Empty`. The server returns the canonical form: an `int4range` written
+  `[1,5]` comes back `[1,6)`.
+- `Multirange[T]`: its ranges, merged and in order, as the server returns
+  them.
+- `Record`: the fields as they arrive, each a `RecordField` (OID and bytes);
+  `DecodeRecordField(rec[i], pgtype.Int8Codec())` decodes one field and
+  refuses a field of another type. As a parameter, the server reads only a
+  named composite (`$1::my_type`, OID 0); the anonymous `record` is read
+  and cannot be sent.
+
+The six built-in ranges and their multiranges have their codecs and OIDs,
+arrays included: [reference](../reference/postgres.md#ranges-and-multiranges).
+
+A range's codec puts a range in a container: an `int4range[]` is
+`DecodeArray` over `Int4RangeCodec()`. A range type a database created
+(`CREATE TYPE … AS RANGE`) is read the same way with
+`RangeCodec(Float8Codec(), oid, arrayOID)` — and `MultirangeCodec` for its
+multirange —, the OIDs returned by `conn.LookupType` (next section); build
+it once and keep it.
+
+The table's named arrays (`DecodeInt4Array`…) stay the fast path for their
+shape, one dimension numbered from 1. Over 1,000 `int4` elements,
+`DecodeArray` takes 3.4 times as long as `DecodeInt4Array`: an indirect
+call per element, the price of code written once for every type.
+
+> **In plain words: a codec.** It is a type's record card: its number at
+> PostgreSQL, and how to write and read it as bytes. A container knows
+> nothing of what it holds; it is handed the card of its contents.
+
+### Types an extension creates
+
+`hstore`, `citext`, `ltree` and pgvector's `vector` have no fixed OID: each
+database that runs `CREATE EXTENSION` gives them the next free one.
+`conn.LookupType(ctx, name)` returns the type's OID and its array's,
+resolved as a cast would be (the search path, or `schema.type`), and
+`ErrUnknownType` when the database does not know it. The codec is built on
+those OIDs, once per database:
+
+```go
+oid, arrayOID, err := conn.LookupType(ctx, "hstore")
+hstore := pgtype.HstoreCodec(oid, arrayOID)
+param := postgres.Param{OID: hstore.OID, Value: hstore.Append(nil, pgtype.Hstore{
+	"color": {Value: "red", Valid: true},
+})}
+```
+
+| Extension | Type | Go | Codec |
+|---|---|---|---|
+| citext | `citext` | `string` | `CitextCodec` |
+| hstore | `hstore` | `Hstore` (`map[string]Null[string]`) | `HstoreCodec` (`AppendHstore`, `DecodeHstore`) |
+| ltree | `ltree`, `lquery`, `ltxtquery` | `string` | `LtreeCodec`, `LqueryCodec`, `LtxtqueryCodec` (`AppendLtree`, `DecodeLtree`) |
+| pgvector | `vector` | `[]float32` | `VectorCodec` (`AppendVector`, `DecodeVector`) |
+
+PostGIS's types (`geometry`, `geography`) stay bytes: their binary form is
+EWKB, a geometry format that a geometry library decodes, not a connector.
+`Rows.Value` returns it as it is, or `ST_AsText` and `ST_AsGeoJSON` convert
+it in the query. pgvector's `halfvec` and `sparsevec` have no codec: cast
+them with `::vector` in the query.
+
+### The types not covered
+
+Every other built-in type of PostgreSQL 14 to 19, by family. A column of
+one of them still arrives: `Rows.Value` gives its raw binary bytes, for
+you to decode, or the query casts it to `text`.
+
+| Family | Types |
+|---|---|
+| Extensions | PostGIS's types (EWKB, [above](#types-an-extension-creates)), pgvector's `halfvec` and `sparsevec`, any other extension's |
+| Internal | `pg_node_tree`, `pg_ndistinct`, `pg_dependencies`, `pg_mcv_list`, the BRIN summaries: the planner's and the statistics' own |
+
+`aclitem` and `gtsvector` have no binary form at all: the server refuses to
+send them to a driver that asks for binary results, as this one does for
+every column. Cast them to `text` in the query.
+
+An error returned by the server is a `*postgres.Error` whose `Code` is its
+SQLSTATE ([above](#connecting)), the only part stable across versions and
+languages, and which names the constraint concerned:
+`e.Code == "23505"` means "duplicate key" whatever the server's language.
 
 ## Securing and controlling the connection
 
