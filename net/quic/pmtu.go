@@ -195,7 +195,14 @@ func (c *Conn) maybeProbePMTULocked() {
 		c.pmtu.done = true
 		return
 	}
-	if !c.canSendLocked(target) {
+	// The room is read here rather than through canSendLocked, as
+	// ackOverflowsWindowLocked reads it: a refusal there is RFC 9002 §7.8's
+	// signal that the window limits the flight, and a probe that does not
+	// fit says nothing of the kind. Taken as one, it marked the round
+	// window-limited and let the window grow for a sender that never
+	// filled it — by a probe's size at most, more with a large
+	// Config.MaxDatagramSize.
+	if target > c.cc.window()-c.cc.bytesInFlight() || 2*c.trackedLocked() >= c.spaces[spaceApplication].sent.bound() {
 		return
 	}
 	sp := &c.spaces[spaceApplication]

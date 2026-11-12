@@ -475,3 +475,28 @@ func TestPMTUSearchAtItsEdges(t *testing.T) {
 		t.Errorf("a black hole at the base size: %d counted, acked %d", c.pmtuBlackHoles, c.pmtu.acked)
 	}
 }
+
+// A probe the window has no room for waits without telling the controller
+// the window limited the flight (RFC 9002 §7.8): that signal is a send
+// refused for lack of window, and a probe of the path's size is not one.
+func TestARefusedPMTUProbeIsNotWindowLimited(t *testing.T) {
+	c := &Conn{maxDatagram: pmtuBaseSize, handshakeConfirmed: true, hasPeerParams: true}
+	c.params.MaxDatagramSize = 9000
+	c.peerParams.MaxUDPPayloadSize = 65527
+	c.pmtu.acked = pmtuEarnedAfter()
+	nr := newNewReno(pmtuBaseSize)
+	nr.ssthresh = nr.cwnd // congestion avoidance: the refusal alone is the signal
+	nr.inFlight = nr.cwnd - pmtuBaseSize
+	c.cc = nr
+	target := c.pmtuTargetLocked()
+	if target <= nr.cwnd-nr.inFlight {
+		t.Fatalf("target %d fits the %d bytes of room; the test needs one that does not", target, nr.cwnd-nr.inFlight)
+	}
+	c.maybeProbePMTULocked()
+	if c.pmtu.inFlight {
+		t.Fatal("the probe left without room for it")
+	}
+	if nr.windowLimited() {
+		t.Error("a probe refused for room marked the round window-limited")
+	}
+}
