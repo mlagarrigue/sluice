@@ -1950,9 +1950,22 @@ func withoutOwnCancel(err error) error {
 // consumes a ReadyForQuery reads it. A body that is not the one status byte
 // is tolerated rather than fatal: the callers are drains and recovery paths,
 // and the message framed whole, so the position is still known.
+//
+// A block the byte says has ended — 'T' or 'E' before, 'I' now — ends the Tx
+// that was running it, whatever statement ended it: the generation moves
+// on, which Tx.check compares. Without that, a block closed through the Conn
+// (Conn.Exec("COMMIT"), which Begin's godoc provides for) or by a text
+// passed to Tx.Query left a Tx that went on sending — Tx.SetLocal's
+// set_config ran outside any transaction and returned nil. Commit and
+// Rollback have moved it already, and clear inTx before their statement:
+// they are not counted twice.
 func (c *Conn) noteTxStatus(body []byte) {
 	if len(body) == 1 {
-		c.inTx = body[0] == 'T' || body[0] == 'E'
+		open := body[0] == 'T' || body[0] == 'E'
+		if c.inTx && !open {
+			c.txGen++
+		}
+		c.inTx = open
 		c.txFailed = body[0] == 'E'
 	}
 }

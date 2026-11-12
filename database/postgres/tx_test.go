@@ -50,6 +50,13 @@ func cmdCycle(tag string) []byte {
 	return append(beCommandComplete(tag), beReadyForQuery()...)
 }
 
+// inBlockCycle is a statement's answer inside an open block: the status a
+// real server reports there is 'T'. cmdCycle's 'I' says the block ended, and
+// ends the Tx that ran it (Conn.noteTxStatus).
+func inBlockCycle(tag string) []byte {
+	return append(beCommandComplete(tag), frame(pgwire.BackendReadyForQuery, "T")...)
+}
+
 // setConfigCycle is what the server answers to `SELECT set_config($1,$2,true)`:
 // an extended-query sequence returning one row nobody reads. One chunk, not
 // two: execParams runs under FetchAll, so the Sync travels with the query and
@@ -614,10 +621,10 @@ func TestTxOperationsAfterEndAreRefused(t *testing.T) {
 
 func TestSavepointRoundTrip(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{
-		cmdCycle("BEGIN"),
-		cmdCycle("SAVEPOINT"),
-		cmdCycle("ROLLBACK"),
-		cmdCycle("RELEASE"),
+		inBlockCycle("BEGIN"),
+		inBlockCycle("SAVEPOINT"),
+		inBlockCycle("ROLLBACK"),
+		inBlockCycle("RELEASE"),
 		cmdCycle("COMMIT"),
 	}}
 	conn := NewConn(srv, Config{})
@@ -747,9 +754,9 @@ func TestSavepointsSendsThemAllBeforeReadingAny(t *testing.T) {
 // to work, or the round trip was saved on something that does not exist.
 func TestSavepointsAreUsable(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{
-		cmdCycle("BEGIN"),
-		cmdCycle("SAVEPOINT"), cmdCycle("SAVEPOINT"),
-		cmdCycle("ROLLBACK"),
+		inBlockCycle("BEGIN"),
+		inBlockCycle("SAVEPOINT"), inBlockCycle("SAVEPOINT"),
+		inBlockCycle("ROLLBACK"),
 		cmdCycle("COMMIT"),
 	}}
 	conn := NewConn(srv, Config{})
