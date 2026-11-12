@@ -1808,6 +1808,11 @@ func (q *query) resync() error {
 	// client-side to explain why.
 	var serverErr error
 	var cancel *cancelWatch
+	// Ended on every way out, not only the two that read its outcome: left
+	// running past a broken connection's return, the watch closed the
+	// socket CancelTimeout after the caller had its error. A no-op once end
+	// has run.
+	defer func() { cancel.disarm() }()
 	aheadRows, aheadBytes := q.ahead*q.batchRows, q.ahead*q.batchBytes
 	for {
 		m, err := c.r.Next()
