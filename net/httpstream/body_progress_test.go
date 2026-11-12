@@ -67,7 +67,7 @@ func TestAStreamedBodyThatDripsIsCut(t *testing.T) {
 // each ReadTimeout is served to the end, however long it takes in all.
 func TestAStreamedBodyThatMovesIsServed(t *testing.T) {
 	addr, _ := serveTest(t, Config{
-		ReadTimeout:          300 * time.Millisecond,
+		ReadTimeout:          600 * time.Millisecond,
 		MaxBodyBytes:         1024,
 		MaxStreamedBodyBytes: 1 << 20,
 	}, readAllHandler)
@@ -88,12 +88,14 @@ func TestAStreamedBodyThatMovesIsServed(t *testing.T) {
 			if _, err := c.Write(bytes.Repeat([]byte("a"), block)); err != nil {
 				return
 			}
-			time.Sleep(150 * time.Millisecond) // half ReadTimeout: 1.2 s in all, four ReadTimeouts
+			// A quarter ReadTimeout: 1.2 s in all, two ReadTimeouts. Half
+			// left a macOS runner, whose sleeps overrun, past the timeout.
+			time.Sleep(150 * time.Millisecond)
 		}
 	}()
 	status, body := readResponse(t, bufio.NewReader(c))
 	if want := fmt.Sprintf("%d a a", blocks*block); !strings.Contains(status, "200") || body != want {
-		t.Fatalf("a body moving by a block per half ReadTimeout: %s %q, want 200 %q", status, body, want)
+		t.Fatalf("a body moving by a block per quarter ReadTimeout: %s %q, want 200 %q", status, body, want)
 	}
 }
 
