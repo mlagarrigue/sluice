@@ -84,9 +84,9 @@ streams for ETL — with the same operators everywhere.
 **Where it wants to go.** The intent is that an ordinary web application or
 ETL pipeline finds here everything from the socket to the database: the
 common protocols, databases and message queues, the orchestration of long
-jobs. It is not there yet — [Status and limits](#status-and-limits) says what
-is missing — but every addition follows the same rule: a package on top of
-the core, never inside it.
+jobs. [Status and limits](#status-and-limits) says what is there and what
+is missing; every addition follows the same rule: a package on top of the
+core, never inside it.
 
 **Modular.** The core knows none of its extensions. The web, HTTP/1.1, /2,
 /3, QUIC and PostgreSQL are packages built on top; other connectors will
@@ -117,9 +117,9 @@ elements, whichever you like.
 Everything that happens in an application — reading the network, routing,
 authenticating, applying a business rule, querying the database, building
 the objects, serialising — is a stage of that same model: an operator over
-the stream, or, on the web path, a function over one batch, whose handler
-takes a batch of requests and returns a batch of responses. There is no
-handler in the middle that would be of another nature.
+the stream, or, on the web path, a function over one batch: it takes a
+batch of requests and returns a batch of responses. Nothing in the middle
+is of another nature.
 
 ### The packages
 
@@ -151,7 +151,7 @@ group's, which are experimental.
 
 | Package | Role |
 |---|---|
-| `sluice/database/postgres` | PostgreSQL by speaking its protocol: `= ANY($1)`, COPY |
+| `sluice/database/postgres` | PostgreSQL by speaking its protocol: `= ANY($1)` (one query for N keys), COPY |
 | `sluice/database/postgres/pgtype` | the binary codecs: a Go value to PostgreSQL's representation and back, no connection needed |
 | `cmd/sluicegen` | generates the code that turns rows into structs |
 | `sluice/net/httpstream` | HTTP/1.1, /2, /3 as stream stages |
@@ -199,7 +199,8 @@ flowchart LR
     end
 ```
 
-Requests that arrive together leave together. The code that handles one
+Requests that arrive together leave together, as one query whose parameter
+holds every key (`WHERE id = ANY($1)`). The code that handles one
 request does not change. **64 requests, 1 connection, <!-- figure: BenchmarkWebDBSluiceOneConn -->898 µs<!-- /figure -->** — against
 <!-- figure: BenchmarkWebDBPgxOneConn -->12.9 ms<!-- /figure --> for pgx (the reference PostgreSQL driver in Go) on one connection,
 and <!-- figure: BenchmarkWebDBPgxPool64 -->1.28 ms<!-- /figure --> for pgx on a pool of 64 connections, one per request
@@ -290,8 +291,8 @@ comparisons against other libraries come from a separate module,
 `benchmarks/`, nested in this repository: it depends on this one and never
 the reverse, so none of them enters this module's dependencies.
 
-**A full comparison, with other languages and other approaches, is in
-preparation** — scenarios, method and results will be published together.
+**No comparison with other languages or approaches is published**; the
+apparatus that would produce one is in `comparison/`.
 
 ## Status and limits
 

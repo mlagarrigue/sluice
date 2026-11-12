@@ -248,10 +248,11 @@ you may keep it.
 > element. Inside the open window, order does not matter at all — two
 > producers whose clocks differ by a few milliseconds, or a batch the
 > network reordered, change nothing, because a `Pane` holds its elements in
-> arrival order and never claimed they were sorted. Pick `LateFail` when a
-> missing element makes the result wrong (billing), `LateDrop` when one
-> client's clock must not be able to stop everyone's aggregation
-> (ingest).
+> arrival order and never claimed they were sorted.
+
+Pick `LateFail` when a missing element makes the result wrong (billing),
+`LateDrop` when one client's clock must not be able to stop everyone's
+aggregation (ingest).
 
 ## `parallel` retains goroutines
 
@@ -294,12 +295,13 @@ rows := parallel.Async(readCSV(path), 4)
 > four ordered goroutines give ×1.04 on 34 µs of work per batch, ×1.7 on
 > 83 µs and ×2.9 on 850 µs, never ×4 — handing each batch over and waking a
 > goroutine costs about what light work does, and the operator waits for the
-> oldest batch, so one slow goroutine holds the others. On a trivial `f`, four goroutines are 3.5 times
-> *slower* than none: the coordination costs more than the work.
-> `Unordered` does better when the cost varies (×2.40 on skewed work). And
-> `Async`, which does not parallelise the computation but overlaps the
-> waiting with the work, halves the wall clock of a three-stage ETL.
-> "Adding parallelism" is a claim to check, not a given.
+> oldest batch, so one slow goroutine holds the others. On a trivial `f`,
+> four goroutines are 3.5 times *slower* than none: the coordination costs
+> more than the work. "Adding parallelism" is a claim to check, not a given.
+
+`Unordered` does better when the cost varies (×2.40 on skewed work). And
+`Async`, which does not parallelise the computation but overlaps the
+waiting with the work, halves the wall clock of a three-stage ETL.
 
 All these operators own the goroutines they start and stop them before
 handing back, on every exit path, panic included: no goroutine outlives the

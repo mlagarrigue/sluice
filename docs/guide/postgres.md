@@ -26,7 +26,8 @@ standard library alone. What that buys:
 
 You give Sluice.go a **connection recipe** — how to reach the server — and
 it handles everything after, including **authentication** (proving to the
-server who you are):
+server who you are). Here the recipe is `DialTLS`, an encrypted connection
+to the address it names:
 
 ```go
 ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // past that, give up

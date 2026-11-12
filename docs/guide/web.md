@@ -40,7 +40,8 @@ correct := diagnostics.Affordance{
 ```
 
 The client receives a `422` whose body lists the problems and the
-remedies, and pairs them by comparing **paths** (`/lines/7/saleQty`): the
+remedies — the `Problems` and `Remedies` of the report the handler below
+writes — and pairs them by comparing **paths** (`/lines/7/saleQty`): the
 remedy is at the same place as the problem. What travels is the message
 **key** (`QtyMustBeOverZero`) and its arguments, never a sentence already
 written: the client picks the language.
@@ -127,6 +128,7 @@ With `curl`, remember `-H 'Content-Type: application/merge-patch+json'`.
 To stay short, this example authenticates no one. A handler that serves
 protected data authenticates first and decodes after: see
 [Authenticating, authorizing](#authenticating-authorizing).
+
 ## Grouping calls with `gateway`
 
 Picture sixty-four requests arriving within the same millisecond, each
@@ -339,7 +341,7 @@ for the one before; that is what makes a `gateway` worth having behind a
 single client. The two file names may be empty when `srv.TLSConfig` already
 carries the certificates.
 
-> **In plain words.** ALPN is the TLS extension by which client and server
+> **In plain words: ALPN.** ALPN is the TLS extension by which client and server
 > agree on the protocol spoken inside.
 
 Behind a CDN or a TLS-terminating proxy, a request may arrive with the
@@ -351,7 +353,7 @@ through. The body of that 425 is `web.TooEarlyReport()`, for a handler that
 refuses early data on its own terms. Accept only what a duplicate does not hurt — a catalogue read, not
 an order.
 
-> **In plain words.** With no such proxy in front of you, the header never
+> **In plain words: without a proxy.** With no such proxy in front of you, the header never
 > arrives and the wrapper costs one table lookup per request.
 
 ## The complete example
