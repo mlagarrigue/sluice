@@ -143,6 +143,28 @@ the PostgreSQL server's settings, the container's limits, network and log driver
 `system` part next to `findings`. Two machines of a comparison must print
 the same table.
 
+## In CI: two reports, and a gate
+
+A report in JSON (`-output json`) is kept; the next run names it with
+`-compare` and says what **appeared**, what **changed** — the same finding
+with another value, `somaxconn = 128` become `512` — what was
+**resolved**, and which lines of the system table moved. A finding is the
+same from one report to the next when its rule, its documentation and its
+text match with the numbers set aside; an advisory's identifier is kept
+whole, so two CVEs of one rule stay two findings.
+
+`-fail-on` turns the run into a gate: `new` trips on any finding that
+appeared, `cve` on an advisory that appeared with the verdict *applies* —
+or whose verdict became *applies* — and `security` on a new finding of
+that goal. The run then exits with **2**, one line per cause, where a run
+that could not read what it was given exits with 1. Without `-compare`,
+every finding of the report counts as new.
+
+```
+go run -C audit ./cmd/audit -module . -cve yes -sources tools -output json > before.json
+go run -C audit ./cmd/audit -module . -cve yes -sources tools -compare before.json -fail-on cve
+```
+
 ## What it does not do
 
 It proposes; a person decides. A finding is not a failure: the interop

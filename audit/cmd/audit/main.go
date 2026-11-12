@@ -32,11 +32,26 @@ import (
 )
 
 func main() {
-	if err := run(os.Args[1:], os.Stdout); err != nil {
+	err := run(os.Args[1:], os.Stdout)
+	var gate gateError
+	switch {
+	case errors.As(err, &gate):
+		for _, line := range gate {
+			fmt.Fprintln(os.Stderr, "audit: fails on", line)
+		}
+		os.Exit(2)
+	case err != nil:
 		fmt.Fprintln(os.Stderr, "audit:", err)
 		os.Exit(1)
 	}
 }
+
+// gateError is a run that -fail-on stops: one line per finding that
+// tripped it. Its exit code is 2, so that a CI step tells it from a run
+// that could not read what it was given (1).
+type gateError []string
+
+func (g gateError) Error() string { return strings.Join(g, "; ") }
 
 // axisFlags binds one flag per axis, so a new axis needs no new flag.
 type axisFlags map[audit.Axis]*string
@@ -65,6 +80,8 @@ func run(args []string, out *os.File) error {
 	statAfter := fs.String("stat-after", "", "a copy of /proc/stat taken after it")
 	imds := fs.String("imds", "", "a file holding Azure's metadata: curl -H Metadata:true 'http://169.254.169.254/metadata/instance?api-version=2025-04-07'")
 	appArgs := fs.String("app-args", "", "a file holding how the comparison's server was started: NAME=value lines (env), then its command line")
+	compare := fs.String("compare", "", "an earlier JSON report (-output json) of the same target: report what appeared, went and changed since")
+	failOn := fs.String("fail-on", "", "comma-separated: new (any new finding), cve (a new advisory that applies), security (a new security finding); exit 2 when one trips")
 	sbom := fs.Bool("sbom", false, "print the binary's bill of materials instead of the findings")
 	axesOnly := fs.Bool("axes", false, "print the axes and their values, and stop")
 	var answers answerFlag
@@ -150,13 +167,55 @@ func run(args []string, out *os.File) error {
 	if sel.Has(audit.Profile, "comparative") {
 		system = audit.System(target)
 	}
+	if findings == nil {
+		findings = []audit.Finding{} // "findings": [] says nothing was found; null would say nothing was asked
+	}
+	current := audit.Report{Findings: findings, System: system}
+	var diff *audit.Diff
+	if *compare != "" {
+		b, err := os.ReadFile(*compare) //nolint:gosec // G304: the path is the caller's
+		if err != nil {
+			return err
+		}
+		var earlier audit.Report
+		if err := json.Unmarshal(b, &earlier); err != nil {
+			return fmt.Errorf("%s: not a JSON report of this tool (-output json): %w", *compare, err)
+		}
+		if earlier.Findings == nil {
+			return fmt.Errorf("%s: not a JSON report of this tool (-output json): no findings array", *compare)
+		}
+		d := audit.Compare(earlier, current)
+		diff = &d
+	}
+	var tripped []string
+	if *failOn != "" {
+		if tripped, err = audit.Gate(strings.Split(*failOn, ","), findings, diff); err != nil {
+			return err
+		}
+	}
+	if err := printReport(out, asJSON, current, diff); err != nil {
+		return err
+	}
+	if len(tripped) > 0 {
+		return gateError(tripped)
+	}
+	return nil
+}
+
+// printReport writes the report, or the comparison when there is one.
+func printReport(out *os.File, asJSON bool, current audit.Report, diff *audit.Diff) error {
+	findings, system := current.Findings, current.System
 	if asJSON {
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
-		if findings == nil {
-			findings = []audit.Finding{} // "findings": [] says nothing was found; null would say nothing was asked
+		if diff != nil {
+			return enc.Encode(diff)
 		}
-		return enc.Encode(report{Findings: findings, System: system})
+		return enc.Encode(current)
+	}
+	if diff != nil {
+		printDiff(out, diff)
+		return nil
 	}
 	if len(system) > 0 {
 		_, _ = fmt.Fprintf(out, "system, as a comparison publishes it\n")
@@ -184,12 +243,24 @@ func run(args []string, out *os.File) error {
 	return nil
 }
 
-// report is the JSON form: the findings always, and the system table when
-// the comparative profile asked for it. One object rather than a bare
-// array, so that a reader of either part parses the same document.
-type report struct {
-	Findings []audit.Finding `json:"findings"`
-	System   []audit.Setting `json:"system,omitempty"`
+// printDiff writes a comparison: what appeared, what changed, what went,
+// and the lines of the system table that moved.
+func printDiff(out *os.File, d *audit.Diff) {
+	for _, f := range d.Appeared {
+		_, _ = fmt.Fprintf(out, "appeared  %s: %s\n", f.Rule, f.Current)
+	}
+	for i := range d.Modified {
+		m := &d.Modified[i]
+		_, _ = fmt.Fprintf(out, "changed   %s: %s\n          was: %s\n", m.Is.Rule, m.Is.Current, m.Was.Current)
+	}
+	for _, f := range d.Resolved {
+		_, _ = fmt.Fprintf(out, "resolved  %s: %s\n", f.Rule, f.Current)
+	}
+	for _, s := range d.System {
+		_, _ = fmt.Fprintf(out, "system    %s: %s -> %s\n", s.Name, s.Was, s.Is)
+	}
+	_, _ = fmt.Fprintf(out, "%d appeared, %d changed, %d resolved, %d unchanged\n",
+		len(d.Appeared), len(d.Modified), len(d.Resolved), d.Unchanged)
 }
 
 // answerFlag collects -answer key=value.
