@@ -9,7 +9,7 @@
 //	receive.go       a datagram in: the read loops, receiveAt's steps, the frames
 //	send.go          a packet out: sendPacketLocked, writePacketLocked, coalescing
 //	stream.go        Stream: Read and Write, OnStreamFrames and its credit modes
-//	reassembly.go    stream and CRYPTO bytes put back in order
+//	reassembly.go    stream bytes put back in order; cryptobuf.go CRYPTO bytes
 //	flow.go          flow control, both directions, both levels (RFC 9000 §4)
 //	ack.go           acknowledgements owed (RFC 9000 §13.2)
 //	recovery.go      loss detection and NewReno (RFC 9002)
@@ -687,8 +687,8 @@ type keyUpdateState struct {
 type space struct {
 	sealer     *packetSealer
 	opener     *packetOpener
-	crypto     reassembly // the peer's handshake bytes, reordered
-	cryptoOff  uint64     // this end's send offset
+	crypto     cryptoBuffer // the peer's handshake bytes, reordered
+	cryptoOff  uint64       // this end's send offset
 	nextPN     uint64
 	largest    uint64 // largest received, for packet-number decoding
 	ack        ackTracker

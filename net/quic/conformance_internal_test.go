@@ -1098,27 +1098,27 @@ func TestStatelessResetTokenOfAnUnusedIDIsNotCompared(t *testing.T) {
 }
 
 // RFC 9000 §7.5 again, for the other way of filling the buffer: CRYPTO data
-// in many disjoint fragments, each a byte, far under the byte bound but
-// over what reassembly parks — one more than the minCryptoOutOfOrder
-// fragments 4096 bytes can make. The close is CRYPTO_BUFFER_EXCEEDED as for
-// the byte bound, not the PROTOCOL_VIOLATION a fragmenting peer — which is
-// legal — has not committed.
-func TestCryptoInTooManyFragmentsIsABufferExceeded(t *testing.T) {
+// in many disjoint fragments, each a byte. The reassembly used to bound the
+// fragments it parked, and closed the connection past 4096 of them; the
+// CRYPTO buffer has no fragment count, so every other byte of the whole
+// window parks — 32768 fragments — and only a byte past the window is
+// refused, with CRYPTO_BUFFER_EXCEEDED as for any other.
+func TestCryptoFragmentsAreBoundedByTheWindowAlone(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
 	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultConfig())
 	defer c.Close()
-	var err error
-	for i := range uint64(minCryptoOutOfOrder + 1) {
-		if err = c.handleCrypto(spaceInitial, Frame{Type: frameCrypto, offset: 1 + 2*i, Data: []byte("x")}); err != nil {
-			break
+	for off := uint64(1); off < maxCryptoBuffer; off += 2 {
+		if err := c.handleCrypto(spaceInitial, Frame{Type: frameCrypto, offset: off, Data: []byte("x")}); err != nil {
+			t.Fatalf("one-byte CRYPTO fragment at %d refused: %v", off, err)
 		}
 	}
-	if err == nil {
-		t.Fatalf("%d disjoint one-byte CRYPTO fragments were parked without complaint", minCryptoOutOfOrder+1)
+	if held := c.spaces[spaceInitial].crypto.held; held != maxCryptoBuffer/2 {
+		t.Fatalf("%d bytes parked, want %d", held, maxCryptoBuffer/2)
 	}
+	err := c.handleCrypto(spaceInitial, Frame{Type: frameCrypto, offset: maxCryptoBuffer, Data: []byte("x")})
 	te := &transportError{}
 	if !errors.As(err, &te) || te.code != transportCryptoBufferExceeded {
-		t.Errorf("the refusal is %v, want CRYPTO_BUFFER_EXCEEDED (0x0d)", err)
+		t.Errorf("a byte past the window: got %v, want CRYPTO_BUFFER_EXCEEDED (0x0d)", err)
 	}
 }
 

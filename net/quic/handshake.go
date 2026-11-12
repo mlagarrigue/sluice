@@ -533,6 +533,7 @@ func (c *Conn) discardSpaceLocked(space int) {
 	sp.sealer, sp.opener = nil, nil
 	_, inFlight := sp.sent.takeAll()
 	sp.retrans = nil
+	sp.crypto.release()
 	c.cc.onLifted(inFlight)
 	c.deferred[space] = nil
 	sp.ack = ackTracker{}

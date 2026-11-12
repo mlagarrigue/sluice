@@ -1720,26 +1720,6 @@ func (c *Conn) abandonPending() {
 	c.pending, c.pendingBytes, c.pendingLost = nil, 0, true
 }
 
-// maxCryptoBuffer bounds how far past the delivered prefix CRYPTO data may
-// reach, per space. Stream reassembly is bounded by flow control; CRYPTO has
-// no flow control (RFC 9000 §7.5 says bound it anyway, and this is the
-// customary bound). A window rather than a count of parked bytes: it bounds
-// those too — every parked byte lies inside it — and it also refuses the
-// byte parked far ahead, which no handshake could ever reach and which would
-// otherwise hold the connection open until its handshake timeout.
-const maxCryptoBuffer = 64 << 10
-
-// minCryptoOutOfOrder is the out-of-order CRYPTO data RFC 9000 §7.5 has an
-// endpoint buffer whatever its fragmentation: "Implementations MUST support
-// buffering at least 4096 bytes of data received in out-of-order CRYPTO
-// frames". A fragment holds at least one byte, so a reassembly floor of as
-// many fragments accepts 4096 bytes however they are cut, where the floor
-// streams get (reassemblyChunkFloor, 256) refused them past 256 pieces.
-// What it costs is bounded: a fragment's bookkeeping times 4096, per space,
-// for the length of a handshake, and only for a peer that cuts its flight
-// into pieces no TLS stack sends.
-const minCryptoOutOfOrder = 4096
-
 // handleCrypto reassembles handshake bytes — retransmissions overlap here
 // exactly as they do on streams — and feeds what is newly in order to TLS.
 func (c *Conn) handleCrypto(space int, f Frame) error {
@@ -1749,30 +1729,14 @@ func (c *Conn) handleCrypto(space int, f Frame) error {
 	if space == spaceInitial && len(f.Data) > 0 && end <= sp.crypto.consumed {
 		c.rxStaleCrypto = true
 	}
-	if end > sp.crypto.consumed+maxCryptoBuffer {
-		c.mu.Unlock()
-		return &transportError{
-			code: transportCryptoBufferExceeded,
-			err:  fmt.Errorf("%w: handshake data over %d bytes past what was delivered", ErrQUIC, maxCryptoBuffer),
-		}
-	}
 	atStart := sp.crypto.consumed == 0
-	sp.crypto.floor = minCryptoOutOfOrder
 	delta, err := sp.crypto.addThenTake(f.offset, f.Data, nil)
 	if space == spaceInitial && atStart && c.isClient && c.earlyOffered && isHelloRetryRequest(delta) {
 		c.earlyHRR = true
 	}
 	c.mu.Unlock()
 	if err != nil {
-		// Too many fragments parked is the buffer exceeded too, by count
-		// rather than by bytes: §7.5 names CRYPTO_BUFFER_EXCEEDED for an
-		// endpoint that cannot buffer what the peer sent, and fragmenting
-		// is legal, so it is no PROTOCOL_VIOLATION. reassembly states
-		// INTERNAL_ERROR for a stream, where no such code exists.
-		if te := (*transportError)(nil); errors.As(err, &te) && te.code == transportInternalError {
-			return &transportError{code: transportCryptoBufferExceeded, err: err}
-		}
-		return &transportError{code: transportProtocolViolation, err: err}
+		return err
 	}
 	if len(delta) == 0 {
 		return nil

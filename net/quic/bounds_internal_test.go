@@ -667,8 +667,8 @@ func TestResetsInOnePacketAreCheckedAgainstTheLimitTheyArrivedUnder(t *testing.T
 // bytes of data received in out-of-order CRYPTO frames." The reassembly
 // bounded the fragments it parks at max(held/1024, 256), so 4096 bytes in
 // more than 256 disjoint fragments closed the connection with
-// CRYPTO_BUFFER_EXCEEDED. CRYPTO parks as many fragments as 4096 bytes can
-// make now (minCryptoOutOfOrder).
+// CRYPTO_BUFFER_EXCEEDED. CRYPTO parks in cryptoBuffer now, which counts no
+// fragments.
 func TestCryptoAcceptsFourKilobytesOutOfOrderHoweverCut(t *testing.T) {
 	c := assembleConn(&fuzzSink{addr: "crypto:self"}, fakeFuzzAddr("crypto:peer"), []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
 	t.Cleanup(func() { _ = c.Close() })

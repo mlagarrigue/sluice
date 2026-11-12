@@ -5,12 +5,12 @@ import (
 	"sort"
 )
 
-// Interval reassembly for one byte stream. STREAM and CRYPTO frames arrive
-// with offsets, and real peers overlap them as a matter of course: a
-// retransmission covers what an ACK had not confirmed, which the original
-// delivery may since have made partly stale. A reassembler that only accepts
-// exact-offset chunks parks such a frame forever and the stream wedges with
-// its bytes already in hand.
+// Interval reassembly for one byte stream. STREAM frames arrive with
+// offsets (CRYPTO frames too, and park in cryptoBuffer), and real peers
+// overlap them as a matter of course: a retransmission covers what an ACK
+// had not confirmed, which the original delivery may since have made partly
+// stale. A reassembler that only accepts exact-offset chunks parks such a
+// frame forever and the stream wedges with its bytes already in hand.
 //
 // The rules: everything at or below what was already delivered is dropped,
 // overlaps merge with what is held, and the first bytes seen for an offset
@@ -85,8 +85,6 @@ type reassembly struct {
 	consumed uint64 // how far the delivered prefix reaches
 	chunks   []rchunk
 	held     int // bytes parked, kept so callers can observe the cost
-	// floor raises reassemblyChunkFloor for this buffer; zero keeps it.
-	floor int
 }
 
 // release drops every parked chunk, keeping where the delivered prefix
@@ -97,7 +95,7 @@ func (r *reassembly) release() {
 
 // chunkLimit is how many chunks r may hold at its current size.
 func (r *reassembly) chunkLimit() int {
-	return min(max(r.held/reassemblyChunkBytes, reassemblyChunkFloor, r.floor), reassemblyChunkCeiling)
+	return min(max(r.held/reassemblyChunkBytes, reassemblyChunkFloor), reassemblyChunkCeiling)
 }
 
 // addThenTake files bytes at an offset and appends whatever is now
@@ -172,8 +170,8 @@ func (r *reassembly) add(off uint64, data []byte) error {
 		// not a violation on the peer's part — fragmenting is legal — and
 		// RFC 9000 §20.1 offers no other code for "cannot continue". The
 		// reason travels with it, for the peer's log. Written up in
-		// docs/reference/exit-conditions.md and ADR 0015. For CRYPTO data handleCrypto
-		// closes with CRYPTO_BUFFER_EXCEEDED instead, the code §7.5 has.
+		// docs/reference/exit-conditions.md and ADR 0015. CRYPTO data parks in
+		// cryptoBuffer instead, which has no fragment bound.
 		return &transportError{
 			code: transportInternalError,
 			err:  fmt.Errorf("%w: stream bytes parked in over %d fragments", ErrQUIC, limit),
