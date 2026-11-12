@@ -973,16 +973,15 @@ func (c *Conn) handleRetry(h longHeader) {
 	// exists before the server's first authenticated packet, and a Retry
 	// after that is discarded above.
 	//
-	// What leaving the 0-RTT ones out cost. Their bytes stayed in flight
-	// and would never be acknowledged, so the window the restarted
-	// handshake had left was the Initial packets' share of it; and the
-	// payloads waited for a loss that no ACK could declare before the 1-RTT
-	// keys, and then left in 1-RTT. lsquic's server answers with a Retry a
-	// ClientHello it holds only part of when it first looks at the
+	// What leaving the 0-RTT ones out would cost: their bytes would stay in
+	// flight and never be acknowledged, so the window the restarted
+	// handshake has left would be the Initial packets' share of it; and the
+	// payloads would wait for a loss that no ACK can declare before the
+	// 1-RTT keys, and then leave in 1-RTT. lsquic's server answers with a
+	// Retry a ClientHello it holds only part of when it first looks at the
 	// connection (a post-quantum key share makes one span two Initial
-	// packets), and against it the QUIC Interop Runner's zerortt case saw
-	// 34 requests sent in 0-RTT dropped and sent again in 1-RTT after the
-	// handshake: 9868 bytes of 1-RTT against a bound of 5000.
+	// packets): 34 requests sent in 0-RTT would go again in 1-RTT after the
+	// handshake, 9868 bytes of 1-RTT where the interop runner allows 5000.
 	for _, space := range []int{spaceInitial, spaceApplication} {
 		sp := &c.spaces[space]
 		payloads, inFlight := sp.sent.takeAll()

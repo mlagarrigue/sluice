@@ -48,8 +48,8 @@ const pathProbeMaxRetransmits = 3
 // so a server with no spare one cannot probe the client's new address —
 // quic-go logs "skipping validation of new path … since no connection ID is
 // available" and keeps sending to the address the NAT abandoned, until the
-// idle timer ends the connection (the runner's rebind-port and rebind-addr
-// cases, against a Dial that issued none).
+// idle timer ends the connection (a NAT rebinding, against a Dial that
+// issued none).
 //
 // Lock order: these are called with the connection's mu held and take the
 // listener's own lock inside — Conn.mu before Listener.mu, never the
@@ -303,7 +303,7 @@ func (c *Conn) localCIDSeqFor(dcid []byte) (uint64, bool) {
 // (§9.5 only lets it) stops following this end: nginx logs "no available
 // client ids for new path" and keeps sending to the port the NAT
 // abandoned, its old identifier never retired despite §5.1.2's SHOULD
-// (runner rebind-port, nginx with active_connection_id_limit 2). The next
+// (nginx with active_connection_id_limit 2, across a rebinding). The next
 // NEW_CONNECTION_ID then carries Retire Prior To at the sequence in use
 // (§5.1.2), which §5.1.1 lets exceed the peer's limit for as long as the
 // retirements take; the entries below it stop counting as active but keep
@@ -311,9 +311,9 @@ func (c *Conn) localCIDSeqFor(dcid []byte) (uint64, bool) {
 // once those have all left, as §5.1.2 asks, so at most one set waits. A
 // spare is any active identifier the peer has not sent under, not only a
 // higher sequence: lsquic moves to the newest first, and a Retire Prior To
-// sent while it still held unused ones retired the identifier of the path
-// it was leaving, which its own retirement then tripped over (an assertion
-// in maybe_retire_dcid, runner rebind-port).
+// sent while it still holds unused ones retires the identifier of the path
+// it is leaving, which its own retirement then trips over (an assertion in
+// its maybe_retire_dcid).
 // Callers hold mu.
 func (c *Conn) issueLocalCIDsLocked() {
 	if c.registrar == nil || !c.handshakeConfirmed {
@@ -1405,10 +1405,10 @@ func (c *Conn) answerPathChallengesLocked(responses []byte, now time.Time) {
 	// Only an answer on the path in use is that path's traffic. One toward
 	// another path — a client probing the server's preferred address, or
 	// arriving from a new address mid-transfer — is not constrained by the
-	// window of a path it does not take, and gating it there dropped it
-	// exactly when that window was full: during a transfer, the moment a
-	// client probes (the interop runner's connectionmigration case, whose
-	// clients challenge once and stay put when unanswered). Its bound is
+	// window of a path it does not take, and gating it there would drop it
+	// exactly when that window is full: during a transfer, the moment a
+	// client probes — and a client that challenges once stays put when
+	// unanswered. Its bound is
 	// a count instead (offPathAnswers), with the §8 books of the off-path
 	// address on top.
 	gated := onPath && !offSocket

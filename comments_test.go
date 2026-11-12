@@ -297,6 +297,13 @@ func identLike(w string) bool {
 // goes to an issue, not to the code.
 var deferredMarker = regexp.MustCompile(`(?i)\brevisit(ed|ing)?\b`)
 
+// runnerCase is a QUIC Interop Runner test case named in a production
+// comment: the comment then tells the incident the case caught — which
+// peer, which pass — where the code needs the rule it keeps. The incident
+// is the commit's, or ADR 0019's. Only the names that are nothing but a
+// case are listed; "handshake" or "retry" are words of the protocol.
+var runnerCase = regexp.MustCompile(`\b(amplificationlimit|connectionmigration|handshakecorruption|handshakeloss|rebind-addr|rebind-port|transfercorruption|transferloss|zerortt|longrtt)\b`)
+
 var usedToOtherSense = regexp.MustCompile(`(?i)\b(is|are|be|was|were|being|never|not|only)\s+used to\b|,\s*used to\b`)
 
 func TestCommentMarkers(t *testing.T) {
@@ -327,6 +334,9 @@ func TestCommentMarkers(t *testing.T) {
 				}
 				if historyMarker.MatchString(c.Text) && !usedToOtherSense.MatchString(c.Text) {
 					t.Errorf("%s: the comment tells the code's history; state the rule it holds: %s", pos, strings.TrimSpace(c.Text))
+				}
+				if m := runnerCase.FindString(c.Text); m != "" {
+					t.Errorf("%s: the comment names the interop runner's %s case; state the rule it keeps: %s", pos, m, strings.TrimSpace(c.Text))
 				}
 				if deferredMarker.MatchString(c.Text) {
 					t.Errorf("%s: the comment puts its decision off; state the condition it holds under: %s", pos, strings.TrimSpace(c.Text))

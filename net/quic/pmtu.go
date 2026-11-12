@@ -141,8 +141,8 @@ func (c *Conn) pmtuTargetLocked() int {
 // the search starts: two initial windows. One is what the probe's own
 // padding costs to recoup — 1452 bytes of it, against the 252 a later
 // datagram saves — and a path that has carried twice that is likely to
-// carry more. At one window, the runner's zerortt case still paid for a
-// probe at the very moment it ended.
+// carry more. At one window, a short 0-RTT exchange still pays for a probe
+// at the very moment it ends.
 func pmtuEarnedAfter() int { return 2 * initialWindow(pmtuBaseSize) }
 
 // resetPMTULocked restarts the search: datagrams fall back to the 1200
@@ -174,9 +174,9 @@ func (c *Conn) maybeProbePMTULocked() {
 	// client on the same emulated path (15 ms, 10 Mbit/s, a queue of 25),
 	// a forty-request download left 1805 bytes behind it in 1-RTT, of
 	// which 1452 were this probe, where quic-go sent 330 and no probe at
-	// all. The QUIC Interop Runner's zerortt case refuses a client that
-	// sends more than 5000 bytes outside 0-RTT, so the padding alone was
-	// three tenths of its budget, bought for nothing.
+	// all. The QUIC Interop Runner refuses a 0-RTT client that sends more
+	// than 5000 bytes outside 0-RTT, so the padding alone is three tenths
+	// of that budget, bought for nothing.
 	//
 	// What pmtuEarnedAfter names, carried on this path, is the bar: a bulk
 	// sender passes it within its first few round trips, so the search is

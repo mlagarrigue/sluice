@@ -266,11 +266,11 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 	// anything was received there, owed or not — §13.2.1's "when sending a
 	// packet for any reason, an endpoint SHOULD attempt to include an ACK
 	// frame if one has not been sent recently". A handshake whose one ACK
-	// was lost otherwise leaves the peer blind until it next elicits one:
-	// runner handshakeloss against quiche, the client's two ACKs of the
-	// ServerHello's first half both dropped while four of its probes got
-	// through bare, and quiche's PTO resending only that first half, never
-	// the lost tail, until Dial expired. A few bytes in packets that leave
+	// is lost otherwise leaves the peer blind until it next elicits one:
+	// under loss, a client's two ACKs of quiche's first ServerHello half can
+	// both drop while its probes get through bare, and quiche's PTO resends
+	// only that first half, never the lost tail, until Dial expires. A few
+	// bytes in packets that leave
 	// rarely, and the client's Initials are padded to 1200 anyway.
 	resend := space != spaceApplication && len(sp.ack.ranges) > 0
 	if owed := sp.ack.owes(now); !offPath && (owed || sp.ack.pending() || resend) {
@@ -718,13 +718,13 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 	//
 	// What that is worth. A client that opens many streams at once and
 	// writes a small request on each — 40 requests the moment the
-	// connection opens, which is the QUIC Interop Runner's zerortt case and
-	// the shape of any multiplexed request burst — would otherwise send one
+	// connection opens, the shape of a 0-RTT resumption and of any
+	// multiplexed request burst — would otherwise send one
 	// datagram per write and a second for the end of each stream: some 140
 	// datagrams of about 200 bytes for 10 KB of requests. A path that queues
 	// 25 datagrams drops most of such a burst, and RFC 9001 §4.6.1 has the
 	// lost 0-RTT data resent in 1-RTT packets once the keys are there,
-	// which the zerortt case counts against the client (at most
+	// which the interop runner counts against a 0-RTT client (at most
 	// 0.5 x FILENAMELEN x NUM_FILES bytes in 1-RTT). Any path with a queue
 	// does the same: a sender that pays a datagram per frame loses the ones
 	// the queue has no room for, and pays for them twice.
@@ -1216,11 +1216,11 @@ func (c *Conn) sendCrypto(l tls.QUICEncryptionLevel, data []byte) error {
 		// one queues after it, in offset order. The anti-amplification
 		// budget withholds a packet by putting it back at the head of the
 		// queue, which is right for the head retransmitLocked just took and
-		// reversed a fresh certificate chain chunk by chunk: the budget
-		// lifted, the server sent its Handshake CRYPTO from offset 8870
+		// would reverse a fresh certificate chain chunk by chunk: the budget
+		// lifted, a server would send its Handshake CRYPTO from offset 8870
 		// down to 4326, and kwik, which buffers the 4096 out-of-order bytes
-		// RFC 9000 §7.5 requires and no more, closed with
-		// CRYPTO_BUFFER_EXCEEDED on the first (runner amplificationlimit).
+		// RFC 9000 §7.5 requires and no more, closes with
+		// CRYPTO_BUFFER_EXCEEDED on the first.
 		sp := &c.spaces[space]
 		if len(sp.retrans) > 0 || !c.canSendLocked(len(frame)+64) {
 			sp.retrans = append(sp.retrans, frame)
@@ -1738,11 +1738,10 @@ func (c *Conn) sendProbeLocked(space int) {
 
 // earlyResendLimit is how many times a server resends its Initial flight
 // ahead of the probe timeout (RFC 9002 §6.2.3). The RFC finds once enough
-// for a single loss; the runner's handshakecorruption case corrupts in
-// bursts of up to three, and quinn's client resent its ClientHello five
-// times while all seven of this end's ServerHello datagrams arrived
-// corrupted and the 10 s handshake deadline ran out on a PTO backoff of
-// 1, 2 and 4 s. Twice keeps the §6.2.3 warning — a server that answers
+// for a single loss; corruption comes in bursts of up to three on an
+// emulated path, and quinn's client can resend its ClientHello five times
+// while all seven of this end's ServerHello datagrams arrive corrupted and
+// the 10 s handshake deadline runs out on a PTO backoff of 1, 2 and 4 s. Twice keeps the §6.2.3 warning — a server that answers
 // every packet it cannot use risks an endless exchange — and each resend
 // still spends the anti-amplification budget like any other.
 const earlyResendLimit = 2

@@ -305,11 +305,11 @@ func (c *Conn) driveHandshake(ctx context.Context) error {
 // called when the client's first Handshake packet authenticates, which
 // validates its address (RFC 9000 §8.1). From then on the client is as
 // proven as any established peer, and RFC 9000 §10.1 ends those by the idle
-// timeout, not by a clock started at their first packet. The fixed deadline
-// closed handshakes that were alive: under 30 % loss a client's Finished
-// went missing, its next probe was due 12 s in, and the server had closed
-// with INTERNAL_ERROR at 10 s (runner handshakeloss against ngtcp2 and
-// quinn). The pending slot a client can hold grows with it, from the
+// timeout, not by a clock started at their first packet. A fixed deadline
+// closes handshakes that are alive: under 30 % loss a client's Finished can
+// go missing with its next probe due 12 s in, past a 10 s deadline, and the
+// server closes with INTERNAL_ERROR a client still working through its
+// losses. The pending slot a client can hold grows with it, from the
 // HandshakeTimeout to the idle timeout — but only for a client that
 // answered from its own address with the handshake keys, which could as
 // well complete and hold a connection that long. Callers hold mu.
