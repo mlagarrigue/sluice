@@ -265,6 +265,15 @@ func (w *h2Writer) run() {
 				return
 			}
 			if len(w.ctrl) > 0 || w.runnable() {
+				// park arms the expiry, and a round that never parks — a
+				// control frame waiting at the end of every round, another
+				// stream always runnable — would never look at it: a
+				// stalled stream would outlive its WriteTimeout for as long
+				// as the work lasted. The look costs a pass over the jobs,
+				// which the round's fill makes anyway.
+				if d, ok := w.earliest(); ok && !time.Now().Before(d) {
+					w.expire()
+				}
 				break
 			}
 			if w.stopping && len(w.jobs) == 0 {
