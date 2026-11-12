@@ -76,3 +76,53 @@ func ExampleDialTLS() {
 	}
 	_ = conn.Close() // the connection is the caller's to close
 }
+
+// Read a stream as one consumer of a group, acknowledging each batch once
+// it is processed.
+func ExampleConn_ReadGroup() {
+	ctx := context.Background()
+	conn, err := redis.Connect(ctx, redis.DialTCP("127.0.0.1:6379"), redis.Config{})
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	g, err := conn.ReadGroup(redis.GroupConfig{Stream: "orders", Group: "billing", Consumer: "worker-1"})
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	src := g.Entries(ctx)
+	for b := range src.Stream() {
+		ids := make([]string, len(b.Items))
+		for i, e := range b.Items {
+			ids[i] = e.ID // process e.Fields here
+		}
+		g.Ack(ids...)
+	}
+	if err := src.Err(); err != nil {
+		fmt.Println(err)
+	}
+	_ = conn.Close()
+}
+
+// Ack may be called from any goroutine: here, the one that finished the
+// work.
+func ExampleGroup_Ack() {
+	var g *redis.Group // from Conn.ReadGroup
+	done := make(chan []string, 1)
+	done <- []string{"1700000000000-0"}
+	if g != nil {
+		g.Ack(<-done...)
+	}
+}
+
+// Entries reads until its context ends.
+func ExampleGroup_Entries() {
+	var g *redis.Group // from Conn.ReadGroup
+	if g == nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = g.Entries(ctx)
+}

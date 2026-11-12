@@ -343,10 +343,12 @@ jobs:
             echo "::error::integration tests skipped: no server" >&2
             exit 1
           fi
-          if ! grep -- '--- PASS: TestPipelineAgainstAServer' test.log; then
-            echo "::error::the pipeline did not run against Valkey" >&2
-            exit 1
-          fi
+          for name in TestPipelineAgainstAServer TestGroupReadsInBatchesAndAcknowledgesOnlyWhatItIsTold TestGroupRedeliversWhatWasNotAcknowledged; do
+            if ! grep -- "--- PASS: $name " test.log; then
+              echo "::error::$name did not pass against Valkey" >&2
+              exit 1
+            fi
+          done
 
   # The connector against a real server. Everything else in database/postgres/ talks
   # to a scripted server, which cannot disagree with the implementation about

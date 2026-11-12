@@ -71,6 +71,54 @@ Arguments are strings, binary-safe, sent as RESP bulk strings: a command is
 never a line of text assembled from your values, so a value cannot become a
 second command.
 
+## Reading a stream as a consumer group
+
+A Redis *stream* is an append-only log of entries, each an ID and some
+fields. A *consumer group* shares a stream among several readers: each
+entry goes to one of them, and stays in that reader's *pending list* until
+it says the entry is processed (XACK). `Conn.ReadGroup` reads a stream as
+one consumer of a group, in batches, through a `sluice.Source`:
+
+```go
+// Once, at deployment: the group is a durable object of the server.
+//   XGROUP CREATE orders billing $ MKSTREAM
+g, err := conn.ReadGroup(redis.GroupConfig{
+	Stream: "orders", Group: "billing", Consumer: "worker-1",
+})
+if err != nil {
+	return err
+}
+src := g.Entries(ctx)
+for b := range src.Stream() {
+	for _, e := range b.Items {
+		// e.ID, e.Fields
+	}
+	ids := make([]string, len(b.Items))
+	for i, e := range b.Items {
+		ids[i] = e.ID
+	}
+	g.Ack(ids...) // processed: they may leave the pending list
+}
+if err := src.Err(); err != nil {
+	return err
+}
+```
+
+> **In plain words: who acknowledges.** Your code does, never the library
+> as it reads. A batch handed to your loop is not yet a batch processed —
+> it may be on its way to another goroutine — so only you can say it is
+> done. Until you call `Group.Ack`, the server keeps the entries pending;
+> if your program stops, they come back first the next time it reads. An
+> entry may then arrive twice, never zero times: process it so that twice
+> does no harm.
+
+The acknowledgements leave with the next read, in the same round trip, and
+when the stream stops. The stream runs until `ctx` ends, which it notices
+between two reads — at most `GroupConfig.Block` later — and then ends
+cleanly: the connection stays usable and `Err` is nil. The group is created
+by you, once, as PostgreSQL's replication slot is; reading a group that
+does not exist ends the stream with the server's `NOGROUP` error.
+
 ## Settings
 
 `redis.Config`:
@@ -81,6 +129,21 @@ second command.
 | `Password` | no AUTH | | the password AUTH sends |
 | `Database` | database 0 | ≥ 0 | the logical database SELECT picks |
 | `MaxReplyBytes` | 64 MiB | ≥ 0 | bytes one reply may take on the wire, nested elements included |
+
+`redis.GroupConfig`, the names, all required:
+
+| Field | Zero | Bounds | What it sets |
+|---|---|---|---|
+| `Stream` | — (required) | | the stream to read |
+| `Group` | — (required) | | the consumer group, created beforehand |
+| `Consumer` | — (required) | | this reader's name in the group |
+
+and the batch and the wait:
+
+| Field | Zero | Bounds | What it sets |
+|---|---|---|---|
+| `BatchEntries` | 1024 | ≥ 0 | entries one read asks for: the most a batch holds |
+| `Block` | one second | ≥ 0 | how long a read waits for new entries, and so how long a stop takes to be noticed |
 
 ## What a round trip costs
 

@@ -44,7 +44,7 @@ var allowed = map[string][]string{
 	"internal/pgwire":          nil,
 	"database/postgres":        {"", "database/postgres/pgtype", "internal/pgwire", "pushdown"},
 	"database/postgres/pgtype": nil,
-	"database/redis":           nil,
+	"database/redis":           {""},
 	"encoding/csvstream":       {""},
 	"encoding/jsonl":           {""},
 }

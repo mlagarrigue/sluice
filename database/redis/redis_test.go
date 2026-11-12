@@ -155,3 +155,43 @@ func TestPipelineRefusesAnEmptyCommand(t *testing.T) {
 		t.Fatalf("the connection after a refused batch: %v", err)
 	}
 }
+
+func TestParseEntries(t *testing.T) {
+	if es, err := parseEntries(Reply{Kind: KindNil}); err != nil || es != nil {
+		t.Fatalf("a BLOCK that timed out: %v %v", es, err)
+	}
+	bulk := func(s string) Reply { return Reply{Kind: KindBulk, Str: []byte(s)} }
+	arr := func(rs ...Reply) Reply { return Reply{Kind: KindArray, Array: rs} }
+	ok := arr(arr(bulk("s"), arr(
+		arr(bulk("1-0"), arr(bulk("a"), bulk("x"), bulk("b"), bulk("y"))),
+		arr(bulk("2-0"), Reply{Kind: KindNil}),
+	)))
+	es, err := parseEntries(ok)
+	if err != nil || len(es) != 2 || es[0].ID != "1-0" || string(es[0].Fields[1].Value) != "y" || !es[1].Deleted || es[0].Deleted {
+		t.Fatalf("got %+v, %v", es, err)
+	}
+	for name, r := range map[string]Reply{
+		"two streams":  arr(arr(bulk("s"), arr()), arr(bulk("t"), arr())),
+		"no entries":   arr(arr(bulk("s"))),
+		"odd fields":   arr(arr(bulk("s"), arr(arr(bulk("1-0"), arr(bulk("a")))))),
+		"integer id":   arr(arr(bulk("s"), arr(arr(Reply{Kind: KindInt}, arr())))),
+		"string reply": {Kind: KindString, Str: []byte("OK")},
+	} {
+		if _, err := parseEntries(r); !errors.Is(err, ErrProtocol) {
+			t.Errorf("%s: err %v, want ErrProtocol", name, err)
+		}
+	}
+}
+
+func TestReadGroupConfig(t *testing.T) {
+	_, err := (&Conn{}).ReadGroup(GroupConfig{BatchEntries: -1, Block: -time.Second})
+	for _, field := range []string{"Stream", "Group", "Consumer", "BatchEntries", "Block"} {
+		if err == nil || !strings.Contains(err.Error(), field) {
+			t.Errorf("err %v does not name %s", err, field)
+		}
+	}
+	g, err := (&Conn{}).ReadGroup(GroupConfig{Stream: "s", Group: "g", Consumer: "c"})
+	if err != nil || g.cfg.BatchEntries != 1024 || g.cfg.Block != time.Second {
+		t.Fatalf("defaults: %+v, %v", g.cfg, err)
+	}
+}

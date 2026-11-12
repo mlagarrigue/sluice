@@ -1,7 +1,7 @@
 # ADR 0026 — The three connectors after PostgreSQL: CSV and JSON Lines, Redis, NATS JetStream
 
 - **Created:** 2026-11-12
-- **Revised:** 2026-11-12 (each protocol fact read in its published text and cited)
+- **Revised:** 2026-11-12 (each protocol fact read in its published text and cited; Redis written, the acknowledged shape confirmed)
 - **Theme:** core
 
 ## Problem
@@ -53,6 +53,16 @@ connection and no pool — grouping calls is `gateway`'s job; batches asked
 for ahead where the protocol allows it. **From ADR 0023:** a source that
 cannot replay is acknowledged by its consumer, once it has finished a
 batch, never by the connector as it reads.
+
+**Redis, written (`database/redis`).** RESP2 only, which every server
+accepts without negotiation; `Conn.Pipeline` sends a batch of commands in
+one write. The consumer group took ADR 0023's shape unchanged —
+`Conn.ReadGroup`, `Group.Entries` and `Group.Ack` stand where `Replicate`,
+`Replication.Changes` and `Replication.Ack` stand — with one difference the
+protocol makes: an XACK names entries, where PostgreSQL's acknowledgement is
+a position, so `Group.Ack` takes IDs and the acknowledgements ride the next
+read's round trip. The shape generalises: an acknowledged source outside
+PostgreSQL needed no new idea.
 
 **Kafka is not among the three.** A Kafka consumer reads the batches its
 producers compressed, and three of the protocol's codecs (Snappy, LZ4,
