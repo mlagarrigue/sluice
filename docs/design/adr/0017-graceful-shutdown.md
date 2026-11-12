@@ -1,7 +1,7 @@
 # ADR 0017 — Shutdown drains, it does not cut
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-11-03 (`Close` in the present tense; subheadings; its own points numbered without §); 5 earlier, from 2026-10-15, in its `git log`
+- **Revised:** 2026-11-12 (Rationale under subheadings); 6 earlier, from 2026-10-15, in its `git log`
 - **Theme:** httpstream
 
 ## Problem
@@ -171,6 +171,8 @@ sequenceDiagram
 
 ## Rationale
 
+### Drain, then cut
+
 The handler's contract says a request handed over is whole; the symmetric
 promise is that a response produced goes out whole. Cutting the socket
 during a write loses the client a response the server already computed
@@ -185,6 +187,8 @@ are those two gestures; `Serve` is only their sequence at a fixed duration.
 `web.Shutdown` composes these signals across several servers; it does not
 add one.
 
+### The order of point 1
+
 The order of point 1 makes the gateway the layer that waits on the next one:
 its pipeline calls the back end that the closers after it close. An
 unbounded wait there turns a silent back end into a stop that never ends,
@@ -192,12 +196,16 @@ which is what point 2's grace refuses for a handler. The shape `Shutdown(ctx)`
 is `http.Server`'s and `web.Server`'s, so no interface is added, and
 `Close` is `Shutdown` without a deadline.
 
+### A forced stop says so
+
 A forced stop that returns `nil` cannot be told from a clean one: the
 operator does not learn that responses were lost. Hence a sentinel,
 `ErrShutdownForced`, which `errors.Is` recognises, and a warning to the
 `Logger` giving the number of connections cut. A `ServeH2Conn` that cut where
 `Serve` drains gave one protocol two contracts depending on the entry
 point: one contract, the drain, holds for all three functions.
+
+### Idle connections, and the close itself
 
 Closing idle connections at once rather than leaving them to the grace is
 what `net/http` does (`Shutdown` closes `StateIdle`), and it is what

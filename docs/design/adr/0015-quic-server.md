@@ -1,7 +1,7 @@
 # ADR 0015 — The QUIC server: transport machinery, a real listener, a moving client
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-11-12 (`CongestionBBR` follows draft-ietf-ccwg-bbr-07); 20 earlier, from 2026-10-03, in its `git log`
+- **Revised:** 2026-11-12 (`CongestionBBR` follows draft-ietf-ccwg-bbr-07; Rationale under subheadings); 20 earlier, from 2026-10-03, in its `git log`
 - **Theme:** quic
 
 ## Problem
@@ -170,6 +170,8 @@ found moving without any is the signal to revisit.
 
 ## Rationale
 
+### Each tier when the deployment needed it
+
 Each tier is the RFC's own obligation, taken when the deployment model
 stopped tolerating its absence: a server behind one UDP port, a client
 behind a NAT. Two cipher suites come from the standard library and the
@@ -183,6 +185,8 @@ and the TTL is then the whole bound (§8.1.4 says "prevented or limited").
 In plain words: a given key is a deployment secret; whoever holds it can
 end any connection (`StatelessResetKey`) or forge a token that validates
 an address (`TokenKey`).
+
+### The handshake deadline
 
 A fixed handshake deadline closes handshakes that are alive. Under 30 %
 loss a client's Finished goes missing, its next probe is due 12 s in, and a
@@ -203,12 +207,16 @@ before the 1-RTT keys. In plain words: a client proven as well as an
 established peer is given the time an idle established connection would
 have.
 
+### Interoperation
+
 Interoperation against foreign implementations carries the proof the
 harness cannot: the harness drops, reorders and forges datagrams, but only
 a peer sharing no code catches a shared wrong assumption. `interop/` plays
 quic-go on every push, the QUIC Interop Runner every implementation it
 lists each week, and `interop/expected-results.json` records the expected
 result of each case with its cause.
+
+### Known residuals
 
 Known residuals, stated rather than hidden: key update (RFC 9001 §6) rotates in both
 directions, but the only rotation this end initiates is

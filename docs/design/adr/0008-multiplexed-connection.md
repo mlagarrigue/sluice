@@ -1,7 +1,7 @@
 # ADR 0008 — A multiplexed connection is a reader, a responder and a writer
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-11-03 (written in the present tense; subheadings); 10 earlier, from 2026-10-05, in its `git log`
+- **Revised:** 2026-11-12 (the diagram before the rules it draws; the rules listed); 11 earlier, from 2026-10-05, in its `git log`
 - **Theme:** httpstream
 
 ## Problem
@@ -56,31 +56,6 @@ call.
 
 ### Every hand-off bounded
 
-Every hand-off is bounded and the bound is stated: reader → responder is a
-channel of `MaxConcurrentStreams` batches that cannot block (a request
-holds its stream slot until its response has left the writer); reader →
-writer for control frames is bounded by `MaxPendingControlBytes` and the
-reader blocks when full, which is the prescribed back-pressure; responder →
-writer for buffered bodies is a queue bounded by the same stream slot — the
-responder queues a batch and moves on to the next, so a stream waiting for
-its window does not hold the others, and the writer hands the batch's
-buffer back once each of its answers is written, dropped or expired. A
-streamed body is still pulled by the responder, at the socket's pace, once
-its head is out.
-
-Flow control waits instead of refusing, bounded by `WriteTimeout` read as a
-time without progress (`WriteProgressBytes`, 4 KiB by default); scheduling
-is round-robin per byte-budget round, control frames first; failures are
-classified (stream error resets one stream, connection error is reserved for
-framing and HPACK state); closed streams are remembered so late `DATA` is
-tolerated and still counted, and a late header block on one, or on a closed
-stream the bounded memory has since forgotten, is decoded and dropped rather
-than refused — only a block on a stream the client never opened is the
-connection error; the idle clock does not run while answers are owed; the
-connection receive window is the sum of the stream windows
-(`MaxConcurrentStreams` × `InitialWindowSize`, 6,553,500 bytes at the
-defaults), never less than 1 MiB.
-
 The three goroutines of an HTTP/2 connection and the bound on each
 hand-off (HTTP/3 has no responder):
 
@@ -94,6 +69,35 @@ flowchart LR
     P -- "buffered bodies,<br/>bounded by the stream slots" --> W
     W --> OUT[(socket, write side)]
 ```
+
+Every hand-off is bounded and the bound is stated: reader → responder is a
+channel of `MaxConcurrentStreams` batches that cannot block (a request
+holds its stream slot until its response has left the writer); reader →
+writer for control frames is bounded by `MaxPendingControlBytes` and the
+reader blocks when full, which is the prescribed back-pressure; responder →
+writer for buffered bodies is a queue bounded by the same stream slot — the
+responder queues a batch and moves on to the next, so a stream waiting for
+its window does not hold the others, and the writer hands the batch's
+buffer back once each of its answers is written, dropped or expired. A
+streamed body is still pulled by the responder, at the socket's pace, once
+its head is out.
+
+Six rules govern what crosses them:
+
+- **Flow control waits instead of refusing**, bounded by `WriteTimeout`
+  read as a time without progress (`WriteProgressBytes`, 4 KiB by default).
+- **Scheduling** is round-robin per byte-budget round, control frames
+  first.
+- **Failures are classified**: a stream error resets one stream; a
+  connection error is reserved for framing and HPACK state.
+- **Closed streams are remembered**, so late `DATA` is tolerated and still
+  counted; a late header block on one, or on a closed stream the bounded
+  memory has since forgotten, is decoded and dropped rather than refused —
+  only a block on a stream the client never opened is the connection error.
+- **The idle clock does not run** while answers are owed.
+- **The connection receive window** is the sum of the stream windows
+  (`MaxConcurrentStreams` × `InitialWindowSize`, 6,553,500 bytes at the
+  defaults), never less than 1 MiB.
 
 ### What a call hands back
 
