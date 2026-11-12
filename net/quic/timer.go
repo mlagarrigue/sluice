@@ -61,11 +61,17 @@ func (c *Conn) idleDeadlineLocked() time.Time {
 	if c.idleTimeout == 0 || c.idleDeadline.IsZero() {
 		return time.Time{}
 	}
-	deadline := c.idleDeadline
-	if floor := 3 * c.rtt.pto(c.peerMaxAckDelayLocked()); c.idleTimeout < floor {
-		deadline = deadline.Add(floor - c.idleTimeout)
+	return c.idleDeadline.Add(c.effectiveIdleLocked() - c.idleTimeout)
+}
+
+// effectiveIdleLocked is the idle timeout in force: the negotiated one,
+// raised to three probe timeouts (see idleDeadlineLocked). Zero when
+// neither end announced one.
+func (c *Conn) effectiveIdleLocked() time.Duration {
+	if c.idleTimeout == 0 {
+		return 0
 	}
-	return deadline
+	return max(c.idleTimeout, 3*c.rtt.pto(c.peerMaxAckDelayLocked()))
 }
 
 // actOnDeadlines fires whatever matured, in this order: close a connection whose idle timeout

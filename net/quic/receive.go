@@ -2190,7 +2190,8 @@ func (c *Conn) settleBatchConsumption(batch []Frame) {
 //
 // What it costs: one small packet and its acknowledgement per period of
 // silence, nothing while the connection is busy. A period longer than half
-// the negotiated idle timeout is brought down to that half when the PING is
+// the effective idle timeout — the negotiated one, raised to three probe
+// timeouts as §10.1 has it — is brought down to that half when the PING is
 // scheduled, because a PING that leaves close to the deadline risks
 // arriving after the peer has already given up (§10.1); a keepalive that
 // holds nothing in silence would be a trap. When neither end announced an
@@ -2211,10 +2212,11 @@ func (c *Conn) SetKeepAlive(period time.Duration) error {
 
 // KeepAlive reports the period a PING waits for in silence: zero when the
 // keepalive is off, otherwise the period [Conn.SetKeepAlive] asked for,
-// brought down to half the negotiated idle timeout when it was longer.
+// brought down to half the effective idle timeout when it was longer.
 // The cap follows the effective idle timeout: this end's own until the
-// peer's transport parameters arrive, the smaller of the two after. Safe
-// from any goroutine.
+// peer's transport parameters arrive, the smaller of the two after, and
+// never under three probe timeouts (RFC 9000 §10.1). Safe from any
+// goroutine.
 func (c *Conn) KeepAlive() time.Duration {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -2224,14 +2226,17 @@ func (c *Conn) KeepAlive() time.Duration {
 // keepAlivePeriodLocked is the period a PING actually waits for: the one
 // asked for, capped at half the effective idle timeout — recomputed at each
 // arming rather than stored, so a cap set before the peer's parameters
-// arrived never goes stale. Zero when the keepalive is off.
+// arrived never goes stale. Zero when the keepalive is off. The cap is half
+// of what the connection actually waits, three probe timeouts at least, not
+// of the announcement: a peer announcing a millisecond would otherwise set
+// the PING rate to one a millisecond, every one of them ack-eliciting.
 func (c *Conn) keepAlivePeriodLocked() time.Duration {
 	period := c.keepAlive
 	if period == 0 {
 		return 0
 	}
-	if half := c.idleTimeout / 2; c.idleTimeout != 0 && period > half {
-		period = max(half, time.Millisecond)
+	if idle := c.effectiveIdleLocked(); idle != 0 && period > idle/2 {
+		period = max(idle/2, time.Millisecond)
 	}
 	return period
 }
