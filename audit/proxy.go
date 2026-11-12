@@ -18,12 +18,14 @@ import (
 // Proxy is one proxy's configuration as read.
 type Proxy struct {
 	Path    string
-	Kind    string // "nginx" or "haproxy"
+	Kind    string // "nginx", "haproxy", "caddy" or "envoy"
 	Version string // "1.26.1", empty when none was given
 	// Nginx is the configuration's tree, its root the main context.
 	Nginx *ngxBlock
 	// HAProxy is the configuration's sections in file order.
 	HAProxy []haSection
+	// JSON is Caddy's or Envoy's configuration, decoded.
+	JSON map[string]any
 }
 
 // ngxBlock is one nginx directive: its name, its arguments, the line it
@@ -48,6 +50,12 @@ type haSection struct {
 func parseProxy(text, version string) (*Proxy, error) {
 	p := &Proxy{Version: proxyVersion(version)}
 	switch {
+	case strings.HasPrefix(strings.TrimSpace(text), "{") && !strings.Contains(text, ";"):
+		kind, doc, err := parseProxyJSON(text)
+		if err != nil {
+			return nil, err
+		}
+		p.Kind, p.JSON = kind, doc
 	case haproxyText(text):
 		p.Kind, p.HAProxy = "haproxy", parseHAProxy(text)
 	case strings.Contains(text, "{") && strings.Contains(text, ";"):
@@ -57,7 +65,7 @@ func parseProxy(text, version string) (*Proxy, error) {
 		}
 		p.Kind, p.Nginx = "nginx", root
 	default:
-		return nil, errors.New("neither an nginx nor an HAProxy configuration")
+		return nil, errors.New("neither an nginx, an HAProxy, a Caddy (JSON) nor an Envoy (JSON) configuration")
 	}
 	return p, nil
 }
@@ -286,6 +294,9 @@ func init() {
 				if t.Proxy == nil {
 					return nil
 				}
+				if t.Proxy.JSON != nil {
+					return t.Proxy.jsonCheck(name)
+				}
 				return check(t.Proxy)
 			},
 		})
@@ -479,6 +490,9 @@ func nginxKeepalive(p *Proxy) []string {
 // keepaliveGaps lists what closes the proxy's connections to the
 // application after each request, empty when nothing does.
 func (p *Proxy) keepaliveGaps() []string {
+	if p.JSON != nil {
+		return p.jsonKeepaliveGaps()
+	}
 	var bad []string
 	if p.Kind == "nginx" {
 		bad = nginxKeepalive(p)
