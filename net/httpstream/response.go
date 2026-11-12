@@ -426,7 +426,7 @@ func appendConnection(dst []byte, closing bool, keepAlive []byte) []byte {
 	return append(dst, keepAlive...)
 }
 
-// appendChunked writes one chunk of a streamed HTTP/1.1 body: its length in
+// appendChunk writes one chunk of a streamed HTTP/1.1 body: its length in
 // hexadecimal, the bytes, and a line ending. An empty chunk ends the body,
 // which is why an empty batch must never be written as one.
 func appendChunk(dst, chunk []byte) []byte {
@@ -737,7 +737,8 @@ func appendResponse(dst, method []byte, closing, http10 bool, keepAlive []byte, 
 // (and HTTP/2 and HTTP/3 forbid the field outright). A 426 without Upgrade
 // is a MUST violation; a 426 with it is a promise this package will not keep.
 // A handler that wants a client on another protocol advertises it with
-// Alt-Svc (RFC 7838). Revisit if an upgrade is ever implemented.
+// Alt-Svc (RFC 7838). The refusal holds while no writer implements an
+// upgrade.
 //
 // It is shared by the three protocols rather than written once: HTTP/1.1 puts
 // the number in a status line, HTTP/2 and HTTP/3 in a :status field, and a

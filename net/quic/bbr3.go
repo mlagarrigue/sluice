@@ -70,10 +70,10 @@ import (
 // a call RFC 9002 leaves optional (§6.1, A.1), on a path that reorders past
 // the packet and time thresholds (§6.1.1, §6.1.2), which no measurement
 // of this transport has shown. So no state is saved, and a spurious loss
-// costs what a real one does. Revisit when a measured path loses throughput
-// to reordering, or when the transport adopts an adaptive reordering
-// threshold (§6.1.1), which needs the same episode record: the undo is
-// then wired to it.
+// costs what a real one does. Two things would pay for the record: a
+// measured path that loses throughput to reordering, or an adaptive
+// reordering threshold (§6.1.1), which needs the same episode record and
+// would carry the undo with it.
 type bbr3 struct {
 	// est is the connection's delivery estimator, which ProbeRTT marks
 	// application-limited (handleProbeRTT).

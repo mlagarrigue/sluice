@@ -14,7 +14,7 @@ package httpstream
 // decoder's documentation on, and there is no reason to buy it back on the
 // way out for a header or two of bandwidth.
 
-// appendIndexed writes a field whose name is in the static table but whose
+// appendHPACK writes a field whose name is in the static table but whose
 // value is not, as a literal-without-indexing with a name index (§6.2.2).
 // Generic over string and []byte so the response path feeds Header fields in
 // without a per-field conversion to string, which escapes and allocates.

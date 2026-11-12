@@ -104,6 +104,15 @@ func TestDocComments(t *testing.T) {
 				if first != name && strings.EqualFold(first, name) {
 					t.Errorf("%s: the doc of %s begins with the exported %q", src.fset.Position(pos), name, first)
 				}
+				// Nor one that opens on a neighbour of its name, an
+				// identifier sharing its first letters: appendChunk's doc
+				// read "appendChunked writes…", the name it had before.
+				if first != name && identLike(first) {
+					n := min(len(first), len(name), 4)
+					if first[:n] == name[:n] {
+						t.Errorf("%s: the doc of %s begins with %q, another name", src.fset.Position(pos), name, first)
+					}
+				}
 				return
 			}
 			if first != name && first != "Deprecated" {
@@ -272,6 +281,22 @@ var historyMarker = regexp.MustCompile(`(?i)\bused to\b|\bformerly\b|\bbefore re
 // not a history.
 var datedHistory = regexp.MustCompile(`(?i)\b(until|before|decided|measured)\s+(on\s+)?20\d{2}-\d{2}-\d{2}\b`)
 
+// identLike reports a word written as a Go identifier of more than one
+// part: lower case first, an upper case letter after ("appendChunked"), so
+// that the prose a doc opens on ("append", "records") is not one.
+func identLike(w string) bool {
+	if w == "" || !unicode.IsLower(rune(w[0])) {
+		return false
+	}
+	return strings.ContainsFunc(w[1:], unicode.IsUpper)
+}
+
+// deferredMarker is a production comment that puts its decision off — "to
+// revisit", "revisit when" — where the condition it holds under is what the
+// reader needs: "the choice holds while no measurement shows…". Work left
+// goes to an issue, not to the code.
+var deferredMarker = regexp.MustCompile(`(?i)\brevisit(ed|ing)?\b`)
+
 var usedToOtherSense = regexp.MustCompile(`(?i)\b(is|are|be|was|were|being|never|not|only)\s+used to\b|,\s*used to\b`)
 
 func TestCommentMarkers(t *testing.T) {
@@ -302,6 +327,9 @@ func TestCommentMarkers(t *testing.T) {
 				}
 				if historyMarker.MatchString(c.Text) && !usedToOtherSense.MatchString(c.Text) {
 					t.Errorf("%s: the comment tells the code's history; state the rule it holds: %s", pos, strings.TrimSpace(c.Text))
+				}
+				if deferredMarker.MatchString(c.Text) {
+					t.Errorf("%s: the comment puts its decision off; state the condition it holds under: %s", pos, strings.TrimSpace(c.Text))
 				}
 			}
 		}

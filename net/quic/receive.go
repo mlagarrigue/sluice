@@ -1181,7 +1181,7 @@ func (c *Conn) framesIn(space int, early bool, payload []byte, now time.Time) er
 	// if one of those aborts the connection, the peer sees an ACK for the
 	// packet that ended it — of no consequence, since the close follows.
 	// What it buys is the measure above: one ACK-only datagram per request
-	// gone. To revisit if a peer is found to act on such an ACK.
+	// gone. The trade holds while no peer is known to act on such an ACK.
 	eliciting := c.oweAckFor(frames, space, now)
 	// RFC 9000 §21.9: an ack-eliciting packet none of whose frames moved
 	// this end's state is counted (Stats.NonProductivePackets says what is

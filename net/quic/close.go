@@ -386,8 +386,8 @@ func (c *Conn) wakeOwnedReadLoop() {
 // The transport form's Frame Type is always 0, which §19.19 reserves for "the
 // frame type is unknown": a transportError carries its code and its cause,
 // not the frame that raised it, and threading the type through every refusal
-// would buy the peer's log one number. Revisited when a peer's diagnosis
-// needs it.
+// would buy the peer's log one number, which no peer's diagnosis has needed
+// yet.
 func (c *Conn) sendCloseLocked(code uint64, app bool) {
 	if c.closeSent || c.draining {
 		return

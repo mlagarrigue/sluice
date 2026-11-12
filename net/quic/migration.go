@@ -824,10 +824,10 @@ func (c *Conn) maybeMigrate(frames []Frame, now time.Time) {
 		// nothing leaves for the new address, and the peer that really
 		// moved there is told nothing. No option to lift it (the section
 		// allows one): no deployment of this package reaches a service
-		// over loopback after reaching it elsewhere; to revisit on that
-		// case. The section's next paragraph, on link-local and private
-		// addresses, is not taken: it carries "a significant risk of
-		// connectivity failure" the text itself names.
+		// over loopback after reaching it elsewhere, the one case an
+		// option would be for. The section's next paragraph, on
+		// link-local and private addresses, is not taken: it carries "a
+		// significant risk of connectivity failure" the text itself names.
 		return
 	}
 	if addrChanged {
@@ -847,8 +847,8 @@ func (c *Conn) maybeMigrate(frames []Frame, now time.Time) {
 	// and data this end wants, reordered or late — and a peer that keeps
 	// sending there gains nothing, since nothing is sent back from it. The
 	// section's MUST is kept: non-probing packets leave from the new
-	// socket only. To revisit if a measurement shows a client stuck on the
-	// old address because its packets keep being answered.
+	// socket only. The choice holds while no measurement shows a client
+	// stuck on the old address because its packets keep being answered.
 	// §9.6.2's first condition is met: a non-probing packet with a new
 	// largest number on the preferred socket. The second is the answer to
 	// this end's own probe from that socket, which may still be on its way

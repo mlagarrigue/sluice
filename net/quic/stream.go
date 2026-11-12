@@ -718,7 +718,7 @@ func (s *Stream) abandon(code, finalSize uint64) (highGrowth, neverConsumed uint
 	return finalSize - oldHigh, neverConsumed, nil
 }
 
-// onStopSending records the peer's refusal to keep reading: this end's
+// onStopSendingLocked records the peer's refusal to keep reading: this end's
 // sending direction is abandoned and answered with RESET_STREAM, as §3.5
 // requires. stopped reports that this STOP_SENDING is what abandoned it — not
 // a retransmission, nor one crossing this end's own reset — the one the
