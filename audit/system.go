@@ -74,6 +74,7 @@ func System(t *Target) []Setting {
 	if t.App != nil {
 		out = append(out, appSystem(t.App)...)
 	}
+	out = append(out, hostSystem(t)...)
 	if c := t.Container; c != nil {
 		hc := c.HostConfig
 		nofile := "daemon default"

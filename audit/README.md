@@ -25,6 +25,7 @@ go run -C audit ./cmd/audit -pg-settings settings.csv -pg-roles roles.csv -firew
 go run -C audit ./cmd/audit -proxy-config nginx.conf -proxy-version "$(nginx -v 2>&1)"
 go run -C audit ./cmd/audit -app-args start.txt -pg-settings settings.csv -profile comparative
 go run -C audit ./cmd/audit -root / -netstat-before before.txt -netstat-after after.txt -sources logs,config
+go run -C audit ./cmd/audit -root / -stat-before stat0.txt -stat-after stat1.txt -imds imds.json -profile comparative
 ```
 
 ## Axes, not modes
@@ -62,6 +63,7 @@ sets one.
 | `linux/listen-overflows` | two copies of `/proc/net/netstat`, or of `nstat -az`, taken before and after a load | connections the kernel dropped because an accept queue was full, put on the queue and its `somaxconn` — and nothing put on it for the retransmissions and timeouts a load also moves |
 | `linux/reconnections` | the same two readings, and `-answer requests=N`, the requests the step served | fewer than 32 requests per new connection, put on what closes them: the server's `-max-requests-per-conn`, the proxy's keep-alive, else the clients |
 | `postgres/connections-saturated`, `postgres/idle-in-transaction` | `pg_stat_activity` saved as CSV during a load, several readings appended, with `pg_settings` | every client slot taken at the peak; sessions idle in a transaction holding their connections |
+| `host/*` | two copies of `/proc/stat`; `/sys/devices/system/cpu` under `-root`; Azure's instance metadata, saved | CPU time stolen by the hypervisor during a load, SMT on a machine of a comparison; the provider, the size, the region, the zone, the CPUs, cores and sockets in the system table |
 | `linux/conntrack-full`, `linux/oom-kill` | the kernel's log, saved to a file | a connection tracking table that filled, a process the OOM killer took |
 | `postgres/*` | `pg_settings` saved as CSV, `pg_hba.conf`, the server's log | connections against the clients' pools, `shared_buffers`, autovacuum, `password_encryption`, `ssl`, `trust`, `md5` and `password` rules; checkpoints forced by the WAL, clients refused for lack of slots |
 | `postgres/superusers`, `postgres/cve` | `pg_roles` saved as CSV; `server_version` and `pg_hba.conf` | more than one superuser that logs in; each PostgreSQL advisory the audit knows, judged on the release and on the configuration it needs |

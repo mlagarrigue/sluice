@@ -78,6 +78,14 @@ type Target struct {
 	// Counters is what the kernel's network counters moved by during a
 	// load, nil when the two readings were not given.
 	Counters *Counters
+
+	// CPUTime is what the CPUs spent during a load, by kind, nil when the
+	// two readings of /proc/stat were not given.
+	CPUTime *CPUTime
+
+	// Azure is the virtual machine as Azure's metadata service described
+	// it, nil when its answer was not given.
+	Azure *Azure
 }
 
 // A Spec names what to read. Every field is optional, and a Target with
@@ -141,6 +149,14 @@ type Spec struct {
 	// network counters, before and after a load: /proc/net/netstat (with
 	// /proc/net/snmp appended or not), or nstat -az's output.
 	NetstatBefore, NetstatAfter string
+
+	// StatBefore and StatAfter are two copies of /proc/stat, before and
+	// after a load.
+	StatBefore, StatAfter string
+
+	// IMDS is a file holding what Azure's Instance Metadata Service
+	// answered at /metadata/instance.
+	IMDS string
 }
 
 // Open reads what a [Spec] names. Anything named must be readable: a path
@@ -250,6 +266,20 @@ func Open(s Spec) (*Target, error) {
 			return nil, err
 		}
 		t.Counters = c
+	}
+	if s.StatBefore != "" || s.StatAfter != "" {
+		c, err := openCPUTime(s.StatBefore, s.StatAfter)
+		if err != nil {
+			return nil, err
+		}
+		t.CPUTime = c
+	}
+	if s.IMDS != "" {
+		a, err := openAzure(s.IMDS)
+		if err != nil {
+			return nil, err
+		}
+		t.Azure = a
 	}
 	return t, nil
 }
