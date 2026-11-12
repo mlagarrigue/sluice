@@ -115,24 +115,30 @@ type portal struct {
 	ran  bool // completed once
 }
 
+// session is the server side of one connection: what it has been told
+// (statements, settings), where its transaction stands, and the bytes it
+// owes the client until the next write.
+type session struct {
+	b        *Backend
+	sent     chan<- []byte
+	out      []byte
+	stmts    map[string]string
+	settings map[string]string
+	local    map[string]bool // settings that end with the transaction
+	cur      *portal
+	status   byte
+	skipping bool // an error occurred; discard until Sync
+}
+
 // serve speaks the server side of one connection, in this order: start the
 // writer goroutine that stands for a socket's buffers; answer the startup when
-// asked to; define the transaction rules a statement applies (fail, refused,
-// endTx, complete); then read messages, one case per frontend message — Query,
+// asked to; then read messages, one method per frontend message — Query,
 // Parse, Bind, Describe, Execute, Close, Flush, Sync, Terminate — until the
-// client leaves.
+// client leaves. The transaction rules a statement applies are the session's
+// fail, refused, endTx and complete.
 func (b *Backend) serve(nc net.Conn, startup bool) {
 	defer func() { _ = nc.Close() }()
 	rd := pgwire.NewReader(nc)
-	var (
-		out      []byte
-		stmts    = map[string]string{}
-		settings = map[string]string{}
-		local    = map[string]bool{} // settings that end with the transaction
-		cur      *portal
-		status   byte = 'I'
-		skipping bool // an error occurred; discard until Sync
-	)
 	// A server's socket buffers what it sends and a net.Pipe does not: a
 	// client that asked for batches ahead writes its Sync before reading
 	// them, and on the bare pipe both ends would wait on the other.
@@ -148,75 +154,15 @@ func (b *Backend) serve(nc net.Conn, startup bool) {
 		close(sent)
 		<-wrote
 	}()
-	write := func() {
-		sent <- bytes.Clone(out)
-		out = out[:0]
+	s := &session{
+		b: b, sent: sent, status: 'I',
+		stmts: map[string]string{}, settings: map[string]string{}, local: map[string]bool{},
 	}
 	if startup {
-		// The startup packet carries no type byte. Answered as a server
-		// that trusts the connection would: authenticated at once, the
-		// parameters every session is told, a cancellation key, ready.
 		if _, err := rd.NextStartup(); err != nil {
 			return
 		}
-		out = append(out, msg(pgwire.BackendAuthentication, []byte{0, 0, 0, 0})...)
-		for _, kv := range [][2]string{{"server_version", "18.0"}, {"client_encoding", "UTF8"}, {"server_encoding", "UTF8"}, {"DateStyle", "ISO, MDY"}, {"integer_datetimes", "on"}} {
-			out = append(out, msg(pgwire.BackendParameterStatus, append(append([]byte(kv[0]), 0), append([]byte(kv[1]), 0)...))...)
-		}
-		out = append(out, msg(pgwire.BackendBackendKeyData, []byte{0, 0, 0, 1, 0, 0, 0, 2})...)
-		out = append(out, msg(pgwire.BackendReadyForQuery, []byte{status})...)
-		write()
-	}
-	fail := func(code, m string) {
-		out = append(out, errorResponse(code, m)...)
-		if status == 'T' {
-			status = 'E'
-		}
-	}
-	// In an aborted block a server runs only what leaves it — COMMIT,
-	// ROLLBACK, ROLLBACK TO, PREPARE TRANSACTION — and refuses the rest, at
-	// Parse and Bind as for a simple Query.
-	refused := func(sql string) bool {
-		if status != 'E' || endsBlock(verb(sql)) {
-			return false
-		}
-		fail("25P02", "current transaction is aborted, commands ignored until end of transaction block")
-		return true
-	}
-	endTx := func() {
-		status = 'I'
-		for k := range local {
-			delete(settings, k)
-		}
-		clear(local)
-	}
-	// complete applies what a statement that ran does to the transaction
-	// block and returns the tag the server reports for its n rows.
-	complete := func(sql string, res Result, n int) string {
-		v, next := verb(sql)
-		switch {
-		case v == "BEGIN" || v == "START":
-			status = 'T'
-		case v == "ROLLBACK" && next == "TO":
-			if status == 'E' {
-				status = 'T' // back to the savepoint, the block usable again
-			}
-		case endsBlock(v, next):
-			aborted := status == 'E'
-			endTx()
-			if aborted && v != "ROLLBACK" && v != "ABORT" {
-				// The server rolls back instead, and says so in the tag
-				// alone: no ErrorResponse (EndTransactionBlock in xact.c).
-				return "ROLLBACK"
-			}
-			if v == "PREPARE" {
-				return "PREPARE TRANSACTION"
-			}
-		}
-		if res.Tag != "" {
-			return res.Tag
-		}
-		return commandTag(v, n)
+		s.startup()
 	}
 	for {
 		m, err := rd.Next()
@@ -225,158 +171,256 @@ func (b *Backend) serve(nc net.Conn, startup bool) {
 		}
 		// After an error everything up to Sync is discarded, but a Flush
 		// still delivers what is pending — the error the client waits for.
-		if skipping && m.Type != pgwire.FrontendSync && m.Type != pgwire.FrontendFlush {
+		if s.skipping && m.Type != pgwire.FrontendSync && m.Type != pgwire.FrontendFlush {
 			continue
 		}
 		switch m.Type {
 		case pgwire.FrontendQuery:
-			// A simple Query may carry several statements; each answers
-			// in turn, and an error ends the run (the rest is skipped), with
-			// one ReadyForQuery for the whole string, as the server does.
-			text, _, _ := cut(m.Body)
-			for _, sql := range statements(text) {
-				if refused(sql) {
-					break
-				}
-				res := b.exec(sql, nil, settings)
-				if res.Err != "" {
-					fail(res.Code, res.Err)
-					break
-				}
-				if res.Columns != nil {
-					out = append(out, rowDescription(res.Columns, res.OIDs)...)
-					for _, r := range res.Rows {
-						out = append(out, dataRow(r)...)
-					}
-				}
-				out = append(out, commandComplete(complete(sql, res, len(res.Rows)))...)
-			}
-			out = append(out, msg(pgwire.BackendReadyForQuery, []byte{status})...)
-			write()
+			s.query(m.Body)
 		case pgwire.FrontendParse:
-			name, rest, _ := cut(m.Body)
-			sql, _, _ := cut(rest)
-			if refused(sql) {
-				skipping = true
-				continue
-			}
-			stmts[name] = sql
-			out = append(out, msg(pgwire.BackendParseComplete, nil)...)
+			s.parse(m.Body)
 		case pgwire.FrontendBind:
-			_, rest, _ := cut(m.Body)
-			stmt, rest, _ := cut(rest)
-			sql, prepared := stmts[stmt]
-			if !prepared {
-				// The server's answer to a name it never parsed, SQLSTATE
-				// 26000 (invalid_sql_statement_name), not a silent success.
-				fail("26000", fmt.Sprintf("prepared statement %q does not exist", stmt))
-				skipping = true
-				continue
-			}
-			if refused(sql) {
-				skipping = true
-				continue
-			}
-			params := bindParams(rest)
-			var res Result
-			if strings.Contains(sql, "set_config") && len(params) >= 2 {
-				settings[string(params[0])] = string(params[1])
-				local[string(params[0])] = true
-				res = Result{Columns: []string{"set_config"}, OIDs: []uint32{pgtype.OIDText}, Rows: [][][]byte{{params[1]}}}
-			}
-			if r := b.exec(sql, params, settings); r.Err != "" || r.Columns != nil || r.Tag != "" {
-				res = r
-			}
-			if res.Err != "" {
-				fail(res.Code, res.Err)
-				skipping = true
-				continue
-			}
-			cur = &portal{sql: sql, res: res}
-			out = append(out, msg(pgwire.BackendBindComplete, nil)...)
+			s.bind(m.Body)
 		case pgwire.FrontendDescribe:
-			if len(m.Body) > 0 && m.Body[0] == 'S' {
-				// A statement: ParameterDescription (none typed here) then
-				// what a row of it would look like, as the server answers
-				// from the plan — not NoData whatever the statement.
-				name, _, _ := cut(m.Body[1:])
-				sql, prepared := stmts[name]
-				if !prepared {
-					fail("26000", fmt.Sprintf("prepared statement %q does not exist", name))
-					skipping = true
-					continue
-				}
-				out = append(out, msg(pgwire.BackendParameterDescription, []byte{0, 0})...)
-				if res := b.exec(sql, nil, settings); res.Columns != nil {
-					out = append(out, rowDescription(res.Columns, res.OIDs)...)
-				} else {
-					out = append(out, msg(pgwire.BackendNoData, nil)...)
-				}
-				continue
-			}
-			if cur == nil || cur.res.Columns == nil {
-				out = append(out, msg(pgwire.BackendNoData, nil)...)
-				continue
-			}
-			out = append(out, rowDescription(cur.res.Columns, cur.res.OIDs)...)
+			s.describe(m.Body)
 		case pgwire.FrontendExecute:
-			b.mu.Lock()
-			b.executes++
-			b.mu.Unlock()
-			if cur == nil {
-				fail("34000", `portal "" does not exist`)
-				skipping = true
-				continue
-			}
-			if cur.ran && cur.res.Columns == nil {
-				// A statement without rows runs once; only a portal the
-				// server fetches from completes again (PortalRun in pquery.c).
-				fail("55000", `portal "" cannot be run`)
-				skipping = true
-				continue
-			}
-			_, rest, _ := cut(m.Body)
-			limit := 0
-			if len(rest) >= 4 {
-				limit = int(binary.BigEndian.Uint32(rest))
-			}
-			rows := cur.res.Rows[cur.next:]
-			// The server stops at the limit without looking ahead: with
-			// exactly limit rows left it suspends, and the next Execute
-			// finds the portal at its end and completes with none.
-			suspend := limit > 0 && len(rows) >= limit
-			if suspend {
-				rows = rows[:limit]
-			}
-			for _, r := range rows {
-				out = append(out, dataRow(r)...)
-			}
-			cur.next += len(rows)
-			if suspend {
-				out = append(out, msg(pgwire.BackendPortalSuspended, nil)...)
-				continue
-			}
-			// The tag counts this Execute's rows, not the portal's.
-			out = append(out, commandComplete(complete(cur.sql, cur.res, len(rows)))...)
-			cur.ran = true
+			s.execute(m.Body)
 		case pgwire.FrontendClose:
-			out = append(out, msg(pgwire.BackendCloseComplete, nil)...)
+			s.out = append(s.out, msg(pgwire.BackendCloseComplete, nil)...)
 		case pgwire.FrontendFlush:
-			write()
+			s.write()
 		case pgwire.FrontendSync:
-			skipping = false
-			cur = nil
-			if status == 'I' {
-				// Outside a transaction block a statement is its own
-				// transaction, and its local settings end with it.
-				endTx()
-			}
-			out = append(out, msg(pgwire.BackendReadyForQuery, []byte{status})...)
-			write()
+			s.sync()
 		case pgwire.FrontendTerminate:
 			return
 		}
 	}
+}
+
+// write hands what is owed to the writer goroutine.
+func (s *session) write() {
+	s.sent <- bytes.Clone(s.out)
+	s.out = s.out[:0]
+}
+
+// startup answers the startup packet as a server that trusts the connection
+// would: authenticated at once, the parameters every session is told, a
+// cancellation key, ready.
+func (s *session) startup() {
+	s.out = append(s.out, msg(pgwire.BackendAuthentication, []byte{0, 0, 0, 0})...)
+	for _, kv := range [][2]string{{"server_version", "18.0"}, {"client_encoding", "UTF8"}, {"server_encoding", "UTF8"}, {"DateStyle", "ISO, MDY"}, {"integer_datetimes", "on"}} {
+		s.out = append(s.out, msg(pgwire.BackendParameterStatus, append(append([]byte(kv[0]), 0), append([]byte(kv[1]), 0)...))...)
+	}
+	s.out = append(s.out, msg(pgwire.BackendBackendKeyData, []byte{0, 0, 0, 1, 0, 0, 0, 2})...)
+	s.out = append(s.out, msg(pgwire.BackendReadyForQuery, []byte{s.status})...)
+	s.write()
+}
+
+func (s *session) fail(code, m string) {
+	s.out = append(s.out, errorResponse(code, m)...)
+	if s.status == 'T' {
+		s.status = 'E'
+	}
+}
+
+// In an aborted block a server runs only what leaves it — COMMIT,
+// ROLLBACK, ROLLBACK TO, PREPARE TRANSACTION — and refuses the rest, at
+// Parse and Bind as for a simple Query.
+func (s *session) refused(sql string) bool {
+	if s.status != 'E' || endsBlock(verb(sql)) {
+		return false
+	}
+	s.fail("25P02", "current transaction is aborted, commands ignored until end of transaction block")
+	return true
+}
+
+func (s *session) endTx() {
+	s.status = 'I'
+	for k := range s.local {
+		delete(s.settings, k)
+	}
+	clear(s.local)
+}
+
+// complete applies what a statement that ran does to the transaction
+// block and returns the tag the server reports for its n rows.
+func (s *session) complete(sql string, res Result, n int) string {
+	v, next := verb(sql)
+	switch {
+	case v == "BEGIN" || v == "START":
+		s.status = 'T'
+	case v == "ROLLBACK" && next == "TO":
+		if s.status == 'E' {
+			s.status = 'T' // back to the savepoint, the block usable again
+		}
+	case endsBlock(v, next):
+		aborted := s.status == 'E'
+		s.endTx()
+		if aborted && v != "ROLLBACK" && v != "ABORT" {
+			// The server rolls back instead, and says so in the tag
+			// alone: no ErrorResponse (EndTransactionBlock in xact.c).
+			return "ROLLBACK"
+		}
+		if v == "PREPARE" {
+			return "PREPARE TRANSACTION"
+		}
+	}
+	if res.Tag != "" {
+		return res.Tag
+	}
+	return commandTag(v, n)
+}
+
+func (s *session) query(body []byte) {
+	// A simple Query may carry several statements; each answers
+	// in turn, and an error ends the run (the rest is skipped), with
+	// one ReadyForQuery for the whole string, as the server does.
+	text, _, _ := cut(body)
+	for _, sql := range statements(text) {
+		if s.refused(sql) {
+			break
+		}
+		res := s.b.exec(sql, nil, s.settings)
+		if res.Err != "" {
+			s.fail(res.Code, res.Err)
+			break
+		}
+		if res.Columns != nil {
+			s.out = append(s.out, rowDescription(res.Columns, res.OIDs)...)
+			for _, r := range res.Rows {
+				s.out = append(s.out, dataRow(r)...)
+			}
+		}
+		s.out = append(s.out, commandComplete(s.complete(sql, res, len(res.Rows)))...)
+	}
+	s.out = append(s.out, msg(pgwire.BackendReadyForQuery, []byte{s.status})...)
+	s.write()
+}
+
+func (s *session) parse(body []byte) {
+	name, rest, _ := cut(body)
+	sql, _, _ := cut(rest)
+	if s.refused(sql) {
+		s.skipping = true
+		return
+	}
+	s.stmts[name] = sql
+	s.out = append(s.out, msg(pgwire.BackendParseComplete, nil)...)
+}
+
+func (s *session) bind(body []byte) {
+	_, rest, _ := cut(body)
+	stmt, rest, _ := cut(rest)
+	sql, prepared := s.stmts[stmt]
+	if !prepared {
+		// The server's answer to a name it never parsed, SQLSTATE
+		// 26000 (invalid_sql_statement_name), not a silent success.
+		s.fail("26000", fmt.Sprintf("prepared statement %q does not exist", stmt))
+		s.skipping = true
+		return
+	}
+	if s.refused(sql) {
+		s.skipping = true
+		return
+	}
+	params := bindParams(rest)
+	var res Result
+	if strings.Contains(sql, "set_config") && len(params) >= 2 {
+		s.settings[string(params[0])] = string(params[1])
+		s.local[string(params[0])] = true
+		res = Result{Columns: []string{"set_config"}, OIDs: []uint32{pgtype.OIDText}, Rows: [][][]byte{{params[1]}}}
+	}
+	if r := s.b.exec(sql, params, s.settings); r.Err != "" || r.Columns != nil || r.Tag != "" {
+		res = r
+	}
+	if res.Err != "" {
+		s.fail(res.Code, res.Err)
+		s.skipping = true
+		return
+	}
+	s.cur = &portal{sql: sql, res: res}
+	s.out = append(s.out, msg(pgwire.BackendBindComplete, nil)...)
+}
+
+func (s *session) describe(body []byte) {
+	if len(body) > 0 && body[0] == 'S' {
+		// A statement: ParameterDescription (none typed here) then
+		// what a row of it would look like, as the server answers
+		// from the plan — not NoData whatever the statement.
+		name, _, _ := cut(body[1:])
+		sql, prepared := s.stmts[name]
+		if !prepared {
+			s.fail("26000", fmt.Sprintf("prepared statement %q does not exist", name))
+			s.skipping = true
+			return
+		}
+		s.out = append(s.out, msg(pgwire.BackendParameterDescription, []byte{0, 0})...)
+		if res := s.b.exec(sql, nil, s.settings); res.Columns != nil {
+			s.out = append(s.out, rowDescription(res.Columns, res.OIDs)...)
+		} else {
+			s.out = append(s.out, msg(pgwire.BackendNoData, nil)...)
+		}
+		return
+	}
+	if s.cur == nil || s.cur.res.Columns == nil {
+		s.out = append(s.out, msg(pgwire.BackendNoData, nil)...)
+		return
+	}
+	s.out = append(s.out, rowDescription(s.cur.res.Columns, s.cur.res.OIDs)...)
+}
+
+func (s *session) execute(body []byte) {
+	s.b.mu.Lock()
+	s.b.executes++
+	s.b.mu.Unlock()
+	if s.cur == nil {
+		s.fail("34000", `portal "" does not exist`)
+		s.skipping = true
+		return
+	}
+	if s.cur.ran && s.cur.res.Columns == nil {
+		// A statement without rows runs once; only a portal the
+		// server fetches from completes again (PortalRun in pquery.c).
+		s.fail("55000", `portal "" cannot be run`)
+		s.skipping = true
+		return
+	}
+	_, rest, _ := cut(body)
+	limit := 0
+	if len(rest) >= 4 {
+		limit = int(binary.BigEndian.Uint32(rest))
+	}
+	rows := s.cur.res.Rows[s.cur.next:]
+	// The server stops at the limit without looking ahead: with
+	// exactly limit rows left it suspends, and the next Execute
+	// finds the portal at its end and completes with none.
+	suspend := limit > 0 && len(rows) >= limit
+	if suspend {
+		rows = rows[:limit]
+	}
+	for _, r := range rows {
+		s.out = append(s.out, dataRow(r)...)
+	}
+	s.cur.next += len(rows)
+	if suspend {
+		s.out = append(s.out, msg(pgwire.BackendPortalSuspended, nil)...)
+		return
+	}
+	// The tag counts this Execute's rows, not the portal's.
+	s.out = append(s.out, commandComplete(s.complete(s.cur.sql, s.cur.res, len(rows)))...)
+	s.cur.ran = true
+}
+
+func (s *session) sync() {
+	s.skipping = false
+	s.cur = nil
+	if s.status == 'I' {
+		// Outside a transaction block a statement is its own
+		// transaction, and its local settings end with it.
+		s.endTx()
+	}
+	s.out = append(s.out, msg(pgwire.BackendReadyForQuery, []byte{s.status})...)
+	s.write()
 }
 
 // statements splits a simple Query's text on the semicolons outside single
