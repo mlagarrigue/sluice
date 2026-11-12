@@ -367,15 +367,31 @@ jobs:
 
       # pgvector is not in the official image. The PostgreSQL project's apt
       # repository, which the image already takes the server from, carries
-      # it; the extension needs its files before init.sql, not a restart.
-      # Its version follows that repository, as the server's minor follows
-      # the tag, so the step prints the one it tested.
+      # it; the extension needs its files before init.sql. Its version
+      # follows that repository, as the server's minor follows the tag, so
+      # the step prints the one it tested. The package may want a newer
+      # server than the image's — pgvector 0.8.7 wanted 17.12 over 17.11 —
+      # and apt then upgrades the server's files under the running server,
+      # which loads the new plpgsql.so into the old binary and fails
+      # (undefined symbol): when the server's package moved, it restarts.
       - name: Install pgvector
         if: matrix.vector == '1'
         run: |
-          docker exec ${{ job.services.postgres.id }} apt-get update -qq
-          docker exec ${{ job.services.postgres.id }} apt-get install -y -qq --no-install-recommends postgresql-${{ matrix.postgres }}-pgvector
-          docker exec ${{ job.services.postgres.id }} dpkg-query -W postgresql-${{ matrix.postgres }} postgresql-${{ matrix.postgres }}-pgvector
+          c=${{ job.services.postgres.id }}
+          server=postgresql-${{ matrix.postgres }}
+          before=$(docker exec "$c" dpkg-query -W -f='${Version}' "$server")
+          docker exec "$c" apt-get update -qq
+          docker exec "$c" apt-get install -y -qq --no-install-recommends "$server-pgvector"
+          docker exec "$c" dpkg-query -W "$server" "$server-pgvector"
+          if [ "$(docker exec "$c" dpkg-query -W -f='${Version}' "$server")" != "$before" ]; then
+            docker restart "$c" >/dev/null
+            for _ in $(seq 30); do
+              docker exec "$c" pg_isready -q -U postgres -h 127.0.0.1 && exit 0
+              sleep 1
+            done
+            echo "the server did not come back after its upgrade" >&2
+            exit 1
+          fi
 
       # A non-superuser role, as pgdev.sh creates: row-level security does
       # not apply to a superuser, and the RLS suites skip rather than pass
