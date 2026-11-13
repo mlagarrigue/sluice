@@ -4,7 +4,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"math"
 	"net"
 	"os"
 	"sync"
@@ -1484,7 +1483,16 @@ func (c *Conn) noteResetLocked(id StreamID) {
 		c.resetMinMark = mark
 	}
 	c.resetIDs[id] = mark
+	c.resetOrder = append(c.resetOrder, resetMark{id: id, mark: mark})
 	c.control = c.pruneStaleLocked(c.control)
+}
+
+// resetMark is one entry of Conn.resetOrder: a stream reset, and the mark it
+// was noted at. A stream reset again later has a later entry too; the
+// earlier one, no longer its mark in resetIDs, is passed over.
+type resetMark struct {
+	id   StreamID
+	mark uint64
 }
 
 // pruneStaleLocked drops from payload — a lost packet's frames, about to go
@@ -1591,9 +1599,10 @@ func (c *Conn) staleLocked(f *Frame) bool {
 //
 // It runs at the end of every packet received, and the table can hold as
 // many streams as the peer may open: the walk happens only once the oldest
-// packet in flight has reached resetMinMark, so each walk forgets one
-// stream at least, and a peer that leaves an old packet unacknowledged buys
-// no walk at all with the packets it sends meanwhile.
+// packet in flight has reached resetMinMark, a peer that leaves an old
+// packet unacknowledged buys no walk at all with the packets it sends
+// meanwhile, and a walk looks only at the entries it forgets
+// (resetOrder).
 func (c *Conn) pruneResetIDsLocked() {
 	sp := &c.spaces[spaceApplication]
 	if len(c.resetIDs) == 0 || len(sp.retrans) > 0 {
@@ -1607,18 +1616,22 @@ func (c *Conn) pruneResetIDsLocked() {
 		return
 	}
 	c.resetWalks++
-	least := uint64(math.MaxUint64)
-	for id, mark := range c.resetIDs {
-		if mark <= oldest {
-			delete(c.resetIDs, id)
-			if s := c.streams[id]; s != nil {
+	for len(c.resetOrder) > 0 && c.resetOrder[0].mark <= oldest {
+		e := c.resetOrder[0]
+		c.resetOrder = c.resetOrder[1:]
+		c.resetVisits++
+		if mark, held := c.resetIDs[e.id]; held && mark == e.mark {
+			delete(c.resetIDs, e.id)
+			if s := c.streams[e.id]; s != nil {
 				c.maybeRemoveLocked(s)
 			}
-			continue
 		}
-		least = min(least, mark)
 	}
-	c.resetMinMark = least
+	if len(c.resetOrder) == 0 {
+		c.resetOrder = nil // every entry of the map had one: the map is empty too
+		return
+	}
+	c.resetMinMark = c.resetOrder[0].mark
 }
 
 // fitFrames cuts payload, frames this end encoded, so that the first part

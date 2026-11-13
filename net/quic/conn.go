@@ -381,9 +381,16 @@ type Conn struct {
 	// resetMinMark is at or below every mark the map holds, so that the
 	// prune skips its walk while the oldest packet in flight is below it;
 	// resetWalks counts the walks, which is how a test sees them skipped.
+	// resetOrder is the map's entries in the order of their marks, which
+	// is the order they were noted in (a mark is the next packet number):
+	// the prune pops what is due from its front instead of walking the
+	// whole map, which cost n(n+1)/2 visits to a peer acknowledging n
+	// resets one at a time; resetVisits counts the entries it looks at.
 	resetIDs     map[StreamID]uint64
 	resetMinMark uint64
 	resetWalks   int
+	resetOrder   []resetMark
+	resetVisits  int
 	// acceptQ holds the streams the peer opened that AcceptStream has not
 	// handed out yet, in identifier order per kind; acceptReady wakes a
 	// waiting AcceptStream. MAX_STREAMS bounds it, not a capacity.

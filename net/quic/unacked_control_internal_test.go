@@ -392,3 +392,31 @@ func TestPruneSkipsTheResetRecordsWhileTheOldestPacketStays(t *testing.T) {
 		t.Fatalf("%d reset records after everything was acknowledged, want none", left)
 	}
 }
+
+// A peer that acknowledges the packets behind n resets one at a time draws n
+// prunes; each looks only at the resets it forgets, n visits in all, where
+// a walk of the whole table cost n(n+1)/2 — with a stream limit the peer
+// may raise as high as the server allows.
+func TestPruningResetsVisitsEachOnce(t *testing.T) {
+	c := assembleConn(&fuzzSink{addr: "prune-once:self"}, fakeFuzzAddr("prune-once:peer"), []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
+	t.Cleanup(func() { _ = c.Close() })
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	const n = 100
+	sp := &c.spaces[spaceApplication]
+	for i := range uint64(n) {
+		c.noteResetLocked(StreamID(4 * i))
+		sp.sent.packets = append(sp.sent.packets, sentPacket{pn: i, ackEliciting: true})
+		sp.nextPN = i + 1
+	}
+	for len(sp.sent.packets) > 0 {
+		sp.sent.packets = sp.sent.packets[1:]
+		c.pruneResetIDsLocked()
+	}
+	if len(c.resetIDs) != 0 {
+		t.Fatalf("%d resets left once nothing is in flight", len(c.resetIDs))
+	}
+	if c.resetVisits > n {
+		t.Errorf("%d resets forgotten one at a time cost %d visits, want at most %d", n, c.resetVisits, n)
+	}
+}
