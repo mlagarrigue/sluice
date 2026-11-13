@@ -203,8 +203,19 @@ func (c *Conn) Pipeline(ctx context.Context, cmds [][]string) ([]Reply, error) {
 	}
 	dl, _ := ctx.Deadline()
 	_ = c.nc.SetDeadline(dl)
-	stop := context.AfterFunc(ctx, func() { _ = c.nc.SetDeadline(time.Unix(1, 0)) })
-	defer stop()
+	done := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		_ = c.nc.SetDeadline(time.Unix(1, 0))
+		close(done)
+	})
+	defer func() {
+		if !stop() {
+			// Started as the call ended: its deadline in the past must land
+			// before the next call sets its own, not after, where it would
+			// fail that call and break the connection.
+			<-done
+		}
+	}()
 
 	c.bw = c.bw[:0]
 	for _, cmd := range cmds {
