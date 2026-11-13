@@ -375,6 +375,30 @@ func TestSharedDependenciesAgreeAcrossModules(t *testing.T) {
 			[]string{"comparison/sluice", "comparison/go-nethttp"},
 			"the two modules measure the same driver (comparison/sluice/go.mod says so)",
 		},
+		// The Go contenders' module does not replace the root, so tidy keeps
+		// the oldest x/ versions its requirements accept: on 2026-11-13 that
+		// left x/net and x/text under five advisories the rest of the tree
+		// had fixed. It follows the root and the study's server by rule.
+		{
+			"golang.org/x/crypto", ".",
+			[]string{"comparison/go-nethttp"},
+			"the contenders run on the x/ modules of the tree they are compared with",
+		},
+		{
+			"golang.org/x/text", ".",
+			[]string{"comparison/go-nethttp"},
+			"the contenders run on the x/ modules of the tree they are compared with",
+		},
+		{
+			"golang.org/x/sys", ".",
+			[]string{"comparison/go-nethttp"},
+			"the contenders run on the x/ modules of the tree they are compared with",
+		},
+		{
+			"golang.org/x/net", "comparison/sluice",
+			[]string{"comparison/go-nethttp"},
+			"the contenders run on the x/ modules of the study's server",
+		},
 	} {
 		want, ok := moduleVersion(t, shared.reference, shared.mod)
 		if !ok {
