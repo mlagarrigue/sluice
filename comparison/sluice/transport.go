@@ -244,7 +244,17 @@ func (a *app) handler() httpstream.Handler {
 				unitKeys = append(unitKeys, key)
 				continue
 			}
-			ans := a.route(context.Background(), string(req.Method), string(req.Target), req.Body)
+			// ReadAll, not Body: a body that did not arrive with the
+			// headers is streamed (BodyDelivery's default), and Body is
+			// then nil — the rule on h2 and h3, where it is a DATA frame
+			// of its own. maxBody is also MaxBodyBytes, so a refusal here
+			// is a body the transport would have refused.
+			body, err := req.ReadAll(nil, maxBody)
+			if err != nil {
+				out[i] = a.encode(answer{status: 400, body: errDoc{Error: "bad body"}}, req)
+				continue
+			}
+			ans := a.route(context.Background(), string(req.Method), string(req.Target), body)
 			out[i] = a.encode(ans, req)
 		}
 		if len(unitIdx) > 0 {

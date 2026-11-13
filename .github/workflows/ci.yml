@@ -651,6 +651,23 @@ jobs:
             exit 1
           fi
 
+      # Every variant of the study's server answers the four scenarios as R
+      # does, on these tables. The benchmarks-module job runs the same test
+      # without a server, where it skips: a variant broken on one transport
+      # (a POST body the httpstream h2 adapter never read) stayed green
+      # there. Without -race: the server's packages are raced in the test job.
+      - name: Study's variants answer like R
+        shell: bash
+        working-directory: comparison/sluice
+        env:
+          GOWORK: off
+        run: |
+          go test -count=1 -v -run '^TestVariantsAnswerLikeR$' ./... | tee test.log
+          if grep 'SLUICE_PG is not set' test.log || ! grep -- '--- PASS: TestVariantsAnswerLikeR ' test.log; then
+            echo "::error::TestVariantsAnswerLikeR did not pass against PostgreSQL" >&2
+            exit 1
+          fi
+
   # net/httpstream against clients it did not write: curl over HTTP/1.1 and
   # HTTP/2, h2load's 10,000 HTTP/2 requests over ten connections, and
   # h2spec's RFC 9113 conformance cases, against a small server
