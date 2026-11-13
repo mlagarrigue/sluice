@@ -482,10 +482,9 @@ type Config struct {
 	// reset): a peer that broke the protocol, a transport that failed — over
 	// HTTP/1.1 a request answered 400, not one refused by a bound or for a
 	// feature this end lacks, whose status says it to the client. A close in
-	// the middle of a request or a frame is one of these: answered 400 over
-	// HTTP/1.1 and logged, though RFC 9112 §8 says it is "usually due to a
-	// canceled request". That last line is one
-	// per connection and within any client's reach, and its text may quote,
+	// the middle of an HTTP/1.1 request is answered 400 and not logged: RFC
+	// 9112 §8 says it is "usually due to a canceled request". That last line
+	// is one per connection and within any client's reach, and its text may quote,
 	// escaped, bytes the peer sent: a client that opens connections only to
 	// break them sets its rate. A Logger that must hold a
 	// budget rate-limits what it receives. Nil means [slog.Default]. It
