@@ -726,11 +726,6 @@ func (c *Conn) processPacket(space int, early bool, pn uint64, payload []byte, n
 		c.amplActive = false
 		c.extendHandshakeLocked()
 	}
-	if err := c.recordFullLocked(); err != nil {
-		c.mu.Unlock()
-		c.abort(err)
-		return err
-	}
 	c.mu.Unlock()
 
 	if err := c.framesIn(space, early, payload, now); err != nil {
@@ -739,6 +734,13 @@ func (c *Conn) processPacket(space int, early bool, pn uint64, payload []byte, n
 	}
 
 	c.mu.Lock()
+	// After the frames, not before: the ACK this very packet carries may be
+	// the one that empties the record.
+	if err := c.recordFullLocked(); err != nil {
+		c.mu.Unlock()
+		c.abort(err)
+		return err
+	}
 	if c.rxStaleCrypto {
 		c.rxStaleCrypto = false
 		c.resendEarlyLocked()
@@ -1026,23 +1028,28 @@ func (c *Conn) handleRetry(h longHeader) {
 // per-packet state it uses (parseScratch, batchScratch, rxProgress) is the
 // loop's alone, under no lock.
 func (c *Conn) frames(space int, payload []byte, now time.Time) error {
-	c.mu.Lock()
-	err := c.recordFullLocked()
-	c.mu.Unlock()
-	if err != nil {
+	if err := c.framesIn(space, false, payload, now); err != nil {
 		return err
 	}
-	return c.framesIn(space, false, payload, now)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.recordFullLocked()
 }
 
 // recordFullLocked is the connection error owed once a send found the
 // application space's sent record at its bound (maxTrackedPackets): the
 // peer acknowledged none of as many ack-eliciting packets, which RFC 9000
-// §13.2.1 has it acknowledge within max_ack_delay. Asked as each of the
+// §13.2.1 has it acknowledge within max_ack_delay. Asked once each of the
 // peer's packets is processed, the point where a connection error already
-// closes the connection. Callers hold mu.
+// closes the connection — after its frames, so that the acknowledgement
+// it carries counts: a record back under its bound owes nothing. Callers
+// hold mu.
 func (c *Conn) recordFullLocked() error {
 	if !c.recordFull {
+		return nil
+	}
+	if c.trackedLocked() < c.spaces[spaceApplication].sent.bound() {
+		c.recordFull = false // the packet just read acknowledged some
 		return nil
 	}
 	return &transportError{

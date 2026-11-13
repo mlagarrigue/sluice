@@ -131,3 +131,43 @@ func checkRecordWithin(t *testing.T, c *Conn, bound int) {
 		t.Fatalf("the sent record holds %d packets, past its bound of %d", tracked, bound)
 	}
 }
+
+// The packet that closes a connection whose record filled was judged before
+// its frames were read: when that packet carried the acknowledgement that
+// empties the record, the peer was closed for not acknowledging in the very
+// packet that did. Its frames are read first now. The control is a packet
+// that acknowledges nothing: it still closes.
+func TestThePacketThatAcknowledgesAFullRecordIsRead(t *testing.T) {
+	const bound = 8
+	fill := func(t *testing.T) (*Conn, uint64) {
+		t.Helper()
+		c, _ := newMigratableServer(t, "bound-acked")
+		boundRecord(c, bound)
+		c.mu.Lock()
+		c.amplActive = false
+		for range bound + 1 {
+			_ = c.sendPacketLocked(spaceApplication, []byte{framePing}, sendOpts{})
+		}
+		full := c.recordFull
+		largest := c.spaces[spaceApplication].nextPN - 1
+		c.mu.Unlock()
+		if !full {
+			t.Fatal("precondition lost: the record did not fill")
+		}
+		return c, largest
+	}
+	t.Run("an ACK of the last packet", func(t *testing.T) {
+		c, largest := fill(t)
+		// The last packet alone: one fewer in the record is under its bound.
+		// (A range down to 0 would name the number skipped on purpose.)
+		ack := appendFrame(nil, frameACK, largest, 0, 0, 0)
+		if err := c.frames(spaceApplication, ack, time.Now()); err != nil {
+			t.Errorf("the packet acknowledging the full record closed the connection: %v", err)
+		}
+	})
+	t.Run("control, a PING", func(t *testing.T) {
+		c, _ := fill(t)
+		err := c.frames(spaceApplication, []byte{framePing}, time.Now())
+		wantCode(t, err, transportProtocolViolation, "a peer acknowledging none of a full record")
+	})
+}

@@ -226,7 +226,8 @@ type Conn struct {
 	dgramPend *pendingPacket
 	// recordFull says a send found the application space's sent record at
 	// its bound (maxTrackedPackets); the next packet from the peer closes
-	// the connection (framesIn).
+	// the connection unless its acknowledgement empties some of the record
+	// (recordFullLocked).
 	recordFull bool
 	dgramPad   bool
 	// batching, batch, batchSeg, batchN and batchShort are send batching:
