@@ -645,10 +645,23 @@ Dependabot opens security updates only.
 |---|---|---|
 | `standard/` | h1 over TLS, h1 in clear; gzip | h2 (Express does not run on `node:http2`), h3 (Node serves none): published "not supported"; deflate, br, zstd |
 | `optimised/` | the same | the same |
+| `dataloader/` | as `standard/`: the variant "with" grouping (CMP-25) | as `standard/` |
 
-What both share without being measured on it lives in `contract.js`: the
+What they share without being measured on it lives in `contract.js`: the
 contract's environment, the TLS, the static document, the write table, the
-metrics point.
+metrics point (`batches` is `null`, except for the DataLoader variant).
+
+**The variant "with" (`dataloader/`)** is the standard version whose unit
+reads go through a DataLoader (the `dataloader` package): the keys loaded
+in one turn of the event loop leave as one `= ANY($1)` query, each batch
+counted in `batches`. One deviation from the documentation, declared
+(§2.1): its README builds a loader per request, which with one key per HTTP
+request groups nothing; this one is shared by the process, its cache off
+(`cache: false`). Its settings are the defaults: a batch leaves on
+`process.nextTick`, which on HTTP/1.1 — one socket callback per request —
+leaves batches of one key. Read under 64 concurrent requests over h1: 192
+keys in 192 batches. That is the default's result, published with the size
+observed, not an error to correct here.
 
 **Deviations from the documentation (standard version)**, each because the
 contract demands it: the pool's size comes from `STUDY_DB_POOL`; the TLS is
@@ -686,7 +699,9 @@ image, `npm ci --omit=dev`, `NODE_ENV=production`, the `node` user);
 the same Node release (24.22.3), run as a user with no rights.
 
 **Checked** from a container by `comparison/chain/conform.sh`, against R,
-300 requests: both images over h1, with and without gzip, conformant.
+300 requests: `standard-doc` and `optimised-opt` over h1, with and without
+gzip, and `dataloader-doc` over h1 (the documentation's image running the
+variant), conformant.
 
 ```
 docker build -f comparison/node-express/Dockerfile --target optimised-opt -t node-express:optimised-opt .

@@ -123,6 +123,19 @@ new PerformanceObserver((list) => {
   }
 }).observe({ entryTypes: ['gc'] });
 
+// The DataLoader variant's batches: one per call of its batch function, by
+// size in powers of two (1, 2, 4…), as the study's server counts its own.
+const batches = { count: 0, keys: 0, sizes: new Map() };
+
+// recordBatch counts one batch of n keys.
+export function recordBatch(n) {
+  batches.count++;
+  batches.keys += n;
+  let le = 1;
+  while (le < n) le *= 2;
+  batches.sizes.set(le, (batches.sizes.get(le) || 0) + 1);
+}
+
 // metricsPart is this process's share of the document: cumulative since it
 // started.
 export function metricsPart() {
@@ -130,13 +143,13 @@ export function metricsPart() {
   return {
     cpu: (u.user + u.system) / 1e6,
     gc: { count: gc.count, seconds: gc.seconds, buckets: [...gc.buckets] },
+    batches: { count: batches.count, keys: batches.keys, sizes: [...batches.sizes] },
   };
 }
 
 // metricsDoc sums the parts of every process (one, or a cluster's workers)
-// into the contract's document; batches is null, as this contender does not
-// group.
-export function metricsDoc(parts) {
+// into the contract's document; batches is null unless the version groups.
+export function metricsDoc(parts, grouped = false) {
   let cpu = 0;
   let count = 0;
   let seconds = 0;
@@ -158,6 +171,18 @@ export function metricsDoc(parts) {
         buckets: [...buckets].sort((a, b) => a[0] - b[0]).map(([le, n]) => ({ le, count: n })),
       },
     },
-    batches: null,
+    batches: grouped ? sumBatches(parts) : null,
   };
+}
+
+function sumBatches(parts) {
+  let count = 0;
+  let keys = 0;
+  const sizes = new Map();
+  for (const p of parts) {
+    count += p.batches.count;
+    keys += p.batches.keys;
+    for (const [le, n] of p.batches.sizes) sizes.set(le, (sizes.get(le) || 0) + n);
+  }
+  return { count, keys, sizes: [...sizes].sort((a, b) => a[0] - b[0]).map(([le, n]) => ({ le, count: n })) };
 }
