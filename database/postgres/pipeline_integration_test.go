@@ -264,3 +264,45 @@ func TestIntegrationPipelineLargeVolumeFinishes(t *testing.T) {
 	}
 	_ = tx.Rollback()
 }
+
+// A part's Setting is transaction-local, as Tx.SetLocal is: the tenant a
+// pipeline set ends with its transaction, and the next one on the same
+// connection, with no setting of its own, sees no tenant's rows. Nothing
+// held it: set_config's third argument turned to false left every test of
+// the package green, while the same change to Tx.SetLocal is caught
+// (TestIntegrationSetLocalDoesNotOutliveItsTransaction).
+func TestIntegrationPipelineSettingDoesNotOutliveItsTransaction(t *testing.T) {
+	conn := dial(t)
+	table := rlsFixture(t, conn)
+	ctx := t.Context()
+
+	tx, err := conn.Begin(ctx, postgres.TxConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := 0
+	err = tx.Pipeline(ctx, []postgres.Part{{Setting: "app.tenant_id", Value: "acme", SQL: `SELECT id FROM ` + table}},
+		postgres.QueryConfig{BatchRows: 16}, func(_ int, b sluice.Batch[postgres.Row]) bool {
+			rows += b.Len()
+			return true
+		})
+	if err != nil {
+		t.Fatalf("Pipeline returned %v", err)
+	}
+	if rows != 2 {
+		t.Fatalf("precondition lost: the pipelined tenant saw %d rows, want 2", rows)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	next, err := conn.Begin(ctx, postgres.TxConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer next.Rollback() //nolint:errcheck // the read is the assertion
+	if got := readIDs(t, next.Query(ctx, `SELECT id FROM `+table, nil,
+		postgres.QueryConfig{BatchRows: 16})); len(got) != 0 {
+		t.Fatalf("the pipeline's tenant leaked into the next transaction: %v", got)
+	}
+}
