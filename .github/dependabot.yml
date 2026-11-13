@@ -64,9 +64,15 @@ updates:
     # The golang image follows the floor go.mod declares; raising it is the
     # decision TestGoModVersionMatchesTheOldestCIBuild guards, not a bump.
     # Within 1.26 the digest still moves.
+    # The node image is the study's runtime, the latest LTS frozen for a
+    # campaign (study §2.5: Node 24): a major is a decision of the study, not
+    # a bump, and an odd major (25) is never an LTS. Within 24 the digest
+    # still moves.
     ignore:
       - dependency-name: golang
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: "build"
   # The CodeQL sub-actions (init, autobuild, analyze) are one release pinned
