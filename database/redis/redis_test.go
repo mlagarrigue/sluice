@@ -97,6 +97,35 @@ func TestPipelineEndedByContextBreaksTheConnection(t *testing.T) {
 	}
 }
 
+// The same end by a cancellation without a deadline: the deadline set from
+// ctx cannot interrupt the read, so only the AfterFunc that forces one does.
+// Group.roundTrip passes a context.WithoutCancel, so no other test of the
+// package cancels a Pipeline this way, and taking the AfterFunc out left the
+// suite green while a cancelled call waited for the server without end.
+func TestPipelineCancelledWithoutADeadlineBreaksTheConnection(t *testing.T) {
+	c, err := Connect(t.Context(), fakeServer(t, kv), Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	time.AfterFunc(50*time.Millisecond, cancel)
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.Do(ctx, "HANG")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrConnBroken) || !errors.Is(err, context.Canceled) {
+			t.Fatalf("err %v, want ErrConnBroken and the cancellation", err)
+		}
+	case <-time.After(5 * time.Second):
+		_ = c.nc.Close() // release the call: Close waits for the lock the call holds
+		<-done
+		t.Fatal("a call cancelled without a deadline still waited for the server 5s later")
+	}
+}
+
 func TestConnectReportsARefusal(t *testing.T) {
 	denied := func([]string) string { return "-DENIED Redis is running in protected mode\r\n" }
 	_, err := Connect(t.Context(), fakeServer(t, denied), Config{})
