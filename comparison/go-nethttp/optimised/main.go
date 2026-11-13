@@ -249,7 +249,7 @@ func run() error {
 	mux.HandleFunc("GET /orders/{id}", s.unit)
 	mux.HandleFunc("GET /orders", s.list)
 	mux.HandleFunc("POST /orders", s.write)
-	mux.HandleFunc("GET /study/metrics", contract.ServeMetrics)
+	mux.HandleFunc("GET /study/metrics", contract.Metrics(nil))
 
 	if !cfg.TLS {
 		fmt.Fprintf(os.Stderr, "go-nethttp-optimised: %s on %s (%s)\n", cfg.Protocol, cfg.Listen, cfg.Summary(nil))

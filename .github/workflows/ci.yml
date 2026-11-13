@@ -674,17 +674,18 @@ jobs:
             exit 1
           fi
 
-      # The first contender, both versions on every protocol they serve,
-      # against R through the generator's conformance check (CMP-09).
+      # The first contender, its two versions and its DataLoader variant on
+      # every protocol they serve, against R through the generator's
+      # conformance check (CMP-09); and the variant does group.
       - name: Contender go-nethttp answers like R
         shell: bash
         working-directory: comparison/go-nethttp
         env:
           GOWORK: off
         run: |
-          go test -count=1 -v -run '^TestConformsToR$' ./... | tee test.log
-          if grep 'SLUICE_PG is not set' test.log || ! grep -- '--- PASS: TestConformsToR ' test.log; then
-            echo "::error::TestConformsToR did not pass against PostgreSQL" >&2
+          go test -count=1 -v -run '^TestConformsToR$|^TestDataLoaderGroups$' ./... | tee test.log
+          if grep 'SLUICE_PG is not set' test.log || ! grep -- '--- PASS: TestConformsToR ' test.log || ! grep -- '--- PASS: TestDataLoaderGroups ' test.log; then
+            echo "::error::go-nethttp did not pass against PostgreSQL" >&2
             exit 1
           fi
 

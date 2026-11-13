@@ -3,28 +3,65 @@ package contract
 import (
 	"encoding/json"
 	"math"
+	"math/bits"
 	"net/http"
 	"runtime"
 	"runtime/metrics"
+	"sync/atomic"
 )
 
 // The metrics point of the contract, GET /study/metrics: every number
 // cumulative since the server started, read at the start and the end of a
 // stage. The runtime's part is read as the study's server reads it
 // (comparison/sluice/metrics.go), so that the two Go processes explain
-// their p99 in one unit; "batches" is null, as a contender that does not
-// group has none.
+// their p99 in one unit. "batches" is null for a version that does not
+// group; the DataLoader variant counts its fetches there, as R counts its
+// gateway's.
 
 // MetricsDoc is the document, field for field the contract's.
 type MetricsDoc struct {
-	Runtime    string  `json:"runtime"`
-	CPUSeconds float64 `json:"cpu_seconds"`
-	GC         *GCDoc  `json:"gc"`
-	Batches    *struct {
-		Count uint64   `json:"count"`
-		Keys  uint64   `json:"keys"`
-		Sizes []Bucket `json:"sizes"`
-	} `json:"batches"`
+	Runtime    string      `json:"runtime"`
+	CPUSeconds float64     `json:"cpu_seconds"`
+	GC         *GCDoc      `json:"gc"`
+	Batches    *BatchesDoc `json:"batches"`
+}
+
+// BatchesDoc counts the SQL batches of unit reads and the keys in them.
+type BatchesDoc struct {
+	Count uint64   `json:"count"`
+	Keys  uint64   `json:"keys"`
+	Sizes []Bucket `json:"sizes"`
+}
+
+// BatchStats counts batches by size in powers of two (1, 2, 4…), as the
+// study's server does: the fetch function records, the metrics point reads,
+// from any goroutine.
+type BatchStats struct {
+	count, keys atomic.Uint64
+	sizes       [batchBuckets]atomic.Uint64
+}
+
+// batchBuckets reaches 2^20 keys a batch.
+const batchBuckets = 21
+
+// Record counts one batch of keys.
+func (b *BatchStats) Record(keys int) {
+	if keys <= 0 {
+		return
+	}
+	b.count.Add(1)
+	b.keys.Add(uint64(keys))
+	b.sizes[min(bits.Len(uint(keys-1)), batchBuckets-1)].Add(1)
+}
+
+func (b *BatchStats) doc() *BatchesDoc {
+	d := &BatchesDoc{Count: b.count.Load(), Keys: b.keys.Load()}
+	for i := range b.sizes {
+		if n := b.sizes[i].Load(); n > 0 {
+			d.Sizes = append(d.Sizes, Bucket{Le: float64(uint64(1) << i), Count: n})
+		}
+	}
+	return d
 }
 
 // GCDoc is the collector's part.
@@ -77,8 +114,15 @@ func ReadMetrics() MetricsDoc {
 	}
 }
 
-// ServeMetrics answers GET /study/metrics.
-func ServeMetrics(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(ReadMetrics())
+// Metrics answers GET /study/metrics; batches is nil for a contender that
+// does not group, and its part of the document is then null.
+func Metrics(batches *BatchStats) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		d := ReadMetrics()
+		if batches != nil {
+			d.Batches = batches.doc()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(d)
+	}
 }

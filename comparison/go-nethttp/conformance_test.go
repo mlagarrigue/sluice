@@ -6,15 +6,21 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
+	"fmt"
+	"io"
 	"math/big"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -36,6 +42,7 @@ func TestConformsToR(t *testing.T) {
 	dir := t.TempDir()
 	build(t, dir, "standard", ".", "./standard")
 	build(t, dir, "optimised", ".", "./optimised")
+	build(t, dir, "dataloader", ".", "./dataloader")
 	build(t, dir, "r", "../sluice", ".")
 	build(t, dir, "loadgen", "../loadgen", ".")
 	cert, key := certificate(t, dir)
@@ -51,6 +58,8 @@ func TestConformsToR(t *testing.T) {
 		{"optimised", "h3", "off"},
 		{"optimised", "h1", "gzip"},
 		{"optimised", "h2", "gzip"},
+		{"dataloader", "h1", "off"},
+		{"dataloader", "h2", "off"},
 	}
 	for _, c := range cases {
 		t.Run(c.version+"-"+c.proto+"-"+c.compression, func(t *testing.T) {
@@ -210,4 +219,80 @@ func certificate(t *testing.T, dir string) (cert, key string) {
 		t.Fatal(err)
 	}
 	return cert, key
+}
+
+// TestDataLoaderGroups is what the variant exists for: unit reads that
+// arrive together leave in fewer queries than reads, and the metrics point
+// says so. 64 concurrent reads over HTTP/2, one connection, inside the
+// loader's 16 ms window: at least one batch of more than one key.
+func TestDataLoaderGroups(t *testing.T) {
+	if os.Getenv("SLUICE_PG") == "" {
+		t.Skip("SLUICE_PG is not set")
+	}
+	dir := t.TempDir()
+	build(t, dir, "dataloader", ".", "./dataloader")
+	cert, key := certificate(t, dir)
+	url := start(t, filepath.Join(dir, "dataloader"), append(contractEnv(t, cert, key), "STUDY_PROTOCOL=h2"), "h2")
+	tr := &http.Transport{
+		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13}, //nolint:gosec // G402: the certificate this test made
+		ForceAttemptHTTP2: true,
+		Protocols:         new(http.Protocols),
+	}
+	tr.Protocols.SetHTTP2(true)
+	client := &http.Client{Transport: tr, Timeout: 5 * time.Second}
+	defer tr.CloseIdleConnections()
+
+	get := func(path string) ([]byte, error) {
+		resp, err := client.Get(url + path)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		b, err := io.ReadAll(resp.Body)
+		if err == nil && resp.StatusCode != http.StatusOK {
+			err = fmt.Errorf("%s: %d %s", path, resp.StatusCode, b)
+		}
+		return b, err
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if _, err := get("/orders/1"); err == nil {
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatalf("not ready: %v", err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	const reads = 64
+	var wg sync.WaitGroup
+	errs := make(chan error, reads)
+	for i := range reads {
+		wg.Go(func() {
+			if _, err := get(fmt.Sprintf("/orders/%d", 1000+i)); err != nil {
+				errs <- err
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	b, err := get("/study/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m struct {
+		Batches *struct {
+			Count, Keys uint64
+		} `json:"batches"`
+	}
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.Batches == nil || m.Batches.Keys < reads || m.Batches.Count >= m.Batches.Keys {
+		t.Fatalf("no grouping in the metrics point: %s", b)
+	}
+	t.Logf("%d keys in %d batches", m.Batches.Keys, m.Batches.Count)
 }

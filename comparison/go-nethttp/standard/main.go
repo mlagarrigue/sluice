@@ -156,7 +156,7 @@ func run() error {
 	mux.HandleFunc("GET /orders/{id}", s.unit)
 	mux.HandleFunc("GET /orders", s.list)
 	mux.HandleFunc("POST /orders", s.write)
-	mux.HandleFunc("GET /study/metrics", contract.ServeMetrics)
+	mux.HandleFunc("GET /study/metrics", contract.Metrics(nil))
 
 	srv := &http.Server{Addr: cfg.Listen, Handler: mux, ReadHeaderTimeout: contract.ReadHeaderTimeout}
 	if !cfg.TLS {

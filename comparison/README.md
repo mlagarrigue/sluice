@@ -513,16 +513,29 @@ it does not require the root module — a contender owes Sluice.go nothing —
 and takes `pgx` and `quic-go` at the versions of `sluice/`, so that the two
 measure the same driver and the same HTTP/3 stack.
 
-Two programs, so that the study counts their lines apart (§1.1):
+Three programs, so that the study counts their lines apart (§1.1):
 
 | Version | Serves | Refuses at startup |
 |---|---|---|
 | `standard/` | h1 and h2 over TLS, h1 in clear | h3 (`net/http` has none), any compression (`net/http` offers none): published "not supported" |
 | `optimised/` | h1, h2, h3; gzip at level 1 | deflate, br, zstd |
+| `dataloader/` | as `standard/`: the variant "with" grouping (CMP-14) | as `standard/` |
 
-What both share without being measured on it lives in `internal/contract`:
+What they share without being measured on it lives in `internal/contract`:
 the contract's environment, every contender's TLS, the static document,
-the write table, the metrics point (`batches` is `null`).
+the write table, the metrics point (`batches` is `null`, except for the
+DataLoader variant).
+
+**The variant "with" (`dataloader/`)** is the standard version whose unit
+reads go through a DataLoader of `vikstrous/dataloadgen`: the keys loaded
+within its window leave as one `= ANY($1)` query, and every batch is counted
+in `batches`. Its settings are the loader's defaults: a 16 ms window, no
+bound on a batch. One deviation from the documentation, declared (§2.1):
+`dataloadgen`'s examples build a loader per request, which with one key per
+HTTP request groups nothing; this one is shared by the process, and its
+memoisation cache is off (`WithoutCache`) — every key differs, so the cache
+would never serve and would only grow. `dataloadgen` brings OpenTelemetry
+(`otel`, `otel/trace`) into the module's graph.
 
 Run it with the contract's variables (`pgx` reads the `PG*` itself):
 
@@ -562,10 +575,12 @@ log (`net/http` has none); database errors go to the standard `log`.
 Nothing else: no GC setting, no `GOMAXPROCS`, no cache. What each
 optimisation is worth is the campaign's to say.
 
-**Checked**: `TestConformsToR` builds both versions, R and the generator,
-and passes `loadgen -conformance` against R for each version and each
-protocol it serves, gzip included (CI's postgres job);
-`TestRefusesWhatItDoesNotServe` checks the refusals.
+**Checked**: `TestConformsToR` builds the three programs, R and the
+generator, and passes `loadgen -conformance` against R for each program and
+each protocol it serves, gzip included (CI's postgres job);
+`TestDataLoaderGroups` sends the variant 64 concurrent reads and reads
+fewer batches than keys in `batches`; `TestRefusesWhatItDoesNotServe`
+checks the refusals.
 
 ## `loadgen/` — the load generator
 
