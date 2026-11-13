@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"io"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -101,6 +102,72 @@ func TestReadBound(t *testing.T) {
 	at := "$56\r\n" + strings.Repeat("x", 56) + "\r\n" // a header of five, 56 of data, two of CRLF: sixty-three
 	if r, err := parse(at, bound); err != nil || len(r.Str) != 56 {
 		t.Errorf("a reply within the bound: %v", err)
+	}
+}
+
+// A length at the end of the int64 range is refused by the bound: adding
+// the CRLF to it must not wrap around and let it through.
+func TestReadRefusesALengthAtTheEndOfTheInt64Range(t *testing.T) {
+	for _, n := range []string{"9223372036854775806", "9223372036854775807"} {
+		if _, err := parse("$"+n+"\r\n", 64); !errors.Is(err, ErrReplyTooLarge) {
+			t.Errorf("$%s: err %v, want ErrReplyTooLarge", n, err)
+		}
+	}
+}
+
+// Every announced element owes the bound at least three bytes until it
+// arrives, so nested arrays cannot each claim the whole bound: headers
+// announcing more elements than the bound could carry are refused.
+func TestReadChargesAnnouncedElements(t *testing.T) {
+	const bound = 1 << 16
+	var b strings.Builder
+	left := bound
+	for range maxDepth {
+		n := left / 3
+		for n > 0 && n > (left-len("*"+strconv.Itoa(n)+"\r\n"))/3 {
+			n--
+		}
+		if n == 0 {
+			break
+		}
+		h := "*" + strconv.Itoa(n) + "\r\n"
+		b.WriteString(h)
+		left -= len(h)
+	}
+	if _, err := parse(b.String(), bound); !errors.Is(err, ErrReplyTooLarge) {
+		t.Errorf("nested headers announcing past the bound: err %v, want ErrReplyTooLarge", err)
+	}
+
+	// Elements of three bytes, the least one takes, fill the bound exactly.
+	const n = 19 // a header of five, nineteen elements of three: sixty-two
+	in := "*" + strconv.Itoa(n) + "\r\n" + strings.Repeat("+\r\n", n)
+	if r, err := parse(in, 62); err != nil || len(r.Array) != n {
+		t.Errorf("an array within the bound: %d elements, err %v", len(r.Array), err)
+	}
+}
+
+// An announced count is not allocated for whole before its elements arrive:
+// a header of eight bytes cannot make the reader allocate many times the
+// bound.
+func TestReadDoesNotAllocateForWhatIsOnlyAnnounced(t *testing.T) {
+	const bound = 300_000
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, err := parse("*99000\r\n", bound)
+	runtime.ReadMemStats(&after)
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("err %v, want the input to end", err)
+	}
+	if got := after.TotalAlloc - before.TotalAlloc; got > 4*bound {
+		t.Errorf("an eight-byte header allocated %d bytes under a bound of %d", got, bound)
+	}
+
+	// A long array still reads whole.
+	const long = 5000
+	r, err := parse("*"+strconv.Itoa(long)+"\r\n"+strings.Repeat(":7\r\n", long), 1<<20)
+	if err != nil || len(r.Array) != long || r.Array[long-1].Int != 7 {
+		t.Fatalf("a long array: %d elements, err %v", len(r.Array), err)
 	}
 }
 

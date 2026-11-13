@@ -97,6 +97,15 @@ var (
 // thousand times.
 const maxDepth = 32
 
+// minElementBytes is the least an array element takes on the wire: a type
+// byte and CRLF, as an empty simple string "+\r\n".
+const minElementBytes = 3
+
+// maxPrealloc bounds the elements an array header makes room for before
+// they arrive: 1024 replies, 64 KiB on a 64-bit platform. Longer arrays
+// grow as they are read.
+const maxPrealloc = 1024
+
 // reader parses the replies of one connection. Its bytes go to arena, which
 // a call hands out with its replies and never reuses: the replies a caller
 // holds stay valid.
@@ -144,7 +153,9 @@ func (r *reader) reply(depth int) (Reply, error) {
 		if n < 0 {
 			return Reply{}, fmt.Errorf("%w: a bulk string of length %d", ErrProtocol, n)
 		}
-		if n+2 > int64(r.budget) {
+		// n is compared before anything is added to it: n+2 wraps for a
+		// length at the end of the int64 range.
+		if n > int64(r.budget)-2 {
 			return Reply{}, fmt.Errorf("%w: a bulk string of %d bytes", ErrReplyTooLarge, n)
 		}
 		r.budget -= int(n) + 2
@@ -172,17 +183,25 @@ func (r *reader) reply(depth int) (Reply, error) {
 		if depth == maxDepth {
 			return Reply{}, fmt.Errorf("%w: arrays nested past %d levels", ErrProtocol, maxDepth)
 		}
-		// Each element takes at least three bytes (":0" would be four, an
-		// empty line is refused): an announced count is held to what the
-		// budget could carry before anything is allocated for it.
-		if n > int64(r.budget/3) {
+		// Each element takes at least minElementBytes on the wire ("+" and
+		// CRLF; an empty line is refused). The announced elements owe the
+		// budget that much until they arrive, each releasing its share as
+		// it is read: nested arrays cannot each claim the whole budget,
+		// and no reply within the bound is refused.
+		if n > int64(r.budget/minElementBytes) {
 			return Reply{}, fmt.Errorf("%w: an array of %d elements", ErrReplyTooLarge, n)
 		}
-		elems := make([]Reply, n)
-		for i := range elems {
-			if elems[i], err = r.reply(depth + 1); err != nil {
+		r.budget -= int(n) * minElementBytes
+		// Room is made for what has arrived, not for what is announced:
+		// past maxPrealloc the slice grows as the elements are read.
+		elems := make([]Reply, 0, min(int(n), maxPrealloc))
+		for range n {
+			r.budget += minElementBytes
+			e, err := r.reply(depth + 1)
+			if err != nil {
 				return Reply{}, err
 			}
+			elems = append(elems, e)
 		}
 		return Reply{Kind: KindArray, Array: elems}, nil
 	}

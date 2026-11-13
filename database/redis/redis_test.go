@@ -143,6 +143,24 @@ func TestReplyPastTheBoundBreaksTheConnection(t *testing.T) {
 	}
 }
 
+// A server that announces a bulk string at the end of the int64 range gets
+// the bound's refusal, not a panic out of Do.
+func TestALengthAtTheEndOfTheInt64RangeIsRefused(t *testing.T) {
+	huge := func(args []string) string {
+		if args[0] == "PING" {
+			return "+PONG\r\n"
+		}
+		return "$9223372036854775807\r\n"
+	}
+	c, err := Connect(t.Context(), fakeServer(t, huge), Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Do(t.Context(), "GET", "k"); !errors.Is(err, ErrReplyTooLarge) || !errors.Is(err, ErrConnBroken) {
+		t.Fatalf("err %v", err)
+	}
+}
+
 func TestPipelineRefusesAnEmptyCommand(t *testing.T) {
 	c, err := Connect(t.Context(), fakeServer(t, kv), Config{})
 	if err != nil {
