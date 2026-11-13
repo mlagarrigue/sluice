@@ -43,6 +43,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"strconv"
 	"strings"
@@ -90,6 +91,25 @@ type Config struct {
 	// until ctx ends.
 	TLS *tls.Config
 }
+
+// String prints the configuration with the password hidden: %v and %+v on
+// a struct print every field, and a password that reaches a log is a
+// credential anyone reading the log holds.
+func (c Config) String() string {
+	type plain Config // no methods: printing it does not come back here
+	p := plain(c)
+	if p.Password != "" {
+		p.Password = "<redacted>"
+	}
+	return fmt.Sprintf("nats.Config%+v", p)
+}
+
+// GoString hides the password from %#v too.
+func (c Config) GoString() string { return c.String() }
+
+// LogValue hides it from slog: the JSON handler calls neither String nor
+// GoString, and marshals the exported fields.
+func (c Config) LogValue() slog.Value { return slog.StringValue(c.String()) }
 
 // Conn is one connection to a NATS server. Its methods may be called from
 // several goroutines; they run one at a time.
@@ -173,6 +193,13 @@ func (c *Conn) handshake(ctx context.Context, cfg Config) error {
 	stop := c.bound(ctx)
 	defer stop()
 	c.wb = append(append(append(c.wb[:0], "CONNECT "...), connect...), "\r\nPING\r\n"...)
+	// The CONNECT line carries the password and would stay in the write
+	// buffer once sent, a field fmt prints with the rest.
+	defer func() {
+		clear(connect)
+		clear(c.wb[:cap(c.wb)])
+		c.wb = c.wb[:0]
+	}()
 	if _, err := c.nc.Write(c.wb); err != nil {
 		return err
 	}
