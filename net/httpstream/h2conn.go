@@ -427,10 +427,13 @@ type h2Conn struct {
 	// streamers is the free list of streamers (see h2Streamer), taken by
 	// the responder and given back by each streamer's goroutine, hence the
 	// lock; pulling counts the streamers' goroutines, which the responder
-	// waits for before it goes, as it waits for its own work.
-	streamersMu sync.Mutex
-	streamers   []*h2Streamer
-	pulling     sync.WaitGroup
+	// waits for before it goes, as it waits for its own work. streamersOut
+	// counts the streamers taken and not given back, which bounds the list
+	// (h2Streamer.done).
+	streamersMu  sync.Mutex
+	streamers    []*h2Streamer
+	streamersOut int
+	pulling      sync.WaitGroup
 }
 
 // h2Scratch is what framing one header block borrows: the block, and the

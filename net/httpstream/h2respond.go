@@ -455,9 +455,11 @@ func appendHeaderFrames(dst []byte, id uint32, flags byte, block []byte, maxFram
 // buffers and its goroutine, which parks on wake between two answers: a
 // goroutine started per response cost +88% on BenchmarkH2StreamBody
 // (chunks=1, paired A/B), most of it the new goroutine's stack growing to
-// what the pull needs, every time. The list is bounded by the most streamed
-// answers ever pulled at once, trimmed to one when the connection goes idle
-// (trimStreamers), and emptied when it ends (stopStreamers).
+// what the pull needs, every time. The list holds no more streamers than
+// are in use, and one (done): a burst gives back its goroutines and buffers
+// as it ends, even while a long streamed answer keeps the connection from
+// idling. It is trimmed to one with its buffers shed when the connection
+// goes idle (trimStreamers), and emptied when it ends (stopStreamers).
 type h2Streamer struct {
 	s *h2Conn
 	// wake starts the parked goroutine on the answer just set; closed, it
@@ -500,6 +502,7 @@ func (s *h2Conn) streamer() *h2Streamer {
 		s.streamers[n-1] = nil
 		s.streamers = s.streamers[:n-1]
 	}
+	s.streamersOut++
 	s.streamersMu.Unlock()
 	if st == nil {
 		st = &h2Streamer{s: s, wake: make(chan struct{}, 1)}
@@ -585,7 +588,18 @@ func (st *h2Streamer) done() {
 	}
 	st.stream, st.trailers, st.ctx, st.ids = nil, nil, nil, nil
 	s.streamersMu.Lock()
+	s.streamersOut--
 	s.streamers = append(s.streamers, st)
+	// No more on the list than are in use, and one: what a burst used ends
+	// with it, rather than when the connection next idles — which one
+	// long streamed answer can put off for as long as it lasts. The ones
+	// past the bound end their goroutine, st's own once loop returns here.
+	for keep := max(1, s.streamersOut); len(s.streamers) > keep; {
+		n := len(s.streamers) - 1
+		close(s.streamers[n].wake)
+		s.streamers[n] = nil
+		s.streamers = s.streamers[:n]
+	}
 	s.streamersMu.Unlock()
 	s.answered()
 }
