@@ -70,3 +70,26 @@ func TestStreamDeadlineHeapFollowsEverySet(t *testing.T) {
 		t.Fatal("the matured write deadline was cleared from its stream")
 	}
 }
+
+// A deadline set on a stream out of the table — retired, or the stand-in
+// Conn.Stream makes for a closed identifier — takes no place in the heap:
+// nothing waits on such a stream, and only a stream leaving the table had
+// its entries taken out, so the entry, and the stream, stayed until the
+// deadline matured. The HTTP/3 server sets a write deadline before every
+// response write, on streams a peer may already have had retired.
+func TestADeadlineOnARetiredStreamTakesNoPlace(t *testing.T) {
+	c, ss := deadlineConn(t, 1)
+	s := ss[0]
+	c.mu.Lock()
+	delete(c.streams, s.id)
+	c.dropStreamDeadlinesLocked(s)
+	c.mu.Unlock()
+	_ = s.SetWriteDeadline(time.Now().Add(time.Hour))
+	_ = s.SetReadDeadline(time.Now().Add(time.Hour))
+	c.mu.Lock()
+	n := len(c.deadlines)
+	c.mu.Unlock()
+	if n != 0 {
+		t.Errorf("%d deadline entries for a stream out of the table, want 0", n)
+	}
+}
