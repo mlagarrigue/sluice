@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -135,5 +137,56 @@ func TestServeReportsAListenerClosedUnderIt(t *testing.T) {
 	}
 	if err := wait(); !errors.Is(err, net.ErrClosed) {
 		t.Fatalf("Serve returned %v, want net.ErrClosed", err)
+	}
+}
+
+// lockedBuffer is a log sink the server's goroutines may write to at once.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  []byte
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.b = append(l.b, p...)
+	return len(p), nil
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return string(l.b)
+}
+
+// A burst of temporary Accept failures was weathered in silence: the
+// descriptors a server ran out of left no trace in its log, where net/http
+// writes one at each retry. It says so once per burst, at the warn level,
+// with the error — and not once per retry, which a shortage that lasts
+// would turn into a line a second.
+func TestATemporaryAcceptFailureIsLoggedOncePerBurst(t *testing.T) {
+	ln := listenFlaky(t, 1, 3, temporaryError{})
+	var log lockedBuffer
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(ctx, ln, Config{Logger: slog.New(slog.NewTextHandler(&log, nil))}, echoTarget)
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	before := dial(t, ln.Addr().String())
+	ask(t, before, "/before")
+	after := dial(t, ln.Addr().String())
+	ask(t, after, "/after")
+
+	got := log.String()
+	if n := strings.Count(got, "too many open files"); n != 1 {
+		t.Errorf("%d log lines carry the Accept error for a burst of 3 failures, want 1:\n%s", n, got)
+	}
+	if !strings.Contains(got, "level=WARN") {
+		t.Errorf("the Accept failure is not logged at the warn level:\n%s", got)
 	}
 }

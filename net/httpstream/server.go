@@ -117,6 +117,14 @@ func (s *Server) Serve(ln net.Listener) error {
 				// The same shape as the QUIC read loop's readBackoff and
 				// deliberately not shared with it: four lines are cheaper
 				// than a dependency between the two packages.
+				if tempDelay == 0 {
+					// The first failure of a burst is logged, the retries
+					// are not: descriptors run out (EMFILE) without any
+					// other trace on this side, and a shortage that lasts
+					// would otherwise write a line a second.
+					s.cfg.logger().Warn("httpstream: accepting failed; retrying with backoff until it succeeds",
+						"addr", ln.Addr().String(), "err", err)
+				}
 				tempDelay = min(max(tempDelay*2, 5*time.Millisecond), time.Second)
 				t := time.NewTimer(tempDelay)
 				select {
