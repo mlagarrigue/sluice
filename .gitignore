@@ -20,3 +20,7 @@ cmd/sluicegen/sluicegen
 .devcontainer/local/
 .vscode/*
 !.vscode/settings.json
+
+# The Node contender's installed packages: package-lock.json pins them and the
+# images install them with npm ci.
+node_modules/

@@ -1,0 +1,18 @@
+{
+  "name": "study-node-express",
+  "private": true,
+  "description": "The study's Node contender: Express 5 and node-postgres, without grouping (comparison/README.md).",
+  "type": "module",
+  "engines": {
+    "node": "24"
+  },
+  "scripts": {
+    "standard": "node standard/server.js",
+    "optimised": "node optimised/server.js"
+  },
+  "dependencies": {
+    "compression": "^1.8.2",
+    "express": "^5.3.0",
+    "pg": "^8.23.1"
+  }
+}

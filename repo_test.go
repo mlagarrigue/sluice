@@ -76,6 +76,11 @@ func linkedPages(t *testing.T) []string {
 	out := append(markdownFiles(t), "CHANGELOG.md", "CODE_OF_CONDUCT.md", "llms.txt")
 	for _, dir := range []string{"benchmarks", "comparison", "interop", ".github"} {
 		err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+			// A contender's installed packages (node_modules, ignored by
+			// git) carry their own READMEs, which are not this repository's.
+			if err == nil && d.IsDir() && d.Name() == "node_modules" {
+				return filepath.SkipDir
+			}
 			if err == nil && !d.IsDir() && strings.HasSuffix(p, ".md") {
 				out = append(out, p)
 			}
@@ -1099,7 +1104,7 @@ func TestCheckRunsTheNestedTestsCIRuns(t *testing.T) {
 // is no image and is skipped.
 func TestDockerImagesArePinned(t *testing.T) {
 	from := regexp.MustCompile(`(?m)^FROM\s+(\S+)(?:\s+AS\s+(\S+))?`)
-	for _, f := range []string{"interop/Dockerfile", ".devcontainer/Dockerfile", "comparison/sluice/Dockerfile", "comparison/loadgen/Dockerfile", "comparison/go-nethttp/Dockerfile"} {
+	for _, f := range []string{"interop/Dockerfile", ".devcontainer/Dockerfile", "comparison/sluice/Dockerfile", "comparison/loadgen/Dockerfile", "comparison/go-nethttp/Dockerfile", "comparison/node-express/Dockerfile"} {
 		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
 		if err != nil {
 			t.Fatal(err)

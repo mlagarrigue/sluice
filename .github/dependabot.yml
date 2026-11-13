@@ -45,11 +45,20 @@ updates:
     open-pull-requests-limit: 0
     commit-message:
       prefix: "build"
+  # The Node contender's packages, frozen for the same reason: security
+  # updates only.
+  - package-ecosystem: npm
+    directories: ["/comparison/node-express"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: "build"
   # The base images are pinned by digest (TestDockerImagesArePinned); these
   # entries move the digests: the interop endpoint's, the devcontainer's and
   # the study's images.
   - package-ecosystem: docker
-    directories: ["/interop", "/.devcontainer", "/comparison/sluice", "/comparison/loadgen", "/comparison/go-nethttp"]
+    directories: ["/interop", "/.devcontainer", "/comparison/sluice", "/comparison/loadgen", "/comparison/go-nethttp", "/comparison/node-express"]
     schedule:
       interval: weekly
     # The golang image follows the floor go.mod declares; raising it is the

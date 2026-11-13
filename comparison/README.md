@@ -505,6 +505,12 @@ requests each under `-encoding gzip`: conformant; the trivial server
 against R parts at the first static request (`$.service`), as it should,
 and agrees on everything else it was asked.
 
+A contender's image is checked the same way from a container by
+`comparison/chain/conform.sh <image> <h1|h2|h3> [gzip]`: the image runs on
+the Docker network of the repository's database (`NETWORK`,
+`sluice_default`), R and the generator are built from this tree and run
+beside it, and the generator's report is the one line it prints.
+
 ## `go-nethttp/` — the Go contenders
 
 Go's standard HTTP server and `pgx`, without grouping: the barest Go
@@ -626,6 +632,66 @@ comparison/chain/image.sh comparison/go-nethttp/Dockerfile optimised-opt
 
 `image.sh`'s `TOUCH` then names the program's file
 (`TOUCH=optimised/main.go`).
+
+## `node-express/` — the Node contender
+
+Express 5 and node-postgres (`pg`), without grouping: the Node contender
+of level 1 (study §2.5). Node is not in the devcontainer; everything is
+built and run in containers (`node:24-alpine`, pinned). The packages
+(`express`, `pg`, `compression`) are frozen by `package-lock.json`;
+Dependabot opens security updates only.
+
+| Version | Serves | Refuses at startup |
+|---|---|---|
+| `standard/` | h1 over TLS, h1 in clear; gzip | h2 (Express does not run on `node:http2`), h3 (Node serves none): published "not supported"; deflate, br, zstd |
+| `optimised/` | the same | the same |
+
+What both share without being measured on it lives in `contract.js`: the
+contract's environment, the TLS, the static document, the write table, the
+metrics point.
+
+**Deviations from the documentation (standard version)**, each because the
+contract demands it: the pool's size comes from `STUDY_DB_POOL`; the TLS is
+everyone's (TLS 1.3, ALPN `http/1.1`, tickets off through
+`SSL_OP_NO_TICKET`); gzip at level 1 (`compression({ level: 1 })`, the
+contract's level; the package's default threshold of 1 KB is kept, so a
+smaller answer goes uncompressed); `bigint` columns written as numbers
+(`pg` returns them as strings); R's static document, error documents and
+write table; the metrics point. Node has no API to make a certificate at
+startup: the images carry one for a local run, made when they are built; a
+campaign names its own.
+
+**The metrics point** reads V8's collector through `perf_hooks`: each
+collection with its duration on the main thread, which stands for both the
+pauses and the collector's CPU. The work V8's helper threads do alongside
+is not in it: declared with the figures (§1.3).
+
+**Optimisations (optimised version)**, each with its source:
+
+1. A cluster of processes, one per usable CPU and at most one per pooled
+   connection; the pool's total is the contract's, split between the
+   processes (§2.6). Source: Express, "Production best practices:
+   performance and reliability", "Run your app in a cluster". The metrics
+   point adds up every process: the one that gets the request hands it to
+   the primary, which gathers each one's share.
+2. `NODE_ENV=production`. Source: the same page, "Set NODE_ENV to
+   production". The documentation's image sets it already (Docker's guide
+   for Node): the optimisation only changes a run outside the image.
+3. Named queries, which node-postgres prepares once per connection. Source:
+   node-postgres, "Queries", "Prepared Statements".
+
+**The images**: `standard-doc` is Docker's guide for Node (the alpine
+image, `npm ci --omit=dev`, `NODE_ENV=production`, the `node` user);
+`optimised-opt` is the optimised version on the distroless Node image of
+the same Node release (24.22.3), run as a user with no rights.
+
+**Checked** from a container by `comparison/chain/conform.sh`, against R,
+300 requests: both images over h1, with and without gzip, conformant.
+
+```
+docker build -f comparison/node-express/Dockerfile --target optimised-opt -t node-express:optimised-opt .
+comparison/chain/conform.sh node-express:optimised-opt h1 gzip
+```
 
 ## `loadgen/` — the load generator
 
