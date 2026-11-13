@@ -210,3 +210,25 @@ func TestH3DenseSmallFramesCostAtMostFourBytesPerByte(t *testing.T) {
 		})
 	}
 }
+
+// Once a request is handed over, its stream leaves a.streams and is counted
+// nowhere; the entries of the frame scratch that parsed it hold views into
+// its buffer, and kept the whole of it reachable until the connection's
+// next parse, which a quiet connection may never make. Each pass clears its
+// entries once they are handled.
+func TestAHandedOverRequestLeavesNothingInTheFrameScratch(t *testing.T) {
+	a := newH3Assembler(Config{BodyDelivery: BodyWhole}.mustResolve())
+	data := appendH3Frame(h3Request("POST", "/up"), h3Data, make([]byte, 200<<10))
+	batch, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, data, true)})
+	if err != nil || len(failed) > 0 || batch.Len() != 1 {
+		t.Fatalf("batch %d, failed %v, err %v", batch.Len(), failed, err)
+	}
+	if _, open := a.streams[0]; open {
+		t.Fatal("the stream is still assembling")
+	}
+	for i, f := range a.frames[:cap(a.frames)] {
+		if f.Payload != nil {
+			t.Errorf("entry %d of the frame scratch holds %d bytes of a request handed over", i, cap(f.Payload))
+		}
+	}
+}

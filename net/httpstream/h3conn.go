@@ -1322,9 +1322,14 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 		a.frames = keepFrames(frames, prev)
 		for _, f := range frames {
 			if err := a.requestFrame(st, f); err != nil {
+				clear(frames)
 				return err
 			}
 		}
+		// The pass's own entries too: each Payload is a view into st.buf,
+		// which a request handed over leaves to the scratch alone, until a
+		// next parse on the connection that may never come.
+		clear(frames)
 	}
 	// What is left is the start of a frame that has not all arrived, kept at
 	// the front for the next datagram — unless its declaration already
