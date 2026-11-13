@@ -38,6 +38,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"strconv"
@@ -93,6 +94,25 @@ type Config struct {
 	MaxReplyBytes int
 }
 
+// String prints the configuration with the password hidden: %v and %+v on
+// a struct print every field, and a password that reaches a log is a
+// credential anyone reading the log holds.
+func (c Config) String() string {
+	type plain Config // no methods: printing it does not come back here
+	p := plain(c)
+	if p.Password != "" {
+		p.Password = "<redacted>"
+	}
+	return fmt.Sprintf("redis.Config%+v", p)
+}
+
+// GoString hides the password from %#v too.
+func (c Config) GoString() string { return c.String() }
+
+// LogValue hides it from slog: the JSON handler calls neither String nor
+// GoString, and marshals the exported fields.
+func (c Config) LogValue() slog.Value { return slog.StringValue(c.String()) }
+
 func (c Config) resolve() (Config, error) {
 	var errs []error
 	if c.Database < 0 {
@@ -146,6 +166,11 @@ func Connect(ctx context.Context, dial DialFunc, cfg Config) (*Conn, error) {
 	}
 	setup = append(setup, []string{"PING"})
 	replies, err := c.Pipeline(ctx, setup)
+	// The AUTH command stays in the write buffer once sent: a field fmt
+	// prints with the rest, and one a later, shorter batch leaves the end
+	// of in place.
+	clear(c.bw[:cap(c.bw)])
+	c.bw = c.bw[:0]
 	if err == nil {
 		for _, r := range replies {
 			if err = r.Err(); err != nil {
