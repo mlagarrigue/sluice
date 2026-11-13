@@ -1399,12 +1399,14 @@ func (c *Conn) sendPathChallengeLocked() {
 // sendOpts.waitCwnd requires of an ungated send. Every answer is
 // ack-eliciting and tracked until acknowledged, so a peer that challenged
 // without ever acknowledging grew the flight and the sent record by 1200
-// bytes and one packet per challenge. A refused answer is dropped rather
-// than queued — a stale response proves nothing, and the peer retries with
-// fresh data. Toward any other path the window of the path in use is not
-// the constraint, and a full one dropped the one answer a client probing
-// the server's preferred address waits for: those answers leave ungated,
-// maxOffPathAnswers of them while the path in use stays the same.
+// bytes and one packet per challenge. An answer the window cannot take
+// now is held, the last one only, and leaves when it can
+// (holdResponseLocked): §8.2.2 lets congestion control delay it, not drop
+// it. Toward any other path the window of the path in use is not the
+// constraint, and a full one dropped the one answer a client probing the
+// server's preferred address waits for: those answers leave ungated, while
+// fewer than maxOffPathAnswers off-path packets wait for their
+// acknowledgement (countOffPathAnswerLocked).
 func (c *Conn) answerPathChallengesLocked(responses []byte, now time.Time) {
 	c.flushControlLocked()
 	padTo := 1200
@@ -1417,11 +1419,17 @@ func (c *Conn) answerPathChallengesLocked(responses []byte, now time.Time) {
 	// exactly when that window is full: during a transfer, the moment a
 	// client probes — and a client that challenges once stays put when
 	// unanswered. Its bound is
-	// a count instead (offPathAnswers), with the §8 books of the off-path
-	// address on top.
+	// a count instead (countOffPathAnswerLocked), with the §8 books of the
+	// off-path address on top.
 	gated := onPath && !offSocket
 	if gated && !c.canSendLocked(padTo) {
 		c.holdResponseLocked(responses)
+		return
+	}
+	if !gated && !c.countOffPathAnswerLocked() {
+		// Refused before anything is spent on it: a fresh identifier
+		// (newPathCIDLocked), the oldest answered address's own, this end's
+		// probe marked as sent (preferredPathChallengeLocked).
 		return
 	}
 	// A challenge that reached a server's preferred-address socket is
@@ -1580,10 +1588,10 @@ func (c *Conn) preferredPathChallengeLocked(now time.Time) (frame, dcid []byte) 
 // links the two paths — so the answer takes a pooled identifier never used
 // on any path, remembered so that a repeat of the challenge, and the
 // migration that follows, use the same one. The section's exception is the
-// NAT rebinding: the challenge named the identifier the path in use
-// already does, and the current identifier may serve. A client probing the
-// server's preferred address answers under the identifier set aside for
-// it (§9.6.2). With none of these — the peer issued nothing beyond the
+// NAT rebinding: on the socket in use, the challenge named the identifier
+// the path in use already does, and the current identifier may serve. A
+// client probing the server's preferred address answers under the
+// identifier set aside for it (§9.6.2). With none of these — the peer issued nothing beyond the
 // identifiers already used — ok is false and the challenge goes
 // unanswered, the rule mayFollowLocked states: §8.2.2's MUST respond meets
 // §9.5's MUST NOT reuse, and §9.5 itself says such an endpoint "cannot
@@ -1595,8 +1603,8 @@ func (c *Conn) newPathCIDLocked() (cid []byte, ok bool) {
 	if c.pathProbe.target != nil && sameAddr(c.rxFrom, c.pathProbe.target) {
 		return c.pathProbe.targetCID, true
 	}
-	if c.rxLocalCIDSeq == c.pathLocalSeq {
-		return nil, true
+	if c.rxLocalCIDSeq == c.pathLocalSeq && (c.rxVia == nil || c.rxVia == c.pc) {
+		return nil, true // on the socket in use only, as mayFollowLocked grants it
 	}
 	if cid, ok := c.answeredCIDLocked(c.rxFrom, c.rxVia); ok {
 		for i := range c.peerCIDs {

@@ -3675,3 +3675,83 @@ func TestFallbackNeverReusesAnIdentifierSentToAnotherAddress(t *testing.T) {
 		})
 	}
 }
+
+// The same challenge, under the identifier of this end the path in use
+// names. newPathCIDLocked took that for the NAT rebinding of §9.5 and
+// answered "the identifier in use", whatever the socket, where
+// mayFollowLocked grants the exception on the socket in use only; on the
+// preferred-address socket the answer then had no identifier and nothing
+// left, although the pool held unused ones. Only a peer outside §9.5 sends
+// it, but the answer it is owed (§8.2.2) costs a fresh identifier.
+func TestAChallengeOnThePreferredSocketUnderTheIdentifierInUseIsAnswered(t *testing.T) {
+	c, main := newMigratableServer(t, "xr12")
+	pref := &recordingPC{addr: fakeFuzzAddr("xr12:preferred")}
+	tok := make([]byte, 16)
+	for _, s := range []struct {
+		seq uint64
+		cid string
+	}{{1, "cli-cid1"}, {2, "cli-cid2"}} {
+		if err := c.frames(spaceApplication, ncidFrame(s.seq, 0, []byte(s.cid), tok), time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rxFromNewAddress(c, fakeFuzzAddr("xr12:peerB"), 1200, true)
+	c.mu.Lock()
+	c.rxVia = net.PacketConn(pref)
+	c.rxLocalCIDSeq = c.pathLocalSeq // the identifier the path in use names
+	c.mu.Unlock()
+
+	data := []byte{9, 8, 7, 6, 5, 4, 3, 1}
+	challenge := append(varint.Append(nil, framePathChallenge), data...)
+	if err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if len(main.recorded())+len(pref.recorded()) == 0 {
+		t.Error("no datagram left either socket after a PATH_CHALLENGE on the preferred-address socket under the identifier in use, with unused peer identifiers in the pool (§8.2.2 MUST respond)")
+	}
+}
+
+// An answer toward another path that countOffPathAnswerLocked refuses — the
+// off-path packets already waiting for their acknowledgement at
+// maxOffPathAnswers — leaves nothing, and must spend nothing either: the
+// identifier was taken from the pool first (newPathCIDLocked), and with the
+// answered list full it made the oldest address give its own back, for an
+// answer that never left.
+func TestARefusedOffPathAnswerTakesNoIdentifier(t *testing.T) {
+	c, _ := newMigratableServer(t, "xr13")
+	tok := make([]byte, 16)
+	for _, s := range []struct {
+		seq uint64
+		cid string
+	}{{1, "cli-cid1"}, {2, "cli-cid2"}} {
+		if err := c.frames(spaceApplication, ncidFrame(s.seq, 0, []byte(s.cid), tok), time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rxFromNewAddress(c, fakeFuzzAddr("xr13:peerB"), 1200, true)
+	unused := func() int {
+		n := 0
+		for _, e := range c.peerCIDs {
+			if !e.used {
+				n++
+			}
+		}
+		return n
+	}
+	c.mu.Lock()
+	c.rxLocalCIDSeq = 1
+	c.spaces[spaceApplication].sent.offPathOut = maxOffPathAnswers
+	before, answered := unused(), len(c.answered)
+	c.mu.Unlock()
+
+	challenge := append(varint.Append(nil, framePathChallenge), 1, 2, 3, 4, 5, 6, 7, 8)
+	if err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	after, answeredAfter := unused(), len(c.answered)
+	c.mu.Unlock()
+	if after != before || answeredAfter != answered {
+		t.Errorf("a refused off-path answer: unused peer identifiers %d → %d, answered addresses %d → %d; want both unchanged", before, after, answered, answeredAfter)
+	}
+}
