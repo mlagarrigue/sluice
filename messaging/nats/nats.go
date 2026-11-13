@@ -230,12 +230,25 @@ func (c *Conn) next() (op, error) {
 }
 
 // bound sets the connection's deadline to ctx's, and to now once ctx ends,
-// until the returned stop.
-func (c *Conn) bound(ctx context.Context) func() bool {
+// until the returned stop, which waits for that second setting when it has
+// already begun.
+func (c *Conn) bound(ctx context.Context) func() {
 	nc := c.nc // not the field: a TLS upgrade replaces it after a stop
 	dl, _ := ctx.Deadline()
 	_ = nc.SetDeadline(dl)
-	return context.AfterFunc(ctx, func() { _ = nc.SetDeadline(time.Unix(1, 0)) })
+	done := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		_ = nc.SetDeadline(time.Unix(1, 0))
+		close(done)
+	})
+	return func() {
+		if !stop() {
+			// Started as the call ended: its deadline in the past must land
+			// before the next call sets its own, not after, where it would
+			// fail that call and break the connection.
+			<-done
+		}
+	}
 }
 
 // begin takes the connection for one call.
