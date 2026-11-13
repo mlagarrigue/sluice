@@ -369,6 +369,14 @@ type Listener struct {
 	// included (StatelessResetKey for resetTokenFor, TokenKey for Retry).
 	lcfg ListenerConfig
 
+	// admit serialises handleNewInitial from its reading of the bounds to
+	// bootstrapConn's counting of the connection it admits. The two are
+	// under two takings of mu with the connection built in between, and
+	// with a preferred address two read loops admit: both read the counts
+	// before either was counted, and each bound was passed by one. Taken
+	// before mu, never under it, and after the Initial decrypts — the key
+	// schedule, the costly part, stays on both loops at once.
+	admit sync.Mutex
 	// mu is taken after a connection's own mu, never before: a connection
 	// registers identifiers (addLocalCID) with its lock held, so nothing
 	// holding mu may lock a Conn — Close and closeQueued end connections
@@ -1120,6 +1128,8 @@ func (l *Listener) handleNewInitial(datagram []byte, from net.Addr, h longHeader
 		return
 	}
 
+	l.admit.Lock()
+	defer l.admit.Unlock()
 	l.mu.Lock()
 	pending := len(l.pendingConns)
 	ip := l.connKey(from)
