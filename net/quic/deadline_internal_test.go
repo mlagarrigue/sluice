@@ -56,11 +56,24 @@ func TestStreamDeadlineHeapFollowsEverySet(t *testing.T) {
 
 	_ = e.SetReadDeadline(at(1))
 	c.mu.Lock()
-	c.dropStreamDeadlinesLocked(e) // e leaves the table
-	checkDeadlines(t, c)
-	if len(c.deadlines) != 2 || !c.streamDeadline.Equal(at(4)) {
-		t.Fatalf("after e closed: %d entries, earliest %v; want d's two at %v", len(c.deadlines), c.streamDeadline, at(4))
+	// e ends both ways and leaves the table the way a stream does
+	// (maybeRemoveLocked), not by a call to the heap's own removal, which a
+	// path that forgot it would never make.
+	e.mu.Lock()
+	e.readEnded, e.endTaken = true, true
+	e.mu.Unlock()
+	e.sendClosed = true
+	c.maybeRemoveLocked(e)
+	if _, present := c.streams[e.id]; present {
+		c.mu.Unlock() // Cleanup's Close takes it
+		t.Fatal("precondition lost: e is still in the table")
 	}
+	if len(c.deadlines) != 2 || !c.streamDeadline.Equal(at(4)) {
+		n, top := len(c.deadlines), c.streamDeadline
+		c.mu.Unlock()
+		t.Fatalf("after e closed: %d entries, earliest %v; want d's two at %v", n, top, at(4))
+	}
+	checkDeadlines(t, c)
 	if next := c.expireStreamDeadlinesLocked(at(9)); !next.IsZero() || len(c.deadlines) != 0 || d.dlIdx != [2]int{} {
 		t.Fatalf("after everything matured: next %v, %d entries left", next, len(c.deadlines))
 	}
@@ -91,5 +104,33 @@ func TestADeadlineOnARetiredStreamTakesNoPlace(t *testing.T) {
 	c.mu.Unlock()
 	if n != 0 {
 		t.Errorf("%d deadline entries for a stream out of the table, want 0", n)
+	}
+}
+
+// A refused 0-RTT empties the stream table (rejectEarlyLocked), and the
+// deadlines of the streams it held leave the heap with them.
+func TestARefusedZeroRTTTakesItsStreamsDeadlinesOut(t *testing.T) {
+	c := newConn(&fuzzSink{addr: "reject-dl:self"}, fakeFuzzAddr("reject-dl:peer"), []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, true, DefaultConfig())
+	t.Cleanup(func() { _ = c.Close() })
+	c.mu.Lock()
+	ss := make([]*Stream, 3)
+	for i := range ss {
+		ss[i] = newStream(c, StreamID(4*i))
+		c.streams[ss[i].id] = ss[i]
+	}
+	c.mu.Unlock()
+	at := time.Now().Add(time.Hour)
+	for _, s := range ss {
+		_ = s.SetWriteDeadline(at)
+		_ = s.SetReadDeadline(at)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.deadlines) != 2*len(ss) {
+		t.Fatalf("precondition lost: %d deadlines in the heap, want %d", len(c.deadlines), 2*len(ss))
+	}
+	c.rejectEarlyLocked()
+	if len(c.deadlines) != 0 || !c.streamDeadline.IsZero() {
+		t.Errorf("after a refused 0-RTT: %d deadlines in the heap, earliest %v; want none", len(c.deadlines), c.streamDeadline)
 	}
 }
