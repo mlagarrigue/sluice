@@ -1947,6 +1947,11 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 		// migration, since what the old path carried proves nothing
 		// about the new one.
 		c.pmtu.acked += out.newlyAcked
+	} else if out.newlyAckedCount > 0 {
+		// Only packets sent off the path in use left the flight: the
+		// window did not move, but drain waits on every packet in flight,
+		// off-path ones included, and parks on cond until none is left.
+		c.cond.Broadcast()
 	}
 	c.settleProbeLocked(out)
 	return nil
