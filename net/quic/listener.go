@@ -129,7 +129,9 @@ type ListenerConfig struct {
 	// refusal, and one that comes back with a valid token is admitted over
 	// such handshakes, so a forged source cannot hold the address's slots
 	// against a client really there; only connections that proved the
-	// address are refused at the bound. Zero means no bound: a figure that
+	// address are refused at the bound, and a handshake admitted without a
+	// Retry that completes once the address is at its bound is closed with
+	// CONNECTION_REFUSED rather than handed out. Zero means no bound: a figure that
 	// is fair to a home connection starves a carrier-grade NAT, so the
 	// operator chooses. Negative is refused by [NewListener].
 	MaxConnsPerIP int
@@ -1501,8 +1503,16 @@ func (l *Listener) runHandshake(c *Conn, first []byte, from net.Addr, ecn uint8)
 		err := c.handshake(context.Background())
 		if err == nil {
 			l.mu.Lock()
-			l.provenLocked(c)
+			over := l.provenLocked(c)
 			l.mu.Unlock()
+			if over {
+				// Admitted without a Retry while the address had room among
+				// its proven connections, and proved it since: past the
+				// bound now, it is refused as an Initial at the bound is.
+				err = &transportError{code: transportConnectionRefused, err: fmt.Errorf(
+					"%w: the address has MaxConnsPerIP proven connections", ErrQUIC)}
+				c.abort(err)
+			}
 		}
 		hsDone <- err
 	}()
@@ -1593,17 +1603,22 @@ func (l *Listener) forget(c *Conn) {
 
 // provenLocked takes c off the unproven count of its address: its handshake
 // completed, which proves the address (RFC 9000 §8.1), or it is forgotten.
-// Idempotent. Callers hold l.mu.
-func (l *Listener) provenLocked(c *Conn) {
+// It reports whether the address then holds more proven connections than
+// MaxConnsPerIP: handshakes admitted without a Retry are not counted against
+// the bound until they prove the address, and connections admitted by token
+// over them can fill it meanwhile. Idempotent. Callers hold l.mu.
+func (l *Listener) provenLocked(c *Conn) (over bool) {
 	ip, ok := l.unvalidated[c]
 	if !ok {
-		return
+		return false
 	}
 	delete(l.unvalidated, c)
 	l.unvalidatedByIP[ip]--
 	if l.unvalidatedByIP[ip] <= 0 {
 		delete(l.unvalidatedByIP, ip)
 	}
+	_, counted := l.ipOf[c]
+	return counted && l.lcfg.MaxConnsPerIP > 0 && l.connsByIP[ip]-l.unvalidatedByIP[ip] > l.lcfg.MaxConnsPerIP
 }
 
 // addLocalCID and removeLocalCID are the [cidRegistrar] a Listener gives
