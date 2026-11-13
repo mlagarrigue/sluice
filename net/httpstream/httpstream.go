@@ -403,12 +403,16 @@ type Config struct {
 	// It is also the memory bound. A request buffer holds one request at its
 	// ceiling: MaxRequestLineBytes + MaxHeaderBytes + MaxBodyBytes plus four
 	// bytes of line endings, about 1 MiB at the defaults. An HTTP/1.1
-	// connection holds two at most: the one its requests are read from, for
-	// ReadTimeout at most, and what a pipelining client sent ahead while a
+	// connection holds three at most: the one its requests are read from,
+	// for ReadTimeout at most; what a pipelining client sent ahead while a
 	// response streamed or a handler watched its context's Done, kept for
-	// the requests that follow. So MaxConns times two request buffers is the
-	// most the request buffers occupy. A public socket sets it; a server
-	// without it is bounded by the peers' goodwill.
+	// the requests that follow; and, while a streamed request body grows its
+	// window into a new buffer, the old one, which the batch's requests
+	// still borrow their method, target and headers from — at the defaults
+	// a request line and headers, far under a buffer's ceiling. So MaxConns
+	// times three request buffers is the most the request buffers occupy. A
+	// public socket sets it; a server without it is bounded by the peers'
+	// goodwill.
 	MaxConns int
 
 	// MaxConnsPerIP is the same bound applied per remote address, so that
