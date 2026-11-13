@@ -443,20 +443,30 @@ func TestReassemblyStoragesDeliverTheSameBytes(t *testing.T) {
 	}
 }
 
-// The ring is let go once nothing is parked in it: the Application space's
-// is never released with its keys, and a reordering long resolved kept up
-// to 72 KiB per connection.
+// A ring grown past cryptoRingMin is let go once nothing is parked in it:
+// the Application space's is never released with its keys, and a
+// reordering long resolved kept up to 72 KiB per connection. A ring of
+// cryptoRingMin stays, so that the next reordering allocates nothing
+// (TestReorderedCryptoPairsKeepTheirRing).
 func TestReassemblyRingIsLetGoWhenEmpty(t *testing.T) {
 	var r reassembly
-	out, err := r.addThenTakeWithin(maxCryptoBuffer, 4, []byte("tail"), nil)
-	if err != nil || len(out) != 0 || r.ring == nil {
+	far := uint64(cryptoRingMin + 100)
+	out, err := r.addThenTakeWithin(maxCryptoBuffer, far, []byte("tail"), nil)
+	if err != nil || len(out) != 0 || len(r.ring) <= cryptoRingMin {
 		t.Fatalf("precondition lost: out %q, err %v, ring %d bytes", out, err, len(r.ring))
 	}
-	out, err = r.addThenTakeWithin(maxCryptoBuffer, 0, []byte("head"), out)
-	if err != nil || string(out) != "headtail" {
-		t.Fatalf("delivered %q, %v; want headtail", out, err)
+	out, err = r.addThenTakeWithin(maxCryptoBuffer, 0, make([]byte, far), out)
+	if err != nil || len(out) != int(far)+4 {
+		t.Fatalf("delivered %d bytes, %v; want %d", len(out), err, far+4)
 	}
 	if r.ring != nil || r.have != nil || r.held != 0 {
 		t.Errorf("nothing parked, and the ring is still %d bytes, the bitmap %d words", len(r.ring), len(r.have))
+	}
+
+	var small reassembly
+	out, _ = small.addThenTakeWithin(maxCryptoBuffer, 4, []byte("tail"), nil)
+	out, _ = small.addThenTakeWithin(maxCryptoBuffer, 0, []byte("head"), out)
+	if string(out) != "headtail" || len(small.ring) != cryptoRingMin || small.held != 0 {
+		t.Errorf("a small reordering: delivered %q, ring %d bytes, %d parked; want the ring of %d kept", out, len(small.ring), small.held, cryptoRingMin)
 	}
 }

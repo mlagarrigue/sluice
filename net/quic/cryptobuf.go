@@ -37,10 +37,16 @@ const cryptoRingMin = 4 << 10
 // reassembly's: bytes at or below the delivered prefix are dropped, and the
 // first bytes seen for an offset win.
 //
-// The ring allocates nothing until a byte arrives out of order, and is let
-// go once nothing is parked in it: the Application space's, never released
-// with its keys, kept up to 72 KiB per connection for a reordering the
-// handshake had long since resolved.
+// The ring allocates nothing until a byte arrives out of order. Once
+// nothing is parked in it, a ring grown past cryptoRingMin is let go — the
+// Application space's, never released with its keys, kept up to 72 KiB per
+// connection for a reordering the handshake had long since resolved — and
+// a ring of cryptoRingMin stays: let go too, the next out-of-order byte
+// allocated it again, and pairs of one-byte frames sent second byte first,
+// from the Initial space on, cost a whole ring per pair (some 460 bytes
+// allocated per byte received). Growing it again takes a byte parked past
+// cryptoRingMin, which only the bytes before it can empty: an allocation in
+// proportion to the bytes received.
 
 // addThenTakeWithin files CRYPTO bytes at an offset and appends whatever is
 // now contiguous with the delivered prefix to dst. Bytes reaching past
@@ -65,7 +71,7 @@ func (r *reassembly) addThenTakeWithin(window, off uint64, data, dst []byte) ([]
 	r.grow(end - r.consumed)
 	r.park(off, data)
 	dst = r.takeRing(dst)
-	if r.held == 0 {
+	if r.held == 0 && len(r.ring) > cryptoRingMin {
 		r.ring, r.have = nil, nil
 	}
 	return dst, nil

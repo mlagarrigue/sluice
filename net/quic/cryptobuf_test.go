@@ -3,6 +3,7 @@ package quic
 import (
 	"bytes"
 	"math/rand/v2"
+	"runtime"
 	"testing"
 )
 
@@ -184,5 +185,47 @@ func TestDiscardedSpaceReleasesItsCryptoBuffer(t *testing.T) {
 	c.discardSpaceLocked(spaceHandshake)
 	if sp.crypto.held != 0 || sp.crypto.ring != nil || sp.crypto.have != nil {
 		t.Errorf("after the discard: %d bytes parked, ring %d bytes, bitmap %d words; want none", sp.crypto.held, len(sp.crypto.ring), len(sp.crypto.have))
+	}
+}
+
+// Pairs of one-byte CRYPTO frames, the second byte sent before the first,
+// are what any peer can send from the Initial space on, before its address
+// is validated: each pair parks one byte and empties the ring again. Fed as
+// handleCrypto feeds them, they allocate no more per wire byte than the
+// same frames in order — the bound TestDensePacketsAllocateAtMostFourBytesPerByte
+// holds a dense packet to — rather than a whole ring per pair.
+func TestReorderedCryptoPairsKeepTheirRing(t *testing.T) {
+	const pairs = 2000
+	run := func(reordered bool) (alloc, wire uint64) {
+		var r reassembly
+		one := []byte{0x16}
+		var frame []byte
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		for i := range uint64(pairs) {
+			order := [2]uint64{2 * i, 2*i + 1}
+			if reordered {
+				order[0], order[1] = order[1], order[0]
+			}
+			for _, off := range order {
+				frame = append(appendFrame(frame[:0], frameCrypto, off, 1), one...)
+				wire += uint64(len(frame))
+				if _, err := r.addThenTakeWithin(maxCryptoBuffer, off, one, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		runtime.ReadMemStats(&after)
+		if r.consumed != 2*pairs || r.held != 0 {
+			t.Fatalf("consumed %d, held %d; want %d and 0", r.consumed, r.held, 2*pairs)
+		}
+		return after.TotalAlloc - before.TotalAlloc, wire
+	}
+	if alloc, wire := run(false); alloc > 4*wire {
+		t.Fatalf("control: in-order frames allocate %d bytes for %d wire bytes", alloc, wire)
+	}
+	if alloc, wire := run(true); alloc > 4*wire {
+		t.Errorf("reordered one-byte pairs allocate %d bytes for %d wire bytes, over 4 per byte", alloc, wire)
 	}
 }
