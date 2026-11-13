@@ -505,6 +505,68 @@ requests each under `-encoding gzip`: conformant; the trivial server
 against R parts at the first static request (`$.service`), as it should,
 and agrees on everything else it was asked.
 
+## `go-nethttp/` — the first contender
+
+Go's standard HTTP server and `pgx`, without grouping: the barest Go
+stack, on the same runtime as Sluice.go (study §2.5). A module of its own:
+it does not require the root module — a contender owes Sluice.go nothing —
+and takes `pgx` and `quic-go` at the versions of `sluice/`, so that the two
+measure the same driver and the same HTTP/3 stack.
+
+Two programs, so that the study counts their lines apart (§1.1):
+
+| Version | Serves | Refuses at startup |
+|---|---|---|
+| `standard/` | h1 and h2 over TLS, h1 in clear | h3 (`net/http` has none), any compression (`net/http` offers none): published "not supported" |
+| `optimised/` | h1, h2, h3; gzip at level 1 | deflate, br, zstd |
+
+What both share without being measured on it lives in `internal/contract`:
+the contract's environment, every contender's TLS, the static document,
+the write table, the metrics point (`batches` is `null`).
+
+Run it with the contract's variables (`pgx` reads the `PG*` itself):
+
+```
+STUDY_TLS_CERT=cert.pem STUDY_TLS_KEY=key.pem STUDY_PROTOCOL=h2 go run -C comparison/go-nethttp ./standard
+```
+
+**Deviations from the documentation (standard version)**, each because the
+contract demands it: the pool's size comes from `STUDY_DB_POOL`
+(`MaxConns`); the TLS is everyone's (TLS 1.3, ALPN naming the run's one
+protocol through `http.Server.Protocols`, no tickets); the static document,
+the error documents and the write table are R's; the metrics point; and
+R's `ReadHeaderTimeout` of 10 s, which the examples leave unset and a
+server in production cannot (§2.4: both versions must be acceptable in
+production). The
+rest follows the examples of `net/http` (patterns such as
+`GET /orders/{id}`, `json.NewEncoder(w)`) and of `pgx` (`pgxpool`,
+`QueryRow().Scan`, `pgx.CollectRows` with `RowToStructByName`). No access
+log (`net/http` has none); database errors go to the standard `log`.
+
+**Optimisations (optimised version)**, each with its source:
+
+1. HTTP/3 through `quic-go`'s `http3` — a different server, listed as
+   `httpstream` is for Sluice.go. Source: `quic-go`'s documentation of its
+   HTTP/3 server.
+2. Every answer encoded into a buffer from a `sync.Pool` and written in one
+   go with its `Content-Length`. Source: `http.ResponseWriter.Write` (past
+   a small buffer, an answer without a length goes chunked on HTTP/1.1) and
+   `sync.Pool`.
+3. gzip at level 1 by `compress/gzip`, the writer reset (`Writer.Reset`)
+   and reused. Source: the documentation of `Reset`.
+4. The list scanned by position into a slice sized to the limit, instead of
+   `RowToStructByName`, which matches columns to fields by name on every
+   row. Source: `Rows.Scan` in `pgx`'s documentation; what the matching
+   costs is read in `pgx`'s code, not measured here.
+
+Nothing else: no GC setting, no `GOMAXPROCS`, no cache. What each
+optimisation is worth is the campaign's to say.
+
+**Checked**: `TestConformsToR` builds both versions, R and the generator,
+and passes `loadgen -conformance` against R for each version and each
+protocol it serves, gzip included (CI's postgres job);
+`TestRefusesWhatItDoesNotServe` checks the refusals.
+
 ## `loadgen/` — the load generator
 
 The study's own client (§3 and §4 of its protocol; "home-made" is a

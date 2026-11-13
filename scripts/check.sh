@@ -68,6 +68,10 @@ nested() {
     # (go run ./internal/bench/cmd/pgfixtures), which is a campaign's
     # preparation and not a gate's.
     comparison/sluice) (cd "$1" && SLUICE_PG= GOWORK=off go test -race ./...) ;;
+    # The same for the first contender: its check against R wants the
+    # tables too, and builds R and the generator; what stays is the refusal
+    # of what it does not serve.
+    comparison/go-nethttp) (cd "$1" && SLUICE_PG= GOWORK=off go test ./...) ;;
     # The two tests skipped are the calibration the study demands of its own
     # machines; the list is the one in .github/workflows/ci.yml, and
     # TestCheckRunsTheNestedTestsCIRuns holds the two equal. Each name is
@@ -86,7 +90,7 @@ step vet go vet ./...
 step format format
 step lint golangci-lint run ./...
 step test go test -race -shuffle=on ./...
-for m in interop benchmarks comparison/sluice comparison/loadgen audit; do
+for m in interop benchmarks comparison/sluice comparison/loadgen comparison/go-nethttp audit; do
   check "nested $m" nested "$m"
 done
 check hygiene scripts/check-hygiene.sh

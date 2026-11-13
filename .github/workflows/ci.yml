@@ -254,6 +254,7 @@ jobs:
             benchmarks/go.sum
             comparison/sluice/go.sum
             comparison/loadgen/go.sum
+            comparison/go-nethttp/go.sum
       - name: Vet
         working-directory: benchmarks
         run: go vet ./...
@@ -286,6 +287,11 @@ jobs:
         run: |
           go vet ./... && go mod tidy -diff
           go test -skip '^TestCalibration$|^TestTrivialServesEveryScenario$' ./...
+      # The first contender (CMP-13): its check against R skips without
+      # SLUICE_PG and runs in the postgres job; its refusals run here.
+      - name: Vet, tidy and test (comparison/go-nethttp)
+        working-directory: comparison/go-nethttp
+        run: go vet ./... && go mod tidy -diff && go test ./...
 
   # The audit tool, a module of its own on the standard library alone: it
   # reads what a build, a host and their dependencies were set to and
@@ -665,6 +671,20 @@ jobs:
           go test -count=1 -v -run '^TestVariantsAnswerLikeR$' ./... | tee test.log
           if grep 'SLUICE_PG is not set' test.log || ! grep -- '--- PASS: TestVariantsAnswerLikeR ' test.log; then
             echo "::error::TestVariantsAnswerLikeR did not pass against PostgreSQL" >&2
+            exit 1
+          fi
+
+      # The first contender, both versions on every protocol they serve,
+      # against R through the generator's conformance check (CMP-09).
+      - name: Contender go-nethttp answers like R
+        shell: bash
+        working-directory: comparison/go-nethttp
+        env:
+          GOWORK: off
+        run: |
+          go test -count=1 -v -run '^TestConformsToR$' ./... | tee test.log
+          if grep 'SLUICE_PG is not set' test.log || ! grep -- '--- PASS: TestConformsToR ' test.log; then
+            echo "::error::TestConformsToR did not pass against PostgreSQL" >&2
             exit 1
           fi
 

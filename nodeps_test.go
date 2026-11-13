@@ -362,17 +362,17 @@ func TestSharedDependenciesAgreeAcrossModules(t *testing.T) {
 		},
 		{
 			"github.com/quic-go/quic-go", "interop",
-			[]string{"comparison/sluice", "comparison/loadgen"},
+			[]string{"comparison/sluice", "comparison/loadgen", "comparison/go-nethttp"},
 			"the study's client is the one the interop module pins (comparison/sluice/go.mod says so)",
 		},
 		{
 			"github.com/quic-go/qpack", "interop",
-			[]string{"comparison/sluice", "comparison/loadgen"},
+			[]string{"comparison/sluice", "comparison/loadgen", "comparison/go-nethttp"},
 			"it follows quic-go, which the study takes from the interop module",
 		},
 		{
 			"github.com/jackc/pgx/v5", "benchmarks",
-			[]string{"comparison/sluice"},
+			[]string{"comparison/sluice", "comparison/go-nethttp"},
 			"the two modules measure the same driver (comparison/sluice/go.mod says so)",
 		},
 	} {
