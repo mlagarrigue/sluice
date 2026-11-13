@@ -513,7 +513,8 @@ func (s *h2Conn) streamer() *h2Streamer {
 }
 
 // trimStreamers lets go of the streamers a burst left on the free list but
-// one, once the connection is idle: each holds its jobs' buffers.
+// one, once the connection is idle: each holds its jobs' buffers. The one
+// kept sheds what a large body grew.
 func (s *h2Conn) trimStreamers() {
 	s.streamersMu.Lock()
 	if len(s.streamers) > 1 {
@@ -523,7 +524,23 @@ func (s *h2Conn) trimStreamers() {
 		clear(s.streamers[1:])
 		s.streamers = s.streamers[:1]
 	}
+	if len(s.streamers) == 1 {
+		s.streamers[0].shed()
+	}
 	s.streamersMu.Unlock()
+}
+
+// shed drops the buffers of a streamer on the free list that are larger than
+// an ordinary batch needs, as [h2Writer.shed] does for the writer's: a burst
+// of large streamed bodies would otherwise stay on an idle connection, up to
+// the largest batch it carried. Its jobs are done and no pull runs, so
+// nothing else holds them; the next large body allocates again, once.
+func (st *h2Streamer) shed() {
+	for _, b := range []*[]byte{&st.buf, &st.tail, &st.jobs[0].data, &st.jobs[1].data, &st.scratch.block, &st.scratch.names} {
+		if cap(*b) > h2KeptOut {
+			*b = nil
+		}
+	}
 }
 
 // stopStreamers ends the goroutines of the streamers on the free list: the

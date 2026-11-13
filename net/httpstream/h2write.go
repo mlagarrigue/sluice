@@ -727,6 +727,9 @@ const (
 // where quic-go's Stream.Write copies, returns, and lets the send loop pack
 // what has accumulated into one packet.
 //
+// What such a job has already framed is let go as the job grows, so its
+// buffer stays within a few rounds' budget however long it stays queued.
+//
 // The outcome of a job that left the queue is on the job, as with deliver:
 // cur.err set means the stream is gone and the pull should stop.
 func (w *h2Writer) extend(id uint32, cur, spare *h2Job, data []byte) (*h2Job, error) {
@@ -737,6 +740,16 @@ func (w *h2Writer) extend(id uint32, cur, spare *h2Job, data []byte) (*h2Job, er
 			return cur, w.err
 		}
 		if len(cur.data)-cur.off < w.cfg.MaxWriteBufferBytes {
+			if cur.off >= w.cfg.MaxWriteBufferBytes {
+				// What is framed was copied into the round's frames (emit),
+				// so nothing reads it any more: the unframed rest moves to
+				// the front. A job a slow reader keeps queued would
+				// otherwise hold everything the producer yielded since it
+				// opened. Moved once per round's budget framed, it costs at
+				// most a copy per byte.
+				cur.data = cur.data[:copy(cur.data, cur.data[cur.off:])]
+				cur.off = 0
+			}
 			cur.data = append(cur.data, data...)
 			w.cond.Broadcast()
 			return cur, nil
