@@ -946,7 +946,7 @@ func (c *Conn) migrateLocked(to net.Addr, via net.PacketConn, now time.Time) {
 	// validation is not already underway", and the address answered this
 	// end's own challenge (candidateChallengeLocked).
 	prevalidated := newPC == c.pc && slices.ContainsFunc(c.answered, func(a answeredPath) bool {
-		return a.validated && a.full && sameAddr(a.from, to)
+		return a.validated && a.full && a.via == newPC && sameAddr(a.from, to)
 	})
 	if !unvalidated {
 		// The path being left is proven: it is what §9.3.2 falls back to
@@ -982,7 +982,7 @@ func (c *Conn) migrateLocked(to net.Addr, via net.PacketConn, now time.Time) {
 	c.amplSent = 0
 	c.resetPathStateLocked(now)
 	previous := c.currentPeerSeq
-	if cid, ok := c.answeredCIDLocked(to); !ok || !c.adoptPeerCIDLocked(cid) {
+	if cid, ok := c.answeredCIDLocked(to, newPC); !ok || !c.adoptPeerCIDLocked(cid) {
 		// One never used on any path; without one, mayFollowLocked let
 		// only a NAT rebinding through, and the current identifier serves.
 		if i := c.pickPeerCIDLocked(true); i >= 0 {
@@ -1024,7 +1024,7 @@ func (c *Conn) mayFollowLocked(to net.Addr, via net.PacketConn) bool {
 	if via == c.pc && c.rxLocalCIDSeq == c.pathLocalSeq {
 		return true
 	}
-	if cid, ok := c.answeredCIDLocked(to); ok && slices.ContainsFunc(c.peerCIDs, func(e peerCID) bool { return bytes.Equal(e.cid, cid) }) {
+	if cid, ok := c.answeredCIDLocked(to, via); ok && slices.ContainsFunc(c.peerCIDs, func(e peerCID) bool { return bytes.Equal(e.cid, cid) }) {
 		return true
 	}
 	return c.pickPeerCIDLocked(true) >= 0
@@ -1591,7 +1591,7 @@ func (c *Conn) newPathCIDLocked() (cid []byte, ok bool) {
 	if c.rxLocalCIDSeq == c.pathLocalSeq {
 		return nil, true
 	}
-	if cid, ok := c.answeredCIDLocked(c.rxFrom); ok {
+	if cid, ok := c.answeredCIDLocked(c.rxFrom, c.rxVia); ok {
 		for i := range c.peerCIDs {
 			if bytes.Equal(c.peerCIDs[i].cid, cid) {
 				return cid, true
@@ -1604,8 +1604,8 @@ func (c *Conn) newPathCIDLocked() (cid []byte, ok bool) {
 		c.reclaimAnsweredLocked()
 		return nil, false
 	}
-	c.answered = slices.DeleteFunc(c.answered, func(a answeredPath) bool { return sameAddr(a.from, c.rxFrom) })
-	c.rememberAnsweredLocked(answeredPath{from: c.rxFrom, cid: cid})
+	c.answered = slices.DeleteFunc(c.answered, c.answeredAtLocked(c.rxFrom, c.rxVia))
+	c.rememberAnsweredLocked(answeredPath{from: c.rxFrom, via: c.socketLocked(c.rxVia), cid: cid})
 	return cid, true
 }
 
@@ -1671,11 +1671,11 @@ func (c *Conn) candidateChallengeLocked() []byte {
 	if c.isClient || !c.handshakeConfirmed || c.rxFrom == nil {
 		return nil
 	}
-	i := slices.IndexFunc(c.answered, func(a answeredPath) bool { return sameAddr(a.from, c.rxFrom) })
+	i := slices.IndexFunc(c.answered, c.answeredAtLocked(c.rxFrom, c.rxVia))
 	if i < 0 {
 		// A NAT rebinding, answered under the identifier in use: no entry
 		// yet.
-		c.rememberAnsweredLocked(answeredPath{from: c.rxFrom})
+		c.rememberAnsweredLocked(answeredPath{from: c.rxFrom, via: c.socketLocked(c.rxVia)})
 		i = len(c.answered) - 1
 	}
 	a := &c.answered[i]
@@ -1705,7 +1705,12 @@ func (c *Conn) candidateChallengeLocked() []byte {
 // echoed, and full when it left in a datagram expanded to 1200 bytes —
 // what a move to the address then skips (migrateLocked).
 type answeredPath struct {
-	from      net.Addr
+	from net.Addr
+	// via is the local socket the address was answered from: §9.5 forbids
+	// one identifier "when sending from more than one local address", so
+	// a server with a preferred address answers the same client address
+	// from its two sockets under two identifiers.
+	via       net.PacketConn
 	cid       []byte
 	challenge [8]byte
 	// challenged, validated and full are the candidate's probe: sent,
@@ -1719,15 +1724,30 @@ type answeredPath struct {
 // identifier again, as long as the pool lasts.
 const maxAnsweredPaths = 4
 
-// answeredCIDLocked is the identifier a challenge from addr was answered
-// under, if addr is remembered. Callers hold mu.
-func (c *Conn) answeredCIDLocked(addr net.Addr) ([]byte, bool) {
-	for _, a := range c.answered {
-		if sameAddr(a.from, addr) {
-			return a.cid, true
-		}
+// answeredCIDLocked is the identifier a challenge from addr, arriving on the
+// socket via (nil meaning pc), was answered under, if that path is
+// remembered. Callers hold mu.
+func (c *Conn) answeredCIDLocked(addr net.Addr, via net.PacketConn) ([]byte, bool) {
+	if i := slices.IndexFunc(c.answered, c.answeredAtLocked(addr, via)); i >= 0 {
+		return c.answered[i].cid, true
 	}
 	return nil, false
+}
+
+// answeredAtLocked matches the answered path from addr on the socket via
+// (nil meaning pc). Callers hold mu.
+func (c *Conn) answeredAtLocked(addr net.Addr, via net.PacketConn) func(answeredPath) bool {
+	via = c.socketLocked(via)
+	return func(a answeredPath) bool { return a.via == via && sameAddr(a.from, addr) }
+}
+
+// socketLocked resolves a socket that may be nil — the datagram arrived on
+// pc, or the send leaves from it — to the socket itself. Callers hold mu.
+func (c *Conn) socketLocked(via net.PacketConn) net.PacketConn {
+	if via == nil {
+		return c.pc
+	}
+	return via
 }
 
 // startPathChallengeDataLocked arms the probe state around data without sending
