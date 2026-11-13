@@ -1104,7 +1104,7 @@ func TestCheckRunsTheNestedTestsCIRuns(t *testing.T) {
 // is no image and is skipped.
 func TestDockerImagesArePinned(t *testing.T) {
 	from := regexp.MustCompile(`(?m)^FROM\s+(\S+)(?:\s+AS\s+(\S+))?`)
-	for _, f := range []string{"interop/Dockerfile", ".devcontainer/Dockerfile", "comparison/sluice/Dockerfile", "comparison/loadgen/Dockerfile", "comparison/go-nethttp/Dockerfile", "comparison/node-express/Dockerfile", "comparison/rust-axum/Dockerfile", "comparison/python-fastapi/Dockerfile"} {
+	for _, f := range []string{"interop/Dockerfile", ".devcontainer/Dockerfile", "comparison/sluice/Dockerfile", "comparison/loadgen/Dockerfile", "comparison/go-nethttp/Dockerfile", "comparison/node-express/Dockerfile", "comparison/rust-axum/Dockerfile", "comparison/python-fastapi/Dockerfile", "comparison/java-spring/Dockerfile"} {
 		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
 		if err != nil {
 			t.Fatal(err)

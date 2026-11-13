@@ -1,8 +1,8 @@
-# Seven Dockerfiles build from this tree: the QUIC Interop Runner endpoint
+# Eight Dockerfiles build from this tree: the QUIC Interop Runner endpoint
 # (interop/Dockerfile), the comparison study's server and load generator
 # (comparison/sluice/Dockerfile, comparison/loadgen/Dockerfile), and the
 # contenders (comparison/go-nethttp/Dockerfile, comparison/rust-axum/Dockerfile,
-# comparison/python-fastapi/Dockerfile,
+# comparison/python-fastapi/Dockerfile, comparison/java-spring/Dockerfile,
 # comparison/node-express/Dockerfile). They need the sources of their
 # modules and the endpoint's entry script, nothing else. Everything is
 # excluded by default so that nothing outside those files can reach an
@@ -22,3 +22,5 @@ comparison/node-express/node_modules/**
 !comparison/rust-axum/src/**/*.rs
 !comparison/python-fastapi/requirements.txt
 !comparison/python-fastapi/**/*.py
+!comparison/java-spring/pom.xml
+!comparison/java-spring/src/**/*.java

@@ -29,3 +29,5 @@ node_modules/
 comparison/rust-axum/target/
 # Cargo's place for a second binary, which the bin/ rule above would hide.
 !comparison/rust-axum/src/bin/
+# The Java contender's build output.
+comparison/java-spring/target/

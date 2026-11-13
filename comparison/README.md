@@ -886,6 +886,87 @@ with and without gzip; the optimised over h1 and h2, with and without gzip —
 conformant. The optimised metrics point adds up its four workers under
 `--cpuset-cpus 0-3`.
 
+## `java-spring/` — the Java contender
+
+Spring Boot, without grouping: the Java contender of level 2 (study §2.5,
+§2.6). Java 25 in containers; Spring Boot 4.1.2 (Spring MVC, Tomcat 11,
+Jackson 3), `JdbcTemplate` on HikariCP, PostgreSQL's JDBC driver. The
+`pom.xml` is start.spring.io's (dependencies `web`, `jdbc`, `postgresql`):
+the versions are those the Spring Boot parent fixes; Dependabot opens
+security updates only.
+
+| Image | Serves | Refuses at startup |
+|---|---|---|
+| `standard-doc` | h1 and h2 over TLS, h1 in clear; gzip | h3 (Tomcat has none): published "not supported"; deflate, br, zstd |
+| `optimised-opt` | the same | the same |
+
+Both images run the same code, as for Rust: what the optimised one changes
+is the runtime's settings. What the versions share without being measured
+on it lives in `study.contract` (the contract's environment, the TLS, the
+static document, the write table, the metrics point); the contender's own
+code is `study.Orders`.
+
+**Standard version**: Spring's guide "Accessing Relational Data using JDBC"
+— SQL written by hand, a `RowMapper` per row, the tables made by a
+`CommandLineRunner` at startup — behind a `@RestController`, gzip through
+`server.compression.enabled`. Deviations from the documentation, each
+because the contract demands it: the contract's variables mapped onto
+Spring Boot's properties at startup (the JDBC driver does not read libpq's
+variables); everyone's TLS (TLS 1.3 only; ALPN naming h2 alone on an h2
+run, nothing on an h1 run; no tickets, through
+`jdk.tls.server.newSessionTicketCount=0`); R's documents and the metrics
+point. Two deviations from the contract, declared: Spring Boot exposes no
+gzip level, so Tomcat compresses at `java.util.zip`'s default (6) rather
+than 1, and not below 2 KB (Spring Boot's default threshold); on an h2 run,
+a client that negotiates nothing through ALPN is served HTTP/1.1.
+
+**The metrics point**: `cpu_seconds` is the process's CPU
+(`OperatingSystemMXBean`). The JVM publishes no figure for its collector's
+CPU: `gc.cpu_seconds` is the CPU of the collector's own threads, read from
+`/proc/self/task` (G1's and ZGC's); the work a collector makes the
+application's threads do — barriers, slow allocations — is in their CPU,
+not here. The pauses are JFR's `jdk.GCPhasePause` events, streamed in the
+process, one per stop-the-world pause of either collector, to the
+nanosecond; JFR hands them over about once a second, so a document lags the
+last second's pauses.
+
+**Optimisations (optimised image)**, each with its source:
+
+1. Virtual threads: `spring.threads.virtual.enabled=true` (Spring Boot
+   reference, "Virtual Threads"; study §2.6).
+2. ZGC (`-XX:+UseZGC`, generational, JDK 25's only mode): the JVM's
+   documented lever on the p99 (study §2.6).
+3. `-XX:MaxRAMPercentage=75` instead of the default 25 % (study §2.6, "the
+   default heap").
+4. A JRE cut by `jlink` to the modules the jar uses, on a distroless base
+   (`cc-debian13`), run as a user with no rights.
+5. The JDK's ahead-of-time cache (JEP 514, 515), made by a training run when
+   the image is built (`spring.context.exit=onRefresh`): startup from
+   1.72 s to 1.35 s, three runs each. Under ZGC, JDK 25 puts the loaded
+   classes in it but not their ahead-of-time linking, which goes through
+   the archived heap ZGC only takes from JDK 26.
+
+The pool's size, a candidate of §2.6, is fixed by the contract
+(`STUDY_DB_POOL`): no optimisation here.
+
+**The images**: `standard-doc` is the Spring Boot reference's
+"Dockerfiles" page (the jar extracted in layers onto the JRE image it
+names, Liberica with CDS, `java -jar`). The reference's other way,
+`spring-boot:build-image` (Buildpacks), cannot carry the certificate a
+local run needs without a binding: a declared deviation. A local
+certificate made when the image is built; a campaign names its own.
+
+**Checked** by `conform.sh`, 300 requests: both images over h1 and h2,
+with and without gzip — conformant; h3 refused at startup; h1 in clear
+served. No session ticket issued without `STUDY_TLS_RESUME=on`, one with it
+(the probe's control). Sizes: 549 MB for the documentation's image, 280 MB
+for the optimised one.
+
+```
+docker build -f comparison/java-spring/Dockerfile --target optimised-opt -t java-spring:optimised-opt .
+comparison/chain/conform.sh java-spring:optimised-opt h2 gzip
+```
+
 ## `loadgen/` — the load generator
 
 The study's own client (§3 and §4 of its protocol; "home-made" is a

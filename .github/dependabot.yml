@@ -68,11 +68,18 @@ updates:
     open-pull-requests-limit: 0
     commit-message:
       prefix: "build"
+  - package-ecosystem: maven
+    directories: ["/comparison/java-spring"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: "build"
   # The base images are pinned by digest (TestDockerImagesArePinned); these
   # entries move the digests: the interop endpoint's, the devcontainer's and
   # the study's images.
   - package-ecosystem: docker
-    directories: ["/interop", "/.devcontainer", "/comparison/sluice", "/comparison/loadgen", "/comparison/go-nethttp", "/comparison/node-express", "/comparison/rust-axum", "/comparison/python-fastapi"]
+    directories: ["/interop", "/.devcontainer", "/comparison/sluice", "/comparison/loadgen", "/comparison/go-nethttp", "/comparison/node-express", "/comparison/rust-axum", "/comparison/python-fastapi", "/comparison/java-spring"]
     schedule:
       interval: weekly
     # The golang image follows the floor go.mod declares; raising it is the
@@ -90,6 +97,14 @@ updates:
       # Python likewise (study §2.5: 3.14), whose releases move the minor.
       - dependency-name: python
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # Java likewise (study §2.5: Java 25, the LTS): the JDK and JRE images'
+      # tags carry the major.
+      - dependency-name: eclipse-temurin
+        update-types: ["version-update:semver-major"]
+      - dependency-name: bellsoft/liberica-openjre-debian
+        update-types: ["version-update:semver-major"]
+      - dependency-name: maven
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: "build"
   # The CodeQL sub-actions (init, autobuild, analyze) are one release pinned
