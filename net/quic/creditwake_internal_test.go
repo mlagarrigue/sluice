@@ -31,10 +31,35 @@ func waitCreditWaiters(t *testing.T, want int) {
 	t.Fatalf("%d writers parked on their stream's credit, want %d", got, want)
 }
 
+// unwoken clears the blocked marks of ss, which a writer sets again each
+// time it goes back to wait (sendBlockedFramesLocked), and returns a check
+// that fails the test if any of them was set since: a writer woken for
+// nothing parks again at once, and the count of parked writers alone
+// cannot tell it from one that never woke.
+func unwoken(t *testing.T, c *Conn, ss ...*Stream) func(event string) {
+	t.Helper()
+	c.mu.Lock()
+	for _, s := range ss {
+		s.sendQ.blockedSent = false
+	}
+	c.mu.Unlock()
+	return func(event string) {
+		t.Helper()
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for _, s := range ss {
+			if s.sendQ.blockedSent {
+				t.Fatalf("%s woke the writer of stream %d, which it gives no credit", event, s.id)
+			}
+		}
+	}
+}
+
 // A writer parked for its stream's credit is woken by what can give it
 // some — a MAX_STREAM_DATA for its stream — and by nothing meant for
 // another: an ACK, or another stream's MAX_STREAM_DATA, leaves it asleep.
-// The stack shows which: parked on the stream's own cond, or gone from it.
+// The stack shows which: parked on the stream's own cond, or gone from it;
+// the blocked mark shows a writer woken for nothing that parked again.
 func TestStreamCreditWakesItsOwnWriter(t *testing.T) {
 	c, ss := deadlineConn(t, 2)
 	a, b := ss[0], ss[1]
@@ -48,6 +73,7 @@ func TestStreamCreditWakesItsOwnWriter(t *testing.T) {
 	waitCreditWaiters(t, 2)
 
 	// An ACK for something the connection sent: nothing for either.
+	asleep := unwoken(t, c, a, b)
 	now := time.Now()
 	sp := &c.spaces[spaceInitial]
 	c.mu.Lock()
@@ -62,12 +88,16 @@ func TestStreamCreditWakesItsOwnWriter(t *testing.T) {
 	}
 	time.Sleep(20 * time.Millisecond)
 	waitCreditWaiters(t, 2)
+	asleep("an ACK")
 
 	// b's credit: b's writer leaves its wait, a's stays.
+	asleep = unwoken(t, c, a)
 	if err := c.handleMaxStreamData(Frame{Type: frameMaxStreamData, StreamID: b.id, value: 10}, spaceApplication); err != nil {
 		t.Fatal(err)
 	}
 	waitCreditWaiters(t, 1)
+	time.Sleep(20 * time.Millisecond)
+	asleep("b's MAX_STREAM_DATA")
 	c.mu.Lock()
 	aWaits := a.credit != nil && a.sendQ.avail() == 0
 	c.mu.Unlock()
