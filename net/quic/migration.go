@@ -1843,7 +1843,7 @@ func (c *Conn) sendOldPathChallengeLocked() {
 	payload = append(payload, c.pathProbe.oldData[:]...)
 	c.flushControlLocked()
 	_ = c.sendPacketLocked(spaceApplication, payload, sendOpts{
-		noRetrans: true, to: c.pathProbe.oldPeer, via: c.pathProbe.oldPC, dcid: dcid, padTo: 1200,
+		noRetrans: true, to: c.pathProbe.oldPeer, via: c.pathProbe.oldPC, dcid: dcid, padTo: 1200, leaving: true,
 	})
 }
 

@@ -123,6 +123,12 @@ type sendOpts struct {
 	// acknowledgement proves the size and its loss moves to the next try,
 	// but released from flight without a congestion event when lost.
 	pmtuProbe bool
+	// leaving marks a packet sent on the path this end is moving off: off
+	// the path for recovery (RFC 9000 §9.4), whatever its destination and
+	// socket say. The old path's first PATH_CHALLENGE needs it — it leaves
+	// before the peer address and the socket change, so neither tells it
+	// apart from the path in use (migrateLocked).
+	leaving bool
 	// close marks this end's own CONNECTION_CLOSE: the one packet
 	// writePacketLocked still writes once closeSent is set, and one that
 	// never coalesces — it must leave now.
@@ -1135,7 +1141,7 @@ func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad, lengthWidth int) ([
 	if p.opts.ackOnly {
 		return out, nil
 	}
-	offPath := !p.onPath || (p.opts.via != nil && p.opts.via != c.pc)
+	offPath := !p.onPath || p.opts.leaving || (p.opts.via != nil && p.opts.via != c.pc)
 	record := sentPacket{pn: p.pn, sentAt: p.now, size: size, ackEliciting: true, pmtuProbe: p.opts.pmtuProbe, ect0: p.ecn == ecnECT0, offPath: offPath}
 	c.delivery.onSent(&record, c.cc.bytesInFlight())
 	if p.opts.pmtuProbe {
