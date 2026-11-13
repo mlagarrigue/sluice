@@ -97,14 +97,32 @@ func TestPublishLineAndSubjects(t *testing.T) {
 	}
 }
 
+// Each refusal is seen alone: one wrong field on a valid configuration,
+// and the error names that field. A configuration wrong on every field
+// would let one refusal's text name the others ("Stream" is in "not a
+// JetStream name").
 func TestConsumerConfig(t *testing.T) {
-	_, err := (&Conn{}).Consume(ConsumerConfig{Stream: "a.b", Consumer: "", BatchMessages: -1, Expires: -1})
-	for _, f := range []string{"Stream", "Consumer", "BatchMessages", "Expires"} {
-		if err == nil || !strings.Contains(err.Error(), f) {
-			t.Errorf("err %v does not name %s", err, f)
+	valid := ConsumerConfig{Stream: "S", Consumer: "C"}
+	type fault struct {
+		field string
+		cfg   ConsumerConfig
+	}
+	faults := []fault{
+		{"BatchMessages", ConsumerConfig{Stream: "S", Consumer: "C", BatchMessages: -1}},
+		{"Expires", ConsumerConfig{Stream: "S", Consumer: "C", Expires: -1}},
+	}
+	for _, bad := range []string{"", "a b", "a\tb", "a\rb", "a\nb", "a.b", "a*", "a>"} {
+		faults = append(faults,
+			fault{"ConsumerConfig.Stream", ConsumerConfig{Stream: bad, Consumer: "C"}},
+			fault{"ConsumerConfig.Consumer", ConsumerConfig{Stream: "S", Consumer: bad}})
+	}
+	for _, f := range faults {
+		_, err := f.cfg.resolve()
+		if err == nil || !strings.Contains(err.Error(), f.field) {
+			t.Errorf("%+v: err %v, want one naming %s", f.cfg, err, f.field)
 		}
 	}
-	k, err := (&Conn{}).Consume(ConsumerConfig{Stream: "S", Consumer: "C"})
+	k, err := (&Conn{}).Consume(valid)
 	if err != nil || k.cfg.BatchMessages != DefaultBatchMessages || k.cfg.Expires.Seconds() != 1 {
 		t.Fatalf("defaults: %+v %v", k.cfg, err)
 	}

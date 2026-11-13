@@ -201,11 +201,20 @@ func TestParseEntries(t *testing.T) {
 	}
 }
 
+// Each refusal is seen alone: one wrong field on a valid configuration,
+// and the error names that field. A configuration wrong on every field
+// would let any refusal's "GroupConfig" name the Group field.
 func TestReadGroupConfig(t *testing.T) {
-	_, err := (&Conn{}).ReadGroup(GroupConfig{BatchEntries: -1, Block: -time.Second})
-	for _, field := range []string{"Stream", "Group", "Consumer", "BatchEntries", "Block"} {
+	for field, cfg := range map[string]GroupConfig{
+		"GroupConfig.Stream":   {Group: "g", Consumer: "c"},
+		"GroupConfig.Group":    {Stream: "s", Consumer: "c"},
+		"GroupConfig.Consumer": {Stream: "s", Group: "g"},
+		"BatchEntries":         {Stream: "s", Group: "g", Consumer: "c", BatchEntries: -1},
+		"Block":                {Stream: "s", Group: "g", Consumer: "c", Block: -time.Second},
+	} {
+		_, err := cfg.resolve()
 		if err == nil || !strings.Contains(err.Error(), field) {
-			t.Errorf("err %v does not name %s", err, field)
+			t.Errorf("%+v: err %v, want one naming %s", cfg, err, field)
 		}
 	}
 	g, err := (&Conn{}).ReadGroup(GroupConfig{Stream: "s", Group: "g", Consumer: "c"})
