@@ -21,7 +21,7 @@ RUN apk add --no-cache openssl && mkdir /cert && \
       -subj /CN=study-contender -addext subjectAltName=DNS:localhost,IP:127.0.0.1 \
       -keyout /cert/key.pem -out /cert/cert.pem && chmod 644 /cert/key.pem /cert/cert.pem
 
-FROM maven:3-eclipse-temurin-25@sha256:a4734fd7909a9c2beddcacfa1229bd308a349f000bea1ec8db3287c8a16ca2a3 AS jar
+FROM maven:3-eclipse-temurin-26@sha256:69a6c37f0a91fca2c9d0cdd684c9c0ea7b1bc00d4196749c24440b2e02ad163d AS jar
 WORKDIR /build
 COPY comparison/java-spring/pom.xml pom.xml
 RUN mvn -q -B dependency:go-offline
