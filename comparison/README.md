@@ -606,6 +606,25 @@ each protocol it serves, gzip included (CI's postgres job);
 fewer batches than keys in `batches`; `TestRefusesWhatItDoesNotServe`
 checks the refusals.
 
+**The images** (CMP-17, §1.4): two per contender, as for the code — the
+documentation's image for the standard version and its variant "with", an
+optimised image for the optimised version. `comparison/go-nethttp/Dockerfile`,
+built from the repository's root, has one target per program:
+`standard-doc`, `dataloader-doc`, `gin-standard-doc` (Docker's guide for
+Go: one stage on the Go image); `optimised-opt`, `gin-optimised-opt` (the
+program static, on `distroless`, run as a user with no rights). The bases
+are `comparison/sluice/Dockerfile`'s, pinned by digest. The certificate
+comes in as files (`STUDY_TLS_CERT`, `STUDY_TLS_KEY`): a mount, or
+`docker cp` before `docker start`.
+
+```
+docker build -f comparison/go-nethttp/Dockerfile --target optimised-opt -t go-nethttp:optimised .
+comparison/chain/image.sh comparison/go-nethttp/Dockerfile optimised-opt
+```
+
+`image.sh`'s `TOUCH` then names the program's file
+(`TOUCH=optimised/main.go`).
+
 ## `loadgen/` — the load generator
 
 The study's own client (§3 and §4 of its protocol; "home-made" is a
