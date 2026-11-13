@@ -613,9 +613,11 @@ built from the repository's root, has one target per program:
 `standard-doc`, `dataloader-doc`, `gin-standard-doc` (Docker's guide for
 Go: one stage on the Go image); `optimised-opt`, `gin-optimised-opt` (the
 program static, on `distroless`, run as a user with no rights). The bases
-are `comparison/sluice/Dockerfile`'s, pinned by digest. The certificate
+are `comparison/sluice/Dockerfile`'s, pinned by digest. The campaign's certificate
 comes in as files (`STUDY_TLS_CERT`, `STUDY_TLS_KEY`): a mount, or
-`docker cp` before `docker start`.
+`docker cp` before `docker start`; with none named, the contender makes an
+ECDSA P-256 one at startup, as the study's server does (the local chain
+relies on it).
 
 ```
 docker build -f comparison/go-nethttp/Dockerfile --target optimised-opt -t go-nethttp:optimised .

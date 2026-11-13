@@ -9,10 +9,16 @@ package contract
 import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"errors"
 	"fmt"
+	"math/big"
+	"net"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,7 +30,7 @@ type Config struct {
 	Listen      string // STUDY_LISTEN, host:port
 	Protocol    string // STUDY_PROTOCOL: h1, h2 or h3
 	TLS         bool   // STUDY_TLS, on unless "off"
-	Cert, Key   string // STUDY_TLS_CERT, STUDY_TLS_KEY: PEM files
+	Cert, Key   string // STUDY_TLS_CERT, STUDY_TLS_KEY: PEM files, or none
 	Resume      bool   // STUDY_TLS_RESUME: issue session tickets
 	Compression string // STUDY_COMPRESSION: off, gzip, deflate, br, zstd
 	Pool        int32  // STUDY_DB_POOL, the size of the PostgreSQL pool
@@ -70,8 +76,8 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		return c, fmt.Errorf("STUDY_COMPRESSION=%q: off, gzip, deflate, br or zstd", c.Compression)
 	case !c.TLS && c.Protocol != "h1":
 		return c, fmt.Errorf("STUDY_TLS=off with STUDY_PROTOCOL=%s: in clear the study runs HTTP/1.1 only", c.Protocol)
-	case c.TLS && (c.Cert == "" || c.Key == ""):
-		return c, errors.New("STUDY_TLS_CERT and STUDY_TLS_KEY name the certificate and its key")
+	case (c.Cert == "") != (c.Key == ""):
+		return c, errors.New("STUDY_TLS_CERT and STUDY_TLS_KEY go together: both, or neither for a certificate made at startup")
 	}
 	return c, nil
 }
@@ -114,12 +120,20 @@ func (c Config) ALPN() string {
 }
 
 // TLSConfig is the TLS of every contender (comparison/README.md, "The TLS
-// every contender runs under"): TLS 1.3 only, the certificate of the
-// campaign, ALPN naming the run's one protocol, tickets only when asked.
-// Enabling a protocol is not an optimisation (study §2.4): both versions
-// of a contender take this as it is.
+// every contender runs under"): TLS 1.3 only, the campaign's certificate or
+// an ECDSA P-256 one made at startup when none is named — as the study's
+// server does, which is what the local chain relies on —, ALPN naming the
+// run's one protocol, tickets only when asked. Enabling a protocol is not
+// an optimisation (study §2.4): both versions of a contender take this as
+// it is.
 func (c Config) TLSConfig() (*tls.Config, error) {
-	cert, err := tls.LoadX509KeyPair(c.Cert, c.Key)
+	var cert tls.Certificate
+	var err error
+	if c.Cert != "" {
+		cert, err = tls.LoadX509KeyPair(c.Cert, c.Key)
+	} else {
+		cert, err = selfSigned()
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -191,4 +205,33 @@ func StaticDoc() Static {
 		d.Padding = append(d.Padding, fmt.Sprintf("line-%02d-abcdefghijklmnop", i))
 	}
 	return d
+}
+
+// selfSigned is the study's server's certificate for a local run: ECDSA
+// P-256, a day long, for localhost and the loopback addresses; a client
+// that checks it cannot, and the generator runs with -no-verify.
+func selfSigned() (tls.Certificate, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "study-contender"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{"localhost"},
+		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, nil
 }
