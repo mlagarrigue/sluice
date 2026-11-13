@@ -72,6 +72,7 @@ func run(args []string, out *os.File) error {
 	container := fs.String("container", "", "a running container to read, by calling docker inspect (needs the tools source)")
 	containerJSON := fs.String("container-json", "", "a file holding docker inspect's output for one container")
 	kernelLog := fs.String("kernel-log", "", "a file holding the kernel's log (dmesg's output, or kern.log)")
+	appLog := fs.String("app-log", "", "a file holding the application's log during a load: what the server wrote to its standard error or its log file")
 	pgSettings := fs.String("pg-settings", "", "a file holding pg_settings as CSV: psql -X --csv -c 'SELECT name, setting, unit FROM pg_settings'")
 	pgHBA := fs.String("pg-hba", "", "a PostgreSQL server's pg_hba.conf")
 	pgLog := fs.String("pg-log", "", "a PostgreSQL server's log")
@@ -116,12 +117,12 @@ func run(args []string, out *os.File) error {
 		return nil
 	}
 	if *binary == "" && *module == "" && *dockerfile == "" && *root == "" &&
-		*container == "" && *containerJSON == "" && *kernelLog == "" &&
+		*container == "" && *containerJSON == "" && *kernelLog == "" && *appLog == "" &&
 		*pgSettings == "" && *pgHBA == "" && *pgLog == "" && *pgRoles == "" && *firewall == "" && *proxyConfig == "" && *appArgs == "" &&
 		*netstatBefore == "" && *netstatAfter == "" && *pgActivity == "" &&
 		*statBefore == "" && *statAfter == "" && *imds == "" &&
 		*metricsBefore == "" && *metricsAfter == "" && *ss == "" {
-		return errors.New("name what to read: -binary, -module, -dockerfile, -root, -container, -container-json, -kernel-log, -pg-settings, -pg-hba, -pg-log, -pg-roles, -pg-activity, -firewall, -proxy-config, -app-args, -imds, -ss, -metrics-before and -metrics-after, or -netstat-before and -netstat-after, or -stat-before and -stat-after")
+		return errors.New("name what to read: -binary, -module, -dockerfile, -root, -container, -container-json, -kernel-log, -app-log, -pg-settings, -pg-hba, -pg-log, -pg-roles, -pg-activity, -firewall, -proxy-config, -app-args, -imds, -ss, -metrics-before and -metrics-after, or -netstat-before and -netstat-after, or -stat-before and -stat-after")
 	}
 
 	sel := audit.Selection{}
@@ -139,7 +140,7 @@ func run(args []string, out *os.File) error {
 	}
 	target, err := audit.Open(audit.Spec{
 		Binary: *binary, Module: *module, Dockerfile: *dockerfile, Root: *root, PID: *pid,
-		Container: *container, ContainerJSON: *containerJSON, KernelLog: *kernelLog,
+		Container: *container, ContainerJSON: *containerJSON, KernelLog: *kernelLog, AppLog: *appLog,
 		PGSettings: *pgSettings, PGHBA: *pgHBA, PGLog: *pgLog, PGRoles: *pgRoles, PGActivity: *pgActivity,
 		Firewall: *firewall, ProxyConfig: *proxyConfig, ProxyVersion: *proxyVersion,
 		AppArgs: *appArgs, NetstatBefore: *netstatBefore, NetstatAfter: *netstatAfter,

@@ -60,6 +60,12 @@ type Target struct {
 	KernelLogPath string
 	KernelLog     string
 
+	// AppLog is the application's own log as text — what the server wrote
+	// to its standard error or its log file during the load — empty when
+	// none was given.
+	AppLogPath string
+	AppLog     string
+
 	// Postgres is what was read of a PostgreSQL server, nil when nothing
 	// of one was named.
 	Postgres *Postgres
@@ -130,6 +136,9 @@ type Spec struct {
 
 	// KernelLog is a file holding the kernel's log.
 	KernelLog string
+
+	// AppLog is a file holding the application's log.
+	AppLog string
 
 	// PGSettings is a file holding pg_settings as psql prints it in CSV,
 	// with at least the name, setting and unit columns. PGHBA is the text
@@ -247,6 +256,13 @@ func Open(s Spec) (*Target, error) {
 			return nil, err
 		}
 		t.KernelLogPath, t.KernelLog = s.KernelLog, string(b)
+	}
+	if s.AppLog != "" {
+		b, err := os.ReadFile(s.AppLog) //nolint:gosec // G304: the path is the caller's
+		if err != nil {
+			return nil, err
+		}
+		t.AppLogPath, t.AppLog = s.AppLog, string(b)
 	}
 	if s.PGSettings != "" || s.PGHBA != "" || s.PGLog != "" || s.PGRoles != "" || s.PGActivity != "" {
 		pg, err := openPostgres(s.PGSettings, s.PGHBA, s.PGLog, s.PGRoles, s.PGActivity)
