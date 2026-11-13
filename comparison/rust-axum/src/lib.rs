@@ -6,6 +6,7 @@
 //! where the study counts its lines (§1.1).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
@@ -155,15 +156,64 @@ pub fn static_doc() -> Static {
 }
 
 /// The metrics point. Rust has no collector: gc is null, and batches is
-/// null as this contender does not group. cpu_seconds is the process's
-/// user and system time from /proc/self/stat, in clock ticks of 1/100 s
-/// (USER_HZ, 100 on every Linux the study runs).
+/// null unless the server groups (the DataLoader variant). cpu_seconds is
+/// the process's user and system time from /proc/self/stat, in clock ticks
+/// of 1/100 s (USER_HZ, 100 on every Linux the study runs).
 #[derive(Serialize)]
 pub struct Metrics {
     runtime: &'static str,
     cpu_seconds: f64,
     gc: Option<()>,
-    batches: Option<()>,
+    batches: Option<Batches>,
+}
+
+/// The batches of unit reads and the keys in them, by size in powers of two
+/// (1, 2, 4…), as the study's server counts its own.
+#[derive(Serialize)]
+pub struct Batches {
+    count: u64,
+    keys: u64,
+    sizes: Vec<Bucket>,
+}
+
+#[derive(Serialize)]
+pub struct Bucket {
+    le: u64,
+    count: u64,
+}
+
+const BATCH_BUCKETS: usize = 21;
+static BATCH_COUNT: AtomicU64 = AtomicU64::new(0);
+static BATCH_KEYS: AtomicU64 = AtomicU64::new(0);
+static BATCH_SIZES: [AtomicU64; BATCH_BUCKETS] = [const { AtomicU64::new(0) }; BATCH_BUCKETS];
+
+/// Counts one batch of n keys.
+pub fn record_batch(n: usize) {
+    if n == 0 {
+        return;
+    }
+    BATCH_COUNT.fetch_add(1, Ordering::Relaxed);
+    BATCH_KEYS.fetch_add(n as u64, Ordering::Relaxed);
+    let bucket = (usize::BITS - (n - 1).leading_zeros()) as usize;
+    BATCH_SIZES[bucket.min(BATCH_BUCKETS - 1)].fetch_add(1, Ordering::Relaxed);
+}
+
+/// The document of a server that groups.
+pub fn metrics_grouped() -> Metrics {
+    let mut m = metrics();
+    m.batches = Some(Batches {
+        count: BATCH_COUNT.load(Ordering::Relaxed),
+        keys: BATCH_KEYS.load(Ordering::Relaxed),
+        sizes: BATCH_SIZES
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                let n = n.load(Ordering::Relaxed);
+                (n > 0).then_some(Bucket { le: 1 << i, count: n })
+            })
+            .collect(),
+    });
+    m
 }
 
 pub fn metrics() -> Metrics {

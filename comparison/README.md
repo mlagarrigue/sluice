@@ -793,6 +793,17 @@ made when the image is built, as for Node.
 **Checked** by `conform.sh`, 300 requests: both images over h1 and h2, with
 and without gzip, conformant. Sizes: 134 MB and 55 MB.
 
+**The variant "with" (`src/bin/dataloader.rs`, CMP-28)** is `src/main.rs`
+whose unit reads go through `async-graphql`'s `DataLoader`, used on its own,
+without GraphQL (§2.5: it takes a batch function and a Tokio spawner). One
+deviation from the documentation, declared (§2.1): `async-graphql` builds
+its loaders per GraphQL request; this one is shared by the process, without
+a cache (`DataLoader::new`). Default settings: a batch leaves 1 ms after its
+first key, at most 1 000 keys. `async-graphql` without its default features
+still brings its parser — about 44 crates, counted in the contender's
+dependencies (§1.1). Image `dataloader-doc`; conformant over h1 and h2;
+under 64 concurrent requests, 192 keys in 82 batches (up to 16 keys).
+
 ```
 docker build -f comparison/rust-axum/Dockerfile --target optimised-opt -t rust-axum:optimised-opt .
 comparison/chain/conform.sh rust-axum:optimised-opt h2 gzip

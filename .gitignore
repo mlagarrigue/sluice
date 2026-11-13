@@ -27,3 +27,5 @@ node_modules/
 
 # The Rust contender's build output.
 comparison/rust-axum/target/
+# Cargo's place for a second binary, which the bin/ rule above would hide.
+!comparison/rust-axum/src/bin/

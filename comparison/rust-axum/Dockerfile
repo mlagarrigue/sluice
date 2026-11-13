@@ -4,6 +4,9 @@
 #   docker build -f comparison/rust-axum/Dockerfile --target standard-doc -t rust-axum:standard .
 #   docker build -f comparison/rust-axum/Dockerfile --target optimised-opt -t rust-axum:optimised .
 #
+# dataloader-doc is the documentation's image running the variant "with" a
+# DataLoader (CMP-28).
+#
 # standard-doc is Docker's guide for Rust: the server built in the Rust
 # image with its caches mounted, run from a slim base as a user with no
 # rights. The guide's base is Alpine; this one is Debian slim, the C
@@ -24,7 +27,7 @@ WORKDIR /app
 COPY comparison/rust-axum/ ./
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
-    cargo build --locked --release && cp target/release/server /server
+    cargo build --locked --release && cp target/release/server target/release/dataloader /
 
 FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS standard-doc
 RUN useradd --system --no-create-home --uid 10001 appuser
@@ -34,6 +37,10 @@ ENV STUDY_LISTEN=0.0.0.0:8443 STUDY_TLS_CERT=/cert/cert.pem STUDY_TLS_KEY=/cert/
 USER appuser
 EXPOSE 8443
 CMD ["/usr/local/bin/server"]
+
+FROM standard-doc AS dataloader-doc
+COPY --from=build /dataloader /usr/local/bin/dataloader
+CMD ["/usr/local/bin/dataloader"]
 
 FROM build AS build-opt
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
