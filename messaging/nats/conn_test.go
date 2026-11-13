@@ -4,39 +4,56 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"io"
 	"net"
 	"strings"
 	"testing"
 	"time"
 )
 
-// scripted starts a server that sends info as its INFO line and reads what
-// the client sends until it closes; Connect then runs against it.
-func scripted(t *testing.T, info string, cfg Config) error {
+// scripted starts a server that sends info as its INFO line and keeps what
+// the client sends until it closes; Connect then runs against it. It returns
+// the bytes the server received and Connect's error.
+func scripted(t *testing.T, info string, cfg Config) ([]byte, error) {
 	t.Helper()
 	server, client := net.Pipe()
+	got := make(chan []byte, 1)
 	go func() {
 		defer server.Close()
 		_, _ = server.Write([]byte("INFO " + info + "\r\n"))
-		_, _ = server.Read(make([]byte, 4096))
+		b, _ := io.ReadAll(server)
+		got <- b
 	}()
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	c, err := Connect(ctx, func(context.Context) (net.Conn, error) { return client, nil }, cfg)
 	if err == nil {
 		_ = c.Close()
+	} else {
+		_ = client.Close()
 	}
-	return err
+	return <-got, err
 }
 
+// A TLS mismatch is refused before anything is sent (Config.TLS): not the
+// error's text alone, but nothing on the wire — a CONNECT written before the
+// refusal would carry the credentials in clear to a server without TLS, or
+// to anything between that struck tls_available from the INFO.
 func TestConnectRefusesTLSMismatch(t *testing.T) {
-	err := scripted(t, `{"headers":true,"tls_required":true}`, Config{})
-	if err == nil || !strings.Contains(err.Error(), "requires TLS") {
-		t.Errorf("a server requiring TLS, no Config.TLS: %v", err)
-	}
-	err = scripted(t, `{"headers":true}`, Config{TLS: &tls.Config{ServerName: "x"}})
-	if err == nil || !strings.Contains(err.Error(), "does not offer TLS") {
-		t.Errorf("Config.TLS, a server without TLS: %v", err)
+	for _, c := range []struct {
+		info, want string
+		cfg        Config
+	}{
+		{`{"headers":true,"tls_required":true}`, "requires TLS", Config{Password: "secret"}},
+		{`{"headers":true}`, "does not offer TLS", Config{Password: "secret", TLS: &tls.Config{ServerName: "x"}}},
+	} {
+		sent, err := scripted(t, c.info, c.cfg)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v", c.info, err)
+		}
+		if len(sent) != 0 {
+			t.Errorf("%s: the client sent %q before refusing", c.info, sent)
+		}
 	}
 }
 
