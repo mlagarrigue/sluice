@@ -65,6 +65,16 @@ type ReadConfig struct {
 	// with [ErrRecordTooLong], having read at most MaxRecordBytes plus one
 	// buffer (4 KiB) beyond the record's start. Zero means
 	// [DefaultMaxRecordBytes]; a negative value is refused.
+	//
+	// The lines [csv.Reader] skips before a record — empty lines, and
+	// comment lines when Comment is set — count in that record's bytes:
+	// more than MaxRecordBytes of them in a row end the read the same way.
+	//
+	// The bound is on input bytes, not on memory: each field of a record is
+	// a string of its own, sixteen bytes of header beside its bytes, so a
+	// record made of delimiters alone holds about sixteen times
+	// MaxRecordBytes once read, and a batch of BatchRecords such records as
+	// many times that.
 	MaxRecordBytes int
 	// Comma is the field delimiter. Zero means ','. It may not be '"', '\r',
 	// '\n', the Unicode replacement character, or Comment.
