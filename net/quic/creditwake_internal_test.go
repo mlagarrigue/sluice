@@ -111,3 +111,35 @@ func TestStreamCreditWakesItsOwnWriter(t *testing.T) {
 	_ = a.Reset(0)
 	waitCreditWaiters(t, 0)
 }
+
+// A writer whose stream has room and whose connection has no credit parks on
+// connCredit. A STOP_SENDING for its stream ends its writing side; the
+// writer must see that at once, not at the next MAX_DATA, deadline or ACK
+// that happens to wake connCredit.
+func TestStopSendingWakesAWriterParkedOnTheConnectionsCredit(t *testing.T) {
+	c, ss := deadlineConn(t, 1)
+	s := ss[0]
+	c.mu.Lock()
+	s.sendQ = sendQuota{max: 1 << 20}
+	c.connSend = sendQuota{max: 0}
+	c.mu.Unlock()
+	done := make(chan error, 1)
+	go func() { _, err := s.Write([]byte{1}); done <- err }()
+	time.Sleep(50 * time.Millisecond) // the writer reaches connCredit
+	select {
+	case err := <-done:
+		t.Fatalf("Write returned %v before the STOP_SENDING", err)
+	default:
+	}
+	if _, err := c.handleStopSending(Frame{Type: FrameStopSending, StreamID: s.id, value: 7}, spaceApplication); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Write returned nil after STOP_SENDING")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a writer parked on the connection's credit slept through STOP_SENDING")
+	}
+}

@@ -740,7 +740,9 @@ func (s *Stream) onStopSendingLocked(code uint64) (stopped bool) {
 	// Ungated (see sendOpts.waitCwnd), and at the read loop's best effort:
 	// see handleStopSending.
 	_ = s.conn.sendPacketLocked(spaceApplication, frame, sendOpts{})
-	s.conn.cond.Broadcast()
+	// The writer may be parked on its stream's credit or, its stream having
+	// room, on the connection's (connCredit), as Stream.Reset wakes it.
+	s.conn.wakeWindowLocked()
 	s.wakeCreditLocked()
 	return true
 }
