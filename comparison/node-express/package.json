@@ -11,9 +11,11 @@
     "optimised": "node optimised/server.js"
   },
   "dependencies": {
+    "@fastify/compress": "^9.3.0",
     "compression": "^1.8.2",
     "dataloader": "^2.2.3",
     "express": "^5.3.0",
+    "fastify": "^5.12.8",
     "pg": "^8.23.1"
   }
 }

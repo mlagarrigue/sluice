@@ -6,7 +6,9 @@
 #
 # dataloader-doc is the standard version's image running its variant "with" a
 # DataLoader (CMP-25); dataloader-optimised-opt is the optimised image running
-# the optimised variant "with", its batches on a time window.
+# the optimised variant "with", its batches on a time window. The Fastify
+# contender (CMP-26) shares the folder, the packages and the two images:
+# fastify-standard-doc and fastify-optimised-opt.
 #
 # standard-doc is Docker's guide for Node: the alpine Node image, the
 # packages installed by npm ci without the development ones, NODE_ENV set to
@@ -50,3 +52,9 @@ CMD ["optimised/server.js"]
 
 FROM optimised-opt AS dataloader-optimised-opt
 CMD ["dataloader-optimised/server.js"]
+
+FROM standard-doc AS fastify-standard-doc
+CMD ["node", "fastify-standard/server.js"]
+
+FROM optimised-opt AS fastify-optimised-opt
+CMD ["fastify-optimised/server.js"]

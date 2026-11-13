@@ -74,16 +74,21 @@ export function tlsOptions(c) {
     cert: readFileSync(c.cert),
     key: readFileSync(c.key),
     minVersion: 'TLSv1.3',
-    ALPNProtocols: ['http/1.1'],
+    ALPNProtocols: [alpn(c)],
     secureOptions: c.resume ? 0 : constants.SSL_OP_NO_TICKET,
   };
+}
+
+// alpn is the run's one protocol identifier.
+export function alpn(c) {
+  return { h1: 'http/1.1', h2: 'h2', h3: 'h3' }[c.protocol];
 }
 
 // summary is the startup line's account of the transport, worded as the
 // study's server words it.
 export function summary(c) {
   if (!c.tls) return 'clear text, HTTP/1.1';
-  return `TLS 1.3+, certificate ${c.cert}, ALPN http/1.1, resumption ${c.resume ? 'on' : 'off'}`;
+  return `TLS 1.3+, certificate ${c.cert}, ALPN ${alpn(c)}, resumption ${c.resume ? 'on' : 'off'}`;
 }
 
 // The write table, as the study's server creates it at startup: no read

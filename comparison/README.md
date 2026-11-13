@@ -719,6 +719,37 @@ docker build -f comparison/node-express/Dockerfile --target optimised-opt -t nod
 comparison/chain/conform.sh node-express:optimised-opt h1 gzip
 ```
 
+### Fastify (`fastify-standard/`, `fastify-optimised/`, CMP-26)
+
+The performance-minded Node framework (level 2), in the same folder: the
+same packages, the same `contract.js`, the same base images (targets
+`fastify-standard-doc`, `fastify-optimised-opt`). It serves **HTTP/2** over
+TLS, as its "HTTP2" page writes it (`http2: true`, `https`): h1 and h2
+served, h3 "not supported". Compression by `@fastify/compress`, gzip only,
+level 1.
+
+The standard version follows "Getting Started": `fastify({ logger: true })`,
+routes that return their document. **It writes two JSON lines per
+request** to stdout (received, completed): the guide's access log, published
+with its figures (§4). Deviations from the documentation: those of the
+Express standard version.
+
+Optimisations, each with its source:
+
+1. Response schemas, which Fastify compiles into a serializer ("Getting
+   Started", "Serialize your data"; "Recommendations", "Common Causes Of
+   Performance Degradation").
+2. No logger: Fastify's default, "for performance reasons" ("Logging");
+   errors still go to stderr.
+3. Several instances in the container, one per two usable CPUs, at most one
+   per pooled connection, by `node:cluster` ("Recommendations", "Capacity
+   Planning For Production": 2 vCPU per instance for the lowest latency);
+   the contract's pool split (§2.6).
+4. Named queries, as for Express.
+
+**Checked** by `conform.sh`, 300 requests: both images over h1 and h2, with
+and without gzip, conformant.
+
 ## `loadgen/` — the load generator
 
 The study's own client (§3 and §4 of its protocol; "home-made" is a
