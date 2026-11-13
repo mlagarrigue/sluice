@@ -809,6 +809,61 @@ docker build -f comparison/rust-axum/Dockerfile --target optimised-opt -t rust-a
 comparison/chain/conform.sh rust-axum:optimised-opt h2 gzip
 ```
 
+## `python-fastapi/` — the Python contender
+
+FastAPI, without grouping: the Python contender of level 2 (study §2.5,
+§2.6). Python runs in containers (`python:3.14-slim`, pinned: 3.14.10). The
+packages are frozen by `requirements.txt` (`pip freeze`); Dependabot opens
+security updates only, and keeps the image on 3.14.
+
+| Version | Serves | Refuses at startup |
+|---|---|---|
+| `standard/` | h1 over TLS, h1 in clear; gzip | h2 (uvicorn speaks no HTTP/2), h3: published "not supported"; deflate, br, zstd |
+| `optimised/` | h1 and h2 (Granian); gzip | h3; deflate, br, zstd |
+
+What both share without being measured on it lives in `contract.py`.
+
+**Standard version**: FastAPI's documentation with SQLModel — synchronous
+path operations (FastAPI runs them in its thread pool), a session per
+request through a dependency, `session.get` and `select`, psycopg, one
+process; `GZipMiddleware` at the contract's level 1. Served by uvicorn, the
+server `fastapi run` starts, but started from code (`uvicorn.Server`): the
+contract's TLS — TLS 1.3 only, ALPN naming the one protocol, no tickets
+(`num_tickets = 0`) — needs an `SSLContext` that neither command line
+takes. That is the deviation from the documentation, with the contract's
+own (the pool's size, R's documents, the metrics point).
+
+**The metrics point**: `gc.callbacks` reports each collection of CPython,
+its start and its stop; the time between is a pause of the collecting
+thread and the collector's CPU. `cpu_seconds` is `time.process_time()`.
+
+**Optimisations (optimised version)**, each with its source:
+
+1. `async` path operations on `asyncpg` instead of SQLModel on synchronous
+   psycopg (FastAPI, "Concurrency and async / await"; study §2.6).
+2. Granian as the server, which speaks HTTP/2, one worker per usable CPU and
+   at most one per pooled connection, the contract's pool split (study
+   §2.6, the optimised column). Granian does not set session tickets: TLS
+   resumption is Granian's default, declared.
+3. Answers returned as a `JSONResponse` directly, without a response model
+   to validate them against (FastAPI, "Return a Response Directly").
+
+Granian's workers are processes with no channel between them: each writes
+its share of the metrics point to a file every half second, and the one that
+answers adds them up — a document at most half a second old.
+
+**The images**: `standard-doc` is the "FastAPI in Containers" page (the
+official Python image, `pip install -r`, the code copied, one process);
+`optimised-opt` builds a virtual environment in a first stage and copies it
+onto the same base, run as a user with no rights — no distroless image
+carries Python 3.14. A local certificate made when the image is built
+(PKCS#8, which Granian requires).
+
+**Checked** by `conform.sh`, 300 requests: the standard version over h1,
+with and without gzip; the optimised over h1 and h2, with and without gzip —
+conformant. The optimised metrics point adds up its four workers under
+`--cpuset-cpus 0-3`.
+
 ## `loadgen/` — the load generator
 
 The study's own client (§3 and §4 of its protocol; "home-made" is a
