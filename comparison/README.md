@@ -813,7 +813,8 @@ comparison/chain/conform.sh rust-axum:optimised-opt h2 gzip
 
 ## `python-fastapi/` — the Python contender
 
-FastAPI, without grouping: the Python contender of level 2 (study §2.5,
+FastAPI, without grouping and, in its optimised version, with: the Python
+contender of level 2 (study §2.5,
 §2.6). Python runs in containers (`python:3.14-slim`, pinned: 3.14.10). The
 packages are frozen by `requirements.txt` (`pip freeze`); Dependabot opens
 security updates only, and keeps the image on 3.14.
@@ -822,8 +823,10 @@ security updates only, and keeps the image on 3.14.
 |---|---|---|
 | `standard/` | h1 over TLS, h1 in clear; gzip | h2 (uvicorn speaks no HTTP/2), h3: published "not supported"; deflate, br, zstd |
 | `optimised/` | h1 and h2 (Granian); gzip | h3; deflate, br, zstd |
+| `dataloader-optimised/` | as `optimised/`: the optimised variant "with" grouping | as `optimised/` |
 
-What both share without being measured on it lives in `contract.py`.
+What the versions share without being measured on it lives in
+`contract.py` (`batches` is `null`, except for the DataLoader variant).
 
 **Standard version**: FastAPI's documentation with SQLModel — synchronous
 path operations (FastAPI runs them in its thread pool), a session per
@@ -853,6 +856,23 @@ thread and the collector's CPU. `cpu_seconds` is `time.process_time()`.
 Granian's workers are processes with no channel between them: each writes
 its share of the metrics point to a file every half second, and the one that
 answers adds them up — a document at most half a second old.
+
+**The optimised variant "with" (`dataloader-optimised/`)** is the optimised
+version whose unit reads go through a DataLoader (`aiodataloader`, the port
+Graphene and Strawberry use): the keys loaded in one turn of the asyncio
+loop leave as one `= ANY($1)` query, each batch counted in `batches` and
+added up over the workers like the rest of the point. One deviation from the
+documentation, declared (§2.1): its README builds a loader per request,
+which with one key per HTTP request groups nothing; this one is shared by
+the worker, its cache off (`cache=False`). Default settings: a batch leaves
+on `loop.call_soon`, with no bound on its size. A key past `bigint` is
+refused ("bad key") before the loader, as R's 64-bit parse refuses it:
+`asyncpg` would refuse the whole array, and with it the other requests'
+keys in the batch. No standard variant "with": the standard version is
+synchronous, and `aiodataloader` is async only. Image
+`dataloader-optimised-opt`; conformant over h1 and h2, with and without
+gzip; under 64 concurrent requests over h1, four workers: 192 keys in 162
+batches (137 of one key, 21 of two, 4 of three or four).
 
 **The images**: `standard-doc` is the "FastAPI in Containers" page (the
 official Python image, `pip install -r`, the code copied, one process);

@@ -3,6 +3,7 @@
 #
 #   docker build -f comparison/python-fastapi/Dockerfile --target standard-doc -t python-fastapi:standard .
 #   docker build -f comparison/python-fastapi/Dockerfile --target optimised-opt -t python-fastapi:optimised .
+#   docker build -f comparison/python-fastapi/Dockerfile --target dataloader-optimised-opt -t python-fastapi:dataloader-optimised-opt .
 #
 # standard-doc is FastAPI's "FastAPI in Containers": the official Python
 # image, the requirements installed with pip, the code copied, one process;
@@ -44,3 +45,8 @@ ENV PATH=/venv/bin:$PATH STUDY_LISTEN=0.0.0.0:8443 STUDY_TLS_CERT=/cert/cert.pem
 USER appuser
 EXPOSE 8443
 CMD ["python", "optimised/main.py"]
+
+# The optimised variant "with" grouping (aiodataloader): the optimised image,
+# started on dataloader-optimised/main.py.
+FROM optimised-opt AS dataloader-optimised-opt
+CMD ["python", "dataloader-optimised/main.py"]

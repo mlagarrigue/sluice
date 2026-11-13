@@ -1,9 +1,10 @@
-"""What the Python contender's two versions share and neither is measured on.
+"""What the Python contender's versions share and none is measured on.
 
 The contract's environment (comparison/README.md, "The contract every
 contender honours"), the static document, the write table and the metrics
 point. The contender's own code -- routes, handlers, the driver -- lives in
-standard/ and optimised/, where the study counts its lines (section 1.1).
+standard/, optimised/ and dataloader-optimised/, where the study counts its
+lines (section 1.1).
 """
 
 import gc
@@ -137,17 +138,33 @@ def _on_gc(phase, info):
 gc.callbacks.append(_on_gc)
 
 
+# The DataLoader variant's batches: one per call of its batch function, by
+# size in powers of two (1, 2, 4...), as the study's server counts its own.
+_batches = {"count": 0, "keys": 0, "sizes": {}}
+
+
+def record_batch(n):
+    """Counts one batch of n keys."""
+    _batches["count"] += 1
+    _batches["keys"] += n
+    le = 1
+    while le < n:
+        le *= 2
+    _batches["sizes"][le] = _batches["sizes"].get(le, 0) + 1
+
+
 def metrics_part():
     """This process's share: cumulative since it started."""
     return {
         "cpu": time.process_time(),
         "gc": {"count": _gc["count"], "seconds": _gc["seconds"], "buckets": dict(_gc["buckets"])},
+        "batches": {"count": _batches["count"], "keys": _batches["keys"], "sizes": dict(_batches["sizes"])},
     }
 
 
-def metrics_doc(parts):
+def metrics_doc(parts, grouped=False):
     """The contract's document, summed over the processes (one, or the
-    workers of a server that forks); batches is null, as neither version
+    workers of a server that forks); batches is null unless the version
     groups."""
     cpu = count = seconds = 0
     buckets = {}
@@ -168,5 +185,21 @@ def metrics_doc(parts):
                 "buckets": [{"le": le, "count": n} for le, n in sorted(buckets.items())],
             },
         },
-        "batches": None,
+        "batches": _sum_batches(parts) if grouped else None,
+    }
+
+
+def _sum_batches(parts):
+    count = keys = 0
+    sizes = {}
+    for p in parts:
+        b = p["batches"]
+        count += b["count"]
+        keys += b["keys"]
+        for le, n in b["sizes"].items():
+            sizes[int(le)] = sizes.get(int(le), 0) + n
+    return {
+        "count": count,
+        "keys": keys,
+        "sizes": [{"le": le, "count": n} for le, n in sorted(sizes.items())],
     }
