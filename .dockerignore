@@ -1,7 +1,7 @@
-# Five Dockerfiles build from this tree: the QUIC Interop Runner endpoint
+# Six Dockerfiles build from this tree: the QUIC Interop Runner endpoint
 # (interop/Dockerfile), the comparison study's server and load generator
 # (comparison/sluice/Dockerfile, comparison/loadgen/Dockerfile), and the
-# contenders (comparison/go-nethttp/Dockerfile,
+# contenders (comparison/go-nethttp/Dockerfile, comparison/rust-axum/Dockerfile,
 # comparison/node-express/Dockerfile). They need the sources of their
 # modules and the endpoint's entry script, nothing else. Everything is
 # excluded by default so that nothing outside those files can reach an
@@ -16,3 +16,6 @@
 !comparison/node-express/package-lock.json
 !comparison/node-express/**/*.js
 comparison/node-express/node_modules/**
+!comparison/rust-axum/Cargo.toml
+!comparison/rust-axum/Cargo.lock
+!comparison/rust-axum/src/**/*.rs

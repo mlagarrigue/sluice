@@ -45,10 +45,17 @@ updates:
     open-pull-requests-limit: 0
     commit-message:
       prefix: "build"
-  # The Node contender's packages, frozen for the same reason: security
-  # updates only.
+  # The Node and Rust contenders' packages, frozen for the same reason:
+  # security updates only.
   - package-ecosystem: npm
     directories: ["/comparison/node-express"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: "build"
+  - package-ecosystem: cargo
+    directories: ["/comparison/rust-axum"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -58,7 +65,7 @@ updates:
   # entries move the digests: the interop endpoint's, the devcontainer's and
   # the study's images.
   - package-ecosystem: docker
-    directories: ["/interop", "/.devcontainer", "/comparison/sluice", "/comparison/loadgen", "/comparison/go-nethttp", "/comparison/node-express"]
+    directories: ["/interop", "/.devcontainer", "/comparison/sluice", "/comparison/loadgen", "/comparison/go-nethttp", "/comparison/node-express", "/comparison/rust-axum"]
     schedule:
       interval: weekly
     # The golang image follows the floor go.mod declares; raising it is the

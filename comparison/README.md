@@ -750,6 +750,54 @@ Optimisations, each with its source:
 **Checked** by `conform.sh`, 300 requests: both images over h1 and h2, with
 and without gzip, conformant.
 
+## `rust-axum/` — the Rust contender
+
+axum and `sqlx`, without grouping: the Rust contender of level 1 (study
+§2.5). Rust is not in the devcontainer; everything is built in containers
+(`rust:1-slim`, pinned: Rust 1.100 on 2026-11-13). The crates are frozen by
+`Cargo.lock`; Dependabot opens security updates only.
+
+One server, `src/main.rs`, written as the examples of axum and `sqlx` teach
+it: a `Router` of functions returning `Json`, a `PgPool`, one query per call
+(`query_as` into a `FromRow` struct), TLS by `axum-server` and `rustls`,
+HTTP/1.1 or HTTP/2 by ALPN, compression by `tower-http`'s
+`CompressionLayer`, gzip only at the contract's level 1. h3 "not supported"
+(`axum-server` serves none). What the server shares with every contender
+without being measured on it lives in `src/lib.rs` (the contract).
+
+**Deviations from the documentation**: those the contract demands — the
+pool's size (`STUDY_DB_POOL`), everyone's TLS (TLS 1.3 only, ALPN naming the
+run's one protocol, no tickets: `send_tls13_tickets = 0`), gzip at level 1,
+R's documents, the metrics point. `rustls` enters the graph to set the ALPN,
+which `axum-server` does not set on its own.
+
+**The metrics point**: Rust has no garbage collector, `gc` is `null`;
+`cpu_seconds` is the process's user and system time read from
+`/proc/self/stat`, in ticks of 1/100 s.
+
+**Optimisation (optimised version)**, one, with its source: the same code
+built under the `optimised` profile — link-time optimisation across every
+crate (`lto = "fat"`) and one code generation unit (`codegen-units = 1`).
+Source: The Rust Performance Book, "Build Configuration". No
+`panic = "abort"`: a handler that panics would stop the server, where tokio
+stops only the task (§2.4: acceptable in production). No other allocator:
+that would be one more crate.
+
+**The images**: `standard-doc` is Docker's guide for Rust (built in the Rust
+image with its caches mounted, run from a slim base as a user with no
+rights), on Debian slim instead of the guide's Alpine — the C library the
+Rust image builds against; `optimised-opt` is the `optimised` profile on
+distroless `cc-debian13`, as a user with no rights. A local certificate
+made when the image is built, as for Node.
+
+**Checked** by `conform.sh`, 300 requests: both images over h1 and h2, with
+and without gzip, conformant. Sizes: 134 MB and 55 MB.
+
+```
+docker build -f comparison/rust-axum/Dockerfile --target optimised-opt -t rust-axum:optimised-opt .
+comparison/chain/conform.sh rust-axum:optimised-opt h2 gzip
+```
+
 ## `loadgen/` — the load generator
 
 The study's own client (§3 and §4 of its protocol; "home-made" is a

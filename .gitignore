@@ -24,3 +24,6 @@ cmd/sluicegen/sluicegen
 # The Node contender's installed packages: package-lock.json pins them and the
 # images install them with npm ci.
 node_modules/
+
+# The Rust contender's build output.
+comparison/rust-axum/target/
