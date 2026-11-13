@@ -156,7 +156,7 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 	}
 	sp := &c.spaces[space]
 	waited := !c.canSealLocked(sp, space)
-	if err := c.awaitSealLocked(sp, space); err != nil {
+	if err := c.awaitSealLocked(sp, space, opts.deadlineLocked()); err != nil {
 		return err
 	}
 	if waited && opts.recheck != nil {
@@ -213,7 +213,7 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 			if c.draining || c.closeSent {
 				return errClosed
 			}
-			if err := c.awaitSealLocked(sp, space); err != nil {
+			if err := c.awaitSealLocked(sp, space, opts.deadlineLocked()); err != nil {
 				return err
 			}
 			if opts.recheck != nil {
@@ -2227,12 +2227,19 @@ func (c *Conn) canSealLocked(sp *space, space int) bool {
 // 0-RTT the server refused: crypto/tls reports the refusal just before the
 // 1-RTT keys, the 0-RTT keys are gone, and a stream opened in between waits
 // the instant until the 1-RTT ones are in. Callers hold mu.
-func (c *Conn) awaitSealLocked(sp *space, space int) error {
+//
+// The instant is the server's to stretch: one that withholds its Finished
+// holds the keys until the handshake timeout. deadline bounds the wait as it
+// bounds the wait for the window (sendOpts.deadline; zero: none), and the
+// timer loop's broadcast at a stream's write deadline wakes this cond too.
+func (c *Conn) awaitSealLocked(sp *space, space int, deadline time.Time) error {
 	for !c.canSealLocked(sp, space) {
 		if sp.discarded || space != spaceApplication || !c.earlyRejected || c.draining || c.closeSent || c.closeErr != nil {
 			return fmt.Errorf("%w: nothing to seal packets with at level %d", ErrQUIC, space)
 		}
-		c.cond.Wait()
+		if err := c.waitOnLocked(&c.cond, deadline); err != nil {
+			return err
+		}
 	}
 	return nil
 }
