@@ -36,7 +36,9 @@ jobs:
           govulncheck ./...
 
   # The nested modules never ship, but they run on this repository's
-  # machines and pin quic-go, pgx, gin and the x/ modules they bring. The
+  # machines and pin quic-go, pgx, gin, dataloadgen and the x/ modules they
+  # bring (comparison/go-nethttp does not replace the root, so its x/ modules
+  # are the ones its own requirements pull, not the root's). The
   # audit module requires nothing at all, and is here for the standard
   # library it links like any other: a module with no dependency still has
   # the one every Go program has.
@@ -48,7 +50,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [interop, benchmarks, comparison/sluice, comparison/loadgen, audit]
+        module: [interop, benchmarks, comparison/sluice, comparison/loadgen, comparison/go-nethttp, audit]
     env:
       GOWORK: off
     steps:
