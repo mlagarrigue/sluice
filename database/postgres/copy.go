@@ -87,12 +87,31 @@ func AppendTupleHeader(dst []byte, fields int) []byte {
 
 // AppendField appends one field: its length, then its bytes.
 //
-// The length is not checked here. A field leaves inside one CopyData, which
-// pgwire refuses past MaxOutgoingMessage (1 GiB): a length the conversion
-// would wrap, or that the server would read as negative, cannot reach it.
+// A field longer than the four-byte length can say — past 2 GiB, beyond what
+// PostgreSQL holds in one value anyway — is written with the length -2,
+// which the server refuses ("invalid field size") and which ends the COPY.
+// Its true length, wrapped, would have had the server read the field's tail
+// as the rows after it: a batch is cut into as many CopyData messages as it
+// needs, so the bound of one message no longer stops such a field.
 func AppendField(dst, v []byte) []byte {
-	dst = binary.BigEndian.AppendUint32(dst, uint32(len(v))) //nolint:gosec // G115: past 1 GiB the CopyData carrying it is refused
+	dst = binary.BigEndian.AppendUint32(dst, fieldLength(len(v)))
 	return append(dst, v...)
+}
+
+// maxFieldBytes is the longest field whose length the four-byte header
+// holds; a variable so that a test can lower it.
+var maxFieldBytes = 1<<31 - 1
+
+// refusedFieldLength is the length a field past maxFieldBytes is written
+// with: negative, and not the -1 of NULL, so the server refuses the COPY.
+const refusedFieldLength = ^uint32(1)
+
+// fieldLength is the four-byte length of an n-byte field.
+func fieldLength(n int) uint32 {
+	if n > maxFieldBytes {
+		return refusedFieldLength
+	}
+	return uint32(n) //nolint:gosec // G115: at most maxFieldBytes, checked above
 }
 
 // AppendFieldNull appends a NULL field, which is a length of -1 and no bytes.
@@ -122,10 +141,11 @@ func BeginField(dst []byte) (out []byte, at int) {
 	return binary.BigEndian.AppendUint32(dst, 0), at
 }
 
-// EndField writes the length of the field [BeginField] opened at.
+// EndField writes the length of the field [BeginField] opened at. A field
+// too long for it is written as [AppendField] writes one: a length the
+// server refuses.
 func EndField(dst []byte, at int) []byte {
-	n := len(dst) - at - 4
-	binary.BigEndian.PutUint32(dst[at:at+4], uint32(n)) //nolint:gosec // G115: past 1 GiB the CopyData carrying it is refused (AppendField)
+	binary.BigEndian.PutUint32(dst[at:at+4], fieldLength(len(dst)-at-4))
 	return dst
 }
 
