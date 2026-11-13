@@ -2235,8 +2235,12 @@ func TestIntegrationFetchAllEarlyStopCancelsTheRest(t *testing.T) {
 	cancelled := stop("SELECT i FROM generate_series(1, 10000000) AS i")
 	drained := stop("WITH s AS (SELECT i FROM generate_series(1, 10000000) AS i) SELECT i FROM s")
 	t.Logf("early stop of 10M rows: cancelled in %v, drained in %v", cancelled, drained)
-	if cancelled > 200*time.Millisecond || cancelled*4 > drained {
-		t.Errorf("the cancelled stop took %v, want under 200ms and under a quarter of the %v drain", cancelled, drained)
+	// Against the drain of the same rows, not a wall-clock figure: a loaded
+	// runner took 238ms to cancel and 1.8s to drain (2026-11-13), and an
+	// absolute 200ms failed the job though the cancellation had done its
+	// work.
+	if cancelled*4 > drained {
+		t.Errorf("the cancelled stop took %v, want under a quarter of the %v drain", cancelled, drained)
 	}
 
 	var got int64
