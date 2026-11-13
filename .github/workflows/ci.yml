@@ -661,14 +661,17 @@ jobs:
       # does, on these tables. The benchmarks-module job runs the same test
       # without a server, where it skips: a variant broken on one transport
       # (a POST body the httpstream h2 adapter never read) stayed green
-      # there. Without -race: the server's packages are raced in the test job.
+      # there. Under -race on one version (18): the library's packages are
+      # raced in the test job, but the study's adapters only here, where 64
+      # concurrent requests reach them; the other versions spare the time.
       - name: Study's variants answer like R
         shell: bash
         working-directory: comparison/sluice
         env:
           GOWORK: off
+          RACE: ${{ matrix.postgres == '18' && '-race' || '' }}
         run: |
-          go test -count=1 -v -run '^TestVariantsAnswerLikeR$' ./... | tee test.log
+          go test $RACE -count=1 -v -run '^TestVariantsAnswerLikeR$' ./... | tee test.log
           if grep 'SLUICE_PG is not set' test.log || ! grep -- '--- PASS: TestVariantsAnswerLikeR ' test.log; then
             echo "::error::TestVariantsAnswerLikeR did not pass against PostgreSQL" >&2
             exit 1
