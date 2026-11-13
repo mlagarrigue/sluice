@@ -688,6 +688,9 @@ func (c *Conn) holdClosing(buf []byte) {
 			if errors.Is(err, os.ErrDeadlineExceeded) {
 				continue
 			}
+			if !errors.Is(err, net.ErrClosed) {
+				c.noteReadError() // Stats.ReadErrors counts every read of the socket, this one too
+			}
 			return
 		}
 		c.answerClosing(buf[:n], from)
