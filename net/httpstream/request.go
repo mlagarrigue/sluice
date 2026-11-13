@@ -223,7 +223,7 @@ func checkRequestTrailer(h Header, protocolErr error) error {
 		return fmt.Errorf("%w: an empty trailer name", protocolErr)
 	}
 	if h.Name[0] == ':' {
-		return fmt.Errorf("%w: the pseudo-header %s in a trailer section", protocolErr, h.Name)
+		return fmt.Errorf("%w: the pseudo-header %s in a trailer section", protocolErr, cite(h.Name))
 	}
 	if !isToken(h.Name) || !lowerASCII(h.Name) {
 		return fmt.Errorf("%w: %s is not a trailer field name", protocolErr, cite(h.Name))
@@ -276,7 +276,7 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 		}
 		if h.Name[0] == ':' {
 			if seenRegular {
-				return req, 0, fmt.Errorf("%w: pseudo-header %s after a regular field", protocolErr, h.Name)
+				return req, 0, fmt.Errorf("%w: pseudo-header %s after a regular field", protocolErr, cite(h.Name))
 			}
 			var dst *[]byte
 			switch string(h.Name) {
@@ -289,7 +289,7 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 			case ":authority":
 				dst = &authority
 			default:
-				return req, 0, fmt.Errorf("%w: unknown pseudo-header %s", protocolErr, h.Name)
+				return req, 0, fmt.Errorf("%w: unknown pseudo-header %s", protocolErr, cite(h.Name))
 			}
 			if *dst != nil {
 				return req, 0, fmt.Errorf("%w: %s appears twice", protocolErr, h.Name)
@@ -436,7 +436,7 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 func checkTarget(method, target []byte, protocolErr error) error {
 	if len(target) == 1 && target[0] == '*' {
 		if string(method) != "OPTIONS" {
-			return fmt.Errorf("%w: the asterisk-form target on a %s request", protocolErr, method)
+			return fmt.Errorf("%w: the asterisk-form target on a %s request", protocolErr, cite(method))
 		}
 		return nil
 	}
