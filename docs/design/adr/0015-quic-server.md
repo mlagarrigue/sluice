@@ -1,7 +1,7 @@
 # ADR 0015 — The QUIC server: transport machinery, a real listener, a moving client
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-11-12 (`CongestionBBR` follows draft-ietf-ccwg-bbr-07; Rationale under subheadings); 20 earlier, from 2026-10-03, in its `git log`
+- **Revised:** 2026-11-13 (`MaxPendingConns` refuses at the bound, twice it waits for `Accept` in all); 21 earlier, from 2026-10-03, in its `git log`
 - **Theme:** quic
 
 ## Problem
@@ -44,16 +44,20 @@ contiguous bytes per stream, so the layer above never sees an offset.
 **A `Listener` owns the socket; connections are fed, not readers.** One
 goroutine runs the only `ReadFrom` loop and routes each datagram by
 destination connection identifier; a managed `Conn` reads from a channel.
-Each handshake runs on its own goroutine, bounded by `MaxPendingConns`
-(counting connections parked for `Accept`, capped at twice that figure with
-a stateless `CONNECTION_REFUSED` (the close code of a server taking no more)
-beyond) and by `HandshakeTimeout` (how long one may hold its slot; the
-client's default when unset; once the client's first Handshake packet
-authenticates, which validates its address under RFC 9000 §8.1, the deadline
-moves once to the handshake's start plus the connection's idle timeout, when
-that is later); what the listener carries in total, accepted connections
-included, is bounded by `MaxConns` and per source address by
-`MaxConnsPerIP`, both unset by default and refused the same way.
+Each handshake runs on its own goroutine, bounded by `MaxPendingConns` and
+by `HandshakeTimeout` (how long one may hold its slot; the client's default
+when unset; once the client's first Handshake packet authenticates, which
+validates its address under RFC 9000 §8.1, the deadline moves once to the
+handshake's start plus the connection's idle timeout, when that is later);
+what the listener carries in total, accepted connections included, is
+bounded by `MaxConns` and per source address by `MaxConnsPerIP`, both unset
+by default. Past any of the three, a new Initial is refused with a
+stateless `CONNECTION_REFUSED`, the close code of a server taking no more.
+
+`MaxPendingConns` counts the handshakes in progress and the completed ones
+waiting for room in a full accept queue: with the queue's own
+`MaxPendingConns` places, what waits for `Accept` stays within twice that
+figure.
 
 A handshake admitted without a Retry has not proved its address until it
 completes, and counts against `MaxConnsPerIP` only once it has: an address
