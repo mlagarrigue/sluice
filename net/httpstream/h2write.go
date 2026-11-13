@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -201,7 +200,6 @@ type h2Writer struct {
 	// The read goroutine credits them through credit and creditConn.
 	connWind int32
 	windows  map[uint32]int32
-	gone     []uint32 // streams forgotten lately, newest last (see forget)
 	// ended is the streams whose answer reached END_STREAM and that the
 	// reader still remembers; evicted is the streams the reader forgot
 	// while their answer was still being written. See responded and evict.
@@ -1038,11 +1036,17 @@ func (w *h2Writer) waitCtrlLocked() error {
 
 // reset sends RST_STREAM with code on id, unless the stream was forgotten
 // already — reset by the peer or finished — in which case RFC 9113 §5.1
-// forbids the frame and nothing goes out.
+// forbids the frame and nothing goes out. Its callers are an answer's late
+// failures — a head that cannot be framed, a producer that panicked, missed
+// its length or had its trailers refused — on a stream whose answer has not
+// ended, so the question is the send window's, as streamGrant asks it:
+// exact for every stream, where a ring of the last 64 forgotten let a reset
+// through to a stream forgotten longer ago, which a producer pulled on its
+// own goroutine (h2Streamer) can outlive.
 func (w *h2Writer) reset(id, code uint32) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if slices.Contains(w.gone, id) {
+	if _, alive := w.windows[id]; !alive {
 		return nil
 	}
 	var p [4]byte
@@ -1061,7 +1065,7 @@ func (w *h2Writer) reset(id, code uint32) error {
 // ignore. The question is the send window's, which interim asks too: in
 // the books from open until the answer ends, is given up, or the stream is
 // forgotten, so exact for every stream, where the ring of the last 64
-// forgotten streams let a grant through to one forgotten longer ago. A
+// forgotten streams once let a grant through to one forgotten longer ago. A
 // grant is owed to a request body still arriving, and once the answer has
 // ended that body has ended too, or its stream is reset behind the answer
 // (resetAfter): nothing is lost by asking the window.
@@ -1170,17 +1174,10 @@ func (w *h2Writer) evict(id uint32) {
 func (w *h2Writer) forget(id uint32) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	// Out of the windows, a late failure on this stream sends no RST_STREAM
+	// to a stream the peer already closed (reset, RFC 9113 §5.1).
 	delete(w.windows, id)
 	delete(w.evicted, id)
-	// Remembered so that a late failure on this stream — a head that cannot
-	// be framed, a producer that panicked — does not send a RST_STREAM to a
-	// stream the peer already closed (RFC 9113 §5.1). A short ring: the
-	// identifiers grow, and a stream forgotten long ago has nothing left
-	// that could fail.
-	w.gone = append(w.gone, id)
-	if len(w.gone) > 64 {
-		w.gone = w.gone[1:]
-	}
 	kept := w.jobs[:0]
 	for _, j := range w.jobs {
 		if j.id != id {

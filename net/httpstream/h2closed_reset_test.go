@@ -384,3 +384,41 @@ func TestH2OverlongHeadersOnAHalfClosedStreamIsStreamClosed(t *testing.T) {
 		t.Errorf("a %d head answered a block on a half-closed stream", got)
 	}
 }
+
+// A streamed answer whose producer fails — a panic, a length it misses, a
+// refused trailer section — long after the peer reset its stream, with any
+// number of streams forgotten since, sends no RST_STREAM to the closed
+// stream (RFC 9113 §5.1, §6.4): reset asks the send windows, exact for every
+// stream, where a ring of the last 64 forgotten let one through. A stream
+// still answering is reset.
+func TestH2NoResetOnAStreamForgottenLongAgo(t *testing.T) {
+	cfg := Config{}.mustResolve()
+	w := newH2Writer(nil, cfg) // run is not started: the control queue is read, never written
+	w.open(1)
+	w.forget(1) // the peer's RST_STREAM
+	for id := uint32(3); id < 3+2*64; id += 2 {
+		w.open(id)
+		w.forget(id)
+	}
+	w.open(201)
+	for _, id := range []uint32{1, 201} {
+		if err := w.reset(id, errInternalError); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reset := map[uint32]bool{}
+	for ctrl := w.ctrl; len(ctrl) > 0; {
+		f, n, err := parseFrame(ctrl, cfg.MaxFrameSize)
+		if err != nil {
+			t.Fatalf("control queue: %v", err)
+		}
+		reset[f.StreamID] = f.Type == frameRSTStream
+		ctrl = ctrl[n:]
+	}
+	if reset[1] {
+		t.Error("RST_STREAM queued on stream 1, forgotten 65 forgets ago")
+	}
+	if !reset[201] {
+		t.Error("no RST_STREAM on stream 201, still answering")
+	}
+}

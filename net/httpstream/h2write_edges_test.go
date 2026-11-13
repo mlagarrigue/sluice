@@ -240,8 +240,8 @@ func TestH2WriterRefusalAtTheWindowsEdge(t *testing.T) {
 	}
 }
 
-// A forgotten stream's jobs are answered and no other's; the last 64
-// forgotten streams are remembered.
+// A forgotten stream's jobs are answered and no other's, and its window is
+// gone: what reset and streamGrant ask (TestH2NoResetOnAStreamForgottenLongAgo).
 func TestH2WriterForget(t *testing.T) {
 	w := testWriter(1, 3)
 	a, b := &h2Job{id: 1, queued: true}, &h2Job{id: 3, queued: true}
@@ -250,11 +250,8 @@ func TestH2WriterForget(t *testing.T) {
 	if !errors.Is(a.err, errStreamGone) || b.done || len(w.jobs) != 1 || w.jobs[0] != b {
 		t.Errorf("forget(1): job 1 %v, job 3 done %v, %d jobs left", a.err, b.done, len(w.jobs))
 	}
-	for id := uint32(5); id < 5+2*65; id += 2 {
-		w.forget(id)
-	}
-	if len(w.gone) != 64 || w.gone[0] != 7 {
-		t.Errorf("%d streams remembered from %d, want 64 from 7", len(w.gone), w.gone[0])
+	if _, open := w.windows[1]; open {
+		t.Error("forget(1) left stream 1's window")
 	}
 }
 
