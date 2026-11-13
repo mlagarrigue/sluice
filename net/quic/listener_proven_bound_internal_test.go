@@ -112,6 +112,22 @@ func TestAHandshakeProvenPastTheAddressBoundIsRefused(t *testing.T) {
 			if err := <-aDone; err != nil {
 				t.Fatalf("control: A did not complete: %v", err)
 			}
+			// The client's Dial returns once it has sent its Finished; the
+			// server proves the address when it reads it. B waits for that,
+			// or it may arrive while A is still unproven (macOS, 2026-11-13).
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				l.mu.Lock()
+				k := len(l.unvalidated)
+				l.mu.Unlock()
+				if k == 0 {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("control: the server never proved A's address")
+				}
+				time.Sleep(time.Millisecond)
+			}
 		} else {
 			// A's Initial is admitted, unproven, before B arrives.
 			deadline := time.Now().Add(5 * time.Second)
