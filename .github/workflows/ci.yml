@@ -287,8 +287,8 @@ jobs:
         run: |
           go vet ./... && go mod tidy -diff
           go test -skip '^TestCalibration$|^TestTrivialServesEveryScenario$' ./...
-      # The first contender (CMP-13): its check against R skips without
-      # SLUICE_PG and runs in the postgres job; its refusals run here.
+      # The Go contenders (CMP-13 to 15): their check against R skips without
+      # SLUICE_PG and runs in the postgres job; their refusals run here.
       - name: Vet, tidy and test (comparison/go-nethttp)
         working-directory: comparison/go-nethttp
         run: go vet ./... && go mod tidy -diff && go test ./...
@@ -674,7 +674,7 @@ jobs:
             exit 1
           fi
 
-      # The first contender, its two versions and its DataLoader variant on
+      # The Go contenders — net/http, its DataLoader variant, Gin — on
       # every protocol they serve, against R through the generator's
       # conformance check (CMP-09); and the variant does group.
       - name: Contender go-nethttp answers like R

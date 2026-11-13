@@ -43,6 +43,8 @@ func TestConformsToR(t *testing.T) {
 	build(t, dir, "standard", ".", "./standard")
 	build(t, dir, "optimised", ".", "./optimised")
 	build(t, dir, "dataloader", ".", "./dataloader")
+	build(t, dir, "gin-standard", ".", "./gin-standard")
+	build(t, dir, "gin-optimised", ".", "./gin-optimised")
 	build(t, dir, "r", "../sluice", ".")
 	build(t, dir, "loadgen", "../loadgen", ".")
 	cert, key := certificate(t, dir)
@@ -60,6 +62,12 @@ func TestConformsToR(t *testing.T) {
 		{"optimised", "h2", "gzip"},
 		{"dataloader", "h1", "off"},
 		{"dataloader", "h2", "off"},
+		{"gin-standard", "h1", "off"},
+		{"gin-standard", "h2", "off"},
+		{"gin-standard", "h3", "off"},
+		{"gin-optimised", "h1", "off"},
+		{"gin-optimised", "h2", "off"},
+		{"gin-optimised", "h3", "off"},
 	}
 	for _, c := range cases {
 		t.Run(c.version+"-"+c.proto+"-"+c.compression, func(t *testing.T) {
@@ -89,6 +97,7 @@ func TestRefusesWhatItDoesNotServe(t *testing.T) {
 	dir := t.TempDir()
 	build(t, dir, "standard", ".", "./standard")
 	build(t, dir, "optimised", ".", "./optimised")
+	build(t, dir, "gin-standard", ".", "./gin-standard")
 	cert, key := certificate(t, dir)
 	base := []string{"STUDY_TLS_CERT=" + cert, "STUDY_TLS_KEY=" + key, "STUDY_LISTEN=127.0.0.1:0"}
 	for _, c := range []struct {
@@ -98,6 +107,7 @@ func TestRefusesWhatItDoesNotServe(t *testing.T) {
 		{"standard", []string{"STUDY_PROTOCOL=h3"}},
 		{"standard", []string{"STUDY_COMPRESSION=gzip"}},
 		{"optimised", []string{"STUDY_COMPRESSION=br"}},
+		{"gin-standard", []string{"STUDY_COMPRESSION=gzip"}},
 		{"optimised", []string{"STUDY_TLS=off", "STUDY_PROTOCOL=h2"}},
 	} {
 		cmd := exec.Command(filepath.Join(dir, c.version)) //nolint:gosec // G204: a binary this test built

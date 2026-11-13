@@ -505,21 +505,23 @@ requests each under `-encoding gzip`: conformant; the trivial server
 against R parts at the first static request (`$.service`), as it should,
 and agrees on everything else it was asked.
 
-## `go-nethttp/` — the first contender
+## `go-nethttp/` — the Go contenders
 
 Go's standard HTTP server and `pgx`, without grouping: the barest Go
-stack, on the same runtime as Sluice.go (study §2.5). A module of its own:
-it does not require the root module — a contender owes Sluice.go nothing —
-and takes `pgx` and `quic-go` at the versions of `sluice/`, so that the two
-measure the same driver and the same HTTP/3 stack.
+stack, on the same runtime as Sluice.go (study §2.5); its variant "with" a
+DataLoader; and Gin, the most used Go framework (level 2). A module of its
+own: it does not require the root module — a contender owes Sluice.go
+nothing — and takes `pgx` and `quic-go` at the versions of `sluice/`, so
+that all of them measure the same driver and the same HTTP/3 stack.
 
-Three programs, so that the study counts their lines apart (§1.1):
+Five programs, so that the study counts their lines apart (§1.1):
 
 | Version | Serves | Refuses at startup |
 |---|---|---|
 | `standard/` | h1 and h2 over TLS, h1 in clear | h3 (`net/http` has none), any compression (`net/http` offers none): published "not supported" |
 | `optimised/` | h1, h2, h3; gzip at level 1 | deflate, br, zstd |
 | `dataloader/` | as `standard/`: the variant "with" grouping (CMP-14) | as `standard/` |
+| `gin-standard/`, `gin-optimised/` | h1, h2, h3 (Gin documents HTTP/3 through `quic-go`, `RunQUIC`) | any compression (Gin's is a module of its own, `gin-contrib/gzip`) |
 
 What they share without being measured on it lives in `internal/contract`:
 the contract's environment, every contender's TLS, the static document,
@@ -575,7 +577,29 @@ log (`net/http` has none); database errors go to the standard `log`.
 Nothing else: no GC setting, no `GOMAXPROCS`, no cache. What each
 optimisation is worth is the campaign's to say.
 
-**Checked**: `TestConformsToR` builds the three programs, R and the
+**Gin (`gin-standard/`, `gin-optimised/`, CMP-15).** The standard version
+follows Gin's quick start: `gin.Default()` (the `Logger` and `Recovery`
+middleware), `c.JSON`, `ShouldBindJSON`, the default (debug) mode. It
+writes **one access log line per request** to stdout, published with its
+figures (§4, declared logs). The server is an `http.Server` around the
+router, the form Gin's documentation gives for a configuration of one's own
+("Custom HTTP configuration"), so that the contract's TLS applies; HTTP/3
+is `quic-go`'s `http3` around the same router, which Gin documents as
+`RunQUIC`. Deviations from the documentation: those of the `net/http`
+standard version above. Optimisations, all from Gin's documentation but the
+last:
+
+1. `gin.New()` with `Recovery` alone: no access log ("Blank Gin without
+   middleware by default"; §4 allows cutting it as a listed optimisation).
+2. Release mode, which Gin's debug mode asks for in production.
+3. `SetTrustedProxies(nil)`: no proxy in front, so Gin computes no client
+   address from headers ("Don't trust all proxies").
+4. `goccy/go-json` as Gin's JSON codec, set at runtime through
+   `codec/json.API` ("Custom json codec at runtime"; the codec of the
+   `go_json` build tag).
+5. The list scanned by position, as in the `net/http` optimised version.
+
+**Checked**: `TestConformsToR` builds the five programs, R and the
 generator, and passes `loadgen -conformance` against R for each program and
 each protocol it serves, gzip included (CI's postgres job);
 `TestDataLoaderGroups` sends the variant 64 concurrent reads and reads
