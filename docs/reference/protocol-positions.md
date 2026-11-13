@@ -189,9 +189,10 @@ package's own 114 at most.
 
 ## The QUIC transport, in detail
 
-Ten requirements of RFC 9000 and RFC 9001 are met otherwise than the text
-writes them. Each was chosen, and a conformant peer sees no difference:
-the departure only touches a peer that already breaks the protocol. For
+Twelve requirements of RFC 9000 and RFC 9001 are met otherwise than the text
+writes them. Each was chosen, and a conformant peer loses nothing by it:
+the departure only touches a peer that already breaks the protocol or,
+for the last, an answer its path's validation does not need. For
 each: what the text says, what the package does, why, and where to read
 the code in `net/quic`.
 
@@ -258,7 +259,26 @@ bounded. The peer gains a readable error code; the cost is a few bytes
 still sent under the spent key. Code: `Conn.atConfidentialityLimitLocked`
 (`send.go`), and the integrity limit in `Conn.openPacket` (`receive.go`).
 
-In plain words: these ten departures are choices, not oversights. Each
+**One path response waits for the window** (RFC 9000 §8.2.2, §19.17). The
+text has every PATH_CHALLENGE received answered by a PATH_RESPONSE, and
+lets the answer be delayed only by congestion control. On the path in
+use, an answer the congestion window cannot take is held and leaves when
+the window opens — but one only: a second challenge arriving before then
+replaces the held answer, and the first never gets one. A held answer is
+also dropped if the path in use changes meanwhile: it must leave by the
+path the challenge came by, which this end has left. Why: §8.2.3 validates
+a path on the response to *any* challenge sent on it, so the answer to the
+latest validates the path as well as all of them would, and it is the one
+a peer that remembers only its latest challenge waits for; a peer still
+probing a path that was left sends another challenge if it wants it
+(§8.2.1). Holding one answer per challenge would let a peer challenging
+into a full window grow a queue without bound; one is all it can make
+wait. To revisit if a conformant peer is seen waiting for the answer to a
+particular challenge rather than to any of them. Code:
+`Conn.holdResponseLocked` and `Conn.sendHeldResponseLocked`
+(`migration.go`), `Conn.heldResponse` (`conn.go`).
+
+In plain words: these twelve departures are choices, not oversights. Each
 avoids a cost — a send toward a doubtful address, one more datagram, a
 double count — and changes nothing for a peer that follows the protocol. A
 peer found to fail on one of them is the reason to revisit it.
