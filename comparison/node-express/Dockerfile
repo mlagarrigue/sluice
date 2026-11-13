@@ -5,7 +5,8 @@
 #   docker build -f comparison/node-express/Dockerfile --target optimised-opt -t node-express:optimised .
 #
 # dataloader-doc is the standard version's image running its variant "with" a
-# DataLoader (CMP-25).
+# DataLoader (CMP-25); dataloader-optimised-opt is the optimised image running
+# the optimised variant "with", its batches on a time window.
 #
 # standard-doc is Docker's guide for Node: the alpine Node image, the
 # packages installed by npm ci without the development ones, NODE_ENV set to
@@ -46,3 +47,6 @@ COPY --from=cert /cert /cert
 ENV STUDY_LISTEN=0.0.0.0:8443 STUDY_TLS_CERT=/cert/cert.pem STUDY_TLS_KEY=/cert/key.pem
 EXPOSE 8443
 CMD ["optimised/server.js"]
+
+FROM optimised-opt AS dataloader-optimised-opt
+CMD ["dataloader-optimised/server.js"]

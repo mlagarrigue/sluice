@@ -646,10 +646,11 @@ Dependabot opens security updates only.
 | `standard/` | h1 over TLS, h1 in clear; gzip | h2 (Express does not run on `node:http2`), h3 (Node serves none): published "not supported"; deflate, br, zstd |
 | `optimised/` | the same | the same |
 | `dataloader/` | as `standard/`: the variant "with" grouping (CMP-25) | as `standard/` |
+| `dataloader-optimised/` | as `optimised/`: the optimised variant "with" | as `optimised/` |
 
 What they share without being measured on it lives in `contract.js`: the
 contract's environment, the TLS, the static document, the write table, the
-metrics point (`batches` is `null`, except for the DataLoader variant).
+metrics point (`batches` is `null`, except for the DataLoader variants).
 
 **The variant "with" (`dataloader/`)** is the standard version whose unit
 reads go through a DataLoader (the `dataloader` package): the keys loaded
@@ -662,6 +663,16 @@ request groups nothing; this one is shared by the process, its cache off
 leaves batches of one key. Read under 64 concurrent requests over h1: 192
 keys in 192 batches. That is the default's result, published with the size
 observed, not an error to correct here.
+
+**The optimised variant "with" (`dataloader-optimised/`)** is the optimised
+version — cluster, named queries — whose unit reads go through the same
+DataLoader, with one change listed with its source: a batch leaves on a
+time window (`batchScheduleFn: callback => setTimeout(callback, 2)`,
+DataLoader's README, "Batch Scheduling") instead of `process.nextTick`, at
+most 64 keys (`maxBatchSize`): R's window and bound (the study server's
+`gateway`), so that the mechanism is compared at equal settings. Read under
+64 concurrent requests over h1, 4 processes: 192 keys in 139 batches (94 of
+one key, 39 of two, 6 of three or four).
 
 **Deviations from the documentation (standard version)**, each because the
 contract demands it: the pool's size comes from `STUDY_DB_POOL`; the TLS is
@@ -701,7 +712,7 @@ the same Node release (24.22.3), run as a user with no rights.
 **Checked** from a container by `comparison/chain/conform.sh`, against R,
 300 requests: `standard-doc` and `optimised-opt` over h1, with and without
 gzip, and `dataloader-doc` over h1 (the documentation's image running the
-variant), conformant.
+variant), and `dataloader-optimised-opt` over h1, conformant.
 
 ```
 docker build -f comparison/node-express/Dockerfile --target optimised-opt -t node-express:optimised-opt .

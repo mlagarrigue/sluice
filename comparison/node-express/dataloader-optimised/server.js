@@ -1,0 +1,162 @@
+// The optimised version with grouping (study §2.1, "with", optimised): the
+// routes, documents, queries and cluster of optimised/, the unit reads
+// through a DataLoader shared by each process, its cache off as in
+// dataloader/. One change to the loader, listed with its source: a batch
+// scheduler on a time window instead of process.nextTick (DataLoader's
+// README, "Batch Scheduling": `batchScheduleFn: callback =>
+// setTimeout(callback, …)`). On HTTP/1.1 the default leaves batches of one
+// key; a window gathers the keys of the requests that arrive within it. The
+// window and the batch bound are R's (the study server's gateway, 2 ms and
+// 64 keys), so that the mechanism is compared at equal settings. Every
+// batch is counted in "batches", added up over the cluster.
+
+import cluster from 'node:cluster';
+import os from 'node:os';
+import * as contract from '../contract.js';
+
+const windowMs = 2;
+const maxBatch = 64;
+
+const cfg = contract.readConfig();
+contract.offers(cfg, ['h1'], ['gzip']);
+process.env.NODE_ENV = 'production';
+
+if (cluster.isPrimary) {
+  const workers = Math.max(1, Math.min(os.availableParallelism(), cfg.pool));
+  const pending = new Map();
+  for (let i = 0; i < workers; i++) {
+    const pool = Math.floor(cfg.pool / workers) + (i < cfg.pool % workers ? 1 : 0);
+    cluster.fork({ STUDY_WORKER_POOL: String(pool) });
+  }
+  cluster.on('message', (worker, m) => {
+    if (m.t === 'ask') {
+      const ids = Object.values(cluster.workers);
+      pending.set(m.id, { from: worker, parts: [contract.metricsPart()], left: ids.length });
+      for (const w of ids) w.send({ t: 'collect', id: m.id });
+    } else if (m.t === 'part') {
+      const p = pending.get(m.id);
+      if (!p) return;
+      p.parts.push(m.part);
+      if (--p.left === 0) {
+        pending.delete(m.id);
+        p.from.send({ t: 'answer', id: m.id, doc: contract.metricsDoc(p.parts, true) });
+      }
+    }
+  });
+  cluster.on('exit', (w, code) => {
+    console.error(`node-express-dataloader-optimised: worker ${w.process.pid} exited (${code})`);
+    process.exit(1);
+  });
+  console.error(`node-express-dataloader-optimised: ${cfg.protocol} on ${cfg.listen} (${contract.summary(cfg)}), ${workers} workers, window ${windowMs} ms`);
+} else {
+  await serve(Number(process.env.STUDY_WORKER_POOL));
+}
+
+async function serve(poolSize) {
+  const { default: express } = await import('express');
+  const { default: compression } = await import('compression');
+  const { default: DataLoader } = await import('dataloader');
+  const { default: pg } = await import('pg');
+  const https = await import('node:https');
+  const http = await import('node:http');
+
+  const pool = new pg.Pool({ max: poolSize });
+  if (cluster.worker.id === 1) {
+    for (const ddl of contract.writeTable) await pool.query(ddl);
+  }
+
+  const asked = new Map();
+  let next = 0;
+  process.on('message', (m) => {
+    if (m.t === 'collect') {
+      process.send({ t: 'part', id: m.id, part: contract.metricsPart() });
+    } else if (m.t === 'answer') {
+      asked.get(m.id)?.(m.doc);
+      asked.delete(m.id);
+    }
+  });
+
+  const unitQuery = { name: 'unit-batch', text: 'SELECT id, total, label FROM bench_orders WHERE id = ANY($1)' };
+  const listQuery = { name: 'list', text: 'SELECT id, total, label FROM bench_orders WHERE id > $1 ORDER BY id LIMIT $2' };
+  const writeQuery = { name: 'write', text: 'INSERT INTO comparison_writes (key, total) VALUES ($1, $2)' };
+
+  const orders = new DataLoader(async (ids) => {
+    contract.recordBatch(ids.length);
+    const { rows } = await pool.query({ ...unitQuery, values: [ids] });
+    const byId = new Map(rows.map((r) => [Number(r.id), order(r)]));
+    return ids.map((id) => byId.get(id) ?? null);
+  }, {
+    cache: false,
+    maxBatchSize: maxBatch,
+    batchScheduleFn: (callback) => setTimeout(callback, windowMs),
+  });
+
+  const app = express();
+  if (cfg.compression === 'gzip') app.use(compression({ level: 1 }));
+  app.use(express.json());
+
+  app.get('/static', (req, res) => {
+    res.json(contract.staticDoc);
+  });
+
+  app.get('/orders/:id', async (req, res) => {
+    if (!/^-?\d+$/.test(req.params.id)) {
+      return res.status(400).json({ error: 'bad key' });
+    }
+    const id = Number(req.params.id);
+    try {
+      const o = await orders.load(id);
+      if (o === null) return res.status(404).json({ error: 'no such key', key: id });
+      res.json(o);
+    } catch (err) {
+      console.error(`unit ${id}: ${err.message}`);
+      res.status(503).json({ error: 'unavailable', key: id });
+    }
+  });
+
+  app.get('/orders', async (req, res) => {
+    if (!/^-?\d+$/.test(req.query.from ?? '')) {
+      return res.status(400).json({ error: 'bad from' });
+    }
+    const from = Number(req.query.from);
+    const limit = Number(req.query.limit);
+    if (!Number.isInteger(limit) || limit <= 0 || limit > contract.listMax) {
+      return res.status(400).json({ error: 'bad limit', key: from });
+    }
+    try {
+      const { rows } = await pool.query({ ...listQuery, values: [from, limit] });
+      res.json({ from, limit, items: rows.map(order) });
+    } catch (err) {
+      console.error(`list ${from}: ${err.message}`);
+      res.status(503).json({ error: 'unavailable', key: from });
+    }
+  });
+
+  app.post('/orders', async (req, res) => {
+    const key = req.body?.key;
+    const total = req.body?.total;
+    if (!Number.isInteger(key) || key === 0 || !Number.isInteger(total)) {
+      return res.status(400).json({ error: 'bad body' });
+    }
+    try {
+      await pool.query({ ...writeQuery, values: [key, total] });
+      res.json({ key });
+    } catch (err) {
+      console.error(`write ${key}: ${err.message}`);
+      res.status(503).json({ error: 'unavailable', key });
+    }
+  });
+
+  app.get('/study/metrics', (req, res) => {
+    const id = `${process.pid}-${next++}`;
+    asked.set(id, (doc) => res.json(doc));
+    process.send({ t: 'ask', id });
+  });
+
+  function order(r) {
+    return { id: Number(r.id), total: Number(r.total), label: r.label };
+  }
+
+  const server = cfg.tls ? https.createServer(contract.tlsOptions(cfg), app) : http.createServer(app);
+  server.listen(cfg.port, cfg.host);
+}
