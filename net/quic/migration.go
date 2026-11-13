@@ -1277,6 +1277,13 @@ func (c *Conn) Rebind(pc net.PacketConn) error {
 	now := time.Now()
 	old := c.pc
 	c.pc = pc
+	// A PATH_RESPONSE held for a full window answers a challenge that came
+	// to the local address being left, the same socket included: §8.2.2
+	// sends it on the path the challenge arrived by, and from the new
+	// address the peer would take it as validating that path.
+	// sendHeldResponseLocked sees a new socket, not a new address behind
+	// the same one.
+	c.heldResponse.owed = false
 	c.migrations++
 	// The old path's measurements say nothing about the new one (§9.4).
 	c.resetPathStateLocked(now)
