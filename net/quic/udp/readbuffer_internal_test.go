@@ -33,3 +33,24 @@ func TestReadBufferRequestHalvesUntilAccepted(t *testing.T) {
 		t.Errorf("a kernel that refuses every size: %v, want its refusal", err)
 	}
 }
+
+// From ReceiveBuffer the halvings skip 64 KiB — 112 KiB, then 56 — so a
+// kernel that grants minReceiveBuffer and refuses anything larger was never
+// asked for it, and Listen failed against the godoc's "down to 64 KiB". The
+// floor itself is the last request.
+func TestAKernelGrantingTheFloorIsAccepted(t *testing.T) {
+	var asked []int
+	set := func(n int) error {
+		asked = append(asked, n)
+		if n > minReceiveBuffer {
+			return syscall.ENOBUFS
+		}
+		return nil
+	}
+	if err := askReadBuffer(set, ReceiveBuffer); err != nil {
+		t.Fatalf("askReadBuffer = %v after asking %v; want minReceiveBuffer (%d) asked and granted", err, asked, minReceiveBuffer)
+	}
+	if last := asked[len(asked)-1]; last != minReceiveBuffer {
+		t.Errorf("the last request was %d, want minReceiveBuffer (%d)", last, minReceiveBuffer)
+	}
+}

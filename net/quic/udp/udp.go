@@ -127,10 +127,12 @@ const minReceiveBuffer = 64 << 10
 func askReadBuffer(set func(int) error, want int) error {
 	for {
 		err := set(want)
-		if err == nil || want/2 < minReceiveBuffer {
+		if err == nil || want <= minReceiveBuffer {
 			return err
 		}
-		want /= 2
+		// Halved, but never below the floor, which is asked for itself:
+		// from ReceiveBuffer the halvings skip 64 KiB (112 KiB, then 56).
+		want = max(want/2, minReceiveBuffer)
 	}
 }
 
