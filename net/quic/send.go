@@ -1857,19 +1857,29 @@ func (c *Conn) passCreditLocked() {
 // or changes them all: a close, a refused 0-RTT, new keys. It walks the
 // stream table. Callers hold mu.
 func (c *Conn) wakeAllLocked() {
-	c.wakeWindowLocked()
+	c.wakeWritersLocked()
 	for _, s := range c.streams {
 		s.wakeCreditLocked()
 	}
 }
 
-// wakeWindowLocked wakes the writers parked on cond and on connCredit — the
-// congestion window, the stream limit, the connection's credit — and not
-// the ones waiting for their stream's credit, which an acknowledgement or a
-// pacing tick cannot give: a peer that starves n streams of credit while it
-// acknowledges would otherwise wake the n writers with every ACK. Callers
-// hold mu.
+// wakeWindowLocked wakes the writers parked on cond — the congestion
+// window, the pacer, the stream limit, the keys — and no one waiting for
+// credit: an acknowledgement, a pacing tick or a MAX_STREAMS gives none.
+// Neither the writers parked on their stream's credit nor those parked on
+// the connection's (connCredit), which a MAX_DATA wakes one at a time: a
+// peer that starves n writers of credit while it acknowledges, or raises
+// MAX_STREAMS by one per two-byte frame, would otherwise buy n wake-ups per
+// frame (BenchmarkStreamLimitTrickle). Callers hold mu.
 func (c *Conn) wakeWindowLocked() {
+	c.cond.Broadcast()
+}
+
+// wakeWritersLocked wakes the writers on cond and on connCredit, for what
+// ends a write whatever it waits for — its stream reset, its write deadline
+// passed — and the writers parked on their stream's credit are woken by
+// the stream (wakeCreditLocked). Callers hold mu.
+func (c *Conn) wakeWritersLocked() {
 	c.cond.Broadcast()
 	c.connCredit.Broadcast()
 }

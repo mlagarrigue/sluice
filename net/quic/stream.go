@@ -577,8 +577,8 @@ func (s *Stream) Reset(code uint64) error {
 	frame := appendStreamFrame(nil, FrameResetStream, s.id, code, s.writeOff)
 	err := c.sendPacketLocked(spaceApplication, frame, sendOpts{}) // ungated: see sendOpts.waitCwnd
 	c.maybeRemoveLocked(s)
-	c.wakeWindowLocked() // a writer of this stream on the window gives up
-	s.wakeCreditLocked() // and one on its credit
+	c.wakeWritersLocked() // a writer of this stream on the window or connCredit gives up
+	s.wakeCreditLocked()  // and one on its credit
 	return sentOrRecorded(err)
 }
 
@@ -742,7 +742,7 @@ func (s *Stream) onStopSendingLocked(code uint64) (stopped bool) {
 	_ = s.conn.sendPacketLocked(spaceApplication, frame, sendOpts{})
 	// The writer may be parked on its stream's credit or, its stream having
 	// room, on the connection's (connCredit), as Stream.Reset wakes it.
-	s.conn.wakeWindowLocked()
+	s.conn.wakeWritersLocked()
 	s.wakeCreditLocked()
 	return true
 }

@@ -124,7 +124,7 @@ func (c *Conn) expireStreamDeadlinesLocked(now time.Time) time.Time {
 		}
 	}
 	if wakeWriters {
-		c.wakeWindowLocked() // a writer of a matured stream on the window
+		c.wakeWritersLocked() // a writer of a matured stream on the window or the connection's credit
 	}
 	if len(c.deadlines) == 0 {
 		return time.Time{}

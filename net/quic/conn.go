@@ -108,8 +108,9 @@ type Conn struct {
 	// On cond, every parked writer woke for every MAX_DATA that raised a
 	// spent window and all but one parked again: a peer granting a byte at
 	// a time bought a wake-up per writer with each three-byte frame
-	// (BenchmarkCreditTrickle). Every other wake-up reaches both
-	// (wakeAllLocked): a deadline, a reset or the end concern them too.
+	// (BenchmarkCreditTrickle). A deadline, a reset, a STOP_SENDING or the
+	// end reach it too (wakeWritersLocked); an ACK, a pacing tick or a
+	// MAX_STREAMS, which give no credit, do not (wakeWindowLocked).
 	connCredit sync.Cond
 
 	// writeRefusals counts sends refused by an ICMP surfacing on the

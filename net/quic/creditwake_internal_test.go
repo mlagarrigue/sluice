@@ -3,6 +3,8 @@ package quic
 import (
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -142,4 +144,73 @@ func TestStopSendingWakesAWriterParkedOnTheConnectionsCredit(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("a writer parked on the connection's credit slept through STOP_SENDING")
 	}
+}
+
+// A writer parked on the connection's credit waits for a MAX_DATA, and a
+// MAX_STREAMS grants none: it raises the limit the openers wait on. The
+// wake that answers it reached connCredit too, so a peer raising MAX_STREAMS
+// by one per two-byte frame bought one wake-up per parked writer per frame —
+// what BenchmarkCreditTrickle closed for MAX_DATA, through another frame.
+// The control repeats the limit, which changes nothing and wakes no one.
+func TestMaxStreamsLeavesTheConnectionCreditWritersAsleep(t *testing.T) {
+	const n, k = 32, 16
+	play := func(t *testing.T, raise bool) int64 {
+		t.Helper()
+		c := assembleConn(&fuzzSink{addr: "maxstreams:self"}, fakeFuzzAddr("maxstreams:peer"),
+			[]byte("dcid0000"), []byte("scid0000"), false, DefaultConfig())
+		t.Cleanup(func() { _ = c.Close() })
+		c.mu.Lock()
+		c.connSend.sent = c.connSend.max
+		limit := c.peerMaxStreamsUni
+		c.mu.Unlock()
+		var woke atomic.Int64
+		stop := false
+		var parked, done sync.WaitGroup
+		parked.Add(n)
+		done.Add(n)
+		for range n {
+			go func() {
+				defer done.Done()
+				c.mu.Lock()
+				defer c.mu.Unlock()
+				parked.Done()
+				for !stop {
+					if err := c.waitForConnCreditLocked(time.Time{}); err != nil {
+						return
+					}
+					if !stop {
+						woke.Add(1)
+					}
+				}
+			}()
+		}
+		parked.Wait()
+		c.mu.Lock()
+		c.mu.Unlock() //nolint:staticcheck,gocritic // SA2001, badLock: the lock is the barrier — every writer is in Wait
+		for range k {
+			if raise {
+				limit++
+			}
+			c.handleLimitGrant(Frame{Type: frameMaxStreams | 1, value: limit})
+		}
+		// A wake-up shows within this time on any runner; none is the answer.
+		time.Sleep(100 * time.Millisecond)
+		got := woke.Load()
+		c.mu.Lock()
+		stop = true
+		c.wakeAllLocked()
+		c.mu.Unlock()
+		done.Wait()
+		return got
+	}
+	t.Run("control, MAX_STREAMS repeating the limit", func(t *testing.T) {
+		if w := play(t, false); w != 0 {
+			t.Fatalf("control: %d wake-ups for frames that change nothing; the control is void", w)
+		}
+	})
+	t.Run("MAX_STREAMS raised by one per frame", func(t *testing.T) {
+		if w := play(t, true); w > 0 {
+			t.Errorf("%d wake-ups of %d writers parked on the connection's credit for %d MAX_STREAMS frames, which grant none; want 0", w, n, k)
+		}
+	})
 }
