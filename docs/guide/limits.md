@@ -11,8 +11,9 @@ Three reasons come up, and the difference matters:
 
 **In short.** Nothing has run in production yet, and the API changes before
 version 1 ([the project](#the-project-as-a-whole)). One process, and no
-sort or buffer stage ([the core](#the-core)). PostgreSQL alone, without a
-pool, read in binary ([PostgreSQL](#postgresql)). No router, no
+sort or buffer stage ([the core](#the-core)). PostgreSQL, Redis and NATS
+JetStream, without a pool; PostgreSQL read in binary
+([PostgreSQL](#postgresql), [Redis and NATS](#redis-and-nats)). No router, no
 compression, no CONNECT tunnel ([web and gateway](#web-and-gateway)). QUIC
 is experimental, under [written conditions](#experimental-the-exit-conditions).
 The figures are a laptop's ([measurements](#measurements-what-is-missing)).
@@ -75,11 +76,12 @@ The figures are a laptop's ([measurements](#measurements-what-is-missing)).
 
 ### What it connects to
 
-- **PostgreSQL only.** No other system has a connector. An inventory of the
-  most useful connectors (MySQL, SQLite, Redis, Kafka, S3, CSV and Parquet
-  files…) is the first item on the roadmap; it will pick the first three
-  by demand, by what the batch model brings to each, and by whether they
-  can be written without a dependency.
+- **Three servers.** PostgreSQL, Redis (or Valkey) and NATS JetStream have
+  a connector; files are read as CSV and JSON Lines (`encoding/`). Other
+  systems (MySQL, SQLite, Kafka, S3, Parquet…) have none: the connector
+  inventory stays first on the roadmap, and will pick the next ones by
+  demand, by what the batch model brings to each, and by whether they can
+  be written without a dependency.
 - **No connection pool** — on purpose. How many connections to open is
   your application's decision; batching does with one connection what a
   pool does with many.
@@ -178,6 +180,20 @@ The figures are a laptop's ([measurements](#measurements-what-is-missing)).
   the SQL is the caller's, and its select list already says which columns
   travel. A column demand would come back with a source that can skip
   decoding a column on its own.
+
+## Redis and NATS
+
+- **One connection, no pool**, as with PostgreSQL; Redis is spoken in
+  RESP2. The guides have the rest: [Redis](redis.md), [NATS](nats.md).
+- **Every reply is bounded**: `MaxReplyBytes` (Redis, 64 MiB by default)
+  and `MaxPayloadBytes` (NATS, 8 MiB by default); past it the connection is
+  broken, the stream being in the middle of a reply.
+- **A batch is bounded** by `BatchEntries` (Redis, a consumer group) and
+  `BatchMessages` (NATS); `Block` and `Expires` (one second by default) say
+  how long a read waits, and so how long the stream takes to see its
+  context end.
+- **The rest of the wait** is bounded by the caller's context, as with
+  PostgreSQL.
 
 ## Web and gateway
 
