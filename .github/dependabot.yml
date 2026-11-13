@@ -98,13 +98,15 @@ updates:
       - dependency-name: python
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
       # Java likewise (study §2.5: Java 25, the LTS): the JDK and JRE images'
-      # tags carry the major.
+      # tags carry Java's major. The Maven image's carries Maven's (3), and
+      # Java's only as a suffix, which Dependabot moves as a lesser update:
+      # its tag stays, only its digest moves.
       - dependency-name: eclipse-temurin
         update-types: ["version-update:semver-major"]
       - dependency-name: bellsoft/liberica-openjre-debian
         update-types: ["version-update:semver-major"]
       - dependency-name: maven
-        update-types: ["version-update:semver-major"]
+        update-types: ["version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch"]
     commit-message:
       prefix: "build"
   # The CodeQL sub-actions (init, autobuild, analyze) are one release pinned
