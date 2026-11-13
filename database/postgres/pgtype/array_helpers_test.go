@@ -88,3 +88,36 @@ func wantNulls[T any](t *testing.T, name string, c Codec[T], raw []byte, want []
 		}
 	}
 }
+
+// fuzzArrayRoundTrip is the body of the array fuzz targets: whatever the
+// bytes, DecodeArray returns or refuses with ErrCodec, and an array it
+// accepts — NULLs, several dimensions, a lower bound other than 1 included,
+// which decodeSlice would refuse — decodes again to the same elements,
+// NULLs and dimensions once AppendArray has written it. Idempotence rather
+// than byte equality: the header carries a flags word saying whether NULLs
+// may be present, which a re-encoding is allowed to normalise.
+func fuzzArrayRoundTrip[T comparable](t *testing.T, c Codec[T], b []byte) {
+	t.Helper()
+	a, err := DecodeArray(Array[T]{}, b, c)
+	if err != nil {
+		if !errors.Is(err, ErrCodec) {
+			t.Fatalf("unclassified error %v for %x", err, b)
+		}
+		return
+	}
+	if len(a.Elems) == 0 {
+		return // the empty array is zero dimensions, not a header to reproduce
+	}
+	again, err := DecodeArray(Array[T]{}, AppendArray(nil, a, c), c)
+	if err != nil {
+		t.Fatalf("DecodeArray(%x) wrote an array that then failed to decode: %v", b, err)
+	}
+	null := func(a Array[T], i int) bool { return i < len(a.Nulls) && a.Nulls[i] }
+	same := len(again.Elems) == len(a.Elems) && slices.Equal(again.Dims, a.Dims)
+	for i := 0; same && i < len(a.Elems); i++ {
+		same = null(again, i) == null(a, i) && (null(a, i) || again.Elems[i] == a.Elems[i])
+	}
+	if !same {
+		t.Fatalf("DecodeArray(%x) is not idempotent: %+v then %+v", b, a, again)
+	}
+}

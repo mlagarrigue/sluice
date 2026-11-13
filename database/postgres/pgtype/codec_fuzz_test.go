@@ -110,36 +110,7 @@ func FuzzDecodeUUIDArray(f *testing.F) {
 	// must stop at the bytes, not at the count.
 	f.Add([]byte{0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 11, 134, 127, 255, 255, 255, 0, 0, 0, 1})
 
-	f.Fuzz(func(t *testing.T, b []byte) {
-		ids, err := decodeSlice(UUIDCodec(), nil, b)
-		if err != nil {
-			if !errors.Is(err, ErrCodec) {
-				t.Fatalf("unclassified error %v for %x", err, b)
-			}
-			return
-		}
-		if len(ids) == 0 {
-			return // the empty array, which is zero dimensions rather than an error
-		}
-		// Idempotence rather than byte equality: the header carries a flags
-		// word this decoder has no use for — PostgreSQL sets bit 0 when the
-		// array may hold NULLs, which the per-element check already refuses —
-		// so a re-encoding is allowed to normalise it. What must not change is
-		// the values, and decoding twice is what proves that without also
-		// asserting a header detail the type does not depend on.
-		again, err := decodeSlice(UUIDCodec(), nil, appendSlice(UUIDCodec(), nil, ids))
-		if err != nil {
-			t.Fatalf("DecodeArray(%x) -> %x, which then failed to decode: %v", b, ids, err)
-		}
-		if len(again) != len(ids) {
-			t.Fatalf("DecodeArray(%x) is not idempotent: %d elements then %d", b, len(ids), len(again))
-		}
-		for i := range ids {
-			if again[i] != ids[i] {
-				t.Fatalf("DecodeArray(%x): element %d changed on a second pass", b, i)
-			}
-		}
-	})
+	f.Fuzz(func(t *testing.T, b []byte) { fuzzArrayRoundTrip(t, UUIDCodec(), b) })
 }
 
 // The eight bytes shared by timestamp and timestamptz, over their whole range

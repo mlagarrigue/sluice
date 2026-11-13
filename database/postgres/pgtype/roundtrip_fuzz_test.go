@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"math"
-	"slices"
 	"testing"
 )
 
@@ -189,27 +188,7 @@ func FuzzRoundTripInt8Array(f *testing.F) {
 	f.Add(make([]byte, 12))
 	f.Add([]byte{})
 
-	f.Fuzz(func(t *testing.T, b []byte) {
-		v, err := decodeSlice(Int8Codec(), nil, b)
-		if err != nil {
-			if !errors.Is(err, ErrCodec) {
-				t.Fatalf("unclassified error %v for %x", err, b)
-			}
-			return
-		}
-		if len(v) == 0 {
-			return // the empty array is zero dimensions, not a header to reproduce
-		}
-		// Idempotence rather than byte equality: the array header carries a
-		// flags word saying whether NULLs may be present, which these
-		// decoders have no use for — a NULL element is refused per element,
-		// with a better message — so a re-encoding normalises it. The values
-		// are what must not change.
-		again, err := decodeSlice(Int8Codec(), nil, appendSlice(Int8Codec(), nil, v))
-		if err != nil || !slices.Equal(again, v) {
-			t.Fatalf("DecodeArray(%x) is not idempotent: %v then %v (%v)", b, v, again, err)
-		}
-	})
+	f.Fuzz(func(t *testing.T, b []byte) { fuzzArrayRoundTrip(t, Int8Codec(), b) })
 }
 
 func FuzzRoundTripTextArray(f *testing.F) {
@@ -218,27 +197,7 @@ func FuzzRoundTripTextArray(f *testing.F) {
 	f.Add(make([]byte, 12))
 	f.Add([]byte{})
 
-	f.Fuzz(func(t *testing.T, b []byte) {
-		v, err := decodeSlice(TextCodec(), nil, b)
-		if err != nil {
-			if !errors.Is(err, ErrCodec) {
-				t.Fatalf("unclassified error %v for %x", err, b)
-			}
-			return
-		}
-		if len(v) == 0 {
-			return
-		}
-		// Idempotence rather than byte equality: the array header carries a
-		// flags word saying whether NULLs may be present, which these
-		// decoders have no use for — a NULL element is refused per element,
-		// with a better message — so a re-encoding normalises it. The values
-		// are what must not change.
-		again, err := decodeSlice(TextCodec(), nil, appendSlice(TextCodec(), nil, v))
-		if err != nil || !slices.Equal(again, v) {
-			t.Fatalf("DecodeArray(%x) is not idempotent: %q then %q (%v)", b, v, again, err)
-		}
-	})
+	f.Fuzz(func(t *testing.T, b []byte) { fuzzArrayRoundTrip(t, TextCodec(), b) })
 }
 
 // The text round trip, which is a different thing from the wire round trip and
