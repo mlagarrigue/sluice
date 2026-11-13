@@ -17,13 +17,13 @@
 # has no API to make a certificate at startup, so the images carry one for a
 # local run, made when they are built and named by STUDY_TLS_CERT and
 # STUDY_TLS_KEY; a campaign names its own. The bases are pinned by digest.
-FROM node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 AS cert
+FROM node:25-alpine@sha256:bdf2cca6fe3dabd014ea60163eca3f0f7015fbd5c7ee1b0e9ccb4ced6eb02ef4 AS cert
 RUN apk add --no-cache openssl && mkdir /cert && \
     openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 3650 \
       -subj /CN=study-contender -addext subjectAltName=DNS:localhost,IP:127.0.0.1 \
       -keyout /cert/key.pem -out /cert/cert.pem && chmod 644 /cert/key.pem /cert/cert.pem
 
-FROM node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 AS standard-doc
+FROM node:25-alpine@sha256:bdf2cca6fe3dabd014ea60163eca3f0f7015fbd5c7ee1b0e9ccb4ced6eb02ef4 AS standard-doc
 ENV NODE_ENV=production
 WORKDIR /usr/src/app
 COPY comparison/node-express/package.json comparison/node-express/package-lock.json ./
