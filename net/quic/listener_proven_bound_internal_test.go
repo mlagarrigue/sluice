@@ -2,6 +2,7 @@ package quic
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -190,4 +191,95 @@ func TestAHandshakeProvenPastTheAddressBoundIsRefused(t *testing.T) {
 			t.Errorf("%d connections established from one address under MaxConnsPerIP 1", accepted)
 		}
 	})
+}
+
+// The same bound, raced rather than relayed: what CI saw on macOS. A is
+// admitted without a Retry and still unproven when B comes back with its
+// token, so B's admission reads one connection at the address, none of them
+// proven, and lets B in. That reading and B's counting are two takings of
+// l.mu with B's connection built in between, and A's handshake goroutine
+// proves A meanwhile: provenLocked then counts A alone and keeps it, and B,
+// admitted by token, is never counted against the bound again. Two proven
+// connections from one address under MaxConnsPerIP 1. Either order on its
+// own leaves one — A proven first refuses B at admission; B counted first
+// refuses A at its proof — and the rounds give the interleaving between its
+// chance.
+func TestAProofDuringATokenAdmissionKeepsTheAddressBound(t *testing.T) {
+	for round := range 200 {
+		if n := proveDuringTokenAdmission(t, round); n > 1 {
+			t.Fatalf("round %d: %d proven connections from one address under MaxConnsPerIP 1", round, n)
+		}
+	}
+}
+
+// proveDuringTokenAdmission admits A unproven, then proves A while B's
+// token Initial is being admitted, and returns how many connections the
+// address ends with that are proven and kept.
+func proveDuringTokenAdmission(t *testing.T, round int) int {
+	t.Helper()
+	spc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := NewListener(spc, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{MaxConnsPerIP: 1})
+	if err != nil {
+		_ = spc.Close()
+		t.Fatal(err)
+	}
+	defer l.Close()
+	bh := newBlackHole()
+	defer bh.Close()
+
+	aFrom := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1000}
+	l.dispatch(sealedClientInitial(t, fmt.Appendf(nil, "dcid-a-%03d", round), []byte("scid-a")), aFrom, bh, 0)
+	l.mu.Lock()
+	var a *Conn
+	for c := range l.unvalidated {
+		a = c
+	}
+	l.mu.Unlock()
+	if a == nil {
+		t.Fatal("A was not admitted unproven: the probe does not exercise the bound")
+	}
+
+	bFrom := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 2000}
+	bDCID := fmt.Appendf(nil, "dcid-b-%03d", round)
+	token := appendRetryToken(nil, l.lcfg.TokenKey, bFrom, []byte("orig-dst"), bDCID)
+	bInitial := sealedClientInitialWithToken(t, bDCID, []byte("scid-b"), token)
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var aOver bool
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		l.dispatch(bInitial, bFrom, bh, 0)
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		// A different instant each round, across the time B's dispatch
+		// takes: the key schedule first, then the admission.
+		for end := time.Now().Add(time.Duration(round%50) * 4 * time.Microsecond); time.Now().Before(end); {
+		}
+		l.mu.Lock()
+		aOver = l.provenLocked(a) // what A's handshake goroutine does once it completes
+		l.mu.Unlock()
+	}()
+	close(start)
+	wg.Wait()
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	kept := 0
+	if !aOver {
+		kept++
+	}
+	for c := range l.pendingConns {
+		if _, unproven := l.unvalidated[c]; c != a && !unproven {
+			kept++ // B, admitted by token
+		}
+	}
+	return kept
 }

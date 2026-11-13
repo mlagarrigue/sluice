@@ -1372,10 +1372,26 @@ func (l *Listener) bootstrapConn(datagram []byte, from net.Addr, h longHeader, r
 		_ = c.Close()
 		return
 	}
+	ip := l.connKey(from)
+	if l.lcfg.MaxConnsPerIP > 0 && l.connsByIP[ip]-l.unvalidatedByIP[ip] >= l.lcfg.MaxConnsPerIP {
+		// handleNewInitial read the address's bound under an earlier taking
+		// of mu, and l.admit keeps other admissions out until here — but
+		// not a handshake goroutine, which proves its address meanwhile
+		// (provenLocked). One that proved the address's last free place
+		// counted itself alone and was kept, and this connection, admitted
+		// by token, is never counted against the bound again: two proven
+		// connections under MaxConnsPerIP 1, as CI saw on macOS. The bound
+		// is read again where the connection is counted, and refused as an
+		// Initial at the bound is.
+		l.mu.Unlock()
+		l.forget(c) // the preferred-address identifier may already route here
+		c.abort(&transportError{code: transportConnectionRefused, err: fmt.Errorf(
+			"%w: the address has MaxConnsPerIP proven connections", ErrQUIC)})
+		return
+	}
 	l.routeLocked(string(c.scid), c)
 	l.routeLocked(firstKey, c)
 	l.pendingConns[c] = struct{}{}
-	ip := l.connKey(from)
 	l.ipOf[c] = ip
 	l.connsByIP[ip]++
 	if rt == nil {
