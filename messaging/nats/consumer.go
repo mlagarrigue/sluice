@@ -161,6 +161,11 @@ func (k *Consumer) subscribe(ctx context.Context) (sid, inbox string, err error)
 		return "", "", berr
 	}
 	defer c.mu.Unlock()
+	// Its own context's deadline, as every call sets it: the one an earlier
+	// call left — Connect's, under a context with a deadline — would
+	// otherwise fail the SUB once passed, and break the connection.
+	stop := c.bound(ctx)
+	defer stop()
 	c.sid++
 	sid = strconv.Itoa(c.sid)
 	inbox = c.inbox + ".p" + sid
@@ -227,7 +232,12 @@ func (k *Consumer) round(ctx context.Context, sid, inbox string, pull bool, batc
 			case 404, 408: // no messages, or the pull expired: it is over
 				return nil
 			case 409:
-				if strings.Contains(strings.ToLower(desc), "consumer deleted") || strings.Contains(strings.ToLower(desc), "push based") {
+				// A consumer gone or push based ends the stream, and so does
+				// a pull the server refuses on its own terms — "Exceeded
+				// MaxRequestBatch of N", MaxRequestExpires, MaxWaiting,
+				// "Message Size Exceeds MaxBytes" — which every next pull
+				// would draw again at once, delivering nothing.
+				if d := strings.ToLower(desc); strings.Contains(d, "consumer deleted") || strings.Contains(d, "push based") || strings.Contains(d, "exceed") {
 					return &StatusError{Code: code, Description: desc}
 				}
 				return nil // the pull ended for a reason of its own; the next one asks again
