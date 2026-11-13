@@ -430,6 +430,10 @@ func (cfg Config) String() string {
 // GoString hides the password from %#v too.
 func (cfg Config) GoString() string { return cfg.String() }
 
+// LogValue hides it from slog: the JSON handler calls neither String nor
+// GoString, and marshals the exported fields.
+func (cfg Config) LogValue() slog.Value { return slog.StringValue(cfg.String()) }
+
 // maxProtocol is [Config.MaxProtocol] with its default applied.
 func (cfg Config) maxProtocol() ProtocolVersion {
 	if cfg.MaxProtocol == 0 {
