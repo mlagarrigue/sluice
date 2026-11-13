@@ -323,11 +323,23 @@ func (s *session) bind(body []byte) {
 		s.skipping = true
 		return
 	}
-	params := bindParams(rest)
+	params, ok := bindParams(rest)
+	if !ok {
+		// A server reads each parameter's declared length and refuses a
+		// message that ends before it (SQLSTATE 08P01, protocol_violation).
+		s.fail("08P01", "Bind message is shorter than its parameters' declared lengths")
+		s.skipping = true
+		return
+	}
 	var res Result
 	if strings.Contains(sql, "set_config") && len(params) >= 2 {
-		s.settings[string(params[0])] = string(params[1])
-		s.local[string(params[0])] = true
+		name := string(params[0])
+		s.settings[name] = string(params[1])
+		if setConfigIsLocal(sql) {
+			s.local[name] = true
+		} else {
+			delete(s.local, name) // the session's now, past the transaction
+		}
 		res = Result{Columns: []string{"set_config"}, OIDs: []uint32{pgtype.OIDText}, Rows: [][][]byte{{params[1]}}}
 	}
 	if r := s.b.exec(sql, params, s.settings); r.Err != "" || r.Columns != nil || r.Tag != "" {
@@ -503,12 +515,28 @@ func cut(b []byte) (field string, rest []byte, ok bool) {
 	return string(before), after, true
 }
 
+// setConfigIsLocal reads set_config's third argument, is_local, from the
+// statement's text, where the library writes it as a literal: false keeps
+// the setting for the session, anything else — true, or an argument the
+// text does not spell — ends it with the transaction.
+func setConfigIsLocal(sql string) bool {
+	i := strings.Index(sql, "set_config(")
+	if i < 0 {
+		return true
+	}
+	args, _, _ := strings.Cut(sql[i+len("set_config("):], ")")
+	parts := strings.Split(args, ",")
+	return len(parts) < 3 || !strings.EqualFold(strings.TrimSpace(parts[2]), "false")
+}
+
 // bindParams reads the parameter values of a Bind body positioned after the
-// portal and statement names.
-func bindParams(b []byte) [][]byte {
+// portal and statement names; ok is false when the body ends before a field
+// or a value it declares.
+func bindParams(b []byte) (params [][]byte, ok bool) {
+	ok = true
 	take := func(n int) []byte {
 		if n < 0 || len(b) < n {
-			b = nil
+			b, ok = nil, false
 			return make([]byte, max(n, 0))
 		}
 		v := b[:n]
@@ -518,7 +546,7 @@ func bindParams(b []byte) [][]byte {
 	formats := int(binary.BigEndian.Uint16(take(2)))
 	take(2 * formats)
 	n := int(binary.BigEndian.Uint16(take(2)))
-	params := make([][]byte, 0, n)
+	params = make([][]byte, 0, n)
 	for range n {
 		l := int32(binary.BigEndian.Uint32(take(4))) //nolint:gosec // G115: the protocol field is int32
 		if l < 0 {
@@ -527,7 +555,7 @@ func bindParams(b []byte) [][]byte {
 		}
 		params = append(params, bytes.Clone(take(int(l))))
 	}
-	return params
+	return params, ok
 }
 
 func msg(typ byte, body []byte) []byte {
