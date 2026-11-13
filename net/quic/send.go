@@ -1296,10 +1296,21 @@ func (c *Conn) flushAcksLocked(now time.Time) {
 // lost back on the space's send queue, and moves the counters Stats reports
 // for it: packets lost, and payload bytes that will go again. Both detection
 // paths (an ACK, the loss timer) end here, so a count lives in one place.
+//
+// In the application space, what the connection's state has made stale
+// leaves a payload before it is queued, as it does at the queue's head
+// (fitLocked): a pass that the window stops at the head would otherwise let
+// stale payloads pile up behind it.
 func (c *Conn) queueLostLocked(sp *space, out ackOutcome) {
-	sp.retrans = append(sp.retrans, out.lost...)
 	c.lostPackets += out.lostCount
+	app := sp == &c.spaces[spaceApplication]
 	for _, payload := range out.lost {
+		if app {
+			if payload = c.pruneStaleLocked(payload); len(payload) == 0 {
+				continue
+			}
+		}
+		sp.retrans = append(sp.retrans, payload)
 		c.bytesRetransmitted += uint64(len(payload))
 	}
 }
@@ -1533,6 +1544,17 @@ func (c *Conn) staleLocked(f *Frame) bool {
 	case f.Type == frameStreamsBlocked, f.Type == frameStreamsBlocked|1:
 		opened, limit := c.localStreamCountersLocked(f.Type&1 != 0)
 		return *opened < *limit || *limit != f.value
+	// RFC 9000 §13.3: an updated credit is sent when the packet carrying
+	// the most recent one is lost, so a credit frame a newer value has
+	// superseded is owed nothing. Kept, a peer that acknowledges only its
+	// newest packet would grow the queue by one grant per stream it
+	// retires, for as long as the connection lives.
+	case f.Type == frameMaxData:
+		return f.value < c.connRecv.max
+	case f.Type == frameMaxStreams:
+		return f.value < c.localMaxStreamsBidi
+	case f.Type == frameMaxStreams|1:
+		return f.value < c.localMaxStreamsUni
 	case f.Type == frameMaxStreamData:
 		s := c.streams[f.StreamID]
 		if s == nil {
@@ -1540,7 +1562,7 @@ func (c *Conn) staleLocked(f *Frame) bool {
 		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		return s.fin || s.readReset
+		return s.fin || s.readReset || f.value < s.recvQ.max
 	case f.Type == FrameStopSending:
 		s := c.streams[f.StreamID]
 		if s == nil {
