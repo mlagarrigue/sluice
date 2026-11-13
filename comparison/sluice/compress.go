@@ -9,13 +9,20 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/andybalholm/brotli"
+	kpgzip "github.com/klauspost/compress/gzip"
+	"github.com/klauspost/compress/zstd"
+
 	"github.com/mlagarrigue/sluice"
 )
 
 // Axis F of the internal study: the buffered body of every answer, encoded
-// with gzip or deflate from the standard library when the client accepts it.
-// HTTP's "deflate" is a deflate stream inside the zlib format (RFC 9110
-// §8.4.1.2), not the raw stream some servers send.
+// when the client accepts it. gzip and deflate come from the standard
+// library; HTTP's "deflate" is a deflate stream inside the zlib format
+// (RFC 9110 §8.4.1.2), not the raw stream some servers send. zstd, br and the
+// klauspost gzip are the study's second level (§2.3 bis): what Sluice.go
+// would gain from a module outside the root's graph, measured here and only
+// here (this module's go.mod; ADR 0002 is untouched).
 // Nothing here is an API of web: the study measures this stage first, and
 // the measurement decides whether web offers one (study, §8.5).
 //
@@ -30,32 +37,88 @@ const (
 	codecGzip1    = "gzip1"
 	codecGzip6    = "gzip6"
 	codecDeflate6 = "deflate6"
+	codecGzip1KP  = "gzip1-kp"
+	codecGzip6KP  = "gzip6-kp"
+	codecZstd     = "zstd"
+	codecBr       = "br"
 )
 
-// codec is one value of -compression: the token it answers to in
-// Accept-Encoding and Content-Encoding, and the level it encodes at.
-type codec struct {
-	token string // "gzip" or "deflate"; "" is identity
-	level int
-	pool  sync.Pool
+// codecNames is every value -compression takes, none first.
+var codecNames = []string{
+	codecNone, codecGzip1, codecGzip6, codecDeflate6,
+	codecGzip1KP, codecGzip6KP, codecZstd, codecBr,
 }
 
-// lookupCodec returns the codec the flag names, or nil for none.
+// brotliLevel is the quality of the br variant. Brotli's top quality, 11, is
+// the default of Node's zlib and aims at static files compressed once; on a
+// dynamic answer it ruins the CPU budget (study, §2.3 bis). On this server's
+// list (BenchmarkListCompress), 4 costs about what gzip 6 does and writes
+// less than half its bytes; 5 and 6 cost 1.6 and 2 times as much and write
+// slightly more.
+const brotliLevel = 4
+
+// codec is one value of -compression: the token it answers to in
+// Accept-Encoding and Content-Encoding, and how it builds an encoder.
+type codec struct {
+	token     string // "gzip", "deflate", "zstd" or "br"; "" is identity
+	newWriter func(io.Writer) resetWriter
+	pool      sync.Pool
+}
+
+// lookupCodec returns the codec the flag names, or nil for none. The levels
+// are constants of this file, so a constructor that refuses one is a bug of
+// this file: it panics at the first answer, in every test of the variant.
 func lookupCodec(name string) *codec {
 	switch name {
 	case codecGzip1:
-		return &codec{token: "gzip", level: gzip.BestSpeed}
+		return &codec{token: "gzip", newWriter: stdGzip(gzip.BestSpeed)}
 	case codecGzip6:
-		return &codec{token: "gzip", level: gzip.DefaultCompression}
+		return &codec{token: "gzip", newWriter: stdGzip(gzip.DefaultCompression)}
 	case codecDeflate6:
-		return &codec{token: "deflate", level: zlib.DefaultCompression}
+		return &codec{token: "deflate", newWriter: func(w io.Writer) resetWriter {
+			return must(zlib.NewWriterLevel(w, zlib.DefaultCompression))
+		}}
+	case codecGzip1KP:
+		return &codec{token: "gzip", newWriter: kpGzip(kpgzip.BestSpeed)}
+	case codecGzip6KP:
+		return &codec{token: "gzip", newWriter: kpGzip(kpgzip.DefaultCompression)}
+	case codecZstd:
+		// The library's default level, SpeedDefault (about zstd's level 3).
+		// One goroutine per encoder: the default is one per CPU, which a
+		// server answering many clients at once pays for nothing. The window
+		// stays at the library's 8 MiB, the ceiling RFC 9659 §3 sets for the
+		// "zstd" content coding.
+		return &codec{token: "zstd", newWriter: func(w io.Writer) resetWriter {
+			return must(zstd.NewWriter(w, zstd.WithEncoderLevel(zstd.SpeedDefault), zstd.WithEncoderConcurrency(1)))
+		}}
+	case codecBr:
+		return &codec{token: "br", newWriter: func(w io.Writer) resetWriter {
+			return brotli.NewWriterLevel(w, brotliLevel)
+		}}
 	}
 	return nil
 }
 
-// resetWriter is what gzip.Writer and zlib.Writer have in common: a reset
-// re-targets the encoder without rebuilding its tables, and a flush ends the
-// current deflate block so that everything written so far can be decoded.
+func stdGzip(level int) func(io.Writer) resetWriter {
+	return func(w io.Writer) resetWriter { return must(gzip.NewWriterLevel(w, level)) }
+}
+
+// kpGzip is klauspost's gzip, a drop-in replacement of compress/gzip: same
+// format, same levels, its own matcher.
+func kpGzip(level int) func(io.Writer) resetWriter {
+	return func(w io.Writer) resetWriter { return must(kpgzip.NewWriterLevel(w, level)) }
+}
+
+func must[W resetWriter](w W, err error) resetWriter {
+	if err != nil {
+		panic(err)
+	}
+	return w
+}
+
+// resetWriter is what every encoder here has in common: a reset re-targets
+// the encoder without rebuilding its tables, and a flush ends the current
+// block so that everything written so far can be decoded.
 type resetWriter interface {
 	io.WriteCloser
 	Reset(io.Writer)
@@ -115,24 +178,6 @@ func (c *codec) encodeStream(in sluice.Stream[[]byte]) sluice.Stream[[]byte] {
 		}
 		emit()
 	}
-}
-
-func (c *codec) newWriter(w io.Writer) resetWriter {
-	switch c.token {
-	case "gzip":
-		zw, err := gzip.NewWriterLevel(w, c.level)
-		if err != nil {
-			panic(err) // the levels are constants of this file
-		}
-		return zw
-	case "deflate":
-		zw, err := zlib.NewWriterLevel(w, c.level)
-		if err != nil {
-			panic(err)
-		}
-		return zw
-	}
-	panic("codec without a token")
 }
 
 // encode compresses body in one write and returns the encoded bytes. The

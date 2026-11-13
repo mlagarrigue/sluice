@@ -116,7 +116,7 @@ func parseOptions(args []string) (options, error) {
 	fs.StringVar(&o.response, "response", responseBuffered,
 		"axis E: buffered (R), stream (the list is written and flushed batch by batch, chunked; with -compression, the encoder is flushed per batch too)")
 	fs.StringVar(&o.compression, "compression", "none",
-		"axis F: none (R), gzip1, gzip6, deflate6; the body is encoded when the client accepts it")
+		"axis F: none (R), gzip1, gzip6, deflate6 (standard library), gzip1-kp, gzip6-kp, zstd, br (klauspost, andybalholm); the body is encoded when the client accepts it")
 
 	fs.StringVar(&o.json, "json", jsonStd,
 		"list encoder: std (R, encoding/json), append (a hand encoder of the list document, strconv.AppendInt; the other scenarios stay under encoding/json)")
@@ -166,7 +166,7 @@ func contractEnv(fs *flag.FlagSet, getenv func(string) string) error {
 		// The protocol picks R's transport for it; -transport names the
 		// study's other variants.
 		{"STUDY_PROTOCOL", "transport", map[string]string{"h1": transportNetHTTPH1, "h2": transportNetHTTPH2, "h3": transportHTTPStreamH3}},
-		{"STUDY_COMPRESSION", "compression", map[string]string{"off": "none", "gzip": codecGzip1, "deflate": codecDeflate6}},
+		{"STUDY_COMPRESSION", "compression", map[string]string{"off": "none", "gzip": codecGzip1, "deflate": codecDeflate6, "br": codecBr, "zstd": codecZstd}},
 		{"STUDY_DB_POOL", "db-conns", nil},
 		{"PGUSER", "db-user", nil},
 		{"PGDATABASE", "db-name", nil},
@@ -228,9 +228,7 @@ func (o options) validate() error {
 	default:
 		return fmt.Errorf("-response %q: unknown", o.response)
 	}
-	switch o.compression {
-	case codecNone, codecGzip1, codecGzip6, codecDeflate6:
-	default:
+	if !slices.Contains(codecNames, o.compression) {
 		return fmt.Errorf("-compression %q: unknown", o.compression)
 	}
 	switch o.json {

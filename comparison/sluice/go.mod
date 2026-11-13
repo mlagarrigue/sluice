@@ -16,7 +16,9 @@ go 1.26.0
 replace github.com/mlagarrigue/sluice => ../..
 
 require (
+	github.com/andybalholm/brotli v1.3.0
 	github.com/jackc/pgx/v5 v5.10.0
+	github.com/klauspost/compress v1.20.4
 	github.com/mlagarrigue/sluice v0.0.0
 	github.com/quic-go/quic-go v0.65.0
 )

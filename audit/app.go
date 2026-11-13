@@ -76,7 +76,7 @@ var appEnv = []struct {
 	{"STUDY_TLS_KEY", "key", nil},
 	{"STUDY_TLS_RESUME", "tls-resume", map[string]string{"on": "true", "off": "false"}},
 	{"STUDY_PROTOCOL", "transport", map[string]string{"h1": "nethttp-h1", "h2": "nethttp-h2", "h3": "httpstream-h3"}},
-	{"STUDY_COMPRESSION", "compression", map[string]string{"off": "none", "gzip": "gzip1", "deflate": "deflate6"}},
+	{"STUDY_COMPRESSION", "compression", map[string]string{"off": "none", "gzip": "gzip1", "deflate": "deflate6", "br": "br", "zstd": "zstd"}},
 	{"STUDY_DB_POOL", "db-conns", nil},
 	{"PGUSER", "db-user", nil},
 	{"PGDATABASE", "db-name", nil},

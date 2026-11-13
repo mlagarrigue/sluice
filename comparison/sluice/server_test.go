@@ -2,8 +2,6 @@ package main
 
 import (
 	"bytes"
-	"compress/gzip"
-	"compress/zlib"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -76,6 +74,17 @@ var variants = []variant{
 	{"json-append", []string{"-json", "append"}},
 	{"json-append-stream", []string{"-json", "append", "-response", "stream"}},
 	{"json-append-gzip6", []string{"-json", "append", "-compression", "gzip6"}},
+	{"gzip1-kp", []string{"-compression", "gzip1-kp"}},
+	{"gzip6-kp", []string{"-compression", "gzip6-kp"}},
+	{"zstd", []string{"-compression", "zstd"}},
+	{"br", []string{"-compression", "br"}},
+	{"httpstream-h2-zstd", []string{"-transport", "httpstream-h2", "-compression", "zstd"}},
+	{"stream-gzip1-kp", []string{"-response", "stream", "-compression", "gzip1-kp"}},
+	{"stream-gzip6-kp", []string{"-response", "stream", "-compression", "gzip6-kp"}},
+	{"stream-zstd", []string{"-response", "stream", "-compression", "zstd"}},
+	{"stream-br", []string{"-response", "stream", "-compression", "br"}},
+	{"httpstream-h2-stream-br", []string{"-transport", "httpstream-h2", "-response", "stream", "-compression", "br"}},
+	{"httpstream-h1-stream-zstd", []string{"-transport", "httpstream-h1", "-response", "stream", "-compression", "zstd"}},
 	{"httpstream-h1-json-append", []string{"-transport", "httpstream-h1", "-json", "append"}},
 }
 
@@ -208,7 +217,7 @@ func (s *server) do(method, path string, body []byte) (reply, error) {
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	req.Header.Set("Accept-Encoding", "gzip, deflate")
+	req.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return reply{}, err
@@ -222,16 +231,13 @@ func (s *server) do(method, path string, body []byte) (reply, error) {
 		if s.o.compression != codecNone {
 			return reply{}, fmt.Errorf("-compression %s answered without Content-Encoding", s.o.compression)
 		}
-	case "gzip":
-		if r, err = gzip.NewReader(resp.Body); err != nil {
-			return reply{}, err
-		}
-	case "deflate":
-		if r, err = zlib.NewReader(resp.Body); err != nil {
-			return reply{}, err
-		}
 	default:
-		return reply{}, fmt.Errorf("Content-Encoding %q", ce)
+		if r, err = openDecoder(ce, resp.Body); err != nil {
+			return reply{}, fmt.Errorf("Content-Encoding %q: %w", ce, err)
+		}
+		if c, ok := r.(io.Closer); ok {
+			defer c.Close()
+		}
 	}
 	if ce := resp.Header.Get("Content-Encoding"); ce != "" {
 		if want := lookupCodec(s.o.compression); want == nil || want.token != ce {
@@ -448,7 +454,7 @@ func TestUnimplementedVariantsRefuse(t *testing.T) {
 		{"-transport", "httpstream-h3", "-tls=false"},
 		{"-driver", "libpq"},
 		{"-response", "chunked"},
-		{"-compression", "br"},
+		{"-compression", "br11"},
 		{"-json", "fast"},
 		{"-transport", "nethttp-h2", "-tls=false"},
 		{"-transport", "nethttp-h1", "-max-requests-per-conn", "-1"},
