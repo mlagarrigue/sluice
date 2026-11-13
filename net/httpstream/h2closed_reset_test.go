@@ -1,6 +1,7 @@
 package httpstream
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
@@ -349,6 +350,31 @@ func TestH2OversizedHeadersOnAHalfClosedStreamIsStreamClosed(t *testing.T) {
 	for i := range 65 {
 		block = literal(block, "x-f"+strconv.Itoa(i), "v")
 	}
+	c.frame(h2Frame{Type: frameHeaders, Flags: flagEndHeaders | flagEndStream, StreamID: 1, Payload: block})
+	c.flush()
+	if code := c.waitReset(1); code != errStreamClosed {
+		t.Errorf("stream 1 was reset with %#x, want STREAM_CLOSED (%#x)", code, errStreamClosed)
+	}
+	if got := h2Status(c.heads[1]); got != 0 {
+		t.Errorf("a %d head answered a block on a half-closed stream", got)
+	}
+}
+
+// The same, when the block's decoded list is past MaxHeaderBytes rather than
+// past MaxHeaders: the decoder's bound is judged in blockRefused, which
+// answered 431 on any stream not yet closed. 1,000 one-byte references to
+// the static table's ":method GET" are 1,000 bytes on the wire, inside every
+// frame bound, and 42,000 bytes decoded, past the default 32 KiB list.
+func TestH2OverlongHeadersOnAHalfClosedStreamIsStreamClosed(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release) // before serveTest's cleanup, which waits for the handler
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		<-release
+		return sluice.Batch[Response]{Items: make([]Response, b.Len())}
+	})
+	c := dialH2(t, addr)
+	c.request(1, "GET", "/held")
+	block := bytes.Repeat([]byte{0x82}, 1000)
 	c.frame(h2Frame{Type: frameHeaders, Flags: flagEndHeaders | flagEndStream, StreamID: 1, Payload: block})
 	c.flush()
 	if code := c.waitReset(1); code != errStreamClosed {

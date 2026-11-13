@@ -711,13 +711,18 @@ func (s *h2Conn) headers(f h2Frame) (*h2Stream, error) {
 // doubt; a list over its bound is a 431 on the stream, because the decoder
 // read the block to its end and the table is consistent (RFC 9113 §10.5.1).
 // On a stream already closed it is nothing at all, for the reason the
-// field-count bound in headers gives.
+// field-count bound in headers gives; on one the client ended it is
+// STREAM_CLOSED, as headers answers any block there (RFC 9113 §5.1), not a
+// request to answer 431.
 func (s *h2Conn) blockRefused(st *h2Stream, err error) error {
 	switch {
 	case !errors.Is(err, errHeadersTooLarge):
 		return err
 	case st.state == stateClosed:
 		return nil
+	case st.state == stateHalfClosed || st.bodyEnded:
+		return streamFail(st.id, errStreamClosed,
+			"%w: HEADERS on stream %d after it ended", ErrH2Protocol, st.id)
 	}
 	return statusFail(st.id, 431, nil, "%w", err)
 }
