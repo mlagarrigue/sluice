@@ -340,6 +340,8 @@ func TestH3FinInsideAFrameOverItsBoundIsAConnectionError(t *testing.T) {
 		{"HEADERS over MaxHeaderBytes", cut(h3Headers, 1025)},
 		{"DATA over MaxBodyBytes", after(cut(h3Data, 4097))},
 		{"trailers over MaxHeaderBytes", after(cut(h3Headers, 1025))},
+		{"HEADERS over MaxBodyBytes", cut(h3Headers, 4097)},
+		{"trailers over MaxBodyBytes", after(cut(h3Headers, 4097))},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			a := testAssembler(Config{MaxHeaderBytes: 1024, MaxBodyBytes: 4096, BodyDelivery: BodyWhole})

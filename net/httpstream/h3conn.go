@@ -1304,13 +1304,18 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 		// request stream never carries is judged on its type first — the
 		// connection error requestFrame gives it under the bound — so its
 		// declared length cannot buy it the lesser stream error. Any other type
-		// keeps the refusal parseH3Frames gave it.
+		// keeps the refusal parseH3Frames gave it — unless the FIN cut it, as
+		// for a frame over the header bound below: the truncation is judged
+		// before the size of a frame that never arrived (RFC 9114 §7.1).
 		if err != nil {
-			typ, _, e := varint.Read(rest)
+			typ, after, e := varint.Read(rest)
 			switch {
 			case e == nil && (typ == h3Settings || typ == h3GoAway || typ == h3MaxPushID || typ == h3CancelPush || typ == h3PushPromise):
 				return fmt.Errorf("%w: frame type %#x does not belong on a request stream", errH3FrameUnexpected, typ)
 			case e != nil || typ != h3Data:
+				if length, payload, e2 := varint.Read(after); e == nil && e2 == nil && a.fin && uint64(len(payload)) < length {
+					return a.truncated(st, length, payload)
+				}
 				return err
 			}
 		}
