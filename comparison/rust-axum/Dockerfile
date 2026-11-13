@@ -8,29 +8,29 @@
 # DataLoader (CMP-28).
 #
 # standard-doc is Docker's guide for Rust: the server built in the Rust
-# image with its caches mounted, run from a slim base as a user with no
-# rights. The guide's base is Alpine; this one is Debian slim, the C
-# library the Rust image builds against (declared in comparison/README.md).
-# optimised-opt is the `optimised` profile's build on a distroless image with
-# the C runtime and nothing else. The server has no way to make a
-# certificate at startup without one more crate, so the images carry one for
-# a local run, made when they are built and named by STUDY_TLS_CERT and
-# STUDY_TLS_KEY; a campaign names its own. The bases are pinned by digest.
+# Alpine image with the guide's build packages and its caches mounted, run
+# from Alpine as a user with no rights. optimised-opt is the `optimised`
+# profile's build in the Debian Rust image, on a distroless image with the C
+# runtime and nothing else. The server has no way to make a certificate at
+# startup without one more crate, so the images carry one for a local run,
+# made when they are built and named by STUDY_TLS_CERT and STUDY_TLS_KEY; a
+# campaign names its own. The bases are pinned by digest.
 FROM alpine:3@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf AS cert
 RUN apk add --no-cache openssl && mkdir /cert && \
     openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 3650 \
       -subj /CN=study-contender -addext subjectAltName=DNS:localhost,IP:127.0.0.1 \
       -keyout /cert/key.pem -out /cert/cert.pem && chmod 644 /cert/key.pem /cert/cert.pem
 
-FROM rust:1-slim@sha256:cc9edbcadf2c27013a642b1d1bb7504e26b1142d6b5ebe58f64cf2eb2bc128ae AS build
+FROM rust:1-alpine@sha256:2cccd8b212b37dad15a555589c1b6787da4ab913fe24d8a9b2d99d3498869409 AS build
+RUN apk add --no-cache clang lld musl-dev git
 WORKDIR /app
 COPY comparison/rust-axum/ ./
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
     cargo build --locked --release && cp target/release/server target/release/dataloader /
 
-FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS standard-doc
-RUN useradd --system --no-create-home --uid 10001 appuser
+FROM alpine:3@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf AS standard-doc
+RUN adduser --disabled-password --gecos "" --home /nonexistent --shell /sbin/nologin --no-create-home --uid 10001 appuser
 COPY --from=build /server /usr/local/bin/server
 COPY --from=cert /cert /cert
 ENV STUDY_LISTEN=0.0.0.0:8443 STUDY_TLS_CERT=/cert/cert.pem STUDY_TLS_KEY=/cert/key.pem
@@ -42,7 +42,9 @@ FROM standard-doc AS dataloader-doc
 COPY --from=build /dataloader /usr/local/bin/dataloader
 CMD ["/usr/local/bin/dataloader"]
 
-FROM build AS build-opt
+FROM rust:1-slim@sha256:cc9edbcadf2c27013a642b1d1bb7504e26b1142d6b5ebe58f64cf2eb2bc128ae AS build-opt
+WORKDIR /app
+COPY comparison/rust-axum/ ./
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
     cargo build --locked --profile optimised && cp target/optimised/server /server-opt

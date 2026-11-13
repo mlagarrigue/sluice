@@ -783,15 +783,17 @@ Source: The Rust Performance Book, "Build Configuration". No
 stops only the task (§2.4: acceptable in production). No other allocator:
 that would be one more crate.
 
-**The images**: `standard-doc` is Docker's guide for Rust (built in the Rust
-image with its caches mounted, run from a slim base as a user with no
-rights), on Debian slim instead of the guide's Alpine — the C library the
-Rust image builds against; `optimised-opt` is the `optimised` profile on
-distroless `cc-debian13`, as a user with no rights. A local certificate
-made when the image is built, as for Node.
+**The images**: `standard-doc` is Docker's guide for Rust as it writes it
+(built in the Rust Alpine image with its build packages and its caches
+mounted, run from Alpine as a user with no rights); `optimised-opt` is the
+`optimised` profile built in the Debian Rust image, on distroless
+`cc-debian13`, as a user with no rights. A local certificate made when the
+image is built, as for Node.
 
 **Checked** by `conform.sh`, 300 requests: both images over h1 and h2, with
-and without gzip, conformant. Sizes: 134 MB and 55 MB.
+and without gzip, conformant. Sizes: 29 MB for the documentation's image
+(musl, Alpine), 55 MB for the optimised one (glibc, distroless) — the
+documentation's image is the smaller, a result of §1.4 published as it is.
 
 **The variant "with" (`src/bin/dataloader.rs`, CMP-28)** is `src/main.rs`
 whose unit reads go through `async-graphql`'s `DataLoader`, used on its own,
