@@ -163,7 +163,13 @@ public sealed record Contract(
     /// <summary>
     /// ResponseCompression with the one coding the run names, over TLS too
     /// (EnableForHttps: the contract compresses there); gzip at level 1
-    /// (CompressionLevel.Fastest), br at .NET's Optimal.
+    /// (CompressionLevel.Fastest), br at .NET's Optimal, which is R's
+    /// quality 4: BrotliCompressionProvider builds a BrotliStream with
+    /// Options.Level, whose constructor sets the encoder's quality through
+    /// BrotliUtils.GetQualityFromCompressionLevel, Optimal giving
+    /// Quality_Default = 4 (dotnet/runtime release/10.0,
+    /// src/libraries/System.IO.Compression.Brotli/src/System/IO/Compression/BrotliUtils.cs;
+    /// Fastest is 1, SmallestSize 11).
     /// </summary>
     public void AddCompression(IServiceCollection services)
     {

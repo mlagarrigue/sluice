@@ -1096,7 +1096,9 @@ variables mapped onto Kestrel's configuration (one endpoint, one protocol;
 HTTP/3 alone listens on UDP only); everyone's TLS (TLS 1.3 only, ALPN naming
 the one protocol); `ResponseCompression` over TLS too (`EnableForHttps`,
 which the documentation leaves off by default because of CRIME and BREACH),
-gzip at level 1 (`Fastest`), br at .NET's `Optimal`, no size threshold; no
+gzip at level 1 (`Fastest`), br at .NET's `Optimal`, which the runtime
+turns into brotli quality 4, R's (`BrotliUtils` in `dotnet/runtime`
+10.0, cited in `Contract.cs`), no size threshold; no
 GSS encryption for Npgsql (it tries it first on every connection, the
 images carry no Kerberos library, and no other contender's driver tries
 it); R's documents and the metrics point. msquic is not in the runtime
