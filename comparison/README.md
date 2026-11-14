@@ -1008,20 +1008,23 @@ comparison/chain/conform.sh java-spring:optimised-opt h2 gzip
 
 ## `dotnet-minimal/` — the .NET contender
 
-ASP.NET Core Minimal APIs and Dapper on Npgsql, without grouping: the .NET
-contender of level 2 (study §2.5, §2.6). .NET 10 in containers. The project
-is `dotnet new web`'s, with `Dapper` and `Npgsql` added and frozen by
-`packages.lock.json` (restored in `--locked-mode`); Dependabot opens
-security updates only.
+ASP.NET Core Minimal APIs and Dapper on Npgsql, without grouping and with:
+the .NET contender of level 2 (study §2.5, §2.6). .NET 10 in containers.
+The project is `dotnet new web`'s, with `Dapper`, `Npgsql` and `GreenDonut`
+added and frozen by `packages.lock.json` (restored in `--locked-mode`);
+Dependabot opens security updates only.
 
 | Image | Serves | Refuses at startup |
 |---|---|---|
 | `standard-doc` | h1, h2 and h3 over TLS, h1 in clear; gzip, br | deflate, zstd (`ResponseCompression` offers neither) |
 | `optimised-opt` | the same | the same |
+| `dataloader-doc` | as `standard-doc`: the variant "with" grouping (GreenDonut) | the same |
+| `multiplexing-opt` | as `optimised-opt`, Npgsql's multiplexing on | the same |
 
-The only contender outside Go that serves HTTP/3: Kestrel on msquic. Both
-images run the same code; `Contract.cs` holds what the contract demands,
-`Program.cs` the contender's own code (the routes, their queries).
+The only contender outside Go that serves HTTP/3: Kestrel on msquic. The
+images run the same code, an argument picking a variant; `Contract.cs`
+holds what the contract demands, `Program.cs` the contender's own code (the
+routes, their queries), `Dataloader.cs` the variant "with".
 
 **Standard version**: the routes as the Minimal APIs tutorial writes them,
 the SQL written by hand as Dapper's README does. Deviations from the
@@ -1078,6 +1081,29 @@ image. A local certificate made when the image is built.
 with and without gzip, and br over h2 — fourteen cases conformant; deflate
 and zstd refused; h1 in clear served. Sizes: 355 MB for the documentation's
 image, 199 MB for the optimised one.
+
+**The variant "with" (`Dataloader.cs`, image `dataloader-doc`)** is the
+standard version whose unit read goes through a DataLoader of GreenDonut,
+.NET's port and the one Hot Chocolate uses: the keys a batch gathers leave
+as one `= ANY(@ids)` query, each batch counted in `batches`. One deviation
+from the documentation, declared (§2.1): Hot Chocolate builds its loaders
+per GraphQL request, which with one key per HTTP request groups nothing;
+this one is shared by the process. Default settings: no cache (GreenDonut
+caches only when given one), at most 1 024 keys a batch, batches dispatched
+by `AutoBatchScheduler`, its default scheduler.
+Under 64 concurrent requests over h1: 192 keys in 176 batches (166 of one
+key) — the default's result, published with the size observed, as for
+Node's. Conformant over h1, h2 (gzip) and h3.
+
+**Multiplexing (`multiplexing-opt`)**: the study left open whether .NET's
+"with" is GreenDonut or Npgsql's multiplexing (§2.1). They are not one
+mechanism: GreenDonut merges concurrent keys into one `= ANY` query, as the
+other columns "with" do, and is the variant "with"; multiplexing
+(`Multiplexing=true`, Npgsql's documentation for high concurrency) pipelines
+the independent commands of concurrent requests on fewer connections, and
+is a variant of the optimised image — the same code, the pool's option on —
+so that the campaign measures it rather than this page deciding it.
+Conformant over h1, h2 (gzip) and h3.
 
 ```
 docker build -f comparison/dotnet-minimal/Dockerfile --target optimised-opt -t dotnet-minimal:optimised-opt .

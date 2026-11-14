@@ -8,11 +8,25 @@
         "resolved": "2.1.89",
         "contentHash": "1VjFE664wnxvuhlgP8kS4PeFFF4jqD3VkbIHW6Zlc52zuibgcz5ICnIHcQXlTp6pURpPNGLV0ZpNe5x9KePJnA=="
       },
+      "GreenDonut": {
+        "type": "Direct",
+        "requested": "[16.7.5, )",
+        "resolved": "16.7.5",
+        "contentHash": "0qqB4TJWfwq+q+rmo7jDGb4jDrdzPyXzOTbzSuNlGuZht2pg04wu1ySrpUkuUbYRAs31qyDh72GDdZ0pK5Yh6w==",
+        "dependencies": {
+          "GreenDonut.Abstractions": "16.7.5"
+        }
+      },
       "Npgsql": {
         "type": "Direct",
         "requested": "[10.0.3, )",
         "resolved": "10.0.3",
         "contentHash": "7nb5YzXuvWWJxB0J8DiyL3we+X4FOctZrt0fIBnucOIaIevFEEwGQVZKtiu9olXdlNAK1eNgqSral6r/jlhI4w=="
+      },
+      "GreenDonut.Abstractions": {
+        "type": "Transitive",
+        "resolved": "16.7.5",
+        "contentHash": "uwS8Hc32V2E7ligPHaY27ajM65B0r6A0fKF59KcaRqrlc35C24sBf6NloSncxVeKC7pBNM3lnvl9FQ0zIXJYtA=="
       }
     },
     "net10.0/linux-x64": {}

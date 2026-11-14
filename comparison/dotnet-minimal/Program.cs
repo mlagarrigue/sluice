@@ -23,11 +23,14 @@ catch (Refused e)
 }
 Console.Error.WriteLine($"dotnet-minimal: {cfg.Protocol} on {cfg.Host}:{cfg.Port} ({cfg.Summary()})");
 var metrics = new Metrics();
+// The image's argument picks a variant: "dataloader" (Dataloader.cs), or
+// "multiplexing" (Npgsql's, an option of the pool).
+var grouped = args.Contains("dataloader");
 
 var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.ConfigureKestrel(cfg.Configure);
 cfg.AddCompression(builder.Services);
-builder.Services.AddSingleton(cfg.DataSource());
+builder.Services.AddSingleton(cfg.DataSource(multiplexing: args.Contains("multiplexing")));
 
 var app = builder.Build();
 if (cfg.Compression != "off")
@@ -55,7 +58,17 @@ static bool ParseKey(string? s, out long v) =>
 
 app.MapGet("/static", () => Results.Json(Contract.Static));
 
-app.MapGet("/orders/{id}", async (string id, NpgsqlDataSource db) =>
+// The variant "with" maps its own unit read (Dataloader.cs).
+if (grouped)
+{
+    Dataloader.MapUnit(app, metrics);
+}
+else
+{
+    app.MapGet("/orders/{id}", Unit);
+}
+
+static async Task<IResult> Unit(string id, NpgsqlDataSource db)
 {
     if (!ParseKey(id, out var key))
     {
@@ -74,7 +87,7 @@ app.MapGet("/orders/{id}", async (string id, NpgsqlDataSource db) =>
         return FailKey(503, "unavailable", key);
     }
     return order is null ? FailKey(404, "no such key", key) : Results.Json(order);
-});
+}
 
 app.MapGet("/orders", async ([FromQuery(Name = "from")] string? from, string? limit, NpgsqlDataSource db) =>
 {
@@ -136,7 +149,7 @@ app.MapPost("/orders", async (HttpRequest request, NpgsqlDataSource db) =>
     return Results.Json(new { key });
 });
 
-app.MapGet("/study/metrics", () => Results.Json(metrics.Document()));
+app.MapGet("/study/metrics", () => Results.Json(metrics.Document(grouped)));
 
 await app.RunAsync();
 return 0;

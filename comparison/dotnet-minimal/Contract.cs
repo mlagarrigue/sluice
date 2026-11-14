@@ -191,12 +191,15 @@ public sealed record Contract(
     /// The pool, from libpq's variables, which Npgsql also reads; the size is
     /// the contract's. No GSS encryption: Npgsql tries it first on every
     /// connection by default, the images carry no Kerberos library, and no
-    /// other contender's driver tries it.
+    /// other contender's driver tries it. Multiplexing, the variant's option,
+    /// pipelines the commands of concurrent requests on fewer connections
+    /// (Npgsql's documentation, "Multiplexing").
     /// </summary>
-    public NpgsqlDataSource DataSource()
+    public NpgsqlDataSource DataSource(bool multiplexing)
     {
         var b = new NpgsqlConnectionStringBuilder
         {
+            Multiplexing = multiplexing,
             GssEncryptionMode = GssEncryptionMode.Disable,
             Host = Environment.GetEnvironmentVariable("PGHOST") ?? "localhost",
             Port = int.TryParse(Environment.GetEnvironmentVariable("PGPORT"), out var p) ? p : 5432,
@@ -218,8 +221,8 @@ public sealed record Contract(
 /// makes the application's threads do is in their CPU, not here. The
 /// pauses are the runtime's own events, read in the process: from
 /// GCSuspendEEBegin to GCRestartEEEnd for a suspension made for a GC, one
-/// pause each. Buckets double from 10 us. batches is null: this version does
-/// not group.
+/// pause each. Buckets double from 10 us. batches is null unless the
+/// variant groups (Dataloader.cs, which counts each batch by RecordBatch).
 /// </summary>
 public sealed class Metrics : EventListener
 {
@@ -228,6 +231,25 @@ public sealed class Metrics : EventListener
     private double _pauseSeconds;
     private readonly SortedDictionary<double, long> _buckets = [];
     private DateTime? _suspended;
+    private long _batches;
+    private long _batchKeys;
+    private readonly SortedDictionary<long, long> _batchSizes = [];
+
+    /// <summary>Counts one batch of n keys, by size in powers of two.</summary>
+    public void RecordBatch(int n)
+    {
+        long le = 1;
+        while (le < n)
+        {
+            le *= 2;
+        }
+        lock (_lock)
+        {
+            _batches++;
+            _batchKeys += n;
+            _batchSizes[le] = _batchSizes.GetValueOrDefault(le) + 1;
+        }
+    }
 
     protected override void OnEventSourceCreated(EventSource source)
     {
@@ -268,16 +290,26 @@ public sealed class Metrics : EventListener
         }
     }
 
-    public Dictionary<string, object?> Document()
+    public Dictionary<string, object?> Document(bool grouped)
     {
         long count;
         double seconds;
         List<Dictionary<string, object>> buckets;
+        Dictionary<string, object>? batches = null;
         lock (_lock)
         {
             count = _pauses;
             seconds = _pauseSeconds;
             buckets = _buckets.Select(b => new Dictionary<string, object> { ["le"] = b.Key, ["count"] = b.Value }).ToList();
+            if (grouped)
+            {
+                batches = new()
+                {
+                    ["count"] = _batches,
+                    ["keys"] = _batchKeys,
+                    ["sizes"] = _batchSizes.Select(b => new Dictionary<string, object> { ["le"] = b.Key, ["count"] = b.Value }).ToList(),
+                };
+            }
         }
         return new()
         {
@@ -293,7 +325,7 @@ public sealed class Metrics : EventListener
                     ["buckets"] = buckets,
                 },
             },
-            ["batches"] = null,
+            ["batches"] = batches,
         };
     }
 

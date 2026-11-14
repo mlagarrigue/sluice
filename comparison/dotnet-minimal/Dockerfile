@@ -1,8 +1,10 @@
-# The .NET contender in containers (study §1.4): two images. Build from the
+# The .NET contender in containers (study §1.4): its images. Build from the
 # repository root, like the study's other images:
 #
 #   docker build -f comparison/dotnet-minimal/Dockerfile --target standard-doc -t dotnet-minimal:standard-doc .
 #   docker build -f comparison/dotnet-minimal/Dockerfile --target optimised-opt -t dotnet-minimal:optimised-opt .
+#   docker build -f comparison/dotnet-minimal/Dockerfile --target dataloader-doc -t dotnet-minimal:dataloader-doc .
+#   docker build -f comparison/dotnet-minimal/Dockerfile --target multiplexing-opt -t dotnet-minimal:multiplexing-opt .
 #
 # standard-doc is the ASP.NET Core documentation's Dockerfile: the SDK image
 # restores and publishes, the ASP.NET Core runtime image runs the app as its
@@ -53,3 +55,13 @@ ENV STUDY_LISTEN=0.0.0.0:8443 STUDY_TLS_CERT=/cert/cert.pem STUDY_TLS_KEY=/cert/
     DOTNET_GCDynamicAdaptationMode=0
 EXPOSE 8443
 ENTRYPOINT ["./Study"]
+
+# The variant "with" grouping (GreenDonut, Dataloader.cs): the
+# documentation's image, started with the argument that picks it.
+FROM standard-doc AS dataloader-doc
+ENTRYPOINT ["./Study", "dataloader"]
+
+# Npgsql's multiplexing, a variant of the optimised image: the same code,
+# the pool's option picked by the argument.
+FROM optimised-opt AS multiplexing-opt
+ENTRYPOINT ["./Study", "multiplexing"]

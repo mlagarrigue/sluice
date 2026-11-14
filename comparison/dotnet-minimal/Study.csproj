@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <PackageReference Include="Dapper" Version="2.1.89" />
+    <PackageReference Include="GreenDonut" Version="16.7.5" />
     <PackageReference Include="Npgsql" Version="10.0.3" />
   </ItemGroup>
 
