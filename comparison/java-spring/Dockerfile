@@ -3,6 +3,8 @@
 #
 #   docker build -f comparison/java-spring/Dockerfile --target standard-doc -t java-spring:standard-doc .
 #   docker build -f comparison/java-spring/Dockerfile --target optimised-opt -t java-spring:optimised-opt .
+#   docker build -f comparison/java-spring/Dockerfile --target dataloader-doc -t java-spring:dataloader-doc .
+#   docker build -f comparison/java-spring/Dockerfile --target native -t java-spring:native .
 #
 # The jar is built once, by Maven, from pom.xml. standard-doc is the Spring
 # Boot reference's "Dockerfiles" page: the jar extracted in layers onto the
@@ -44,6 +46,12 @@ ENV STUDY_LISTEN=0.0.0.0:8443 STUDY_TLS_CERT=/cert/cert.pem STUDY_TLS_KEY=/cert/
 EXPOSE 8443
 ENTRYPOINT ["java", "-jar", "application.jar"]
 
+# The variant "with" grouping (java-dataloader): the documentation's image,
+# started on dataloader.Application rather than the jar's own main class;
+# the extracted jar names its libraries in its manifest.
+FROM standard-doc AS dataloader-doc
+ENTRYPOINT ["java", "-cp", "application.jar", "dataloader.Application"]
+
 # The JRE of the optimised image: the modules the jar uses, without debug
 # symbols, man pages or header files.
 FROM eclipse-temurin:25-jdk@sha256:b8705e936964c228dfce359e63dbf08f6c69cb380ed1d576b1f6b1064f15567d AS jre
@@ -72,3 +80,27 @@ ENV STUDY_LISTEN=0.0.0.0:8443 STUDY_TLS_CERT=/cert/cert.pem STUDY_TLS_KEY=/cert/
     SPRING_THREADS_VIRTUAL_ENABLED=true
 EXPOSE 8443
 ENTRYPOINT ["/opt/jre/bin/java", "-XX:+UseZGC", "-XX:MaxRAMPercentage=75", "-XX:AOTCache=/application/application.aot", "-jar", "application.jar"]
+
+# The native image (study §2.6, "Pitfalls": another compiler, no JIT,
+# another collector -- measured for containerisation only, never under
+# load): the Spring Boot reference's `mvn -Pnative native:compile` on
+# GraalVM Community, Maven taken from the jar stage. Spring's ahead-of-time
+# processing runs the main class, which reads the contract: it is given the
+# local certificate. What a condition reads from a property is fixed here,
+# at build time.
+FROM ghcr.io/graalvm/native-image-community:25@sha256:0d936f32bb8acb5bc60c41b33e05f064d7a6aaf36b726538296c54949bd4a3c0 AS native-build
+COPY --from=jar /usr/share/maven /usr/share/maven
+COPY --from=jar /root/.m2 /root/.m2
+COPY --from=cert /cert /cert
+WORKDIR /build
+COPY comparison/java-spring/pom.xml pom.xml
+COPY comparison/java-spring/src src
+RUN STUDY_TLS_CERT=/cert/cert.pem STUDY_TLS_KEY=/cert/key.pem \
+    /usr/share/maven/bin/mvn -B -ntp -Pnative -DskipTests native:compile
+
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:cb87acc574abe719b6e5c547384defa2f7b1f24af9605d3f618cf852495d8be2 AS native
+COPY --from=native-build /build/target/java-spring /application/java-spring
+COPY --from=cert /cert /cert
+ENV STUDY_LISTEN=0.0.0.0:8443 STUDY_TLS_CERT=/cert/cert.pem STUDY_TLS_KEY=/cert/key.pem
+EXPOSE 8443
+ENTRYPOINT ["/application/java-spring"]

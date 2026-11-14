@@ -2,6 +2,7 @@ package study;
 
 import java.util.List;
 import java.util.Map;
+import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.dao.DataAccessException;
 import org.springframework.http.ResponseEntity;
@@ -22,21 +23,24 @@ import tools.jackson.databind.json.JsonMapper;
  * The four routes of the study, on JdbcTemplate as Spring's guide
  * "Accessing Relational Data using JDBC" uses it: SQL written by hand, a
  * RowMapper per row, the tables made by a CommandLineRunner at startup.
+ * The answers' records are named for binding: the handlers return
+ * ResponseEntity of Object, which a native image cannot see through.
  */
 @RestController
+@RegisterReflectionForBinding({Orders.Order.class, Orders.Page.class, Orders.Written.class})
 public class Orders implements CommandLineRunner {
-    record Order(long id, long total, String label) {}
+    public record Order(long id, long total, String label) {}
 
     record Page(long from, long limit, List<Order> items) {}
 
     record Written(long key) {}
 
-    private static final RowMapper<Order> ORDER =
+    protected static final RowMapper<Order> ORDER =
             (rs, n) -> new Order(rs.getLong("id"), rs.getLong("total"), rs.getString("label"));
 
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
-    private final JdbcTemplate jdbc;
+    protected final JdbcTemplate jdbc;
 
     public Orders(JdbcTemplate jdbc) {
         this.jdbc = jdbc;
@@ -47,11 +51,11 @@ public class Orders implements CommandLineRunner {
         Contract.WRITE_TABLE.forEach(jdbc::execute);
     }
 
-    private static ResponseEntity<Object> fail(int status, String error) {
+    protected static ResponseEntity<Object> fail(int status, String error) {
         return ResponseEntity.status(status).body(Map.of("error", error));
     }
 
-    private static ResponseEntity<Object> fail(int status, String error, long key) {
+    protected static ResponseEntity<Object> fail(int status, String error, long key) {
         return ResponseEntity.status(status).body(Map.of("error", error, "key", key));
     }
 

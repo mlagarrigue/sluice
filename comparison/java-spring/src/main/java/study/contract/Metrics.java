@@ -26,8 +26,9 @@ import jdk.jfr.consumer.RecordingStream;
  * here. The pauses are JFR's jdk.GCPhasePause events, streamed in the
  * process, one per stop-the-world pause of either collector, at nanosecond
  * resolution; JFR hands them over about once a second, so a document lags
- * the last second's pauses. Buckets double from 10 us. batches is null:
- * this version does not group.
+ * the last second's pauses. Buckets double from 10 us. batches is null
+ * unless the version groups (the DataLoader variant, which counts each
+ * batch with {@link #recordBatch}).
  */
 public final class Metrics {
     private Metrics() {}
@@ -37,12 +38,25 @@ public final class Metrics {
     private static long pauseNanos;
     private static final TreeMap<Double, Long> buckets = new TreeMap<>();
 
-    /** Starts the pause stream; called once, before the server listens. */
+    /**
+     * Starts the pause stream; called once, before the server listens. A
+     * native image built without JFR has none: the pauses then stay at zero,
+     * and the image is never measured under load (study 2.6). Spring's
+     * ahead-of-time processing runs the main class to build the native
+     * image: no stream then, whose thread would keep that JVM from exiting.
+     */
     public static void start() {
-        RecordingStream rs = new RecordingStream();
-        rs.enable("jdk.GCPhasePause").withThreshold(Duration.ZERO);
-        rs.onEvent("jdk.GCPhasePause", e -> record(e.getDuration().toNanos()));
-        rs.startAsync();
+        if (Boolean.getBoolean("spring.aot.processing")) {
+            return;
+        }
+        try {
+            RecordingStream rs = new RecordingStream();
+            rs.enable("jdk.GCPhasePause").withThreshold(Duration.ZERO);
+            rs.onEvent("jdk.GCPhasePause", e -> record(e.getDuration().toNanos()));
+            rs.startAsync();
+        } catch (RuntimeException | LinkageError e) {
+            System.err.println("metrics: no JFR, pauses not counted: " + e);
+        }
     }
 
     private static void record(long nanos) {
@@ -58,7 +72,28 @@ public final class Metrics {
         }
     }
 
+    private static long batches;
+    private static long batchKeys;
+    private static final TreeMap<Long, Long> batchSizes = new TreeMap<>();
+
+    /** Counts one batch of n keys, by size in powers of two (1, 2, 4...). */
+    public static void recordBatch(int n) {
+        long le = 1;
+        while (le < n) {
+            le *= 2;
+        }
+        synchronized (lock) {
+            batches++;
+            batchKeys += n;
+            batchSizes.merge(le, 1L, Long::sum);
+        }
+    }
+
     public static Map<String, Object> document() {
+        return document(false);
+    }
+
+    public static Map<String, Object> document(boolean grouped) {
         var os = (com.sun.management.OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean();
         List<Map<String, Object>> b = new ArrayList<>();
         long count;
@@ -79,8 +114,20 @@ public final class Metrics {
         doc.put("runtime", "java " + Runtime.version());
         doc.put("cpu_seconds", os.getProcessCpuTime() / 1e9);
         doc.put("gc", gc);
-        doc.put("batches", null);
+        doc.put("batches", grouped ? batchDocument() : null);
         return doc;
+    }
+
+    private static Map<String, Object> batchDocument() {
+        Map<String, Object> b = new LinkedHashMap<>();
+        List<Map<String, Object>> sizes = new ArrayList<>();
+        synchronized (lock) {
+            b.put("count", batches);
+            b.put("keys", batchKeys);
+            batchSizes.forEach((le, n) -> sizes.add(Map.of("le", le, "count", n)));
+        }
+        b.put("sizes", sizes);
+        return b;
     }
 
     private static final String[] COLLECTOR_THREADS = {"GC Thread", "G1 ", "Z"};

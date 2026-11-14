@@ -888,20 +888,23 @@ conformant. The optimised metrics point adds up its four workers under
 
 ## `java-spring/` — the Java contender
 
-Spring Boot, without grouping: the Java contender of level 2 (study §2.5,
-§2.6). Java 25 in containers; Spring Boot 4.1.2 (Spring MVC, Tomcat 11,
-Jackson 3), `JdbcTemplate` on HikariCP, PostgreSQL's JDBC driver. The
-`pom.xml` is start.spring.io's (dependencies `web`, `jdbc`, `postgresql`):
-the versions are those the Spring Boot parent fixes; Dependabot opens
-security updates only.
+Spring Boot, without grouping and with: the Java contender of level 2
+(study §2.5, §2.6). Java 25 in containers; Spring Boot 4.1.2 (Spring MVC,
+Tomcat 11, Jackson 3), `JdbcTemplate` on HikariCP, PostgreSQL's JDBC
+driver. The `pom.xml` is start.spring.io's (dependencies `web`, `jdbc`,
+`postgresql`), the versions those the Spring Boot parent fixes, plus
+`java-dataloader` 6.0.0 for the variant "with", which the parent does not
+manage; Dependabot opens security updates only.
 
 | Image | Serves | Refuses at startup |
 |---|---|---|
 | `standard-doc` | h1 and h2 over TLS, h1 in clear; gzip | h3 (Tomcat has none): published "not supported"; deflate, br, zstd |
 | `optimised-opt` | the same | the same |
+| `dataloader-doc` | as `standard-doc`: the variant "with" grouping | as `standard-doc` |
+| `native` | the same; containerisation only, never under load | the same |
 
-Both images run the same code, as for Rust: what the optimised one changes
-is the runtime's settings. What the versions share without being measured
+`standard-doc` and `optimised-opt` run the same code, as for Rust: what the
+optimised one changes is the runtime's settings. What the versions share without being measured
 on it lives in `study.contract` (the contract's environment, the TLS, the
 static document, the write table, the metrics point); the contender's own
 code is `study.Orders`.
@@ -961,6 +964,41 @@ with and without gzip — conformant; h3 refused at startup; h1 in clear
 served. No session ticket issued without `STUDY_TLS_RESUME=on`, one with it
 (the probe's control). Sizes: 549 MB for the documentation's image, 280 MB
 for the optimised one.
+
+**The variant "with" (`dataloader`, image `dataloader-doc`)** is
+`study.Orders` whose unit read goes through a DataLoader of
+`java-dataloader` 6.0.0 (graphql-java's): the keys loaded within one tick of
+its registry leave as one `= ANY(?)` query, each batch counted in
+`batches`. The class extends `study.Orders` and redefines only the unit
+read and the metrics point. One deviation from the documentation, declared
+(§2.1): graphql-java builds its loaders per GraphQL request, which with one
+key per HTTP request groups nothing; this one is shared by the process, its
+cache off. Default settings — a tick every 10 ms, no bound on a batch — but
+one: the registry's ticker mode. Without it a batch leaves only on an
+explicit `dispatch()`, which graphql-java's engine makes and a controller
+does not; and the ticker starts only at the first `dispatchAll()`, called
+once when the loader is built (without that call no unit read is ever
+answered, as the conformance check showed). The batch function is the
+README's: `CompletableFuture.supplyAsync` on the common pool. The
+documentation's image, started on `dataloader.Application`; conformant over
+h1 and h2, with and without gzip; under 64 concurrent requests over h1, 192
+keys in 23 batches (up to 64 keys).
+
+**The native image** (`native`; study §2.6, "Pitfalls": another compiler,
+no JIT, another collector — measured for containerisation only, never under
+load) is the Spring Boot reference's `mvn -Pnative native:compile` on
+GraalVM Community 25, on a distroless base. What a condition reads from a
+property is fixed when it is built. The handlers' records are named for
+binding (`@RegisterReflectionForBinding`), which the JVM images do not need.
+Its first figures, on this machine, against the JVM images over h2:
+
+| Image | Size | Startup (Spring's line) | Memory at rest |
+|---|---|---|---|
+| `standard-doc` | 549 MB | 2.49 s | 237 MiB |
+| `optimised-opt` | 280 MB | 1.72 s | 512 MiB (ZGC, 75 % of memory allowed to the heap) |
+| `native` | 174 MB | 0.15 s | 52 MiB |
+
+Conformant over h1 and h2 with gzip, like the others.
 
 ```
 docker build -f comparison/java-spring/Dockerfile --target optimised-opt -t java-spring:optimised-opt .
