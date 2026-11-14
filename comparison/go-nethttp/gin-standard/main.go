@@ -107,7 +107,7 @@ func (s *server) write(c *gin.Context) {
 		return
 	}
 	if _, err := s.db.Exec(c.Request.Context(), "INSERT INTO comparison_writes (key, total) VALUES ($1, $2)", req.Key, req.Total); err != nil {
-		log.Printf("write %d: %v", req.Key, err)
+		log.Printf("insert: %v", err)
 		c.JSON(http.StatusServiceUnavailable, errDoc{Error: "unavailable", Key: &req.Key})
 		return
 	}
