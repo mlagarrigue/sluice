@@ -190,8 +190,12 @@ up() {
     "$DB_IMAGE" \
     -c max_connections="$MAX_CONNECTIONS" -c shared_buffers=256MB \
     -c checkpoint_timeout=1h -c max_wal_size=8GB >/dev/null
+  # Over TCP: the image's initialisation runs a server of its own on the
+  # Unix socket alone (listen_addresses ''), then stops it; a probe on the
+  # socket can be answered by that one, and the psql after it meets
+  # "the database system is shutting down".
   for _ in $(seq 60); do
-    docker exec "$db" pg_isready -q -U study -d study 2>/dev/null && break
+    docker exec "$db" pg_isready -q -h 127.0.0.1 -U study -d study 2>/dev/null && break
     sleep 1
   done
   # The table is loaded once, frozen and never written: autovacuum has
@@ -207,6 +211,7 @@ CREATE TABLE bench_orders (id bigint PRIMARY KEY, total bigint NOT NULL,
 INSERT INTO bench_orders (id, total, label)
   SELECT g, g * 7, 'order-' || g FROM generate_series(1, $ROWS + 1000) g;
 VACUUM (FREEZE, ANALYZE) bench_orders;
+CHECKPOINT;
 SQL
   if on "$DB_RTT"; then
     tc_in "$db" "tc qdisc add dev eth0 root netem delay $DB_RTT limit $NETEM_LIMIT"
@@ -270,7 +275,10 @@ launch() {
 # to its last stage (§7.1).
 web() {
   launch >/dev/null
-  docker logs "$web" 2>&1 | head -1
+  # awk reads the whole log: head would close the pipe after the first
+  # line, and docker logs, killed by SIGPIPE, would fail the script under
+  # pipefail as soon as the server has written two lines.
+  docker logs "$web" 2>&1 | awk 'NR == 1'
 }
 
 # boot measures a start (§1.4) on the chain up built: from docker create to
