@@ -176,3 +176,23 @@ func TestVerdictAddsTheInjectedRTT(t *testing.T) {
 		}
 	}
 }
+
+// TestABudgetThatWillNotOpenIsAStage: against a port nobody listens on,
+// the budget's openings are refused, and the stage is written all the
+// same — broken, its refusals counted — rather than ended without a line,
+// which a campaign can only read as its own chain failing (CMP-34: an
+// HTTP/3 server that stopped answering new connections stopped the
+// rehearsal).
+func TestABudgetThatWillNotOpenIsAStage(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+	c := testCampaign(t, protoH1, "https://"+addr, "-scenario", "unit", "-rate", "100", "-duration", "1s")
+	rep := runStage(t, c)
+	if rep.Held || rep.Cause != causeSLO || rep.Refused == 0 || rep.Sent != rep.Refused || rep.OK != 0 {
+		t.Fatalf("held %v cause %q sent %d refused %d ok %d, want a broken stage of refusals", rep.Held, rep.Cause, rep.Sent, rep.Refused, rep.OK)
+	}
+}

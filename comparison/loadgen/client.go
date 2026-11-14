@@ -359,24 +359,24 @@ const freshSalt = 0x66726573685f636f
 // inside the measurement (§3.5). The connections an earlier stage opened
 // are kept. The answers are discarded; the opening is bounded by
 // warmDeadline, not by a request's deadline, since a few thousand
-// handshakes at once is no measurement.
-func (c *client) warm(ctx context.Context, conns int) error {
+// handshakes at once is no measurement. It returns the openings that
+// failed, each with its nature: the caller makes the stage of them.
+func (c *client) warm(ctx context.Context, conns int) []result {
 	c.mu.Lock()
 	from := len(c.conns)
 	for len(c.conns) < conns {
 		c.conns = append(c.conns, c.dial(true))
 	}
 	c.mu.Unlock()
-	errs := make([]error, conns-from)
+	results := make([]result, conns-from)
 	var wg sync.WaitGroup
 	for i := from; i < conns; i++ {
 		wg.Go(func() {
-			r := c.do(ctx, c.conns[i].hc, job{req: request{kind: static, method: "GET", path: "/static"}, due: time.Now()}, warmDeadline)
-			errs[i-from] = r.err
+			results[i-from] = c.do(ctx, c.conns[i].hc, job{req: request{kind: static, method: "GET", path: "/static"}, due: time.Now()}, warmDeadline)
 		})
 	}
 	wg.Wait()
-	return errors.Join(errs...)
+	return slices.DeleteFunc(results, func(r result) bool { return r.nature == natureOK })
 }
 
 // warmDeadline bounds the opening of the budget.
@@ -536,6 +536,10 @@ func classify(ctx context.Context, err error, opening bool) nature {
 			return natureConnectTimeout
 		}
 		return natureTimedOut
+	case opening && isQUICTimeout(err):
+		// QUIC's own timers end a handshake the server never answered
+		// before the request's deadline does: an opening timed out too.
+		return natureConnectTimeout
 	case errors.Is(err, syscall.ECONNRESET), errors.Is(err, syscall.EPIPE),
 		errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF), isStreamReset(err):
 		return natureReset
@@ -551,4 +555,12 @@ func isStreamReset(err error) bool {
 	var ae *quic.ApplicationError
 	var he *http3.Error
 	return errors.As(err, &se) || errors.As(err, &ae) || errors.As(err, &he)
+}
+
+// isQUICTimeout says whether QUIC gave up on a connection by its own
+// timers: the handshake's, or the idle timeout of a peer gone silent.
+func isQUICTimeout(err error) bool {
+	var ht *quic.HandshakeTimeoutError
+	var it *quic.IdleTimeoutError
+	return errors.As(err, &ht) || errors.As(err, &it)
 }

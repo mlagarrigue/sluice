@@ -331,7 +331,7 @@ func waitReady(ctx context.Context, st stage, within time.Duration, out io.Write
 			return json.NewEncoder(out).Encode(map[string]int64{"ready_unix_ns": time.Now().UnixNano(), "attempts": int64(attempt)})
 		}
 		if r.nature == natureBadKey {
-			return fmt.Errorf("%s answered, but not the key asked for", st.url)
+			return fmt.Errorf("%s answered, but not the key asked for: %w", st.url, r.err)
 		}
 		if time.Now().After(give) {
 			last := r.err

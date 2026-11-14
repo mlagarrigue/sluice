@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -34,8 +33,13 @@ func (st stage) run(ctx context.Context, cl *client) (whole report, perWindow []
 	draw := st.scenario.draw(st.seed, st.keyspace)
 	fresh := st.freshDraw()
 	conns, perConn := st.layout()
-	if err := cl.warm(ctx, conns); err != nil {
-		return report{}, nil, fmt.Errorf("opening the connections: %w", err)
+	if failed := cl.warm(ctx, conns); len(failed) > 0 {
+		// A budget that will not open is a stage all the same, made of the
+		// openings that failed, by nature: the server's refusals and
+		// silences break it, the tester's own exhaustion invalidates it
+		// (report.verdict). Without a line the campaign could only read a
+		// broken chain and stop.
+		return st.report(failed, 0, 0, 0), nil, nil
 	}
 
 	phases := st.phases()
