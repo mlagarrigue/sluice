@@ -6,6 +6,101 @@ impact, and what to write instead, is in the
 [migration guide](docs/migration.md), from 0.3.0 on: read the section that
 leaves your version, then each section above it up to the one you move to.
 
+## [0.5.1](https://github.com/mlagarrigue/sluice/compare/v0.5.0...v0.5.1) (2026-11-14)
+
+
+### Features
+
+* **audit:** read the application's log for EMFILE ([b350fb9](https://github.com/mlagarrigue/sluice/commit/b350fb9ff1e7a4a0f17bb489913faa4f56166337))
+* **bench:** .NET contender with a DataLoader ([c1b7b93](https://github.com/mlagarrigue/sluice/commit/c1b7b93c0a36b689926e4b2453f7830264b870d8))
+* **bench:** .NET contender, Minimal APIs ([3c996ca](https://github.com/mlagarrigue/sluice/commit/3c996caf80f22ba428f68f1536503235963fbff1))
+* **bench:** a contender makes its own certificate ([1549e81](https://github.com/mlagarrigue/sluice/commit/1549e81c10d32bd1f70d793c7c954e940106d550))
+* **bench:** Fastify contender, standard and optimised ([21f9cf5](https://github.com/mlagarrigue/sluice/commit/21f9cf5032c0227479764914abb4d25015c52454))
+* **bench:** first contender, net/http and pgx ([947e583](https://github.com/mlagarrigue/sluice/commit/947e5833fecb18249c6b78619f02912588bec34c))
+* **bench:** Gin contender, standard and optimised ([ad1ac0e](https://github.com/mlagarrigue/sluice/commit/ad1ac0e017425dfbd83f67b0de8303710049ae1e))
+* **bench:** Go contender with a DataLoader ([7aee58f](https://github.com/mlagarrigue/sluice/commit/7aee58f4147c2e2055de9b34268e49b5677b4192))
+* **bench:** images of the Go contenders ([47b8b01](https://github.com/mlagarrigue/sluice/commit/47b8b01ace32d6ab5eacb74e63b814ce68a2d2b7))
+* **bench:** Java contender with a DataLoader ([7bcceb8](https://github.com/mlagarrigue/sluice/commit/7bcceb8092080ea6974400fed3df26538c108380))
+* **bench:** Java contender, Spring Boot ([e7aa2df](https://github.com/mlagarrigue/sluice/commit/e7aa2df14475154c5b206b74c811ad1433054f71))
+* **bench:** Node contender with a DataLoader ([3a07053](https://github.com/mlagarrigue/sluice/commit/3a070530950f3c42b4f9ea8582b032147a26173f))
+* **bench:** Node contender, Express 5 and pg ([5e13416](https://github.com/mlagarrigue/sluice/commit/5e13416ac791850f62be7d01707ec7cf88feace0))
+* **bench:** optimised Node DataLoader on a time window ([844e777](https://github.com/mlagarrigue/sluice/commit/844e77754f385afdffe4b15d0aeb7c2810cc746c))
+* **bench:** Python contender with a DataLoader ([f8ca15d](https://github.com/mlagarrigue/sluice/commit/f8ca15d45964622334f1919a32bb8c0f5618f90f))
+* **bench:** Python contender, FastAPI ([42991e3](https://github.com/mlagarrigue/sluice/commit/42991e37c3c02a18a31bc218e1f07b5f1dad8d9b))
+* **bench:** Rust contender with a DataLoader ([5913b62](https://github.com/mlagarrigue/sluice/commit/5913b62f589f26a0f77bc55d5276e8c0e2051165))
+* **bench:** Rust contender, axum and sqlx ([8d4f668](https://github.com/mlagarrigue/sluice/commit/8d4f668d554777c26d3b15a9f814c0b2b9f633cc))
+* **bench:** Rust doc image on Docker's Alpine guide ([10f3ad1](https://github.com/mlagarrigue/sluice/commit/10f3ad12c07620fd6c22e197fd076e7c738437ec))
+* **bench:** writing cost per contender ([48708a4](https://github.com/mlagarrigue/sluice/commit/48708a47963377f3a6b7236bde3aa1c33b1fa433))
+* **bench:** zstd, br and klauspost gzip in the study ([6f2128f](https://github.com/mlagarrigue/sluice/commit/6f2128fe6218d58c01b513e4d0494bba822da53c))
+* **encoding:** CSV and JSON Lines sources and sinks ([6f62fce](https://github.com/mlagarrigue/sluice/commit/6f62fce076b00165724a82679ebd067b0c78f262))
+* **httpstream:** log the first failed accept of a burst ([c3b065f](https://github.com/mlagarrigue/sluice/commit/c3b065f03a08b303183dda14092a058c6596e074))
+* **nats:** JetStream pull consumer, ADR 0026 revised ([e33c85a](https://github.com/mlagarrigue/sluice/commit/e33c85abd9b33f17192ff78a4ddd23cbc5fd7ca1))
+* **nats:** TLS and acknowledged publishing, ADR 0026 revised ([518e71d](https://github.com/mlagarrigue/sluice/commit/518e71dd423aa2679d6df9f3a31bdfc1a5c5f917))
+* **redis:** consumer groups, ADR 0026 revised ([62c7296](https://github.com/mlagarrigue/sluice/commit/62c7296065e672cc2cdbb5ce2c43470a7e3d151c))
+* **redis:** RESP connection and pipelined batches ([3a71402](https://github.com/mlagarrigue/sluice/commit/3a714028132f4028798b684ff89ce1af46a99fa1))
+
+
+### Bug fixes
+
+* **audit:** bound the integers read from pg_settings ([7f618c2](https://github.com/mlagarrigue/sluice/commit/7f618c22fbf2bacde681201f22f3986c899091ab))
+* **audit:** follow firewall jumps into user chains ([8f9b247](https://github.com/mlagarrigue/sluice/commit/8f9b2476e8a70c6476f8dff341ba6e9745f1a602))
+* **bench:** keep the request's key out of the Go logs ([86abf39](https://github.com/mlagarrigue/sluice/commit/86abf39cd968f514f254898d69ad2c4db945f5ea))
+* **bench:** out-of-range keys answer as R does ([a45eb14](https://github.com/mlagarrigue/sluice/commit/a45eb14d5b249a2791bc76d5a4151bbe674365f9))
+* **bench:** read a streamed request body in the study ([fbf4f5e](https://github.com/mlagarrigue/sluice/commit/fbf4f5eca51a91fbb4b9f81a93385f5fc9f1a857))
+* **httpstream:** bound what a queued h2 body retains ([d6fcf9f](https://github.com/mlagarrigue/sluice/commit/d6fcf9f56f8070341ffb2fb80a9851b7ae7b0dde))
+* **httpstream:** cite a peer's name or method in its refusal ([144dba4](https://github.com/mlagarrigue/sluice/commit/144dba460cc75b53b29115d8f7de5d2d9d290d75))
+* **httpstream:** clear an h3 parse pass once it is handled ([32dc75d](https://github.com/mlagarrigue/sluice/commit/32dc75dfac08870ff5c643ba7474dc6e08ac6490))
+* **httpstream:** close a too-long block on an ended h2 stream ([3f1a88c](https://github.com/mlagarrigue/sluice/commit/3f1a88c37ee34dbd96e2234d9ed35d2833d80ab1))
+* **httpstream:** judge an h3 frame cut by FIN before its size ([6734797](https://github.com/mlagarrigue/sluice/commit/67347973a31d7074b306b99d7629a97b2118b59c))
+* **httpstream:** keep no more free streamers than in use ([8ef75fe](https://github.com/mlagarrigue/sluice/commit/8ef75fef7070e4b439ea32a2e6ccdc3ee49e08f0))
+* **httpstream:** reset an h2 stream only while it is answering ([62f6ae0](https://github.com/mlagarrigue/sluice/commit/62f6ae01ef9becdf62f5f14464111db74bdce79f))
+* **nats:** bound the SUB's write and end a refused pull ([20fda4d](https://github.com/mlagarrigue/sluice/commit/20fda4ddf04429adb488543cb8a69ae11faf778c))
+* **nats:** keep the password out of prints and logs ([416ed46](https://github.com/mlagarrigue/sluice/commit/416ed460ca7b180c437bacc814f6d4e00dc12933))
+* **nats:** let a started deadline land before returning ([79d7314](https://github.com/mlagarrigue/sluice/commit/79d7314c1d2e5ccc54ee75805a951565b13fcf4e))
+* **postgres:** hide the password from slog's JSON handler ([83ec6cd](https://github.com/mlagarrigue/sluice/commit/83ec6cd6105462c386bdee235119af19b9a731ab))
+* **postgres:** refuse a COPY field its length cannot say ([cf38a78](https://github.com/mlagarrigue/sluice/commit/cf38a785ccaa3966aa6dafe87769ad8561df68ef))
+* **quic:** admit one new Initial at a time ([979507c](https://github.com/mlagarrigue/sluice/commit/979507c3b76816ce7e1dbf99d012ea84f7240962))
+* **quic:** align challenge answers with identifier rules ([90d9c57](https://github.com/mlagarrigue/sluice/commit/90d9c57367198d07212c7bb88efcfa389416d43c))
+* **quic:** answer one address from two sockets under two IDs ([654f3ec](https://github.com/mlagarrigue/sluice/commit/654f3ec6c9fef0580657dacdb219802b12a800c1))
+* **quic:** ask for the 64 KiB receive buffer floor itself ([616f747](https://github.com/mlagarrigue/sluice/commit/616f747a875985e64124fda690d2d33b71bfbdbc))
+* **quic:** bound the wait for 1-RTT keys by the deadline ([264edf1](https://github.com/mlagarrigue/sluice/commit/264edf186947276a07be3db815d82e78764c59c8))
+* **quic:** count a failed read in the closing state ([d438841](https://github.com/mlagarrigue/sluice/commit/d438841340396401ec76c02088ea9a71121d1467))
+* **quic:** drop a held path response when Rebind moves ([7bcb405](https://github.com/mlagarrigue/sluice/commit/7bcb4055219c4a90399de37eea52b1062376539b))
+* **quic:** drop superseded credit from the resend queue ([d845f72](https://github.com/mlagarrigue/sluice/commit/d845f72da32cb8c8acbb1fe8620a00c99db6d1ea))
+* **quic:** keep no deadline for a stream out of the table ([b77fda3](https://github.com/mlagarrigue/sluice/commit/b77fda3173389234a6e852b6f7c6271ac20a64de))
+* **quic:** keep the first old-path challenge off the new path ([105b718](https://github.com/mlagarrigue/sluice/commit/105b718b68b36f552087aa665587ad979735360f))
+* **quic:** keep the smallest CRYPTO ring once it empties ([92fc926](https://github.com/mlagarrigue/sluice/commit/92fc926abd578e6f7924a10df3c66a5e0a6be3fb))
+* **quic:** read a packet's ACK before judging the record ([2cc92ab](https://github.com/mlagarrigue/sluice/commit/2cc92ab1e193c4ad14ba5afb3373a1db199e4e0a))
+* **quic:** read the address bound where it counts ([7405983](https://github.com/mlagarrigue/sluice/commit/7405983c4896fa2d01d62603b3228f33748ed0fa))
+* **quic:** refuse a handshake proven past MaxConnsPerIP ([ce9fce7](https://github.com/mlagarrigue/sluice/commit/ce9fce7ba0bc6985224cfa81c7aa8c408cc26250))
+* **quic:** wake a connection-credit writer on STOP_SENDING ([fa11b74](https://github.com/mlagarrigue/sluice/commit/fa11b743f7030d482ae491f1d7f3dcfd11b4d8d0))
+* **quic:** wake drain on an ACK of off-path packets ([4ce37e5](https://github.com/mlagarrigue/sluice/commit/4ce37e57eb8a0de1e49b93acfd08d8384a4e6e16))
+* **quic:** wake no credit writer for credit not given ([0df8375](https://github.com/mlagarrigue/sluice/commit/0df83756a4d81893265d6df6325d2382c1a15663))
+* **redis:** hold the reply bound on lengths and counts ([11dd55c](https://github.com/mlagarrigue/sluice/commit/11dd55c5e10294c5db9b70659293819a32a0b501))
+* **redis:** keep the password out of prints and logs ([659ca0e](https://github.com/mlagarrigue/sluice/commit/659ca0e450d595cf8183672cae532155216e7522))
+* **redis:** let a started deadline land before returning ([084b6e7](https://github.com/mlagarrigue/sluice/commit/084b6e7aa71ce772ee17a18c4686a1281109ea64))
+
+
+### Performance
+
+* **postgres:** array loops resume after each NULL ([71f1ec8](https://github.com/mlagarrigue/sluice/commit/71f1ec8e1d2e549b7f5271fe393a760c1d8ad52b))
+* **quic:** an ACK leaves stream-credit writers asleep ([88dd46c](https://github.com/mlagarrigue/sluice/commit/88dd46c0a8144b468d348ae10ce8efb81188c265))
+* **quic:** forget reset streams in mark order ([0016e18](https://github.com/mlagarrigue/sluice/commit/0016e18a480504bc8728c683c523fb1b5f440ea0))
+* **quic:** stream deadlines kept in a heap ([fda1465](https://github.com/mlagarrigue/sluice/commit/fda146562784de19e7ac3f38868e0753ae1a69b4))
+
+
+### Documentation
+
+* **bench:** no local startup or memory figures ([441ed5c](https://github.com/mlagarrigue/sluice/commit/441ed5c8809d9db63a3085d5c7ebb46efca747b9))
+* **encoding:** a CSV file copied into PostgreSQL ([a1a57f6](https://github.com/mlagarrigue/sluice/commit/a1a57f6b62b378bdee7952b659243894fb29de9a))
+* **encoding:** say what MaxRecordBytes counts and costs ([2fe3ef2](https://github.com/mlagarrigue/sluice/commit/2fe3ef280d3fdb66be96183df6776dd76ee5e4ce))
+* **httpstream:** a mid-request close is not logged ([f66b51d](https://github.com/mlagarrigue/sluice/commit/f66b51d65b3d31bc28a9b8e51caaadf7466555e2))
+* **httpstream:** count the third request buffer ([1c7b62d](https://github.com/mlagarrigue/sluice/commit/1c7b62df4b59ed49abdcbdf6bde685f69199063d))
+* limits name the Redis and NATS connectors ([90afa4e](https://github.com/mlagarrigue/sluice/commit/90afa4e342a62717a6c68c665629480b0fc056e4))
+* **quic:** ADR 0015 states where MaxPendingConns refuses ([169057b](https://github.com/mlagarrigue/sluice/commit/169057b3780082ccf982986ac40a814d498b001b))
+* **quic:** the held path response, written out ([30c2c96](https://github.com/mlagarrigue/sluice/commit/30c2c9629e6c16ffa00138e83a2bd0002409a8e6))
+* the guides install v0.5.0, not main ([b019690](https://github.com/mlagarrigue/sluice/commit/b019690f1ece03af4506d2f2a17f07b1e297d3fd))
+
 ## [0.5.0](https://github.com/mlagarrigue/sluice/compare/v0.4.0...v0.5.0) (2026-11-12)
 
 
