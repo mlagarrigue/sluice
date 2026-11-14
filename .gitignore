@@ -31,3 +31,6 @@ comparison/rust-axum/target/
 !comparison/rust-axum/src/bin/
 # The Java contender's build output.
 comparison/java-spring/target/
+# The .NET contender's build output.
+comparison/dotnet-minimal/bin/
+comparison/dotnet-minimal/obj/

@@ -1005,6 +1005,84 @@ docker build -f comparison/java-spring/Dockerfile --target optimised-opt -t java
 comparison/chain/conform.sh java-spring:optimised-opt h2 gzip
 ```
 
+## `dotnet-minimal/` — the .NET contender
+
+ASP.NET Core Minimal APIs and Dapper on Npgsql, without grouping: the .NET
+contender of level 2 (study §2.5, §2.6). .NET 10 in containers. The project
+is `dotnet new web`'s, with `Dapper` and `Npgsql` added and frozen by
+`packages.lock.json` (restored in `--locked-mode`); Dependabot opens
+security updates only.
+
+| Image | Serves | Refuses at startup |
+|---|---|---|
+| `standard-doc` | h1, h2 and h3 over TLS, h1 in clear; gzip, br | deflate, zstd (`ResponseCompression` offers neither) |
+| `optimised-opt` | the same | the same |
+
+The only contender outside Go that serves HTTP/3: Kestrel on msquic. Both
+images run the same code; `Contract.cs` holds what the contract demands,
+`Program.cs` the contender's own code (the routes, their queries).
+
+**Standard version**: the routes as the Minimal APIs tutorial writes them,
+the SQL written by hand as Dapper's README does. Deviations from the
+documentation, each because the contract demands it: the contract's
+variables mapped onto Kestrel's configuration (one endpoint, one protocol;
+HTTP/3 alone listens on UDP only); everyone's TLS (TLS 1.3 only, ALPN naming
+the one protocol); `ResponseCompression` over TLS too (`EnableForHttps`,
+which the documentation leaves off by default because of CRIME and BREACH),
+gzip at level 1 (`Fastest`), br at .NET's `Optimal`, no size threshold; no
+GSS encryption for Npgsql (it tries it first on every connection, the
+images carry no Kerberos library, and no other contender's driver tries
+it); R's documents and the metrics point. msquic is not in the runtime
+images: `libmsquic` 2.6.4 from packages.microsoft.com, pinned, copied with
+the `libnuma` it links.
+
+**TLS resumption, declared**: over h1 and h2, without `STUDY_TLS_RESUME`, a
+second connection does not resume (`AllowTlsResume = false`, checked: "New"),
+although OpenSSL still sends its two TLS 1.3 tickets, which serve nothing;
+with it, the connection resumes ("Reused"). Over h3, Kestrel refuses the
+callback that carries the setting: resumption there is .NET's default.
+
+**The metrics point**: `cpu_seconds` is the process's CPU. The runtime
+publishes no figure for its collector's CPU: `gc.cpu_seconds` is the CPU of
+its threads (`.NET Server GC`, one per heap, and the background collector's,
+which appears at its first collection), read from `/proc/self/task`. The
+pauses are the runtime's own events read in the process (an
+`EventListener`): from `GCSuspendEEBegin` to `GCRestartEEEnd` for a
+suspension made for a GC, one pause each. Server GC, ASP.NET Core's default.
+
+**Optimisations (optimised image)**, each with its source:
+
+1. ReadyToRun (.NET documentation, "ReadyToRun compilation"): the code
+   compiled ahead of time, at the cost of larger assemblies; the JIT still
+   recompiles the hot methods.
+2. ASP.NET Core's chiseled image (.NET documentation, "chiseled
+   containers"): no shell, no package manager, a user with no rights;
+   without ICU, hence invariant globalisation (the code reads the invariant
+   culture only).
+3. DATAS off (`DOTNET_GCDynamicAdaptationMode=0`, .NET documentation,
+   "Dynamic adaptation to application sizes"): on by default with Server GC
+   since .NET 9, it fits the number of heaps to the load to save memory; the
+   documentation says how to turn it off when throughput matters more.
+
+Left aside: native AOT (Dapper emits code at run time, which AOT forbids;
+Dapper.AOT is another package); JSON serialisation generated at compile
+time (it would change the code both images share).
+
+**The images**: `standard-doc` is the ASP.NET Core documentation's
+Dockerfile (the SDK to restore and publish, ASP.NET Core's runtime image,
+its non-root user); `optimised-opt` publishes ReadyToRun onto the chiseled
+image. A local certificate made when the image is built.
+
+**Checked** by `conform.sh`, 300 requests: both images over h1, h2 and h3,
+with and without gzip, and br over h2 — fourteen cases conformant; deflate
+and zstd refused; h1 in clear served. Sizes: 355 MB for the documentation's
+image, 199 MB for the optimised one.
+
+```
+docker build -f comparison/dotnet-minimal/Dockerfile --target optimised-opt -t dotnet-minimal:optimised-opt .
+comparison/chain/conform.sh dotnet-minimal:optimised-opt h3 gzip
+```
+
 ## `loadgen/` — the load generator
 
 The study's own client (§3 and §4 of its protocol; "home-made" is a
