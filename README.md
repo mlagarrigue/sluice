@@ -20,12 +20,10 @@ and two of the Go project's own modules, explained below.
 > is tested and measured; but function names may still change before
 > version 1. See [Status and limits](#status-and-limits).
 
-The guides describe the `main` branch, which carries the additions grouped
-for the next minor release; the last one published, v0.5.0, lacks some of
-the functions cited here. Until that release, install `main`:
+The guides describe the latest release, v0.5.1:
 
 ```sh
-go get github.com/mlagarrigue/sluice@main
+go get github.com/mlagarrigue/sluice
 ```
 
 ```go
