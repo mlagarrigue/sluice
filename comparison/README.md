@@ -514,6 +514,35 @@ the Docker network of the repository's database (`NETWORK`,
 `sluice_default`), R and the generator are built from this tree and run
 beside it, and the generator's report is the one line it prints.
 
+### The writing cost of each contender
+
+`comparison/chain/cost.sh` prints the table of §1.1, one tab-separated
+line per version: the lines written by hand for it, the lines of the
+contract code its contender shares, the dependencies linked into what it
+ships (direct, then all), and the concepts one must know to write it.
+
+- **Lines** are counted by one tool for every language,
+  [scc](https://github.com/boyter/scc) at a fixed version, built into an
+  image of its own (`chain/scc/Dockerfile`) and run with no network on a
+  copy of the files it counts: code lines only, no blank line, no
+  comment, no test, no build configuration. A variant "with" grouping
+  counts what it adds or changes against the version it starts from: its
+  own files when it inherits (Java's `dataloader` package, .NET's
+  `Dataloader.cs`), the added lines of a diff when it copies (Go, Node,
+  Rust, Python).
+- **Dependencies** follow the command of each ecosystem, run in the
+  stack's own pinned image: `go version -m` on each Go binary;
+  `cargo tree -e normal,no-proc-macro` (a procedural macro runs at build
+  time and is not linked); `npm ls --omit=dev --all`; the packages of the
+  Python image, of which `# direct` in `requirements.txt` marks the
+  chosen ones; the jars inside the Spring Boot jar; `dotnet list package
+  --include-transitive`. Go's count is per binary. The others ship one set
+  of packages for every version, so their versions share one count.
+- **Concepts** are written by hand, in `chain/concepts.tsv`.
+
+Run twice, the script prints the same table: it depends on the tree, not
+on the machine.
+
 ## `go-nethttp/` — the Go contenders
 
 Go's standard HTTP server and `pgx`, without grouping: the barest Go
@@ -822,7 +851,10 @@ comparison/chain/conform.sh rust-axum:optimised-opt h2 gzip
 FastAPI, without grouping and, in its optimised version, with: the Python
 contender of level 2 (study §2.5,
 §2.6). Python runs in containers (`python:3.14-slim`, pinned: 3.14.10). The
-packages are frozen by `requirements.txt` (`pip freeze`); Dependabot opens
+packages are frozen by `requirements.txt` (`pip freeze`), where `# direct`
+marks the ones the contender chooses, the rest being what they pull in
+(`uvicorn[standard]` and `psycopg[binary]` count as `uvicorn` and
+`psycopg`); Dependabot opens
 security updates only, and keeps the image on 3.14.
 
 | Version | Serves | Refuses at startup |

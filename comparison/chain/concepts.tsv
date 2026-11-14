@@ -1,0 +1,25 @@
+go-nethttp	standard	ServeMux patterns, pgxpool, context
+go-nethttp	optimised	ServeMux patterns, pgxpool, context, http3 (quic-go), gzip writer pool, prepared statements
+go-nethttp	gin-standard	Gin router and context, pgxpool, context
+go-nethttp	gin-optimised	Gin router and context, pgxpool, context, http3 (quic-go), JSON codec at runtime
+go-nethttp	dataloader	ServeMux patterns, pgxpool, context, DataLoader (batch function, window)
+node-express	standard	Express middleware, pg Pool, async handlers, compression middleware
+node-express	optimised	Express middleware, pg Pool, async handlers, cluster workers, named queries
+node-express	fastify-standard	Fastify plugins and replies, pg Pool, async handlers
+node-express	fastify-optimised	Fastify plugins and replies, JSON schemas, pg Pool, cluster workers
+node-express	dataloader	Express middleware, pg Pool, DataLoader (batch function, nextTick)
+node-express	dataloader-optimised	Express middleware, pg Pool, cluster workers, DataLoader (batch scheduler)
+rust-axum	standard	axum router and extractors, Tokio, sqlx PgPool, rustls, serde
+rust-axum	optimised	axum router and extractors, Tokio, sqlx PgPool, rustls, serde, release profile
+rust-axum	dataloader	axum router and extractors, Tokio, sqlx PgPool, serde, DataLoader (Loader trait, spawner)
+python-fastapi	standard	FastAPI path operations and dependencies, SQLModel session, uvicorn
+python-fastapi	optimised	FastAPI async path operations, asyncpg pool, Granian workers, lifespan
+python-fastapi	dataloader-optimised	FastAPI async path operations, asyncpg pool, Granian workers, lifespan, DataLoader (event loop)
+java-spring	standard	Spring Boot auto-configuration, RestController, JdbcTemplate and RowMapper, HikariCP
+java-spring	optimised	Spring Boot auto-configuration, RestController, JdbcTemplate and RowMapper, HikariCP, virtual threads, ZGC, AOT cache
+java-spring	native	Spring Boot auto-configuration, RestController, JdbcTemplate and RowMapper, HikariCP, GraalVM native image, reflection hints
+java-spring	dataloader	Spring Boot auto-configuration, RestController, JdbcTemplate, DataLoader (scheduled registry, ticker), CompletableFuture
+dotnet-minimal	standard	Minimal APIs, Kestrel, Dapper, Npgsql data source, async/await
+dotnet-minimal	optimised	Minimal APIs, Kestrel, Dapper, Npgsql data source, async/await, ReadyToRun, chiseled image, GC settings
+dotnet-minimal	multiplexing	Minimal APIs, Kestrel, Dapper, Npgsql data source and multiplexing, async/await
+dotnet-minimal	dataloader	Minimal APIs, Kestrel, Dapper, Npgsql data source, DataLoader (BatchDataLoader, scheduler)
