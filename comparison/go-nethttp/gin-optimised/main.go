@@ -48,9 +48,27 @@ type listDoc struct {
 	Items []order `json:"items"`
 }
 
+// writeReq holds the numbers as written: goccy/go-json decodes a number past
+// int64 into an int64 field without an error, overflowed, where
+// encoding/json -- and R -- refuse it. They are parsed as R decodes them.
 type writeReq struct {
-	Key   int64 `json:"key"`
-	Total int64 `json:"total"`
+	Key   gojson.Number `json:"key"`
+	Total gojson.Number `json:"total"`
+}
+
+// int64s returns the key and the total, or false where R's decoding into
+// int64 fails; an absent total is 0, as it is there.
+func (w writeReq) int64s() (key, total int64, ok bool) {
+	key, err := strconv.ParseInt(string(w.Key), 10, 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	if w.Total != "" {
+		if total, err = strconv.ParseInt(string(w.Total), 10, 64); err != nil {
+			return 0, 0, false
+		}
+	}
+	return key, total, true
 }
 
 type writeDoc struct {
@@ -137,16 +155,18 @@ func (s *server) listRows(ctx context.Context, from int64, limit int) ([]order, 
 
 func (s *server) write(c *gin.Context) {
 	var req writeReq
-	if err := c.ShouldBindJSON(&req); err != nil || req.Key == 0 {
+	err := c.ShouldBindJSON(&req)
+	key, total, ok := req.int64s()
+	if err != nil || !ok || key == 0 {
 		c.JSON(http.StatusBadRequest, errDoc{Error: "bad body"})
 		return
 	}
-	if _, err := s.db.Exec(c.Request.Context(), "INSERT INTO comparison_writes (key, total) VALUES ($1, $2)", req.Key, req.Total); err != nil {
-		log.Printf("write %d: %v", req.Key, err)
-		c.JSON(http.StatusServiceUnavailable, errDoc{Error: "unavailable", Key: &req.Key})
+	if _, err := s.db.Exec(c.Request.Context(), "INSERT INTO comparison_writes (key, total) VALUES ($1, $2)", key, total); err != nil {
+		log.Printf("write %d: %v", key, err)
+		c.JSON(http.StatusServiceUnavailable, errDoc{Error: "unavailable", Key: &key})
 		return
 	}
-	c.JSON(http.StatusOK, writeDoc{Key: req.Key})
+	c.JSON(http.StatusOK, writeDoc{Key: key})
 }
 
 func run() error {

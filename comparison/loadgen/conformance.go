@@ -81,29 +81,57 @@ func (cf conformance) run(ctx context.Context) (conformanceReport, error) {
 		defer cn.close() //nolint:gocritic // deferInLoop: two connections, both kept to the end of the check
 		hcs[k] = cn.hc
 	}
+	// ask sends rq to both servers and reports where they part, if they do.
+	ask := func(rq request) (*difference, error) {
+		var got [2]answer
+		for k, url := range []string{cf.url, cf.reference} {
+			a, err := cf.fetch(ctx, hcs[k], url, rq)
+			if err != nil {
+				return nil, fmt.Errorf("%s %s on %s: %w", rq.method, rq.path, url, err)
+			}
+			got[k] = a
+		}
+		rep.Checked++
+		d := compareAnswers(got[0], got[1])
+		if d != nil {
+			d.Request = rq.method + " " + rq.path
+		}
+		return d, nil
+	}
 	draw := scenarios["mixed"].draw(cf.seed, cf.keyspace)
+	requests := make([]request, 0, cf.n+len(edgeRequests))
 	for i := range cf.n {
 		rq := draw(i)
 		if i%20 == 19 {
 			rq = scenarios["static"](i, 0, false)
 		}
-		var got [2]answer
-		for k, url := range []string{cf.url, cf.reference} {
-			a, err := cf.fetch(ctx, hcs[k], url, rq)
-			if err != nil {
-				return rep, fmt.Errorf("%s %s on %s: %w", rq.method, rq.path, url, err)
-			}
-			got[k] = a
-		}
-		rep.Checked++
-		if d := compareAnswers(got[0], got[1]); d != nil {
-			d.Request = rq.method + " " + rq.path
+		requests = append(requests, rq)
+	}
+	for _, rq := range append(requests, edgeRequests...) {
+		d, err := ask(rq)
+		if err != nil || d != nil {
 			rep.First = d
-			return rep, nil
+			return rep, err
 		}
 	}
 	rep.Conformant = true
 	return rep, nil
+}
+
+// edgeRequests are asked after the drawn ones, which never carry them: keys
+// that do not parse, and keys past bigint -- in a path, a query or a written
+// body -- where a contender that reads a
+// key in a looser type than R's 64-bit parse answers otherwise -- a 503
+// from the database, a key rounded through a float. R refuses them all with
+// a 400 and its error document.
+var edgeRequests = []request{
+	{method: http.MethodGet, path: "/orders/abc"},
+	{method: http.MethodGet, path: "/orders/9223372036854775808"},
+	{method: http.MethodGet, path: "/orders?from=abc&limit=10"},
+	{method: http.MethodGet, path: "/orders?from=9223372036854775808&limit=10"},
+	{method: http.MethodGet, path: "/orders?from=1&limit=abc"},
+	{method: http.MethodGet, path: "/orders?from=1&limit=9223372036854775808"},
+	{method: http.MethodPost, path: "/orders", body: []byte(`{"key":9223372036854775808,"total":1}`)},
 }
 
 // fetch sends one request and reads its answer, decoded.

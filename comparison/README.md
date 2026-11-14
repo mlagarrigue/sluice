@@ -488,7 +488,10 @@ go run -C comparison/loadgen . -no-verify -conformance https://127.0.0.1:8443 -u
 Before a series, every contender answers the requests a seed draws — unit
 reads, lists and writes in the mixed scenario's proportions, a static
 request every twentieth — one at a time, and so does the reference named
-by `-conformance`. The two answers are compared as §4 asks: the status, the
+by `-conformance`; then seven fixed requests no draw carries: a key, a
+`from` and a `limit` that do not parse or pass a bigint
+(`9223372036854775808`), and a write whose key does, which R refuses with
+a 400 and its error document. The two answers are compared as §4 asks: the status, the
 `Content-Type` (media type and parameters, `charset=utf-8` counting as
 JSON's own), and the JSON after parsing — keys in any order, numbers by
 their exact value (`7`, `7.0` and `7e0` are one number; `0.1` and
@@ -602,7 +605,10 @@ last:
    address from headers ("Don't trust all proxies").
 4. `goccy/go-json` as Gin's JSON codec, set at runtime through
    `codec/json.API` ("Custom json codec at runtime"; the codec of the
-   `go_json` build tag).
+   `go_json` build tag). It decodes a number past `int64` into an `int64`
+   field without an error, overflowed: a write's numbers are taken as
+   written (`json.Number`) and parsed as R parses them, which the check's
+   fixed requests verify.
 5. The list scanned by position, as in the `net/http` optimised version.
 
 **Checked**: `TestConformsToR` builds the five programs, R and the

@@ -133,10 +133,10 @@ async function serve(poolSize) {
   fastify.get('/static', { schema: schemas.static }, async () => contract.staticDoc);
 
   fastify.get('/orders/:id', { schema: schemas.unit }, async (request, reply) => {
-    if (!/^-?\d+$/.test(request.params.id)) {
+    const id = contract.parseInt64(request.params.id);
+    if (id === null) {
       return reply.code(400).send({ error: 'bad key' });
     }
-    const id = Number(request.params.id);
     try {
       const { rows } = await pool.query({ ...unitQuery, values: [id] });
       if (rows.length === 0) return reply.code(404).send({ error: 'no such key', key: id });
@@ -148,11 +148,11 @@ async function serve(poolSize) {
   });
 
   fastify.get('/orders', { schema: schemas.list }, async (request, reply) => {
-    if (!/^-?\d+$/.test(request.query.from ?? '')) {
+    const from = contract.parseInt64(request.query.from);
+    if (from === null) {
       return reply.code(400).send({ error: 'bad from' });
     }
-    const from = Number(request.query.from);
-    const limit = Number(request.query.limit);
+    const limit = contract.parseInt64(request.query.limit) ?? 0;
     if (!Number.isInteger(limit) || limit <= 0 || limit > contract.listMax) {
       return reply.code(400).send({ error: 'bad limit', key: from });
     }
@@ -168,7 +168,7 @@ async function serve(poolSize) {
   fastify.post('/orders', { schema: schemas.write }, async (request, reply) => {
     const key = request.body?.key;
     const total = request.body?.total;
-    if (!Number.isInteger(key) || key === 0 || !Number.isInteger(total)) {
+    if (!contract.inInt64(key) || key === 0 || !contract.inInt64(total)) {
       return reply.code(400).send({ error: 'bad body' });
     }
     try {

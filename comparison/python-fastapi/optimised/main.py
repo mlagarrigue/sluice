@@ -80,9 +80,8 @@ async def static():
 
 @app.get("/orders/{id}")
 async def unit(id: str, request: Request):
-    try:
-        key = int(id)
-    except ValueError:
+    key = contract.parse_int64(id)
+    if key is None:
         return fail(400, "bad key")
     try:
         row = await request.app.state.pool.fetchrow(
@@ -97,14 +96,10 @@ async def unit(id: str, request: Request):
 
 @app.get("/orders")
 async def list_orders(request: Request, from_: str = Query("", alias="from"), limit: str = ""):
-    try:
-        start = int(from_)
-    except ValueError:
+    start = contract.parse_int64(from_)
+    if start is None:
         return fail(400, "bad from")
-    try:
-        n = int(limit)
-    except ValueError:
-        n = 0
+    n = contract.parse_int64(limit) or 0
     if n <= 0 or n > contract.LIST_MAX:
         return fail(400, "bad limit", start)
     try:
@@ -122,7 +117,7 @@ async def write(request: Request):
     try:
         body = await request.json()
         key, total = body["key"], body["total"]
-        if type(key) is not int or type(total) is not int or key == 0:
+        if not contract.in_int64(key) or not contract.in_int64(total) or key == 0:
             raise ValueError
     except Exception:
         return fail(400, "bad body")

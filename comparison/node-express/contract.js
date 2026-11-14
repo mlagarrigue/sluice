@@ -103,6 +103,23 @@ export const writeTable = [
 // listMax is the largest limit a list request may ask for, R's -list-max.
 export const listMax = 100000;
 
+// parseInt64 reads a key, a from or a limit as R's 64-bit parse does: an
+// optional sign, decimal digits, within a bigint; null otherwise. Number()
+// alone takes "1e3", " 5" and keys past a bigint, which R refuses. A key
+// past 2^53 is read rounded: JavaScript's numbers stop there, declared.
+export function parseInt64(s) {
+  if (typeof s !== 'string' || !/^[+-]?\d+$/.test(s)) return null;
+  const b = BigInt(s);
+  if (b < -(2n ** 63n) || b >= 2n ** 63n) return null;
+  return Number(b);
+}
+
+// inInt64 tells whether a number of a written body fits a bigint, as R's
+// decoding into int64 asks.
+export function inInt64(n) {
+  return Number.isInteger(n) && n >= -(2 ** 63) && n < 2 ** 63;
+}
+
 // staticDoc is R's static document, value for value.
 export const staticDoc = {
   status: 'ok',

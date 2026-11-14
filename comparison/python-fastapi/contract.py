@@ -9,11 +9,31 @@ lines (section 1.1).
 
 import gc
 import os
+import re
 import ssl
 import time
 from dataclasses import dataclass
 
 LIST_MAX = 100_000
+
+_INT64 = re.compile(r"[+-]?[0-9]+")
+
+
+def parse_int64(s):
+    """Reads a key, a from or a limit as R's 64-bit parse does: an optional
+    sign, decimal digits, within a bigint; None otherwise. int() alone takes
+    spaces, underscores, other scripts' digits and keys past a bigint, which
+    R refuses -- and the driver then refuses the query, a 503."""
+    if not isinstance(s, str) or not _INT64.fullmatch(s):
+        return None
+    v = int(s)
+    return v if -(1 << 63) <= v < (1 << 63) else None
+
+
+def in_int64(v):
+    """Whether a number of a written body fits a bigint, as R's decoding into
+    int64 asks."""
+    return type(v) is int and -(1 << 63) <= v < (1 << 63)
 
 WRITE_TABLE = [
     """CREATE TABLE IF NOT EXISTS comparison_writes (

@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -99,7 +100,12 @@ async fn list(State(db): State<PgPool>, Query(q): Query<HashMap<String, String>>
     }
 }
 
-async fn write(State(db): State<PgPool>, Json(req): Json<WriteReq>) -> Response {
+async fn write(State(db): State<PgPool>, body: Result<Json<WriteReq>, JsonRejection>) -> Response {
+    // axum answers 422 to a body it cannot deserialize, a number past i64
+    // among them; R answers 400 with its document.
+    let Ok(Json(req)) = body else {
+        return fail(StatusCode::BAD_REQUEST, "bad body", None);
+    };
     if req.key == 0 {
         return fail(StatusCode::BAD_REQUEST, "bad body", None);
     }

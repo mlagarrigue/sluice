@@ -81,9 +81,8 @@ def static():
 
 @app.get("/orders/{id}")
 def unit(id: str, session: SessionDep):
-    try:
-        key = int(id)
-    except ValueError:
+    key = contract.parse_int64(id)
+    if key is None:
         return fail(400, "bad key")
     try:
         order = session.get(Order, key)
@@ -97,14 +96,10 @@ def unit(id: str, session: SessionDep):
 
 @app.get("/orders")
 def list_orders(session: SessionDep, from_: Annotated[str, Query(alias="from")] = "", limit: str = ""):
-    try:
-        start = int(from_)
-    except ValueError:
+    start = contract.parse_int64(from_)
+    if start is None:
         return fail(400, "bad from")
-    try:
-        limit = int(limit)
-    except ValueError:
-        limit = 0
+    limit = contract.parse_int64(limit) or 0
     if limit <= 0 or limit > contract.LIST_MAX:
         return fail(400, "bad limit", start)
     try:
@@ -117,7 +112,7 @@ def list_orders(session: SessionDep, from_: Annotated[str, Query(alias="from")] 
 
 @app.post("/orders")
 def write(req: WriteReq, session: SessionDep):
-    if req.key == 0:
+    if req.key == 0 or not contract.in_int64(req.key) or not contract.in_int64(req.total):
         return fail(400, "bad body")
     try:
         session.add(Write(key=req.key, total=req.total))

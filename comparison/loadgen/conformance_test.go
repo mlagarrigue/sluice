@@ -55,7 +55,7 @@ func TestConformance(t *testing.T) {
 	ref := startTrivial(t, 10000)
 	other := startTrivial(t, 10000)
 	for _, enc := range []string{"identity", codingGzip} {
-		if rep := check2(t, other.URL, ref.URL, "-encoding", enc); !rep.Conformant || rep.Checked != 100 {
+		if rep := check2(t, other.URL, ref.URL, "-encoding", enc); !rep.Conformant || rep.Checked != 100+len(edgeRequests) {
 			t.Fatalf("trivial against trivial under %s: %+v", enc, rep)
 		}
 	}
@@ -101,6 +101,21 @@ func TestConformance(t *testing.T) {
 	rep = check2(t, notFound, ref.URL)
 	if rep.Conformant || rep.First.Where != "status" || !strings.HasPrefix(rep.First.Request, "POST /orders") {
 		t.Fatalf("writes refused: %+v", rep.First)
+	}
+
+	// A contender whose database refuses a key past bigint, where the
+	// reference's parse refuses it: no drawn request carries one, the edge
+	// requests do, after the drawn ones.
+	pastBigint := variant(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/orders/9223372036854775808" {
+			http.Error(w, `{"error":"unavailable"}`, http.StatusServiceUnavailable)
+			return
+		}
+		h.ServeHTTP(w, r)
+	}), func(_ string, _ http.Header, b []byte) []byte { return b })
+	rep = check2(t, pastBigint, ref.URL)
+	if rep.Conformant || rep.First.Where != "status" || rep.First.Request != "GET /orders/9223372036854775808" || rep.Checked != 102 {
+		t.Fatalf("a key past bigint: %+v %+v", rep, rep.First)
 	}
 }
 

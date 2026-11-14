@@ -100,10 +100,10 @@ async function serve(poolSize) {
   });
 
   app.get('/orders/:id', async (req, res) => {
-    if (!/^-?\d+$/.test(req.params.id)) {
+    const id = contract.parseInt64(req.params.id);
+    if (id === null) {
       return res.status(400).json({ error: 'bad key' });
     }
-    const id = Number(req.params.id);
     try {
       const o = await orders.load(id);
       if (o === null) return res.status(404).json({ error: 'no such key', key: id });
@@ -115,11 +115,11 @@ async function serve(poolSize) {
   });
 
   app.get('/orders', async (req, res) => {
-    if (!/^-?\d+$/.test(req.query.from ?? '')) {
+    const from = contract.parseInt64(req.query.from);
+    if (from === null) {
       return res.status(400).json({ error: 'bad from' });
     }
-    const from = Number(req.query.from);
-    const limit = Number(req.query.limit);
+    const limit = contract.parseInt64(req.query.limit) ?? 0;
     if (!Number.isInteger(limit) || limit <= 0 || limit > contract.listMax) {
       return res.status(400).json({ error: 'bad limit', key: from });
     }
@@ -135,7 +135,7 @@ async function serve(poolSize) {
   app.post('/orders', async (req, res) => {
     const key = req.body?.key;
     const total = req.body?.total;
-    if (!Number.isInteger(key) || key === 0 || !Number.isInteger(total)) {
+    if (!contract.inInt64(key) || key === 0 || !contract.inInt64(total)) {
       return res.status(400).json({ error: 'bad body' });
     }
     try {
