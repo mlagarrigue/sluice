@@ -1,0 +1,42 @@
+{
+  "name": "rehearsal-levels-1-2",
+  "trial": true,
+  "seed": 1,
+  "rows": 1000000,
+  "rounds": 2,
+  "max_rounds": 2,
+  "full_rounds": 1,
+  "warmup": "10s",
+  "stage": "5s",
+  "stage_warmup": "2s",
+  "survey_stage": "5s",
+  "point_stage": "5s",
+  "drain": "2s",
+  "contenders": {
+    "R": {"image": "sluice-study:opt", "cost": "sluice/reference"},
+    "sluice-reference": {"image": "sluice-reference", "cost": "sluice/reference"},
+    "go-standard": {"image": "go-nethttp:standard-doc", "cost": "go-nethttp/standard"},
+    "go-optimised": {"image": "go-nethttp:optimised-opt", "cost": "go-nethttp/optimised"},
+    "gin-standard": {"image": "go-nethttp:gin-standard-doc", "cost": "go-nethttp/gin-standard"},
+    "go-dataloader": {"image": "go-nethttp:dataloader-doc", "cost": "go-nethttp/dataloader"},
+    "node-standard": {"image": "node-express:standard-doc", "cost": "node-express/standard"},
+    "fastify-standard": {"image": "node-express:fastify-standard-doc", "cost": "node-express/fastify-standard"},
+    "node-dataloader": {"image": "node-express:dataloader-doc", "cost": "node-express/dataloader"},
+    "rust-standard": {"image": "rust-axum:standard-doc", "cost": "rust-axum/standard"},
+    "python-standard": {"image": "python-fastapi:standard-doc", "cost": "python-fastapi/standard"},
+    "java-standard": {"image": "java-spring:standard-doc", "cost": "java-spring/standard"},
+    "dotnet-standard": {"image": "dotnet-minimal:standard-doc", "cost": "dotnet-minimal/standard"},
+    "dotnet-multiplexing": {"image": "dotnet-minimal:multiplexing-opt", "cost": "dotnet-minimal/multiplexing"}
+  },
+  "families": [
+    {"scenario": "list", "proto": "h3",
+     "contenders": ["R", "sluice-reference", "go-optimised", "dotnet-standard"],
+     "survey_from": 100, "points": [100, 250, 500]},
+    {"scenario": "mixed", "proto": "h2",
+     "contenders": ["R", "go-optimised", "gin-standard", "fastify-standard", "dotnet-multiplexing"],
+     "survey_from": 400, "points": [250, 500, 1000]},
+    {"scenario": "unit", "proto": "h1",
+     "contenders": ["R", "sluice-reference", "go-standard", "go-dataloader", "node-standard", "node-dataloader", "rust-standard", "python-standard", "java-standard"],
+     "survey_from": 400, "points": [100, 250]}
+  ]
+}

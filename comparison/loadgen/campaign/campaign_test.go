@@ -317,6 +317,7 @@ func TestMatrixChecks(t *testing.T) {
 		{`"name": "x", "contenders": {"A": {"image": "a"}}, "families": [{"scenario": "unit", "proto": "h1", "contenders": ["A", "C"], "points": [500]}]`, "no contender"},
 		{`"name": "x", "contenders": {"A": {"image": "a"}, "B": {"image": "b"}}, "families": [{"scenario": "unit", "proto": "h1", "contenders": ["A", "B"], "points": [2000, 500]}]`, "ascending"},
 		{`"name": "x", "stage": "1500ms", ` + base, "whole seconds"},
+		{`"name": "x", "contenders": {"A": {"image": "a", "cost": "go-nethttp"}}, "families": [{"scenario": "unit", "proto": "h1", "contenders": ["A"], "points": [500]}]`, "contender/version"},
 	} {
 		if _, err := parseMatrix([]byte("{" + tc.body + "}")); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: %v, want an error naming %q", tc.body, err, tc.want)

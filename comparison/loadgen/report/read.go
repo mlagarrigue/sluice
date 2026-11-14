@@ -23,6 +23,7 @@ type matrix struct {
 	Contenders map[string]struct { // the image each ran
 		Image string   `json:"image"`
 		Args  []string `json:"args"`
+		Cost  string   `json:"cost"` // its line of cost.sh, contender/version
 	} `json:"contenders"`
 	Families []struct {
 		Scenario   string   `json:"scenario"`
@@ -178,6 +179,7 @@ type inputs struct {
 	summary  summary
 	stages   []stage
 	verdicts []verdict
+	cost     map[string]costRow // cost.sh's table, nil without -cost
 }
 
 // read loads a campaign directory and the verdicts file beside it. Every
@@ -291,4 +293,29 @@ func (in *inputs) contenders(family string) []string {
 	}
 	slices.Sort(out)
 	return out
+}
+
+// costRow is one line of comparison/chain/cost.sh (§1.1): the lines
+// written by hand, the contract lines shared with the other versions, the
+// dependencies linked, direct then all.
+type costRow struct {
+	lines, contract, direct, all string
+}
+
+// readCost reads cost.sh's table, keyed contender/version as a matrix's
+// contenders name their line.
+func readCost(path string) (map[string]costRow, error) {
+	rows := map[string]costRow{}
+	err := readLines(path, func(n int, b []byte) error {
+		f := strings.Split(string(b), "\t")
+		if len(f) < 6 {
+			return fmt.Errorf("%s line %d: %d fields, cost.sh writes 7", path, n, len(f))
+		}
+		if n == 1 && f[0] == "contender" {
+			return nil // the header
+		}
+		rows[f[0]+"/"+f[1]] = costRow{lines: f[2], contract: f[3], direct: f[4], all: f[5]}
+		return nil
+	})
+	return rows, err
 }

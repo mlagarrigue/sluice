@@ -30,16 +30,17 @@ import (
 func main() {
 	campaign := flag.String("campaign", "", "the campaign's output directory: matrix.json, summary.json, raw.jsonl")
 	verdicts := flag.String("verdicts", "", "the verdicts of `loadgen -verdicts` (default: verdicts.jsonl of -campaign)")
+	cost := flag.String("cost", "", "the table comparison/chain/cost.sh prints, for the lines of code and dependencies of the contenders whose matrix entry names a cost line")
 	out := flag.String("out", "", "the directory to write COMPARISON.md and the charts into")
 	flag.Parse()
 
-	if err := run(*campaign, *verdicts, *out); err != nil {
+	if err := run(*campaign, *verdicts, *cost, *out); err != nil {
 		fmt.Fprintln(os.Stderr, "report:", err)
 		os.Exit(1)
 	}
 }
 
-func run(campaign, verdicts, out string) error {
+func run(campaign, verdicts, cost, out string) error {
 	if campaign == "" || out == "" {
 		return errors.New("-campaign and -out are required")
 	}
@@ -49,6 +50,18 @@ func run(campaign, verdicts, out string) error {
 	in, err := read(campaign, verdicts)
 	if err != nil {
 		return err
+	}
+	if cost != "" {
+		if in.cost, err = readCost(cost); err != nil {
+			return err
+		}
+		// A line the matrix names and the table lacks is a stale table or
+		// a typo: published as a dash, it would read as nothing to count.
+		for name, c := range in.matrix.Contenders {
+			if _, ok := in.cost[c.Cost]; c.Cost != "" && !ok {
+				return fmt.Errorf("-cost: contender %s names the line %s, which %s does not have", name, c.Cost, cost)
+			}
+		}
 	}
 	files := render(in)
 	if err := os.MkdirAll(out, 0o750); err != nil {

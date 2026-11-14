@@ -64,9 +64,17 @@ func render(in *inputs) files {
 		// §5.3 — the short table.
 		fmt.Fprint(&b, "### The short table\n\n")
 		fmt.Fprint(&b, shortTable(in, family))
-		fmt.Fprint(&b, "\nLines of code and dependencies are counted by CMP-32 and are not in\n"+
-			"this campaign's files; a dependency count compares inside an ecosystem\n"+
-			"and barely across (npm, cargo and go do not cut a module the same way).\n\n")
+		if in.cost == nil {
+			fmt.Fprint(&b, "\nLines of code and dependencies are counted by CMP-32 and are not in\n"+
+				"this campaign's files; a dependency count compares inside an ecosystem\n"+
+				"and barely across (npm, cargo and go do not cut a module the same way).\n\n")
+		} else {
+			fmt.Fprint(&b, "\nLines of code and dependencies are comparison/chain/cost.sh's (§1.1):\n"+
+				"the code lines written by hand, then the contract code the versions of a\n"+
+				"contender share; the dependencies linked, direct then all. A dependency\n"+
+				"count compares inside an ecosystem and barely across (npm, cargo and go\n"+
+				"do not cut a module the same way).\n\n")
+		}
 
 		// §5.4 — three sentences, the author's.
 		fmt.Fprint(&b, "### Why\n\n> **To write, three sentences:** the mechanism behind the gap; where\n"+
@@ -194,7 +202,12 @@ func shortTable(in *inputs, family string) string {
 			}
 			break
 		}
-		fmt.Fprintf(&b, "| %s | — | — | %s | %s | %s | %s | %s |\n", c, capacity, db, slo, conns, held)
+		loc, deps := "—", "—"
+		if row, ok := in.cost[in.matrix.Contenders[c].Cost]; ok {
+			loc = fmt.Sprintf("%s (+%s contract)", row.lines, row.contract)
+			deps = fmt.Sprintf("%s direct, %s in all", row.direct, row.all)
+		}
+		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s | %s | %s |\n", c, loc, deps, capacity, db, slo, conns, held)
 	}
 	return b.String()
 }

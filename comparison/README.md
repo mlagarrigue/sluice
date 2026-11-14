@@ -241,8 +241,9 @@ go run -C comparison/loadgen . -verdicts /tmp/trial/rounds.jsonl -compare R:http
 ```
 
 `loadgen/campaign` plays a matrix on the chain (§3.3, §6, §7.1, §7.2,
-§7.6). The matrix is a JSON file: the contenders (an image, and the flags
-that make a variant of the study's server), the families they meet in (a
+§7.6). The matrix is a JSON file: the contenders (an image, the flags
+that make a variant of the study's server, and the line of
+`chain/cost.sh` it is, `contender/version`), the families they meet in (a
 scenario × a protocol, the survey's first rate, the scenario's absolute
 fixed points), and the protocol's numbers, each defaulting to the
 protocol's value — 21 rounds, 40 at most, 5 more at a time, 7 full rounds,
@@ -305,6 +306,21 @@ each, the tester's cores pass 70 % before web breaks), it runs end to end
 in 23 minutes, 81 stages, none invalidated, and nothing it measures is a
 figure.
 
+`rehearsal.json` is the dress rehearsal of levels 1 and 2 (CMP-34): every
+image of every contender played at least once, in three families — the
+unit read under h1 (R, `sluice-reference`, Go standard and `dataloader`,
+Node standard and `dataloader`, Rust, Python, Java), the mixed scenario
+under h2 (R, Go optimised, Gin, Fastify, .NET multiplexing), the list
+under h3 (R, `sluice-reference`, Go optimised, .NET standard) — two
+rounds, short stages, a keyspace of a million rows: with a hundred
+thousand, the survey of a Sluice.go server on one core needs more keys
+than the keyspace holds, and the campaign stops, as §2.1 wants. The h3
+family comes first, the unit read's last, so that the shortest families
+fail early; the unit read's fixed points stop at 250 req/s, where a
+developer's machine still leaves the tester under its 70 % at 20 ms. It
+needs the machine to itself: the tester's cores are not isolated from
+the host, and another load on them invalidates every stage it touches.
+
 ### An image, built and started
 
 ```
@@ -344,7 +360,8 @@ would run; the image is tagged `study-measured:<target>`. It reports:
 ### The report of a campaign
 
 ```
-go run -C comparison/loadgen ./report -campaign /tmp/trial -out /tmp/trial/report
+comparison/chain/cost.sh > /tmp/cost.tsv
+go run -C comparison/loadgen ./report -campaign /tmp/trial -cost /tmp/cost.tsv -out /tmp/trial/report
 ```
 
 The publication of §5, written by a program rather than by hand: one
@@ -353,11 +370,14 @@ and the verdicts `loadgen -verdicts` wrote. A figure and the sentence
 beside it then move together, and re-running the campaign re-runs the
 report.
 
-The nine points of §5 are each present, or say why they are not. Two are
+The nine points of §5 are each present, or say why they are not. One is
 left to a person and marked in the output: the three sentences that read
 the gap — the mechanism, where Sluice.go loses, what is arithmetic rather
-than framework — and the two columns CMP-32 counts, lines of code and
-dependencies. Everything else is rendered: the diagram of the three
+than framework. The two columns of the writing cost, lines of code and
+dependencies, come from `-cost`, the table `cost.sh` prints, for every
+contender whose matrix entry names its line; a line the table lacks is
+refused, and without `-cost` the columns stay marked as unfilled.
+Everything else is rendered: the diagram of the three
 roles, the two curves (latency p50 and p99, then the server's memory,
 both against the rate on a logarithmic scale, because the grid is
 geometric), the short table with each capacity and its interval, the

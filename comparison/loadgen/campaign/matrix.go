@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/mlagarrigue/sluice/comparison/loadgen/stats"
@@ -55,6 +56,11 @@ type matrix struct {
 type contender struct {
 	Image string   `json:"image"`
 	Args  []string `json:"args"`
+	// Cost names the line of comparison/chain/cost.sh this contender is,
+	// "contender/version" (go-nethttp/standard), for the report's lines of
+	// code and dependencies (§5.3); empty leaves them unfilled. Variants of
+	// the study's server share R's line, sluice/reference.
+	Cost string `json:"cost,omitempty"`
 }
 
 // family is a scenario × a protocol: the contenders compared in it, and
@@ -166,6 +172,9 @@ func (m *matrix) check() error {
 	for name, c := range m.Contenders {
 		if c.Image == "" {
 			return fmt.Errorf("matrix: contender %s has no image", name)
+		}
+		if a, b, ok := strings.Cut(c.Cost, "/"); c.Cost != "" && (!ok || a == "" || b == "" || strings.Contains(b, "/")) {
+			return fmt.Errorf("matrix: contender %s: cost %q, want contender/version as cost.sh prints them", name, c.Cost)
 		}
 	}
 	seen := map[string]bool{}

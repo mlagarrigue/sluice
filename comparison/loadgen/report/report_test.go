@@ -112,7 +112,7 @@ func synthetic(t *testing.T) string {
 func TestReportCoversSection5(t *testing.T) {
 	dir := synthetic(t)
 	out := filepath.Join(t.TempDir(), "report")
-	if err := run(dir, "", out); err != nil {
+	if err := run(dir, "", "", out); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(filepath.Join(out, "COMPARISON.md")) //nolint:gosec // G304: the directory is the test's own
@@ -217,7 +217,7 @@ func TestReportCoversSection5(t *testing.T) {
 func TestReportChartsParse(t *testing.T) {
 	dir := synthetic(t)
 	out := filepath.Join(t.TempDir(), "report")
-	if err := run(dir, "", out); err != nil {
+	if err := run(dir, "", "", out); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"unit-h2-apparatus.svg", "unit-h2-latency.svg", "unit-h2-memory.svg"} {
@@ -259,7 +259,7 @@ func TestReportRefusesAnIncompleteCampaign(t *testing.T) {
 	if err := os.Remove(filepath.Join(dir, "raw.jsonl")); err != nil {
 		t.Fatal(err)
 	}
-	err := run(dir, "", filepath.Join(t.TempDir(), "report"))
+	err := run(dir, "", "", filepath.Join(t.TempDir(), "report"))
 	if err == nil || !strings.Contains(err.Error(), "raw.jsonl") {
 		t.Errorf("a campaign without its stages: %v, want an error naming raw.jsonl", err)
 	}
@@ -282,7 +282,7 @@ func TestReportSaysATrialIsNotPublishable(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := filepath.Join(t.TempDir(), "report")
-	if err := run(dir, "", out); err != nil {
+	if err := run(dir, "", "", out); err != nil {
 		t.Fatal(err)
 	}
 	doc, err := os.ReadFile(filepath.Join(out, "COMPARISON.md")) //nolint:gosec // G703,G304: the directory is the test's own
@@ -291,5 +291,50 @@ func TestReportSaysATrialIsNotPublishable(t *testing.T) {
 	}
 	if !strings.Contains(string(doc), "**Not publishable.**") {
 		t.Error("a campaign that is not publishable produces a report that does not say so")
+	}
+}
+
+// TestReportFillsTheWritingCost: with cost.sh's table, a contender whose
+// matrix entry names its line gets its lines and dependencies, one that
+// names none keeps the dash; a line the table lacks is refused, not
+// published as nothing to count.
+func TestReportFillsTheWritingCost(t *testing.T) {
+	dir := synthetic(t)
+	matrix := `{
+	  "name": "trial-unit", "trial": false, "rows": 100000,
+	  "contenders": {"sluice-std": {"image": "sluice-reference", "args": [], "cost": "sluice/reference"},
+	                 "nethttp": {"image": "go-nethttp:doc", "args": []}},
+	  "families": [{"scenario": "unit", "proto": "h2",
+	                "contenders": ["sluice-std", "nethttp"], "points": [1000, 2000]}]
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "matrix.json"), []byte(matrix), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cost := filepath.Join(t.TempDir(), "cost.tsv")
+	table := "contender\tversion\tlines\tcontract lines\tdirect deps\tall deps\tconcepts\n" +
+		"sluice\treference\t430\t283\t1\t4\tgateway\n"
+	if err := os.WriteFile(cost, []byte(table), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "report")
+	if err := run(dir, "", cost, out); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(out, "COMPARISON.md")) //nolint:gosec // G304: the directory is the test's own
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := string(b)
+	if !strings.Contains(doc, "| sluice-std | 430 (+283 contract) | 1 direct, 4 in all |") {
+		t.Error("the cost line the matrix names is not in the short table")
+	}
+	if !strings.Contains(doc, "| nethttp | — | — |") || !strings.Contains(doc, "comparison/chain/cost.sh's (§1.1)") {
+		t.Error("a contender without a cost line keeps the dash, and the source is named")
+	}
+	if err := os.WriteFile(cost, []byte("contender\tversion\tlines\tcontract lines\tdirect deps\tall deps\tconcepts\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(dir, "", cost, filepath.Join(t.TempDir(), "r")); err == nil || !strings.Contains(err.Error(), "sluice/reference") {
+		t.Errorf("a cost line the table lacks: %v, want a refusal naming it", err)
 	}
 }
