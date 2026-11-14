@@ -55,14 +55,27 @@ func TestASocketHandedBackHasNoDeadlineLeft(t *testing.T) {
 	if _, err := peer.WriteTo([]byte("after"), own.LocalAddr()); err != nil {
 		t.Fatal(err)
 	}
+	// The listener may still send to the client's address (a late
+	// acknowledgement, its own close): the socket is the caller's again,
+	// and those datagrams are skipped. Only the peer's is awaited.
 	got := make(chan error, 1)
 	go func() {
-		buf := make([]byte, 64)
-		n, _, err := own.ReadFrom(buf)
-		if err == nil && string(buf[:n]) != "after" {
-			err = net.UnknownNetworkError(string(buf[:n]))
+		buf := make([]byte, 2048)
+		for {
+			n, from, err := own.ReadFrom(buf)
+			if err != nil {
+				got <- err
+				return
+			}
+			if from.String() != peer.LocalAddr().String() {
+				continue
+			}
+			if string(buf[:n]) != "after" {
+				err = net.UnknownNetworkError(string(buf[:n]))
+			}
+			got <- err
+			return
 		}
-		got <- err
 	}()
 	select {
 	case err := <-got:
