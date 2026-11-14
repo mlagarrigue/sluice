@@ -950,8 +950,8 @@ last second's pauses.
 4. A JRE cut by `jlink` to the modules the jar uses, on a distroless base
    (`cc-debian13`), run as a user with no rights.
 5. The JDK's ahead-of-time cache (JEP 514, 515), made by a training run when
-   the image is built (`spring.context.exit=onRefresh`): startup from
-   1.72 s to 1.35 s, three runs each. Under ZGC, JDK 25 puts the loaded
+   the image is built (`spring.context.exit=onRefresh`), for the startup
+   §1.4 measures. Under ZGC, JDK 25 puts the loaded
    classes in it but not their ahead-of-time linking, which goes through
    the archived heap ZGC only takes from JDK 26.
 
@@ -996,15 +996,10 @@ load) is the Spring Boot reference's `mvn -Pnative native:compile` on
 GraalVM Community 25, on a distroless base. What a condition reads from a
 property is fixed when it is built. The handlers' records are named for
 binding (`@RegisterReflectionForBinding`), which the JVM images do not need.
-Its first figures, on this machine, against the JVM images over h2:
-
-| Image | Size | Startup (Spring's line) | Memory at rest |
-|---|---|---|---|
-| `standard-doc` | 549 MB | 2.49 s | 237 MiB |
-| `optimised-opt` | 280 MB | 1.72 s | 512 MiB (ZGC, 75 % of memory allowed to the heap) |
-| `native` | 174 MB | 0.15 s | 52 MiB |
-
-Conformant over h1 and h2 with gzip, like the others.
+Its size is 174 MB, against 549 MB and 280 MB for the JVM images; its
+startup and its memory at rest are the campaign's to measure (§1.4), on its
+machines, not this tree's. Conformant over h1 and h2 with gzip, like the
+others.
 
 ```
 docker build -f comparison/java-spring/Dockerfile --target optimised-opt -t java-spring:optimised-opt .
