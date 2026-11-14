@@ -38,6 +38,25 @@ response under load:
 | list | `GET /orders?from=K&limit=1000` | `from`; `items` strictly increasing above it |
 | write | `POST /orders` with `{"key":K,"total":T}` | `key` |
 
+Beside it, `sluice/reference/` is the configuration R and nothing else,
+written as the guides teach it: the program whose lines the writing cost
+counts (§1.1), since the server's own lines count every axis. HTTP/1.1
+and HTTP/2 go through `net/http`, a `ServeMux` with method patterns, the
+`web` helpers and `web.ServeTLS`; HTTP/3 through `net/httpstream` on a
+QUIC listener, the batch routed by `web/stream`; `database/postgres`
+with one connection for the gateway and a channel of `STUDY_DB_POOL`
+for lists and writes; gzip at level 1 under `STUDY_COMPRESSION=gzip`.
+It reads the contract's variables alone (`STUDY_*`, `PG*`) and answers
+as R does, error documents included: `comparison/chain/conform.sh
+sluice-reference <h1|h2|h3> gzip` is conformant on all three, the image
+built with `--target reference` from the server's Dockerfile. One
+difference does not show in an answer: `web.ServeTLS` sets its read,
+write and idle timeouts (30 s, 1 min, 2 min), where the server sets the
+header timeout alone. The contract — variables, TLS, static document,
+write table, metrics point — is `sluice/internal/contract`, shared by
+the two programs, as `go-nethttp/internal/contract` is by the Go
+contenders.
+
 ### The TLS every contender runs under
 
 What a TLS handshake costs weighs more than the framework once a tenth of
@@ -539,6 +558,18 @@ ships (direct, then all), and the concepts one must know to write it.
   --include-transitive`. Go's count is per binary. The others ship one set
   of packages for every version, so their versions share one count.
 - **Concepts** are written by hand, in `chain/concepts.tsv`.
+
+Sluice.go's line is `sluice/reference/` (see [`sluice/`](#sluice--the-server-of-the-internal-study)),
+its contract lines `sluice/internal/contract`, and its dependencies those
+`go version -m` reads in its binary, the framework counted as one of
+them. On 2026-11-14: 430 lines, the most of the table, against 233 for
+the optimised Go contender, which serves the same three protocols. Most
+of the gap is two request paths — `net/http` for HTTP/1.1 and HTTP/2,
+`net/httpstream` for HTTP/3, where quic-go's `http3` takes the same
+`ServeMux` — and what the connector leaves to the program: a channel of
+connections, the decoding of each column, the gateway's pipeline. One
+direct dependency, four in all: the framework, `x/crypto`, `x/sys`,
+`x/text`.
 
 Run twice, the script prints the same table: it depends on the tree, not
 on the machine.

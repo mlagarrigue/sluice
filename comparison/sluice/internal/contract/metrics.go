@@ -1,4 +1,4 @@
-package main
+package contract
 
 import (
 	"math"
@@ -14,34 +14,34 @@ import (
 // explains a p99, it is never a verdict (study §1.3, §1.2 batch size).
 // Reading it costs one metrics.Read; serving costs nothing between reads.
 
-// metricsDoc is the document, field for field the contract's.
-type metricsDoc struct {
+// MetricsDoc is the document, field for field the contract's.
+type MetricsDoc struct {
 	Runtime    string      `json:"runtime"`
 	CPUSeconds float64     `json:"cpu_seconds"`
-	GC         *gcDoc      `json:"gc"`
-	Batches    *batchesDoc `json:"batches"`
+	GC         *GCDoc      `json:"gc"`
+	Batches    *BatchesDoc `json:"batches"`
 }
 
-type gcDoc struct {
+type GCDoc struct {
 	CPUSeconds float64   `json:"cpu_seconds"`
-	Pauses     pausesDoc `json:"pauses"`
+	Pauses     PausesDoc `json:"pauses"`
 }
 
-type pausesDoc struct {
+type PausesDoc struct {
 	Count   uint64   `json:"count"`
 	Seconds float64  `json:"seconds"`
-	Buckets []bucket `json:"buckets"`
+	Buckets []Bucket `json:"buckets"`
 }
 
-type batchesDoc struct {
+type BatchesDoc struct {
 	Count uint64   `json:"count"`
 	Keys  uint64   `json:"keys"`
-	Sizes []bucket `json:"sizes"`
+	Sizes []Bucket `json:"sizes"`
 }
 
-// bucket counts what is at most Le and above the bucket before it; only
+// Bucket counts what is at most Le and above the bucket before it; only
 // the buckets that counted something are written.
-type bucket struct {
+type Bucket struct {
 	Le    float64 `json:"le"`
 	Count uint64  `json:"count"`
 }
@@ -58,8 +58,8 @@ const (
 	metricGCPauses  = "/sched/pauses/total/gc:seconds"
 )
 
-// readRuntime is the runtime's part of the document.
-func readRuntime() (cpu float64, gc gcDoc) {
+// ReadRuntime is the runtime's part of the document.
+func ReadRuntime() (cpu float64, gc GCDoc) {
 	samples := []metrics.Sample{
 		{Name: metricCPUTotal},
 		{Name: metricCPUIdle},
@@ -85,15 +85,15 @@ func readRuntime() (cpu float64, gc gcDoc) {
 		if math.IsInf(le, 1) {
 			le = math.MaxFloat64
 		}
-		gc.Pauses.Buckets = append(gc.Pauses.Buckets, bucket{Le: le, Count: n})
+		gc.Pauses.Buckets = append(gc.Pauses.Buckets, Bucket{Le: le, Count: n})
 	}
 	return cpu, gc
 }
 
-// batchStats counts the SQL batches of unit reads and the keys in them,
+// BatchStats counts the SQL batches of unit reads and the keys in them,
 // by size in powers of two: 1, 2, 4… The gateway's pipeline records, from
 // its one goroutine; the metrics point reads, from any.
-type batchStats struct {
+type BatchStats struct {
 	count, keys atomic.Uint64
 	sizes       [batchBuckets]atomic.Uint64
 }
@@ -101,7 +101,7 @@ type batchStats struct {
 // batchBuckets reaches 2^20 keys a batch, far past any -gateway-size.
 const batchBuckets = 21
 
-func (b *batchStats) record(keys int) {
+func (b *BatchStats) Record(keys int) {
 	if keys <= 0 {
 		return
 	}
@@ -110,18 +110,23 @@ func (b *batchStats) record(keys int) {
 	b.sizes[min(bits.Len(uint(keys-1)), batchBuckets-1)].Add(1)
 }
 
-func (b *batchStats) doc() *batchesDoc {
-	d := &batchesDoc{Count: b.count.Load(), Keys: b.keys.Load()}
+func (b *BatchStats) Doc() *BatchesDoc {
+	d := &BatchesDoc{Count: b.count.Load(), Keys: b.keys.Load()}
 	for i := range b.sizes {
 		if n := b.sizes[i].Load(); n > 0 {
-			d.Sizes = append(d.Sizes, bucket{Le: float64(uint64(1) << i), Count: n})
+			d.Sizes = append(d.Sizes, Bucket{Le: float64(uint64(1) << i), Count: n})
 		}
 	}
 	return d
 }
 
-// metrics is the document now.
-func (a *app) metrics() metricsDoc {
-	cpu, gc := readRuntime()
-	return metricsDoc{Runtime: runtime.Version(), CPUSeconds: cpu, GC: &gc, Batches: a.batches.doc()}
+// Read is the document now; batches is nil for a program that does not
+// group, and its part of the document is then null.
+func Read(batches *BatchStats) MetricsDoc {
+	cpu, gc := ReadRuntime()
+	d := MetricsDoc{Runtime: runtime.Version(), CPUSeconds: cpu, GC: &gc}
+	if batches != nil {
+		d.Batches = batches.Doc()
+	}
+	return d
 }

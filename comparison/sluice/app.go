@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/comparison/sluice/internal/contract"
 	"github.com/mlagarrigue/sluice/gateway"
 )
 
@@ -33,10 +34,10 @@ import (
 // The app does not know which driver answers either: the store (store.go) is
 // what -driver swaps, the gateway in front of it stays.
 type app struct {
-	static  staticDoc
+	static  contract.Static
 	st      store
 	gw      *gateway.Gateway[int64, orderRow]
-	batches batchStats // the unit reads' SQL batches, for the metrics point
+	batches contract.BatchStats // the unit reads' SQL batches, for the metrics point
 	listMax int
 	codec   *codec // axis F; nil in R
 	stream  bool   // axis E: the list is written as it comes
@@ -65,13 +66,6 @@ type orderRow struct {
 	Label string `json:"label"`
 }
 
-type staticDoc struct {
-	Status  string   `json:"status"`
-	Service string   `json:"service"`
-	Version string   `json:"version"`
-	Padding []string `json:"padding"`
-}
-
 type listDoc struct {
 	From  int64      `json:"from"`
 	Limit int        `json:"limit"`
@@ -95,15 +89,8 @@ type errDoc struct {
 const (
 	unitQuery = `SELECT id, total, label FROM bench_orders WHERE id = ANY($1) ORDER BY id`
 	listQuery = `SELECT id, total, label FROM bench_orders WHERE id > $1 ORDER BY id LIMIT $2`
-	// The write table is never read by a scenario (§2.2): the expected answer
-	// of a read must not depend on the writes before it. Autovacuum is off on
-	// it so that nothing fires mid-step; the campaign truncates it between
-	// repetitions.
-	writeTable = `CREATE TABLE IF NOT EXISTS comparison_writes (
-		id bigserial PRIMARY KEY, key bigint NOT NULL, total bigint NOT NULL,
-		created timestamptz NOT NULL DEFAULT now())`
-	writeNoVacuum = `ALTER TABLE comparison_writes SET (autovacuum_enabled = off)`
-	writeQuery    = `INSERT INTO comparison_writes (key, total) VALUES ($1, $2)`
+	// The write table is contract.WriteTable, created at startup.
+	writeQuery = `INSERT INTO comparison_writes (key, total) VALUES ($1, $2)`
 )
 
 func newApp(o options) (*app, error) {
@@ -116,7 +103,7 @@ func newApp(o options) (*app, error) {
 		return nil, fmt.Errorf("write table: %w", err)
 	}
 	a := &app{
-		static: newStaticDoc(), st: st, listMax: o.listMax,
+		static: contract.StaticDoc(), st: st, listMax: o.listMax,
 		codec: lookupCodec(o.compression), stream: o.response == responseStream,
 		appendJSON: o.json == jsonAppend,
 	}
@@ -140,19 +127,10 @@ func (a *app) Close() error {
 	return errors.Join(errs...)
 }
 
-// newStaticDoc is about 1 KB once encoded, the size §2.2 names.
-func newStaticDoc() staticDoc {
-	d := staticDoc{Status: "ok", Service: "sluice-study", Version: "r"}
-	for i := range 40 {
-		d.Padding = append(d.Padding, fmt.Sprintf("line-%02d-abcdefghijklmnop", i))
-	}
-	return d
-}
-
 // unitPipeline is the gateway's pipeline, the same whatever the driver: the
 // keys of a batch go to the store as one slice and come back as one map, and
 // every caller gets its row or a miss.
-func unitPipeline(st store, size int, stats *batchStats) func(sluice.Stream[*gateway.Call[int64, orderRow]]) {
+func unitPipeline(st store, size int, stats *contract.BatchStats) func(sluice.Stream[*gateway.Call[int64, orderRow]]) {
 	return func(calls sluice.Stream[*gateway.Call[int64, orderRow]]) {
 		ids := make([]int64, 0, size)
 		found := make(map[int64]orderRow, size)
@@ -162,7 +140,7 @@ func unitPipeline(st store, size int, stats *batchStats) func(sluice.Stream[*gat
 			for _, c := range batch.Items {
 				ids = append(ids, c.In)
 			}
-			stats.record(len(ids))
+			stats.Record(len(ids))
 			if err := st.unit(context.Background(), ids, found); err != nil {
 				for _, c := range batch.Items {
 					c.Fail(err)
@@ -195,7 +173,7 @@ func (a *app) route(ctx context.Context, method, target string, body []byte) ans
 	case path == "/static" && method == "GET":
 		return answer{status: 200, body: a.static}
 	case path == "/study/metrics" && method == "GET":
-		return answer{status: 200, body: a.metrics()}
+		return answer{status: 200, body: contract.Read(&a.batches)}
 	case strings.HasPrefix(path, "/orders/") && method == "GET":
 		return a.unit(ctx, path[len("/orders/"):])
 	case path == "/orders" && method == "GET":

@@ -2,26 +2,17 @@ package main
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/ed25519"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
-	"math/big"
 	"net"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/comparison/sluice/internal/contract"
 	"github.com/mlagarrigue/sluice/net/httpstream"
 	"github.com/mlagarrigue/sluice/net/quic"
 	"github.com/mlagarrigue/sluice/web"
@@ -333,7 +324,7 @@ func tlsConfig(o options) (*tls.Config, error) {
 	if o.cert != "" {
 		cert, err = tls.LoadX509KeyPair(o.cert, o.key)
 	} else {
-		cert, err = selfSigned()
+		cert, err = contract.SelfSigned()
 	}
 	if err != nil {
 		return nil, err
@@ -353,57 +344,4 @@ func tlsConfig(o options) (*tls.Config, error) {
 		return nil, errors.New("tlsConfig: transport without a TLS protocol")
 	}
 	return cfg, nil
-}
-
-// tlsSummary is the TLS the server runs under, written at startup so that
-// a campaign's log says it (§4 "TLS fixed"): the version floor, the
-// certificate's key, the ALPN, whether sessions resume. TLS 1.3's suites
-// are crypto/tls's, which no Config sets.
-func tlsSummary(cfg *tls.Config, resume bool) string {
-	key := "unknown key"
-	if len(cfg.Certificates) > 0 {
-		switch k := cfg.Certificates[0].PrivateKey.(type) {
-		case *ecdsa.PrivateKey:
-			key = "ECDSA " + k.Curve.Params().Name
-		case *rsa.PrivateKey:
-			key = fmt.Sprintf("RSA %d", k.N.BitLen())
-		case ed25519.PrivateKey:
-			key = "Ed25519"
-		}
-	}
-	resumption := "off"
-	if resume {
-		resumption = "on"
-	}
-	return fmt.Sprintf("TLS %s+, %s certificate, ALPN %s, resumption %s", tlsVersion(cfg.MinVersion), key, strings.Join(cfg.NextProtos, ","), resumption)
-}
-
-func tlsVersion(v uint16) string {
-	return strings.TrimPrefix(tls.VersionName(v), "TLS ")
-}
-
-func selfSigned() (tls.Certificate, error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "sluice-study"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(24 * time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		DNSNames:     []string{"localhost"},
-		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-	leaf, err := x509.ParseCertificate(der)
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, nil
 }

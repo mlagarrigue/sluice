@@ -23,3 +23,4 @@ dotnet-minimal	standard	Minimal APIs, Kestrel, Dapper, Npgsql data source, async
 dotnet-minimal	optimised	Minimal APIs, Kestrel, Dapper, Npgsql data source, async/await, ReadyToRun, chiseled image, GC settings
 dotnet-minimal	multiplexing	Minimal APIs, Kestrel, Dapper, Npgsql data source and multiplexing, async/await
 dotnet-minimal	dataloader	Minimal APIs, Kestrel, Dapper, Npgsql data source, DataLoader (BatchDataLoader, scheduler)
+sluice	reference	ServeMux patterns, web helpers (PathInt64, DecodeJSON, WriteJSON, ServeTLS), gateway (pipeline, Size, Within), database/postgres (Query, BatchRows, pgtype), a channel of connections, httpstream and QUIC listener, web/stream router and Render, gzip writer pool

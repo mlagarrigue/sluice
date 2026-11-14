@@ -23,6 +23,7 @@ import (
 	quicgo "github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 
+	"github.com/mlagarrigue/sluice/comparison/sluice/internal/contract"
 	"github.com/mlagarrigue/sluice/database/postgres"
 	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 )
@@ -125,7 +126,7 @@ func start(tb testing.TB, args ...string) *server {
 	// One certificate for the server and the client: the listener is
 	// wrapped here with a certificate the test holds, and serve told not to
 	// wrap it again.
-	cert, err := selfSigned()
+	cert, err := contract.SelfSigned()
 	if err != nil {
 		tb.Fatal(err)
 	}

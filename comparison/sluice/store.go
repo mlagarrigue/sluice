@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/comparison/sluice/internal/contract"
 	"github.com/mlagarrigue/sluice/database/postgres"
 	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 )
@@ -121,10 +122,12 @@ func (s *sluiceStore) Close() error {
 func (s *sluiceStore) createWriteTable(ctx context.Context) error {
 	c := <-s.pool
 	defer func() { s.pool <- c }()
-	if err := c.Exec(ctx, writeTable); err != nil {
-		return err
+	for _, ddl := range contract.WriteTable {
+		if err := c.Exec(ctx, ddl); err != nil {
+			return err
+		}
 	}
-	return c.Exec(ctx, writeNoVacuum)
+	return nil
 }
 
 // unit is mostly the example of package gateway, with the label added: every
@@ -277,11 +280,12 @@ func (s *pgxStore) Close() error {
 }
 
 func (s *pgxStore) createWriteTable(ctx context.Context) error {
-	if _, err := s.pool.Exec(ctx, writeTable); err != nil {
-		return err
+	for _, ddl := range contract.WriteTable {
+		if _, err := s.pool.Exec(ctx, ddl); err != nil {
+			return err
+		}
 	}
-	_, err := s.pool.Exec(ctx, writeNoVacuum)
-	return err
+	return nil
 }
 
 func (s *pgxStore) unit(ctx context.Context, ids []int64, found map[int64]orderRow) error {

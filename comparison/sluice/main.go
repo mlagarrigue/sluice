@@ -13,6 +13,8 @@ import (
 	"os"
 	"os/signal"
 	"runtime/pprof"
+
+	"github.com/mlagarrigue/sluice/comparison/sluice/internal/contract"
 )
 
 func main() {
@@ -65,7 +67,7 @@ func run(ctx context.Context, o options) (err error) {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "sluice-study: %s on udp %s (%s)\n", o.transport, pc.LocalAddr(), tlsSummary(tlsCfg, o.tlsResume))
+		fmt.Fprintf(os.Stderr, "sluice-study: %s on udp %s (%s)\n", o.transport, pc.LocalAddr(), contract.TLSSummary(tlsCfg, o.tlsResume))
 		return serveH3(ctx, o, a, pc, tlsCfg)
 	}
 	ln, err := net.Listen("tcp", o.listen)
@@ -78,7 +80,7 @@ func run(ctx context.Context, o options) (err error) {
 		if tlsCfg, err = tlsConfig(o); err != nil {
 			return err
 		}
-		summary = tlsSummary(tlsCfg, o.tlsResume)
+		summary = contract.TLSSummary(tlsCfg, o.tlsResume)
 	}
 	fmt.Fprintf(os.Stderr, "sluice-study: %s on %s (%s)\n", o.transport, ln.Addr(), summary)
 	return serve(ctx, o, a, ln, tlsCfg)

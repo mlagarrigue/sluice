@@ -79,6 +79,19 @@ for v in standard optimised gin-standard gin-optimised dataloader; do
 	row go-nethttp $v "$lines" "$gc" "$dir" "$all"
 done
 
+# Sluice.go: the program of the configuration R alone (sluice/reference),
+# not the study's server beside it, which carries every axis of the study
+# behind a flag; the contract it shares with that server is counted apart.
+# The framework is a dependency like any other: go.mod requires it,
+# replaced by this tree.
+sl=comparison/sluice
+slc=$(code $sl/internal/contract/contract.go $sl/internal/contract/metrics.go)
+GOWORK=off go build -C $sl -o "$tmp/reference" ./reference || exit 2
+go version -m "$tmp/reference" | awk '$1 == "dep" { print $2 }' | sort >"$tmp/reference.deps"
+direct_sl=$(awk '/^require/ { r = 1; next } r && /^\)/ { r = 0 } r && !/indirect/ { print $1 }' $sl/go.mod | sort)
+row sluice reference "$(code $sl/reference/main.go)" "$slc" \
+	"$(comm -12 "$tmp/reference.deps" <(echo "$direct_sl") | wc -l)" "$(wc -l <"$tmp/reference.deps")"
+
 # Node: one set of packages for every version (npm ci --omit=dev).
 n=comparison/node-express
 node_image=$(sed -n 's/^FROM \(node:[^ ]*\) AS standard-doc$/\1/p' $n/Dockerfile)

@@ -31,3 +31,17 @@ COPY --from=build-opt /sluice-study /sluice-study
 ENV STUDY_LISTEN=0.0.0.0:8443
 EXPOSE 8443/tcp 8443/udp
 ENTRYPOINT ["/sluice-study"]
+
+# reference is the program of the configuration R alone (reference/, the
+# writing cost of §1.1), built and shipped as opt is, so that
+# comparison/chain/conform.sh checks it against R:
+#
+#   docker build -f comparison/sluice/Dockerfile --target reference -t sluice-reference .
+FROM doc AS build-reference
+RUN cd comparison/sluice && CGO_ENABLED=0 go build -trimpath -o /sluice-reference ./reference
+
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS reference
+COPY --from=build-reference /sluice-reference /sluice-reference
+ENV STUDY_LISTEN=0.0.0.0:8443
+EXPOSE 8443/tcp 8443/udp
+ENTRYPOINT ["/sluice-reference"]

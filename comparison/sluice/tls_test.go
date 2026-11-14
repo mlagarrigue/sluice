@@ -5,6 +5,8 @@ import (
 	"crypto/x509"
 	"strings"
 	"testing"
+
+	"github.com/mlagarrigue/sluice/comparison/sluice/internal/contract"
 )
 
 // TestTLSResume: under -tls-resume the server issues session tickets and a
@@ -29,7 +31,7 @@ func TestTLSResume(t *testing.T) {
 		if resume {
 			want = "TLS 1.3+, ECDSA P-256 certificate, ALPN h2, resumption on"
 		}
-		if got := tlsSummary(cfg, o.tlsResume); got != want {
+		if got := contract.TLSSummary(cfg, o.tlsResume); got != want {
 			t.Errorf("summary %q, want %q", got, want)
 		}
 
