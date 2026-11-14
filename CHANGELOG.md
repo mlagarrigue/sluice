@@ -6,6 +6,19 @@ impact, and what to write instead, is in the
 [migration guide](docs/migration.md), from 0.3.0 on: read the section that
 leaves your version, then each section above it up to the one you move to.
 
+## [0.5.2](https://github.com/mlagarrigue/sluice/compare/v0.5.1...v0.5.2) (2026-11-14)
+
+
+### Features
+
+* **bench:** Sluice.go row of the writing cost ([ee1dc8b](https://github.com/mlagarrigue/sluice/commit/ee1dc8b1d634bd43958b06fb16b301dc69eeebb7))
+
+
+### Documentation
+
+* **bench:** .NET br at Optimal is R's quality 4 ([5e6b18d](https://github.com/mlagarrigue/sluice/commit/5e6b18d802617596cf9ce0dad5f106cebbebd2d0))
+* the guides install v0.5.1, not main ([b1c798b](https://github.com/mlagarrigue/sluice/commit/b1c798bd1d65dec1acf04178ecfa68bce2058661))
+
 ## [0.5.1](https://github.com/mlagarrigue/sluice/compare/v0.5.0...v0.5.1) (2026-11-14)
 
 
