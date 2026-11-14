@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -44,7 +45,7 @@ func parsePGRoles(text string) ([]PGRole, error) {
 // — 140001 for 14.1, 90624 for 9.6.24 — from that setting, or from
 // server_version when only it was saved.
 func (pg *Postgres) versionNum() (int, bool) {
-	if n, ok := pg.integer("server_version_num"); ok {
+	if n, ok := pg.integer("server_version_num"); ok && n >= 0 && n <= math.MaxInt32 {
 		return int(n), true
 	}
 	s, ok := pg.setting("server_version")

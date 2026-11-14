@@ -118,4 +118,8 @@ func TestServerVersionNum(t *testing.T) {
 	if got, _ := pg.versionNum(); got != 160004 || versionName(got) != "16.4" || versionName(90624) != "9.6.24" {
 		t.Errorf("server_version_num first: %d %s", got, versionName(got))
 	}
+	pg = &Postgres{Settings: map[string]PGSetting{"server_version_num": {Value: "9999999999"}, "server_version": {Value: "16.4"}}}
+	if got, ok := pg.versionNum(); !ok || got != 160004 {
+		t.Errorf("server_version_num out of range: %d, want server_version's 160004", got)
+	}
 }

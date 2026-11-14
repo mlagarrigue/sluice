@@ -97,6 +97,7 @@ func TestThePostgresPortOpenToAnyAddressIsReported(t *testing.T) {
 		{"iptables-save, a multiport range", iptablesOpen, "", "line 6"},
 		{"Docker's DNAT to 5432", iptablesDocker, "", "DNAT"},
 		{"a port read in pg_settings", strings.ReplaceAll(nftOpen, "5432", "6543"), "name,setting,unit\nport,6543,\n", "line 6"},
+		{"a port out of range in pg_settings is 5432", nftOpen, "name,setting,unit\nport,70000,\n", "line 6"},
 		{"nft, a source on the rule", nftClosed, "", ""},
 		{"iptables-save, restricted then dropped", iptablesClosed, "", ""},
 		{"Docker published on 127.0.0.1", iptablesDockerLoopback, "", ""},

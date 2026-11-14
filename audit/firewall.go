@@ -479,7 +479,7 @@ func init() {
 				return nil
 			}
 			port := 5432
-			if n, ok := t.Postgres.integer("port"); ok {
+			if n, ok := t.Postgres.integer("port"); ok && n > 0 && n <= 65535 {
 				port = int(n)
 			}
 			how, unknown := t.Firewall.exposed(port)
