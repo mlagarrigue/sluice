@@ -320,6 +320,15 @@ fail early; the unit read's fixed points stop at 250 req/s, where a
 developer's machine still leaves the tester under its 70 % at 20 ms. It
 needs the machine to itself: the tester's cores are not isolated from
 the host, and another load on them invalidates every stage it touches.
+Played on a developer's machine on 2026-11-14 (`CORES="2 1 4"`), it runs
+end to end in 4 h 20, 796 stages, 4 invalidated and replayed, and the
+report is written from it; nothing it measures is a figure.
+
+```
+CORES="2 1 4" go run -C comparison/loadgen ./campaign -matrix ../chain/rehearsal.json -out /tmp/rehearsal
+comparison/chain/cost.sh > /tmp/cost.tsv
+go run -C comparison/loadgen ./report -campaign /tmp/rehearsal -cost /tmp/cost.tsv -out /tmp/rehearsal/report
+```
 
 ### An image, built and started
 
@@ -376,7 +385,10 @@ the gap — the mechanism, where Sluice.go loses, what is arithmetic rather
 than framework. The two columns of the writing cost, lines of code and
 dependencies, come from `-cost`, the table `cost.sh` prints, for every
 contender whose matrix entry names its line; a line the table lacks is
-refused, and without `-cost` the columns stay marked as unfilled.
+refused, and without `-cost` the columns stay marked as unfilled. A
+trial needs no verdicts file — `loadgen -verdicts` refuses its rounds —
+and its document opens on "Not publishable"; any other campaign without
+one is refused.
 Everything else is rendered: the diagram of the three
 roles, the two curves (latency p50 and p99, then the server's memory,
 both against the rate on a logarithmic scale, because the grid is

@@ -338,3 +338,27 @@ func TestReportFillsTheWritingCost(t *testing.T) {
 		t.Errorf("a cost line the table lacks: %v, want a refusal naming it", err)
 	}
 }
+
+// TestReportOfATrialNeedsNoVerdicts: loadgen -verdicts refuses a trial's
+// rounds, so a trial's report is written without the file; a campaign
+// that is no trial still needs it.
+func TestReportOfATrialNeedsNoVerdicts(t *testing.T) {
+	dir := synthetic(t)
+	if err := os.Remove(filepath.Join(dir, "verdicts.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(dir, "", "", filepath.Join(t.TempDir(), "report")); err == nil || !strings.Contains(err.Error(), "verdicts.jsonl") {
+		t.Errorf("a campaign that is no trial, without its verdicts: %v, want an error naming the file", err)
+	}
+	m := filepath.Join(dir, "matrix.json")
+	b, err := os.ReadFile(m) //nolint:gosec // G304: the directory is the test's own
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(m, bytes.Replace(b, []byte(`"trial": false`), []byte(`"trial": true`), 1), 0o600); err != nil { //nolint:gosec // G703: the directory is the test's own
+		t.Fatal(err)
+	}
+	if err := run(dir, "", "", filepath.Join(t.TempDir(), "report")); err != nil {
+		t.Errorf("a trial without verdicts: %v, want its report", err)
+	}
+}

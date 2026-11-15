@@ -3,7 +3,9 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -214,14 +216,21 @@ func read(dir, verdictsPath string) (*inputs, error) {
 	}); err != nil {
 		return nil, err
 	}
-	if err := readLines(verdictsPath, func(n int, b []byte) error {
+	err := readLines(verdictsPath, func(n int, b []byte) error {
 		var v verdict
 		if err := json.Unmarshal(b, &v); err != nil {
 			return fmt.Errorf("%s line %d: %w", verdictsPath, n, err)
 		}
 		in.verdicts = append(in.verdicts, v)
 		return nil
-	}); err != nil {
+	})
+	// A trial has no verdicts to read: loadgen -verdicts refuses its rounds
+	// (§7.2), and the document already says it is not publishable. Any
+	// other campaign without them is a report missing a §5 point.
+	if errors.Is(err, fs.ErrNotExist) && in.matrix.Trial {
+		err = nil
+	}
+	if err != nil {
 		return nil, err
 	}
 	if len(in.stages) == 0 {
