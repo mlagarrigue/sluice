@@ -23,6 +23,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/zstd"
 	"github.com/quic-go/quic-go/http3"
 )
 
@@ -161,12 +163,12 @@ func (t *trivial) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(b) //nolint:gosec // G705: the body is JSON the server built, never a request's bytes
 }
 
-// acceptedCoding is the coding the trivial answers in: gzip or deflate
-// when the request's Accept-Encoding names it with a weight above 0, gzip
-// first (the generator sends one token; this is enough for it and for
-// curl).
+// acceptedCoding is the coding the trivial answers in: the first of gzip,
+// deflate, br and zstd, in that order, that the request's Accept-Encoding
+// names with a weight above 0 (the generator sends one token; this is
+// enough for it and for curl).
 func acceptedCoding(accept string) string {
-	var deflate bool
+	named := map[string]bool{}
 	for part := range strings.SplitSeq(accept, ",") {
 		token, params, _ := strings.Cut(part, ";")
 		if q, ok := strings.CutPrefix(strings.TrimSpace(params), "q="); ok {
@@ -174,22 +176,24 @@ func acceptedCoding(accept string) string {
 				continue
 			}
 		}
-		switch strings.ToLower(strings.TrimSpace(token)) {
-		case codingGzip:
-			return codingGzip
-		case codingDeflate:
-			deflate = true
-		}
+		named[strings.ToLower(strings.TrimSpace(token))] = true
 	}
-	if deflate {
-		return codingDeflate
+	for _, coding := range []string{codingGzip, codingDeflate, codingBrotli, codingZstd} {
+		if named[coding] {
+			return coding
+		}
 	}
 	return ""
 }
 
-// The encoders, at level 1, reused: a gzip.Writer and a zlib.Writer
-// rebuild their tables on Reset only.
-var gzipWriters, zlibWriters sync.Pool
+// The encoders, reused: gzip and deflate at level 1, the level the study
+// compares at (§2.3 bis); br at quality 4 and zstd at its library's default
+// level, one goroutine an encoder, which are R's (comparison/sluice
+// compress.go). Every one rebuilds its tables on Reset only.
+var gzipWriters, zlibWriters, brotliWriters, zstdWriters sync.Pool
+
+// brotliQuality is R's brotliLevel.
+const brotliQuality = 4
 
 // compress appends doc encoded in coding to dst. HTTP's deflate is the
 // zlib format (RFC 9110 §8.4.1.2).
@@ -208,6 +212,23 @@ func compress(coding string, dst, doc []byte) []byte {
 			zw, _ = gzip.NewWriterLevel(buf, gzip.BestSpeed)
 		}
 		defer gzipWriters.Put(zw)
+	case codingBrotli:
+		if w, ok := brotliWriters.Get().(*brotli.Writer); ok {
+			w.Reset(buf)
+			zw = w
+		} else {
+			zw = brotli.NewWriterLevel(buf, brotliQuality)
+		}
+		defer brotliWriters.Put(zw)
+	case codingZstd:
+		if w, ok := zstdWriters.Get().(*zstd.Encoder); ok {
+			w.Reset(buf)
+			zw = w
+		} else {
+			// The options are constants: the constructor cannot refuse them.
+			zw, _ = zstd.NewWriter(buf, zstd.WithEncoderLevel(zstd.SpeedDefault), zstd.WithEncoderConcurrency(1))
+		}
+		defer zstdWriters.Put(zw)
 	default:
 		if w, ok := zlibWriters.Get().(*zlib.Writer); ok {
 			w.Reset(buf)

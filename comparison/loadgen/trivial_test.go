@@ -39,7 +39,7 @@ func startTrivial(tb testing.TB, keyspace int) *trivialServer {
 func TestTrivialServesEveryScenario(t *testing.T) {
 	s := startTrivial(t, 10000)
 	protos(t, func(t *testing.T, proto string) { //nolint:thelper // a sub-test body
-		for _, encoding := range []string{"identity", codingGzip, codingDeflate} {
+		for _, encoding := range []string{"identity", codingGzip, codingDeflate, codingBrotli, codingZstd} {
 			for _, name := range []string{"static", "unit", "list", "write", "mixed"} {
 				t.Run(encoding+"/"+name, func(t *testing.T) {
 					testTrivialServes(t, s, proto, encoding, name)
@@ -162,7 +162,11 @@ func TestTrivialEdges(t *testing.T) {
 		{"deflate, gzip", "gzip"},
 		{"gzip;q=0, deflate", "deflate"},
 		{"gzip;q=0", ""},
-		{"br", ""},
+		{"br", "br"},
+		{"zstd", "zstd"},
+		{"zstd, br", "br"},
+		{"br;q=0, zstd", "zstd"},
+		{"compress", ""},
 	} {
 		for _, path := range []string{"/orders?from=1999&limit=1000", "/nowhere"} {
 			rec := httptest.NewRecorder()

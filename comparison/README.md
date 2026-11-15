@@ -1420,10 +1420,12 @@ generator's validation at 100 % on. It is the same binary under `-trivial`,
 run as a process of its own so that its goroutines never share the
 generator's scheduler, serving HTTP/1.1 and HTTP/2 on TCP and HTTP/3 on UDP
 at the same port, under a certificate generated at startup (`-no-verify`
-accepts it). Asked for gzip or deflate, it compresses every 200 on the fly
-at level 1, the level the study compares at (§2.3 bis), with encoders
-reused from a pool: ~90 µs for a list page, a third of what the generator
-spends decoding and checking it. A page cannot be compressed once at
+accepts it). Asked for gzip, deflate, br or zstd, it compresses every 200
+on the fly — gzip and deflate at level 1, the level the study compares at
+(§2.3 bis), br at quality 4 and zstd at its library's default level, R's
+settings — with encoders reused from a pool: ~90 µs for a list page in
+gzip, a third of what the generator spends decoding and checking it. A
+page cannot be compressed once at
 startup, since every list starts at another key. `selftest.sh` builds it,
 starts it, runs one ramp per scenario, protocol and coding on a coarse
 `×1.25` grid from 4 000 req/s (`RATES`, `DURATION`, `SCENARIOS`, `PROTOS`,
@@ -1449,6 +1451,22 @@ input — `FuzzValidJSON` holds it to `json.Valid` — at a third of the
 cost, which took the generator's CPU over a stage at 4 000 pages a
 second from 4.2 to 3.7 ms a page, opening of the budget included, in
 three alternated pairs.
+
+Per coding, the list's last stage held on the same `×1.25` grid
+(2026-11-15, 3 s stages; the generator on four cores, the trivial server
+on six threads, R on one core against the repository's PostgreSQL) —
+every cell at least twice R's:
+
+| list, pages/s | identity | gzip | deflate | br | zstd |
+|---|---|---|---|---|---|
+| h1: generator / R | ≥ 11 370 / 2 980 | 7 280 / 2 380 | 7 280 / 1 220 | 4 660 / 1 530 | ≥ 11 370 / 2 380 |
+| h2: generator / R | ≥ 11 370 / 2 380 | 7 280 / 1 910 | 7 280 / 1 220 | 4 660 / 1 530 | 9 100 / 2 380 |
+| h3: generator / R | 5 820 / 2 380 | 5 820 / 1 910 | 5 820 / 1 220 | 3 730 / 1 530 | 9 100 / 2 380 |
+
+The narrowest are h3 in clear and br, at 2.4 times; deflate is R's at
+level 6, the trivial server's at 1, hence its width. Under h3 a coding
+that writes fewer bytes raises the generator's ceiling: the page's
+packets, not its decoding, are what it pays for.
 
 Not yet here: the `oha` cross-check.
 
