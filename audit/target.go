@@ -109,6 +109,10 @@ type Target struct {
 	// was not given.
 	Load *LoadLine
 
+	// Stack is what a contender's stack starts with, nil when no file of
+	// it was given.
+	Stack *Stack
+
 	// CPUTime is what the CPUs spent during a load, by kind, nil when the
 	// two readings of /proc/stat were not given.
 	CPUTime *CPUTime
@@ -204,6 +208,11 @@ type Spec struct {
 	// LoadLine is the study load generator's line for a stage, saved: its
 	// stage.jsonl, or the chain's merged line.
 	LoadLine string
+
+	// StackConfig is a contender's configuration files, comma-separated:
+	// a Spring Boot application.properties, the command line that starts
+	// uvicorn, a Node server's source, an appsettings.json.
+	StackConfig string
 
 	// StatBefore and StatAfter are two copies of /proc/stat, before and
 	// after a load.
@@ -361,6 +370,13 @@ func Open(s Spec) (*Target, error) {
 			return nil, err
 		}
 		t.Study = m
+	}
+	if s.StackConfig != "" {
+		st, err := openStack(s.StackConfig)
+		if err != nil {
+			return nil, err
+		}
+		t.Stack = st
 	}
 	if s.LoadLine != "" {
 		l, err := openLoadLine(s.LoadLine)

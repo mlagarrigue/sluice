@@ -89,6 +89,7 @@ func run(args []string, out *os.File) error {
 	metricsAfter := fs.String("metrics-after", "", "the same at its end")
 	ss := fs.String("ss", "", "what ss -tan printed during a load")
 	loadLine := fs.String("load-line", "", "the study load generator's line for a stage, saved (stage.jsonl)")
+	stackConfig := fs.String("stack-config", "", "a contender's configuration files, comma-separated: application.properties, the uvicorn command line, a Node server's source, appsettings.json")
 	statBefore := fs.String("stat-before", "", "a copy of /proc/stat taken before a load")
 	statAfter := fs.String("stat-after", "", "a copy of /proc/stat taken after it")
 	imds := fs.String("imds", "", "a file holding Azure's metadata: curl -H Metadata:true 'http://169.254.169.254/metadata/instance?api-version=2025-04-07'")
@@ -123,8 +124,8 @@ func run(args []string, out *os.File) error {
 		*pgSettings == "" && *pgHBA == "" && *pgLog == "" && *pgRoles == "" && *firewall == "" && *proxyConfig == "" && *appArgs == "" &&
 		*netstatBefore == "" && *netstatAfter == "" && *pgActivity == "" &&
 		*statBefore == "" && *statAfter == "" && *imds == "" &&
-		*metricsBefore == "" && *metricsAfter == "" && *ss == "" && *loadLine == "" {
-		return errors.New("name what to read: -binary, -module, -dockerfile, -root, -container, -container-json, -kernel-log, -app-log, -tls-chain, -pg-settings, -pg-hba, -pg-log, -pg-roles, -pg-activity, -firewall, -proxy-config, -app-args, -imds, -ss, -load-line, -metrics-before and -metrics-after, or -netstat-before and -netstat-after, or -stat-before and -stat-after")
+		*metricsBefore == "" && *metricsAfter == "" && *ss == "" && *loadLine == "" && *stackConfig == "" {
+		return errors.New("name what to read: -binary, -module, -dockerfile, -root, -container, -container-json, -kernel-log, -app-log, -tls-chain, -pg-settings, -pg-hba, -pg-log, -pg-roles, -pg-activity, -firewall, -proxy-config, -app-args, -imds, -ss, -load-line, -stack-config, -metrics-before and -metrics-after, or -netstat-before and -netstat-after, or -stat-before and -stat-after")
 	}
 
 	sel := audit.Selection{}
@@ -147,7 +148,7 @@ func run(args []string, out *os.File) error {
 		Firewall: *firewall, ProxyConfig: *proxyConfig, ProxyVersion: *proxyVersion,
 		AppArgs: *appArgs, NetstatBefore: *netstatBefore, NetstatAfter: *netstatAfter,
 		StatBefore: *statBefore, StatAfter: *statAfter, IMDS: *imds, VulnDB: *vulndb,
-		MetricsBefore: *metricsBefore, MetricsAfter: *metricsAfter, SS: *ss, LoadLine: *loadLine,
+		MetricsBefore: *metricsBefore, MetricsAfter: *metricsAfter, SS: *ss, LoadLine: *loadLine, StackConfig: *stackConfig,
 	})
 	if err != nil {
 		return err
