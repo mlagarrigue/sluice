@@ -130,3 +130,48 @@ func TestAPoolRunDryIsReadInTheApplicationLog(t *testing.T) {
 		}
 	}
 }
+
+// TestPostgreSQLTimeoutsAreReadInTheApplicationLog: a line for each of the
+// server's cancellations, as a driver logs it, names its setting; a log
+// without them reports nothing.
+func TestPostgreSQLTimeoutsAreReadInTheApplicationLog(t *testing.T) {
+	for _, tc := range []struct{ line, setting string }{
+		{`ERROR: canceling statement due to statement timeout (SQLSTATE 57014)`, "statement_timeout"},
+		{`org.postgresql.util.PSQLException: ERROR: canceling statement due to lock timeout`, "lock_timeout"},
+		{`level=ERROR msg="list failed" err="postgres: 57014: canceling statement due to user request"`, "the client's own deadline"},
+		{`FATAL: terminating connection due to idle-in-transaction timeout`, "idle_in_transaction_session_timeout"},
+		{`FATAL: terminating connection due to transaction timeout`, "transaction_timeout"},
+		{`asyncpg.exceptions.IdleSessionTimeoutError: terminating connection due to idle-session timeout`, "idle_session_timeout"},
+	} {
+		target, err := Open(Spec{AppLog: seedFile(t, "server.log", "starting\n"+tc.line+"\n")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		findings, err := Run(Selection{Sources: {"logs"}}, nil, target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []Finding
+		for _, f := range findings {
+			if f.Rule == "app/statement-cancelled" {
+				got = append(got, f)
+			}
+		}
+		if len(got) != 1 || !strings.Contains(got[0].Proposed, tc.setting) {
+			t.Errorf("%s: %v, want one finding naming %s", tc.line, got, tc.setting)
+		}
+	}
+	target, err := Open(Spec{AppLog: seedFile(t, "server.log", "level=INFO msg=listening\nERROR: duplicate key value violates unique constraint\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	findings, err := Run(Selection{Sources: {"logs"}}, nil, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range findings {
+		if f.Rule == "app/statement-cancelled" {
+			t.Errorf("a log without a cancellation: %v", f)
+		}
+	}
+}

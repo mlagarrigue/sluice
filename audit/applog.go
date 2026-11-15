@@ -188,3 +188,68 @@ func init() {
 		},
 	})
 }
+
+// pgCancelled is what the PostgreSQL server sends back when it cancels a
+// statement or ends a session on a timeout, as ProcessInterrupts words it
+// (src/backend/tcop/postgres.c), which every driver copies into the error
+// the application logs; and the setting each is put on.
+var pgCancelled = []struct{ words, setting string }{
+	{
+		"canceling statement due to statement timeout",
+		"statement_timeout, against the slowest statement the load runs: raise it for that statement, or make the statement cheaper",
+	},
+	{
+		"canceling statement due to lock timeout",
+		"lock_timeout, and the transaction that held the lock that long: shorten it, or order the locks",
+	},
+	{
+		"canceling statement due to user request",
+		"the client's own deadline (the request's context, the driver's command timeout), shorter than the statement: the cancellation is the client's, the server only obeyed",
+	},
+	{
+		"terminating connection due to idle-in-transaction timeout",
+		"idle_in_transaction_session_timeout, and the code that kept a transaction open while it waited on something else",
+	},
+	{
+		"terminating connection due to transaction timeout",
+		"transaction_timeout, against the longest transaction the load runs",
+	},
+	{
+		"terminating connection due to idle-session timeout",
+		"idle_session_timeout, above the pool's idle lifetime: the pool should close an idle connection before the server does",
+	},
+}
+
+// init registers app/statement-cancelled.
+func init() {
+	Register(Rule{
+		Name:  "app/statement-cancelled",
+		Needs: Selection{Components: {"app"}, Goals: {"reliability"}, Sources: {"logs"}},
+		Doc:   "https://www.postgresql.org/docs/current/runtime-config-client.html#RUNTIME-CONFIG-CLIENT-STATEMENT",
+		Check: func(t *Target, _ Answers) []Finding {
+			var out []Finding
+			for _, c := range pgCancelled {
+				var n int
+				var first string
+				for line := range strings.SplitSeq(t.AppLog, "\n") {
+					if strings.Contains(line, c.words) {
+						if n == 0 {
+							first = line
+						}
+						n++
+					}
+				}
+				if n == 0 {
+					continue
+				}
+				out = append(out, Finding{
+					Current:  fmt.Sprintf("%d line(s) of PostgreSQL %q in %s, the first: %s", n, c.words, t.AppLogPath, cite(first)),
+					Proposed: c.setting,
+					Why: "each is a request that failed on a bound, not on its data: under load the bound is " +
+						"reached by the queue in front of the statement as much as by the statement itself",
+				})
+			}
+			return out
+		},
+	})
+}
