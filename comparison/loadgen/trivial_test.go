@@ -73,6 +73,11 @@ func testTrivialServes(t *testing.T, s *trivialServer, proto, encoding, name str
 	if rep.Failed() || rep.OK != rep.Sent || !rep.Held {
 		t.Fatalf("errors %d bad_key %d tester %d held %v cause %q", rep.Errors, rep.BadKey, rep.Tester, rep.Held, rep.Cause)
 	}
+	// The generator's own CPU, which the chain sets against everything that
+	// ran on the tester's cores: a stage that sent requests cost some.
+	if rep.GeneratorCPU <= 0 {
+		t.Fatalf("generator_cpu_s %v after %d requests", rep.GeneratorCPU, rep.Sent)
+	}
 	if want := 100.0; encoding == "identity" && rep.Compressed != 0 || encoding != "identity" && rep.Compressed != want {
 		t.Fatalf("compressed %.1f %% under %s", rep.Compressed, encoding)
 	}

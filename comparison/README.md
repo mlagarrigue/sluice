@@ -218,7 +218,11 @@ listen queue at most, the interface's bytes and packets, the accept
 queue's kernel counters (`ListenOverflows`, `ListenDrops`,
 `SyncookiesSent`), its PID, restarts and OOM; the database: connections
 and the oldest unfrozen transaction; the tester: its cores' busy share as
-the host counts it, softirq included; and the contract's metrics point
+the host counts it, softirq included, and the generator's own share of
+it (`generator_pct`, from the CPU the generator reports for the stage,
+`generator_cpu_s`) — a busy core the generator does not account for is
+netem's softirq or another process the host put there, which the
+invalidation names; and the contract's metrics point
 at the start and the end, read by the generator itself (`loadgen
 -metrics`, in the stage's protocol). Then the controls of §4, all on the
 apparatus, never the contender: the injected network, the tester's cores
@@ -316,10 +320,12 @@ rounds, short stages, a keyspace of a million rows: with a hundred
 thousand, the survey of a Sluice.go server on one core needs more keys
 than the keyspace holds, and the campaign stops, as §2.1 wants. The h3
 family comes first, the unit read's last, so that the shortest families
-fail early; the unit read's fixed points stop at 250 req/s, where a
-developer's machine still leaves the tester under its 70 % at 20 ms. It
-needs the machine to itself: the tester's cores are not isolated from
-the host, and another load on them invalidates every stage it touches.
+fail early; the unit read's fixed points stop at 250 req/s. It needs the
+machine to itself: the tester's cores are not isolated from the host,
+and another load on them invalidates every stage it touches — a first
+pass met another project's eight busy cores at the unit read's 500 req/s
+and stopped there. Alone, the generator costs 15 to 23 % of the tester's
+four cores from 500 to 2 000 unit reads/s, at 0 ms as at 20 ms.
 Played on a developer's machine on 2026-11-14 (`CORES="2 1 4"`), it runs
 end to end in 4 h 20, 796 stages, 4 invalidated and replayed, and the
 report is written from it; nothing it measures is a figure.

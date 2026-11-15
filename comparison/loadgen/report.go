@@ -62,6 +62,7 @@ type report struct {
 	ConnectTimeout int     `json:"connect_timeout"` // the deadline passed while the connection was opening
 	Other          int     `json:"other"`           // a failed handshake, a status out of 200, 4xx and 5xx, anything else
 	Tester         int     `json:"tester"`          // the tester could not open a connection, no port or descriptor (§4): one is an invalid stage
+	GeneratorCPU   float64 `json:"generator_cpu_s"` // the generator's own CPU over the stage, user and system: its share of the tester's cores, apart from what else runs on them
 
 	// What the server did to the budget's connections (§1.2): a closure
 	// past zero means the stage no longer holds "0 % fresh connections"

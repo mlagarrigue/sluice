@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -33,6 +34,8 @@ func (st stage) run(ctx context.Context, cl *client) (whole report, perWindow []
 	draw := st.scenario.draw(st.seed, st.keyspace)
 	fresh := st.freshDraw()
 	conns, perConn := st.layout()
+	cpu0 := processCPU()
+	defer func() { whole.GeneratorCPU = processCPU() - cpu0 }()
 	if failed := cl.warm(ctx, conns); len(failed) > 0 {
 		// A budget that will not open is a stage all the same, made of the
 		// openings that failed, by nature: the server's refusals and
@@ -179,4 +182,15 @@ func sleepUntil(ctx context.Context, due time.Time) bool {
 		}
 	}
 	return true
+}
+
+// processCPU is the CPU this process has used, user and system, in
+// seconds: the generator's own share of the tester's cores, which the
+// chain sets against everything that ran on them (§4, the tester's 70 %).
+func processCPU() float64 {
+	var ru syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
+		return 0
+	}
+	return time.Duration(ru.Utime.Nano() + ru.Stime.Nano()).Seconds()
 }

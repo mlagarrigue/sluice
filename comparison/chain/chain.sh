@@ -502,13 +502,20 @@ SQL
       \"tx_bytes\": $(( tb1 - tb0 )), \"tx_packets\": $(( tp1 - tp0 )), \"listen_overflows\": $(( lo1 - lo0 )),
       \"listen_drops\": $(( ld1 - ld0 )), \"syncookies_sent\": $(( sc1 - sc0 )),
       \"pid_restarts\": \"$id0 -> $id1\", \"oom_killed_running\": \"$oom\"}" \
-    --argjson tester "{\"cores_busy_pct\": $(awk -v b="$((busy1 - busy0))" -v t="$((total1 - total0))" 'BEGIN {printf "%.1f", t ? 100 * b / t : 0}'), \"seconds\": $seconds}" \
+    --argjson tester "{\"cores_busy_pct\": $(awk -v b="$((busy1 - busy0))" -v t="$((total1 - total0))" 'BEGIN {printf "%.1f", t ? 100 * b / t : 0}'), \"seconds\": $seconds, \"ticks\": $((total1 - total0))}" \
     --argjson db "{\"connections\": $dbconns, \"max_frozen_xid_age\": $frozen}" \
     --argjson m0 "${m0:-null}" --argjson m1 "${m1:-null}" \
     --arg crash "$([ "$id0" = "$id1" ] && [ "$oom" = "false true" ] && echo no || echo "yes: pid/restarts $id0 -> $id1, oom/running $oom")" \
     '. as $g | $chain[0] as $c |
+     # The generator'"'"'s own share of the same ticks (/proc/stat counts
+     # in USER_HZ, 100 a second): the rest of the busy cores is netem'"'"'s
+     # softirq and whatever else the host scheduled there.
+     ($tester + {generator_pct: (if $tester.ticks > 0 and $g.generator_cpu_s != null
+        then ($g.generator_cpu_s * 10000 / $tester.ticks * 10 | round / 10) else null end)}) as $tester |
      ([ (if $c.netem.ok != "yes" then "network: \($c.netem.ok)" else empty end),
-        (if $tester.cores_busy_pct > 70 then "tester: its cores \($tester.cores_busy_pct) % busy, over 70 %" else empty end),
+        (if $tester.cores_busy_pct > 70 then "tester: its cores \($tester.cores_busy_pct) % busy, over 70 %"
+           + (if $tester.generator_pct != null then " (the generator \($tester.generator_pct) %; the rest is interrupts and other processes on these cores)" else "" end)
+         else empty end),
         (if $c.db_steady != "yes" then "db: a checkpoint or an autovacuum ran (\($c.db_steady))" else empty end),
         (if ($g.tester // 0) > 0 then "tester: \($g.tester) connections it could not open" else empty end)
       ]) as $invalid |
@@ -518,7 +525,7 @@ SQL
     "$OUT/stage.jsonl" > "$OUT/stage-merged.jsonl"
   jq -c '{scenario, proto, rate, held, cause, sent, ok, bad_key, errors, timed_out,
           p50: .ttlb_ms.p50, p99: .ttlb_ms.p99, valid, invalid, crash,
-          tester_busy: .roles.tester.cores_busy_pct, web_cpu_s: .roles.web.cpu_s, rss_kb_max: .roles.web.rss_kb_max}' "$OUT/stage-merged.jsonl"
+          tester_busy: .roles.tester.cores_busy_pct, tester_generator: .roles.tester.generator_pct, web_cpu_s: .roles.web.cpu_s, rss_kb_max: .roles.web.rss_kb_max}' "$OUT/stage-merged.jsonl"
   echo "chain: merged line in $OUT/stage-merged.jsonl, tester exit $code" >&2
   # A wrong answer is the contender's and ends the campaign; a stage that
   # broke (errors, requests past their deadline) is a measurement, which
