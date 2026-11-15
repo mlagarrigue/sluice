@@ -157,16 +157,23 @@ the tester from reaching the database: db and web on one, web and tester
 on the other. PostgreSQL is tuned so that nothing fires during a stage
 (§2.2): `bench_orders` loaded, frozen (`VACUUM FREEZE`) and left out of
 autovacuum, which its load's statistics would otherwise fire a minute
-later, mid-stage; checkpoints by time only (`checkpoint_timeout` 1 h,
+later, mid-stage; `shared_buffers` sized from `ROWS` to hold the table
+and its primary key (91 bytes a row, a quarter more, never under 256 MB)
+and the two read into it by `pg_prewarm`; the load checked, the table
+ending at the key it should; checkpoints by time only (`checkpoint_timeout` 1 h,
 `max_wal_size` 8 GB), `max_connections` above any pool, and before the
 stage the write table emptied, vacuumed and a checkpoint taken. Web and
 tester get the same `nofile`; web a memory limit; the tester a wide port range and
 `tcp_tw_reuse` (§3.6). The script plays one stage with the generator's
 image against the server's (`WEB_IMAGE`, `TESTER_IMAGE`; `SCENARIO`,
 `PROTO`, `RATE`, `DURATION`…), writes `chain.json` — the cores of each
-role, the limits, the images, the cache hit rate and whether a checkpoint
-or an autovacuum ran during the stage (`db_steady`) — and the stage's
-line, and fails unless every answer was valid. Everything it created is
+role, the limits, the images, the cache hit rate of the stage's reads
+(`cache_hit_pct`: the blocks of `bench_orders` and its index found in
+`shared_buffers`, from `pg_statio_user_tables` across the stage, null for
+a stage that read none) and whether a checkpoint or an autovacuum ran
+during the stage (`db_steady`) — and the stage's line, and fails unless
+every answer was valid. A cache hit rate under 99.9 % invalidates the
+stage (§2.1). Everything it created is
 removed on exit, error or not. On a developer's machine it holds under
 h1, h2 and h3, the mixed scenario included, with the cache at 99.9 % and
 the database steady.
@@ -282,7 +289,16 @@ A wrong answer stops it at once. A stage is lengthened until it counts
 the requests its percentile needs (§7.3: 1 000 for a capacity stage,
 10 000 for a fixed point, whose p99.9 is published only from those that
 did), and refused if the keyspace (`rows`) cannot hold it without a
-repeated key (§2.1); a warm-up is cut into stages the keyspace holds. The
+repeated key (§2.1); a warm-up is cut into stages the keyspace holds. A
+static stage draws no key and is never refused. The keyspace is checked
+as soon as a survey bounds a capacity, for the family's largest stages —
+the top of its ramp, and the highest fixed point at most 0.8 × the rate
+the survey broke at — so that a keyspace too small stops the campaign
+there, with the rows it needs, not at the fixed points hours later. The
+default, 20 million rows, holds 95 C keys for C = 8 × 26 036 req/s: eight
+web cores at the rate the study's server held on one in the rehearsal
+below, a fixed point at up to 1.25 C × 0.8 for 90 s and its 5 s warm-up.
+The
 adaptive stop (§7.2) runs on the width of the intervals, never on a
 test's result: past the minimum, while the 95 % interval of one
 contender's median covers more than one step on either side (capacity)
@@ -320,7 +336,7 @@ rounds, short stages, a keyspace of a million rows: with a hundred
 thousand, the survey of a Sluice.go server on one core needs more keys
 than the keyspace holds, and the campaign stops, as §2.1 wants. The h3
 family comes first, the unit read's last, so that the shortest families
-fail early; the unit read's fixed points stop at 250 req/s. It needs the
+fail early; the unit read's fixed points are 250, 500 and 1 000 req/s. It needs the
 machine to itself: the tester's cores are not isolated from the host,
 and another load on them invalidates every stage it touches — a first
 pass met another project's eight busy cores at the unit read's 500 req/s

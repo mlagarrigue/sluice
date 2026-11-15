@@ -341,3 +341,50 @@ func TestParseStage(t *testing.T) {
 		t.Error("seconds rounds down")
 	}
 }
+
+// The level 1 matrix is the defaults. Its keyspace holds the envelope of
+// CMP-35: the study's server held 26 036 req/s of unit/h1 on one physical
+// core of the local rehearsal (2026-11-14), and a web VM of the study has
+// at most eight. The survey's worst case breaks at 1.25 × that capacity,
+// which bounds the fixed points at 0.8 × 1.25 C over 90 s + 5 s: 95 C keys.
+func TestLevelOneKeyspace(t *testing.T) {
+	m, err := parseMatrix([]byte(`{"name": "level-1", "contenders": {"A": {"image": "a"}, "B": {"image": "b"}}, "families": [{"scenario": "unit", "proto": "h1", "contenders": ["A", "B"], "points": [500]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const perCore, cores = 26036, 8
+	capacity := perCore * cores
+	var points []int
+	for p := 1000; p <= 2*capacity; p += 1000 {
+		points = append(points, p)
+	}
+	c := &campaign{m: m}
+	unit := family{Scenario: "unit", Proto: "h1", Points: points}
+	if err := c.holds(unit, capacity, capacity*5/4); err != nil {
+		t.Errorf("rows %d: %v", m.Rows, err)
+	}
+	if err := c.holds(unit, 2*capacity, 2*capacity*5/4); err == nil || !strings.Contains(err.Error(), "raise rows") {
+		t.Errorf("twice the envelope: %v, want the rows to raise", err)
+	}
+	static := family{Scenario: "static", Proto: "h1", Points: points}
+	if err := c.holds(static, 10*capacity, 10*capacity*5/4); err != nil {
+		t.Errorf("static draws no key: %v", err)
+	}
+}
+
+// A keyspace too small for a family's fixed points stops the campaign as
+// soon as a survey bounds the capacity, before any ramp is played.
+func TestKeyspaceCheckedAfterSurvey(t *testing.T) {
+	m := testMatrix(t, true, 3, 3, 1)
+	m.Rows = 5000 // the surveys and the ramps fit, the point at 900 req/s (13 s, 11 700 keys) does not
+	ch := newFake(map[string]float64{"A": 1000, "B": 1200}, nil)
+	o, err := playMatrix(t, m, ch)
+	if err == nil || !strings.Contains(err.Error(), "the survey of") || !strings.Contains(err.Error(), "raise rows") {
+		t.Fatalf("%v, want the survey to stop the campaign on the keyspace", err)
+	}
+	for _, r := range lines[record](t, &o.raw) {
+		if r.Phase != "survey" {
+			t.Fatalf("a %s %s stage was played after the survey: %+v", r.Phase, r.Kind, r)
+		}
+	}
+}

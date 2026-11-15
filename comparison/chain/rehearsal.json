@@ -37,6 +37,6 @@
      "survey_from": 400, "points": [250, 500, 1000]},
     {"scenario": "unit", "proto": "h1",
      "contenders": ["R", "sluice-reference", "go-standard", "go-dataloader", "node-standard", "node-dataloader", "rust-standard", "python-standard", "java-standard"],
-     "survey_from": 400, "points": [100, 250]}
+     "survey_from": 400, "points": [250, 500, 1000]}
   ]
 }

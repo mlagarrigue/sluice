@@ -22,8 +22,10 @@
 # (a variant of the study's server by its flags), and TESTER_IMAGE
 # (sluice-loadgen). The database is PostgreSQL tuned so that nothing fires
 # during a stage (§2.2): the table loaded and frozen, checkpoints by time
-# only, the write table emptied before each stage; a stage reports the
-# cache hit rate and whether a checkpoint or an autovacuum ran during it.
+# only, the write table emptied before each stage, shared_buffers sized to
+# hold the read table and its index, loaded into it; a stage reports the
+# cache hit rate of its reads and whether a checkpoint or an autovacuum ran
+# during it.
 # Limits are the same for web and tester (§4): nofile, and the web
 # container's memory.
 #
@@ -47,6 +49,10 @@ WARMUP=${WARMUP:-3s}
 SEED=${SEED:-1}     # the draw, the same for every contender of a round (§2.1)
 CONNS=${CONNS:-0}   # the budget C; 0 is 2 R (RTT + X) at the stage's rate (§3.5), a ramp's
 ROWS=${ROWS:-100000} # the keyspace; the table holds a list page more (below)
+# The read table and its primary key take 91 bytes a row (postgres 17, 16
+# million rows: 1 092 + 359 MB); a quarter more, never under 256 MB, holds
+# them in shared_buffers, where pg_statio counts a hit (§2.1).
+SHARED_BUFFERS=${SHARED_BUFFERS:-$(( (ROWS * 91 * 5 / 4 >> 20) + 1 > 256 ? (ROWS * 91 * 5 / 4 >> 20) + 1 : 256 ))MB}
 DB_POOL=${DB_POOL:-8}
 MAX_CONNECTIONS=${MAX_CONNECTIONS:-400}
 NOFILE=${NOFILE:-65536}
@@ -188,7 +194,7 @@ up() {
   docker run -d --name "$db" --network "$back" --cpuset-cpus "$DB_CPUS" \
     -e POSTGRES_USER=study -e POSTGRES_PASSWORD="$DBPASS" -e POSTGRES_DB=study \
     "$DB_IMAGE" \
-    -c max_connections="$MAX_CONNECTIONS" -c shared_buffers=256MB \
+    -c max_connections="$MAX_CONNECTIONS" -c shared_buffers="$SHARED_BUFFERS" \
     -c checkpoint_timeout=1h -c max_wal_size=8GB >/dev/null
   # Over TCP: the image's initialisation runs a server of its own on the
   # Unix socket alone (listen_addresses ''), then stops it; a probe on the
@@ -212,7 +218,19 @@ INSERT INTO bench_orders (id, total, label)
   SELECT g, g * 7, 'order-' || g FROM generate_series(1, $ROWS + 1000) g;
 VACUUM (FREEZE, ANALYZE) bench_orders;
 CHECKPOINT;
+-- Read into shared_buffers whole, whatever the load and the VACUUM's ring
+-- left out: the first stage reads from cache like the last (§2.1).
+CREATE EXTENSION IF NOT EXISTS pg_prewarm;
+SELECT pg_prewarm('bench_orders'), pg_prewarm('bench_orders_pkey');
 SQL
+  # The load is checked, not trusted: a client that returned before its
+  # statements did leaves a table short of the keys a stage draws.
+  local last; last=$(psql -At -c 'SELECT max(id) FROM bench_orders')
+  if [ "$last" != $(( ROWS + 1000 )) ]; then
+    echo "chain: bench_orders ends at id '$last', want $(( ROWS + 1000 )): the load did not finish" >&2
+    down
+    exit 1
+  fi
   if on "$DB_RTT"; then
     tc_in "$db" "tc qdisc add dev eth0 root netem delay $DB_RTT limit $NETEM_LIMIT"
   fi
@@ -354,6 +372,16 @@ SELECT (SELECT num_requested FROM pg_stat_checkpointer) || ' ' ||
 SQL
 }
 
+# statio is the read table's blocks found in shared_buffers and the ones
+# read past them, table and index: the cache of §2.1, counted on the reads
+# the contenders make and nothing else.
+statio() {
+  psql -At <<'SQL'
+SELECT (heap_blks_hit + coalesce(idx_blks_hit, 0)) || ' ' || (heap_blks_read + coalesce(idx_blks_read, 0))
+FROM pg_statio_user_tables WHERE relname = 'bench_orders';
+SQL
+}
+
 stage() {
   local OUT=${OUT:-$(mktemp -d)}
   trap 'docker rm -f "$tester" "$sampler" "$watch" "$burn" >/dev/null 2>&1 || true' EXIT
@@ -364,6 +392,7 @@ VACUUM ANALYZE comparison_writes;
 CHECKPOINT;
 SQL
   local before; before=$(steady)
+  local io0; io0=$(statio)
 
   # netem's counters are the campaign's since up: the stage reads their
   # difference. The largest queue netem held during the stage is sampled
@@ -450,17 +479,22 @@ SQL
     echo "chain: the generator wrote no line (exit $code)" >&2
     exit 1
   fi
-  local after hit
+  local after hit io1 h0 r0 h1 r1
   after=$(steady)
-  hit=$(psql -At <<'SQL'
-SELECT round(100.0 * blks_hit / nullif(blks_hit + blks_read, 0), 3)
-FROM pg_stat_database WHERE datname = 'study';
-SQL
-)
+  io1=$(statio)
+  read -r h0 r0 <<<"$io0"
+  read -r h1 r1 <<<"$io1"
+  # null for a stage that read no block of it, a static one; "unread" when
+  # a count did not come back, which the controls below never pass.
+  if [ -z "$io0" ] || [ -z "$io1" ]; then
+    hit='"unread"'
+  else
+    hit=$(awk -v h=$(( h1 - h0 )) -v r=$(( r1 - r0 )) 'BEGIN {if (h + r) printf "%.3f", 100 * h / (h + r); else print "null"}')
+  fi
 
   jq -n --arg db "$DB_CPUS" --arg web "$WEB_CPUS" --arg tester "$TESTER_CPUS" \
     --arg nofile "$NOFILE" --arg memory "$WEB_MEMORY" --arg maxconn "$MAX_CONNECTIONS" \
-    --arg webimage "$WEB_IMAGE" --arg webargs "$WEB_ARGS" --arg dbimage "$DB_IMAGE" --arg hit "$hit" \
+    --arg webimage "$WEB_IMAGE" --arg webargs "$WEB_ARGS" --arg dbimage "$DB_IMAGE" --argjson hit "$hit" \
     --arg steady "$([ "$before" = "$after" ] && echo yes || echo "no: $before -> $after")" \
     --arg rtt "$RTT" --arg dbrtt "$DB_RTT" --arg link "$LINK" --arg loss "$LOSS" \
     --argjson qdiscs "$qd" --argjson backlog "$backlog" --arg netemok "$netem_ok" \
@@ -517,6 +551,9 @@ SQL
            + (if $tester.generator_pct != null then " (the generator \($tester.generator_pct) %; the rest is interrupts and other processes on these cores)" else "" end)
          else empty end),
         (if $c.db_steady != "yes" then "db: a checkpoint or an autovacuum ran (\($c.db_steady))" else empty end),
+        (if ($c.cache_hit_pct | type) == "string" then "db: the cache hit rate went unread"
+         elif $c.cache_hit_pct != null and $c.cache_hit_pct < 99.9 then "db: \($c.cache_hit_pct) % of the read table'"'"'s blocks in shared_buffers, under 99.9 % (§2.1)"
+         else empty end),
         (if ($g.tester // 0) > 0 then "tester: \($g.tester) connections it could not open" else empty end)
       ]) as $invalid |
      $g + {chain: $c, roles: {web: $web, db: $db, tester: $tester},

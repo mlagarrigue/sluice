@@ -45,7 +45,13 @@ type matrix struct {
 		PointsRTT   string `json:"points_rtt"`   // client round trip of the fixed points: 20ms
 		DBRTT       string `json:"db_rtt"`       // web ↔ db, both: 1ms
 	} `json:"network"`
-	Rows int `json:"rows"` // the table's rows, the keyspace: 100000
+	// Rows is the table's rows, the keyspace: 20000000. No stage repeats a
+	// key (§2.1), and the largest stage a capacity C makes is a fixed point
+	// at up to 0.8 × the survey's broken rate, 1.25 C, for 90 s + 5 s: 95 C
+	// keys. The default holds C = 8 × 26 036 req/s, eight web cores at the
+	// rate the study's server held on one in the local rehearsal (unit/h1,
+	// 2026-11-14). A keyspace too small stops the campaign at the survey.
+	Rows int `json:"rows"`
 
 	Contenders map[string]contender `json:"contenders"`
 	Families   []family             `json:"families"`
@@ -131,7 +137,7 @@ func (m *matrix) defaults() {
 	setInt(&m.MaxRounds, 40)
 	setInt(&m.Extend, 5)
 	setInt(&m.FullRounds, 7)
-	setInt(&m.Rows, 100000)
+	setInt(&m.Rows, 20000000)
 	setDur(&m.Warmup, time.Minute)
 	setDur(&m.Stage, 30*time.Second)
 	setDur(&m.StageWarmup, 5*time.Second)

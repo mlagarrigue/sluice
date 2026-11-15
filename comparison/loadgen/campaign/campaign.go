@@ -243,7 +243,7 @@ type play func(kind string, s stageSpec) (stageResult, error)
 // first stage's rate, then body's stages. A stage the apparatus
 // invalidates replays the whole repetition, a fresh server again; the
 // warm-up's own validity decides nothing, it is never measured.
-func (c *campaign) repeat(ctx context.Context, tag record, warmRate int, seed uint64, body func(play) error) error {
+func (c *campaign) repeat(ctx context.Context, f family, tag record, warmRate int, seed uint64, body func(play) error) error {
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		tag.Attempt = attempt
 		if err := c.ch.web(ctx, c.m.Contenders[tag.Contender]); err != nil {
@@ -272,11 +272,15 @@ func (c *campaign) repeat(ctx context.Context, tag record, warmRate int, seed ui
 			return r, nil
 		}
 		// The warm-up is cut into stages the keyspace holds: a stage never
-		// repeats a key (§2.1), and a minute at a high rate would.
+		// repeats a key (§2.1), and a minute at a high rate would. A static
+		// warm-up draws none, it is played whole.
 		left := c.m.Warmup.Duration
-		chunk := time.Duration(c.m.Rows/max(warmRate, 1)) * time.Second
-		if chunk < time.Second {
-			return fmt.Errorf("%d req/s for a second is more than the %d rows of the keyspace: raise rows", warmRate, c.m.Rows)
+		chunk := left
+		if keyed(f) {
+			chunk = time.Duration(c.m.Rows/max(warmRate, 1)) * time.Second
+			if chunk < time.Second {
+				return fmt.Errorf("%d req/s for a second is more than the %d rows of the keyspace: raise rows", warmRate, c.m.Rows)
+			}
 		}
 		var err error
 		for left > 0 && err == nil {
@@ -310,11 +314,12 @@ func (c *campaign) shuffled(names []string) []string {
 }
 
 // spec is a stage at rate, at least long enough to count the requests its
-// percentile needs (§7.3), and refused if the keyspace cannot hold it.
-func (c *campaign) spec(rate int, d time.Duration, count int, seed uint64) (stageSpec, error) {
+// percentile needs (§7.3), and refused if the keyspace cannot hold it. A
+// static stage draws no key: any keyspace holds it.
+func (c *campaign) spec(f family, rate int, d time.Duration, count int, seed uint64) (stageSpec, error) {
 	need := time.Duration(math.Ceil(float64(count)/float64(rate))) * time.Second
 	s := stageSpec{rate: rate, duration: max(d, need), warmup: c.m.StageWarmup.Duration, seed: seed}
-	if n := float64(rate) * (s.duration + s.warmup).Seconds(); n > float64(c.m.Rows) {
+	if n := float64(rate) * (s.duration + s.warmup).Seconds(); keyed(f) && n > float64(c.m.Rows) {
 		return s, fmt.Errorf("a stage of %s at %d req/s sends %.0f requests, more than the %d rows of the keyspace: raise rows (§2.1, a stage never repeats a key)", s.duration+s.warmup, rate, n, c.m.Rows)
 	}
 	return s, nil
@@ -337,6 +342,9 @@ func (c *campaign) capacity(ctx context.Context, f family) (map[string][]float64
 		}
 		win[name] = [2]int{lo, hi}
 		c.logf("campaign: %s survey %s: held %d, broke at %d req/s\n", f, name, lo, hi)
+		if err := c.holds(f, lo, hi); err != nil {
+			return nil, ms, fmt.Errorf("the survey of %s broke at %d req/s: %w", name, hi, err)
+		}
 	}
 	values := map[string][]float64{}
 	wide := func() []string {
@@ -435,11 +443,11 @@ func p99Wide(useful []float64) bool {
 func (c *campaign) survey(ctx context.Context, f family, name string, from int) (lo, hi int, err error) {
 	for {
 		tag := record{Family: f.String(), Measure: "capacity", Phase: "survey", Contender: name}
-		err = c.repeat(ctx, tag, from, c.seed(0), func(stage play) error {
+		err = c.repeat(ctx, f, tag, from, c.seed(0), func(stage play) error {
 			lo, hi = 0, 0
 			for i := 0; ; i++ {
 				rate := int(math.Round(float64(from) * math.Pow(surveyFactor, float64(i))))
-				s, err := c.spec(rate, c.m.SurveyStage.Duration, capacityCount, c.seed(0))
+				s, err := c.spec(f, rate, c.m.SurveyStage.Duration, capacityCount, c.seed(0))
 				if err != nil {
 					return fmt.Errorf("the survey of %s holds %d req/s: %w", name, lo, err)
 				}
@@ -463,6 +471,33 @@ func (c *campaign) survey(ctx context.Context, f family, name string, from int) 
 		from = max(1, from/4)
 	}
 }
+
+// holds checks, as soon as a survey bounds a capacity, that the keyspace
+// holds the family's largest stages: the top of the ramp (§7.6) and the
+// highest fixed point the capacity can make eligible, at most 0.8 × the
+// rate the survey broke at (§3.2). A keyspace too small stops the campaign
+// here, saying the rows it needs, not hours later at the fixed points.
+func (c *campaign) holds(f family, lo, hi int) error {
+	rates := gridRange(0.9*float64(lo), 1.1*float64(hi))
+	if _, err := c.spec(f, rates[len(rates)-1], c.m.Stage.Duration, capacityCount, 0); err != nil {
+		return err
+	}
+	top := 0
+	for _, p := range f.Points {
+		if float64(p) <= 0.8*float64(hi) {
+			top = p
+		}
+	}
+	if top == 0 {
+		return nil
+	}
+	_, err := c.spec(f, top, c.m.PointStage.Duration, pointCount, 0)
+	return err
+}
+
+// keyed says whether a family's requests draw keys from the table (§2.1):
+// every scenario but static.
+func keyed(f family) bool { return f.Scenario != "static" }
 
 // gridRange is the stages of a ramp (§7.6): the common grid from its
 // largest point at or below lo to its smallest at or above hi.
@@ -492,13 +527,13 @@ func (c *campaign) capacityRep(ctx context.Context, f family, name string, round
 		specs := make([]stageSpec, len(rates))
 		for i, rate := range rates {
 			var err error
-			if specs[i], err = c.spec(rate, c.m.Stage.Duration, capacityCount, c.seed(round)); err != nil {
+			if specs[i], err = c.spec(f, rate, c.m.Stage.Duration, capacityCount, c.seed(round)); err != nil {
 				return 0, err
 			}
 		}
 		capacity, censored := 0, ""
 		tag := record{Family: f.String(), Measure: "capacity", Phase: "round", Round: round, Contender: name}
-		err := c.repeat(ctx, tag, rates[0], c.seed(round), func(stage play) error {
+		err := c.repeat(ctx, f, tag, rates[0], c.seed(round), func(stage play) error {
 			capacity, censored = 0, "high"
 			for i, s := range specs {
 				r, err := stage("ramp", s)
@@ -597,13 +632,13 @@ func (c *campaign) points(ctx context.Context, f family, eligible map[string][]i
 			specs := make([]stageSpec, len(pts))
 			for i, p := range pts {
 				var err error
-				if specs[i], err = c.spec(p, c.m.PointStage.Duration, pointCount, c.seed(r)); err != nil {
+				if specs[i], err = c.spec(f, p, c.m.PointStage.Duration, pointCount, c.seed(r)); err != nil {
 					return err
 				}
 			}
 			var got []stageResult
 			tag := record{Family: f.String(), Measure: "points", Phase: "round", Round: r, Contender: name}
-			err := c.repeat(ctx, tag, pts[0], c.seed(r), func(stage play) error {
+			err := c.repeat(ctx, f, tag, pts[0], c.seed(r), func(stage play) error {
 				got = got[:0]
 				for _, s := range specs {
 					res, err := stage("point", s)
