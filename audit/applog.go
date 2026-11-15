@@ -120,3 +120,71 @@ func init() {
 		},
 	})
 }
+
+// poolDry is what each contender's pool writes when a request waited for a
+// connection past its timeout, as its source words it, and the settings it
+// is put on. pgx and asyncpg write no words of their own (a context
+// deadline, a TimeoutError): pg_stat_activity tells their saturation
+// (postgres/connections-saturated), the log does not.
+var poolDry = []struct{ stack, words, settings string }{
+	// HikariPool.createTimeoutException.
+	{
+		"HikariCP", "Connection is not available, request timed out after",
+		"spring.datasource.hikari.maximum-pool-size (10 by default) against the database's max_connections, or connection-timeout (30 s)",
+	},
+	// PoolingDataSource.RentAsync.
+	{
+		"Npgsql", "The connection pool has been exhausted",
+		"Max Pool Size (100 by default) in the connection string against the database's max_connections, or Timeout",
+	},
+	// pg-pool's connect, under connectionTimeoutMillis.
+	{
+		"node-postgres", "timeout exceeded when trying to connect",
+		"the Pool's max (10 by default) against the database's max_connections, or connectionTimeoutMillis",
+	},
+	// sqlx_core::Error::PoolTimedOut.
+	{
+		"sqlx", "pool timed out while waiting for an open connection",
+		"PgPoolOptions::max_connections (10 by default) against the database's max_connections, or acquire_timeout (30 s)",
+	},
+	// sqlalchemy.pool.QueuePool._do_get.
+	{
+		"SQLAlchemy", "QueuePool limit of size",
+		"create_engine's pool_size and max_overflow (5 and 10 by default) against the database's max_connections, or pool_timeout (30 s)",
+	},
+}
+
+// init registers app/pool-exhausted.
+func init() {
+	Register(Rule{
+		Name:  "app/pool-exhausted",
+		Needs: Selection{Components: {"app"}, Goals: {"reliability"}, Sources: {"logs"}},
+		Doc:   "https://www.postgresql.org/docs/current/runtime-config-connection.html#GUC-MAX-CONNECTIONS",
+		Check: func(t *Target, _ Answers) []Finding {
+			var out []Finding
+			for _, p := range poolDry {
+				var n int
+				var first string
+				for line := range strings.SplitSeq(t.AppLog, "\n") {
+					if strings.Contains(line, p.words) {
+						if n == 0 {
+							first = line
+						}
+						n++
+					}
+				}
+				if n == 0 {
+					continue
+				}
+				out = append(out, Finding{
+					Current:  fmt.Sprintf("%d line(s) of %s's pool run dry in %s, the first: %s", n, p.stack, t.AppLogPath, cite(first)),
+					Proposed: p.settings,
+					Why: "a request waited for a database connection longer than the pool allows and failed: " +
+						"the pool is smaller than the load needs, or the database holds its connections too long; " +
+						"raising it past max_connections only moves the refusal to the database",
+				})
+			}
+			return out
+		},
+	})
+}

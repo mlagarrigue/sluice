@@ -85,3 +85,48 @@ func TestAnAccessLogIsReadInTheApplicationLog(t *testing.T) {
 		}
 	}
 }
+
+// TestAPoolRunDryIsReadInTheApplicationLog: one line of each stack's pool
+// run dry, as its driver words it, names that stack; a log without them,
+// a startup and an access line, reports nothing.
+func TestAPoolRunDryIsReadInTheApplicationLog(t *testing.T) {
+	lines := map[string]string{
+		"HikariCP":      "java.sql.SQLTransientConnectionException: HikariPool-1 - Connection is not available, request timed out after 30005ms (total=10, active=10, idle=0, waiting=187)",
+		"Npgsql":        "Npgsql.NpgsqlException (0x80004005): The connection pool has been exhausted, either raise 'Max Pool Size' (currently 100) or 'Timeout' (currently 15 seconds) in your connection string.",
+		"node-postgres": "Error: timeout exceeded when trying to connect",
+		"sqlx":          "Error: pool timed out while waiting for an open connection",
+		"SQLAlchemy":    "sqlalchemy.exc.TimeoutError: QueuePool limit of size 5 overflow 10 reached, connection timed out, timeout 30.00",
+	}
+	for stack, line := range lines {
+		target, err := Open(Spec{AppLog: seedFile(t, "server.log", "starting\n"+line+"\n")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		findings, err := Run(Selection{Sources: {"logs"}}, nil, target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []Finding
+		for _, f := range findings {
+			if f.Rule == "app/pool-exhausted" {
+				got = append(got, f)
+			}
+		}
+		if len(got) != 1 || !strings.Contains(got[0].Current, stack+"'s pool run dry") || !strings.Contains(got[0].Proposed, "max_connections") {
+			t.Errorf("%s: %v, want one finding naming it", stack, got)
+		}
+	}
+	target, err := Open(Spec{AppLog: seedFile(t, "server.log", "INFO:     Started server process [1]\nINFO:     10.0.0.1:5000 - \"GET /orders/1 HTTP/1.1\" 200 OK\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	findings, err := Run(Selection{Sources: {"logs"}}, nil, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range findings {
+		if f.Rule == "app/pool-exhausted" {
+			t.Errorf("a log without a pool run dry: %v", f)
+		}
+	}
+}
