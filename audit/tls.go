@@ -15,8 +15,8 @@ import (
 // -showcerts` printed, the text around the blocks included, or the PEM file
 // the server is configured with. The audit never dials the server: like
 // every other source, the reading is a file that can be seeded. The
-// versions, suites and resumption it negotiates need a handshake, and are
-// not read here.
+// versions, suites and resumption it negotiates are read from the
+// handshakes s_client printed, in tls_handshake.go.
 
 // TLSChain is the chain as served, the leaf first.
 type TLSChain struct {

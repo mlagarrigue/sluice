@@ -143,7 +143,10 @@ func TestTheServedChain(t *testing.T) {
 			names = append(names, r.Name)
 		}
 	}
-	if !slices.Equal(names, []string{"tls/cert-expiry", "tls/cert-key", "tls/cert-chain"}) {
+	if !slices.Equal(names, []string{
+		"tls/cert-expiry", "tls/cert-key", "tls/cert-chain",
+		"tls/legacy-version", "tls/version-in-comparison", "tls/weak-cipher", "tls/resumption-off", "tls/resumption-in-comparison",
+	}) {
 		t.Errorf("tls rules registered %v", names)
 	}
 }

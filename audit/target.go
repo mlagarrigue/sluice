@@ -73,6 +73,10 @@ type Target struct {
 	TLSChain *TLSChain
 	Now      time.Time
 
+	// TLSHandshake is the connections openssl s_client transcripts show,
+	// what each negotiated (tls_handshake.go), nil when none was given.
+	TLSHandshake *TLSHandshake
+
 	// Postgres is what was read of a PostgreSQL server, nil when nothing
 	// of one was named.
 	Postgres *Postgres
@@ -161,6 +165,10 @@ type Spec struct {
 	TLSChain string
 	Now      time.Time
 
+	// TLSHandshake is what openssl s_client printed, saved, one file per
+	// run, comma-separated: a -tls1_2 run, a -reconnect run…
+	TLSHandshake string
+
 	// PGSettings is a file holding pg_settings as psql prints it in CSV,
 	// with at least the name, setting and unit columns. PGHBA is the text
 	// of pg_hba.conf; PGLog is the server's log; PGRoles is pg_authid or
@@ -245,6 +253,13 @@ func Open(s Spec) (*Target, error) {
 		if t.TLSChain, err = parseChain(s.TLSChain, b); err != nil {
 			return nil, err
 		}
+	}
+	if s.TLSHandshake != "" {
+		h, err := openHandshakes(s.TLSHandshake)
+		if err != nil {
+			return nil, err
+		}
+		t.TLSHandshake = h
 	}
 	if s.Binary != "" {
 		info, err := buildinfo.ReadFile(s.Binary)
