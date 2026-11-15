@@ -9,6 +9,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // A Target is what an audit was pointed at. One run may hold several: a
@@ -65,6 +66,12 @@ type Target struct {
 	// none was given.
 	AppLogPath string
 	AppLog     string
+
+	// TLSChain is the certificate chain a server serves, read from a saved
+	// file (tls.go), nil when none was given. Now is the instant its
+	// validity is judged at: the clock, or the one a test seeds.
+	TLSChain *TLSChain
+	Now      time.Time
 
 	// Postgres is what was read of a PostgreSQL server, nil when nothing
 	// of one was named.
@@ -140,6 +147,12 @@ type Spec struct {
 	// AppLog is a file holding the application's log.
 	AppLog string
 
+	// TLSChain is a file holding the chain a server serves, as openssl
+	// s_client -showcerts printed it or as PEM. Now, zero for the clock,
+	// is when its validity is judged.
+	TLSChain string
+	Now      time.Time
+
 	// PGSettings is a file holding pg_settings as psql prints it in CSV,
 	// with at least the name, setting and unit columns. PGHBA is the text
 	// of pg_hba.conf; PGLog is the server's log; PGRoles is pg_authid or
@@ -194,9 +207,28 @@ type Spec struct {
 }
 
 // Open reads what a [Spec] names. Anything named must be readable: a path
-// given and not read is an error, never a silence.
+// given and not read is an error, never a silence. It reads each source
+// on its own, none depending on another, in this order: the clock and
+// the served certificate chain; the build (binary, module,
+// Dockerfile); the host (root, process, container); the logs (kernel,
+// application); PostgreSQL; the network's configuration (firewall,
+// proxy); the application's command line; the readings taken around a
+// load (netstat, the vulnerability database, metrics, ss, stat); the
+// cloud's instance metadata.
 func Open(s Spec) (*Target, error) {
-	t := &Target{}
+	t := &Target{Now: s.Now}
+	if t.Now.IsZero() {
+		t.Now = time.Now()
+	}
+	if s.TLSChain != "" {
+		b, err := os.ReadFile(s.TLSChain) //nolint:gosec // G304: the path is the caller's
+		if err != nil {
+			return nil, err
+		}
+		if t.TLSChain, err = parseChain(s.TLSChain, b); err != nil {
+			return nil, err
+		}
+	}
 	if s.Binary != "" {
 		info, err := buildinfo.ReadFile(s.Binary)
 		if err != nil {
