@@ -50,3 +50,38 @@ Error: accept EMFILE
 		t.Errorf("a quiet application log was reported: %v", fs)
 	}
 }
+
+// TestAnAccessLogIsReadInTheApplicationLog: uvicorn's access lines name
+// uvicorn's setting; a Common Log Format line gets the general advice; a
+// log with no access line, its startup and an error, reports nothing.
+func TestAnAccessLogIsReadInTheApplicationLog(t *testing.T) {
+	for _, tc := range []struct{ name, log, want string }{
+		{"uvicorn", "INFO:     Started server process [1]\n" +
+			"INFO:     172.18.0.3:51234 - \"GET /orders/12 HTTP/1.1\" 200 OK\n" +
+			"INFO:     172.18.0.3:51236 - \"POST /orders HTTP/1.1\" 200 OK\n", "access_log=False"},
+		{"common log format", `10.0.0.7 - - [15/Nov/2026:10:00:00 +0000] "GET /static HTTP/1.1" 200 1043` + "\n", "the access log off in production"},
+		{"none", "time=2026-11-15T10:00:00Z level=INFO msg=listening addr=:8443\n" +
+			"time=2026-11-15T10:00:01Z level=ERROR msg=\"GET /orders/1 failed\" status=503\n", ""},
+	} {
+		target, err := Open(Spec{AppLog: seedFile(t, "server.log", tc.log)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		findings, err := Run(Selection{Sources: {"logs"}}, nil, target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []Finding
+		for _, f := range findings {
+			if f.Rule == "app/access-log" {
+				got = append(got, f)
+			}
+		}
+		switch {
+		case tc.want == "" && len(got) != 0:
+			t.Errorf("%s: %v, want nothing", tc.name, got)
+		case tc.want != "" && (len(got) != 1 || !strings.Contains(got[0].Proposed, tc.want)):
+			t.Errorf("%s: %v, want one finding proposing %q", tc.name, got, tc.want)
+		}
+	}
+}
