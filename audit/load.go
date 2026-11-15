@@ -85,7 +85,16 @@ func init() {
 				return nil
 			}
 			requests, err := strconv.ParseInt(ans.Get("requests"), 10, 64)
+			if t.Load != nil && err != nil {
+				requests, err = int64(t.Load.Sent), nil
+			}
 			opens := t.Counters.Delta["TcpPassiveOpens"]
+			if t.Load != nil {
+				// The fresh connections a stage opens on purpose (§3.6) are
+				// the load's shape, not a cost a setting explains.
+				fresh := int64(t.Load.Fresh())
+				requests, opens = requests-fresh, opens-fresh
+			}
 			if err != nil || requests <= 0 || opens <= 0 || requests/opens >= fewRequestsPerConnection {
 				return nil
 			}

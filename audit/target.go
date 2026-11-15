@@ -105,6 +105,10 @@ type Target struct {
 	// output was not given.
 	TimeWait *Sockets
 
+	// Load is the study generator's line for a load stage, nil when it
+	// was not given.
+	Load *LoadLine
+
 	// CPUTime is what the CPUs spent during a load, by kind, nil when the
 	// two readings of /proc/stat were not given.
 	CPUTime *CPUTime
@@ -196,6 +200,10 @@ type Spec struct {
 
 	// SS is a file holding what ss -tan printed during a load.
 	SS string
+
+	// LoadLine is the study load generator's line for a stage, saved: its
+	// stage.jsonl, or the chain's merged line.
+	LoadLine string
 
 	// StatBefore and StatAfter are two copies of /proc/stat, before and
 	// after a load.
@@ -353,6 +361,13 @@ func Open(s Spec) (*Target, error) {
 			return nil, err
 		}
 		t.Study = m
+	}
+	if s.LoadLine != "" {
+		l, err := openLoadLine(s.LoadLine)
+		if err != nil {
+			return nil, err
+		}
+		t.Load = l
 	}
 	if s.SS != "" {
 		ss, err := openSockets(s.SS)
