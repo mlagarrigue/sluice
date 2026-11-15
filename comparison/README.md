@@ -1437,6 +1437,19 @@ The study asks for a ceiling of at least twice the fastest contender's
 capacity in that scenario; otherwise the tester gets more cores before
 anything else is measured.
 
+Under h3 the list is the costly cell. With the roles on cores of their
+own as on the chain — the generator on four (`taskset -c 6-13`), the
+trivial server on others — the generator holds 5 000 to 6 000 pages a
+second (2026-11-15), using two thirds of its cores, with no UDP buffer
+lost: 2.7 times R's h3 list on its one core of the chain (1 868), enough
+for the local chain, not yet a measure of a level 1 tester. Of the
+generator's CPU on a page, a fifth was `json.Valid` proving the body
+parses to the end; `validJSON` (`jsonvalid.go`) says the same on every
+input — `FuzzValidJSON` holds it to `json.Valid` — at a third of the
+cost, which took the generator's CPU over a stage at 4 000 pages a
+second from 4.2 to 3.7 ms a page, opening of the budget included, in
+three alternated pairs.
+
 Not yet here: the `oha` cross-check.
 
 ### From rounds to verdicts

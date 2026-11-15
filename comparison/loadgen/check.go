@@ -219,12 +219,13 @@ func equalJSON(got any, want []byte) bool {
 // checkList is a list's cheap control in one validation pass and one scan.
 // encoding/json took three passes over the ~50 KB page and reflected a
 // thousand rows, about 75 % of the generator's CPU on lists (CMP-02); here
-// json.Valid proves the body parses to the end, and the scan reads the
+// validJSON proves the body parses to the end — what json.Valid would
+// say, at a third of its cost (jsonvalid.go) — and the scan reads the
 // bound and the ids in order. A key is matched with its quotes and colon,
 // so an id inside a label, where the quotes are escaped, is not one. The
 // sampled 1 % still goes through validateList, which decodes every row.
 func checkList(rq request, body []byte) error {
-	if !json.Valid(body) {
+	if !validJSON(body) {
 		return errors.New("body is not JSON")
 	}
 	from, _, ok := intAfter(body, keyFrom)
