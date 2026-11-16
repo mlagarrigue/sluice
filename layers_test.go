@@ -43,7 +43,7 @@ var allowed = map[string][]string{
 	"internal/ipkey":           nil,
 	"internal/varint":          nil,
 	"internal/pgwire":          nil,
-	"database/postgres":        {"", "database/postgres/pgtype", "internal/pgwire", "pushdown"},
+	"database/postgres":        {"", "database/postgres/pgtype", "internal/pgwire", "phase", "pushdown"},
 	"database/postgres/pgtype": nil,
 	"database/redis":           {""},
 	"encoding/csvstream":       {""},

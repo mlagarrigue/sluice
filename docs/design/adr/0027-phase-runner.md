@@ -1,7 +1,7 @@
 # ADR 0027 — The phase runner: resuming a long job where it died
 
 - **Created:** 2026-11-16
-- **Revised:** —
+- **Revised:** 2026-11-16 (the lock's connection is the job's own: the connector has no pool; the lock's key)
 - **Theme:** core
 
 ## Problem
@@ -95,10 +95,12 @@ forces a restart with the same input.
 `Store.Lock` comes first and fails at once (`ErrBusy`), never waits.
 PostgreSQL: a session-level advisory lock (`pg_try_advisory_lock`), which
 "is held until explicitly released or the session ends", so the server
-releases it when the process dies. It is taken on a connection removed from
-the pool for the job's whole run, because one session may take the lock
-twice, and the record is written on that same connection: a lost
-connection — and the lock with it — fails the next write and stops the job.
+releases it when the process dies. It is taken on a connection of the job's
+own, opened for its whole run — the connector has no pool to share it
+with, and one session may take the lock twice — and the record is written
+on that same connection: a lost connection — and the lock with it — fails
+the next write and stops the job. The lock's key is a 64-bit hash of the
+table and the job's name, computed by the client.
 
 The file store: a lease the runner renews while the job runs; an expired
 lease may be taken over, a live one refuses. The lease carries a token, and

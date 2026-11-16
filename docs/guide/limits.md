@@ -39,8 +39,7 @@ The figures are a laptop's ([measurements](#measurements-what-is-missing)).
   a "phase runner", a unit of resumption that outlives the process — and
   [ADR 0027](../design/adr/0027-phase-runner.md) gives it a shape: the
   package `phase`, whose state lives in a store you choose, never in the
-  library. A store in a directory is there; one in a table of your own
-  PostgreSQL schema is next.
+  library: a directory, or a table of your own PostgreSQL schema.
 - **Dependencies are decided case by case.** Today, the standard library
   plus `golang.org/x/crypto` and `golang.org/x/text`, and nothing enters
   without a written decision
@@ -356,7 +355,7 @@ their condition is met; [Experimental](experimental.md) names them.
 ## What comes next
 
 In the order the roadmap takes them: the connector inventory and
-prioritisation, the phase runner's store in PostgreSQL, the end-to-end bench, the
+prioritisation, the end-to-end bench, the
 comparative study, streaming compression, and the exit from experimental
 of what meets its conditions. The end-to-end bench and the comparative
 study have their apparatus in `comparison/` (the study's server, one flag

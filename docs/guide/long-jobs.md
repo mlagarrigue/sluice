@@ -73,6 +73,16 @@ lease — frozen for longer than the lease — stops at its next write with
 ## Where the state lives
 
 In the directory given to `phase.Dir`: `<job>.json`, the record, and
-`<job>.lease`, the lease. The library keeps nothing of its own. A store in
-a table of your own PostgreSQL schema comes next; the decision is
+`<job>.lease`, the lease. Or in a table of your own PostgreSQL schema, with
+`postgres.PhaseStore`:
+
+```go
+store := &postgres.PhaseStore{Dial: postgres.DialTCP(addr), Config: cfg, Table: "etl.phases"}
+```
+
+The table is created on first use. Its lock is the server's: an
+**advisory lock** — a lock the application names itself — taken on a
+connection of the job's own; a process that dies releases it at once, with
+its connection, without waiting for a lease to run out. The library keeps
+nothing of its own either way; the decision is
 [ADR 0027](../design/adr/0027-phase-runner.md).

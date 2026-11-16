@@ -15,6 +15,7 @@
 //	listen.go        LISTEN and NOTIFY
 //	replicate.go     logical replication; pgoutput.go its messages, LSN
 //	types.go         LookupType: a type's OID by name
+//	phase.go         PhaseStore: long jobs' records and locks (package phase)
 
 package postgres
 
