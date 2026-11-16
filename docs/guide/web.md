@@ -172,6 +172,11 @@ gw := gateway.New(gateway.Config{Size: 64, Within: 2 * time.Millisecond}, pipeli
 res, err := gw.Do(r.Context(), amendment)
 ```
 
+When the pipeline only fetches values by key — the commonest shape, one
+`= ANY($1)` per batch — `gateway.Lookup` writes it: a function receives
+the batch's keys, each once, and fills a map; a key left out fails with
+the error you give, and the function's error fails the whole batch.
+
 `Size` is the maximum number of calls per batch; `Within` is how long a
 lone call agrees to wait for company. Both are required: no value suits
 every service, and without a ceiling an isolated call would wait for a
