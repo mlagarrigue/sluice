@@ -616,8 +616,11 @@ ships (direct, then all), and the concepts one must know to write it.
 Sluice.go's line is `sluice/reference/` (see [`sluice/`](#sluice--the-server-of-the-internal-study)),
 its contract lines `sluice/internal/contract`, and its dependencies those
 `go version -m` reads in its binary, the framework counted as one of
-them. On 2026-11-14: 430 lines, the most of the table, against 233 for
-the optimised Go contender, which serves the same three protocols. Most
+them. On 2026-11-16: 440 lines, the most of the table, against 233 for
+the optimised Go contender, which serves the same three protocols. Ten
+of them came that day, when the HTTP/3 path started answering its
+refusals in R's error document through `web/stream` (one `Renderer`)
+rather than reading its parameters by hand. Most
 of the gap is two request paths — `net/http` for HTTP/1.1 and HTTP/2,
 `net/httpstream` for HTTP/3, where quic-go's `http3` takes the same
 `ServeMux` — and what the connector leaves to the program: a channel of
