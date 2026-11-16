@@ -112,39 +112,18 @@ func connect() (*postgres.Conn, error) {
 // pipeline is the gateway's, built once: the keys of a batch leave as one
 // array parameter, and every call gets its row or a miss.
 func (s *server) pipeline(conn *postgres.Conn) func(sluice.Stream[*gateway.Call[int64, order]]) {
-	return func(calls sluice.Stream[*gateway.Call[int64, order]]) {
-		var ids []int64
-		var rows []order
-		found := make(map[int64]order, batchSize)
-		calls(func(b sluice.Batch[*gateway.Call[int64, order]]) bool {
-			var err error
-			ids = ids[:0]
-			clear(found)
-			for _, c := range b.Items {
-				ids = append(ids, c.In)
-			}
-			s.batches.Record(len(ids))
-			keys := pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: ids}, pgtype.Int8Codec())
-			src := conn.Query(context.Background(), unitQuery, []postgres.Param{{OID: pgtype.OIDInt8Array, Value: keys}},
-				postgres.QueryConfig{BatchRows: batchSize + 1}) // one more than a batch can hold: one round trip
-			rows, err = collectOrder(rows[:0], src)
-			for _, o := range rows {
-				found[o.ID] = o
-			}
-			for _, c := range b.Items {
-				o, ok := found[c.In]
-				switch {
-				case err != nil:
-					c.Fail(err)
-				case !ok:
-					c.Fail(errNotFound)
-				default:
-					c.Reply(o)
-				}
-			}
-			return true
-		})
-	}
+	var rows []order
+	return gateway.Lookup(errNotFound, func(ids []int64, found map[int64]order) error {
+		s.batches.Record(len(ids))
+		src := conn.Query(context.Background(), unitQuery, []postgres.Param{postgres.ArrayArg(pgtype.Int8Codec(), ids)},
+			postgres.QueryConfig{BatchRows: batchSize + 1}) // one more than a batch can hold: one round trip
+		var err error
+		rows, err = collectOrder(rows[:0], src)
+		for _, o := range rows {
+			found[o.ID] = o
+		}
+		return err
+	})
 }
 
 func unitAnswer(id int64, o order, err error) (status int, body any) {
@@ -158,18 +137,11 @@ func unitAnswer(id int64, o order, err error) (status int, body any) {
 	return http.StatusOK, o
 }
 
-func int8Params(vs ...int64) []postgres.Param {
-	ps := make([]postgres.Param, len(vs))
-	for i, v := range vs {
-		ps[i] = postgres.Param{OID: pgtype.OIDInt8, Value: pgtype.AppendInt8(nil, v)}
-	}
-	return ps
-}
-
 func (s *server) list(ctx context.Context, from int64, limit int) (status int, body any) {
 	conn := <-s.conns
 	defer func() { s.conns <- conn }()
-	src := conn.Query(ctx, listQuery, int8Params(from, int64(limit)), postgres.QueryConfig{BatchRows: 1024})
+	params := []postgres.Param{postgres.Arg(pgtype.Int8Codec(), from), postgres.Arg(pgtype.Int8Codec(), int64(limit))}
+	src := conn.Query(ctx, listQuery, params, postgres.QueryConfig{BatchRows: 1024})
 	items, err := collectOrder(make([]order, 0, limit), src)
 	switch {
 	case errors.Is(err, pgtype.ErrCodec):
@@ -198,7 +170,7 @@ func listArgs(fromArg, limitArg string) (from int64, limit int, refused *errDoc)
 func (s *server) write(ctx context.Context, req writeReq) (status int, body any) {
 	conn := <-s.conns
 	defer func() { s.conns <- conn }()
-	if _, err := conn.ExecParams(ctx, writeQuery, int8Params(req.Key, req.Total)); err != nil {
+	if _, err := conn.ExecParams(ctx, writeQuery, []postgres.Param{postgres.Arg(pgtype.Int8Codec(), req.Key), postgres.Arg(pgtype.Int8Codec(), req.Total)}); err != nil {
 		log.Printf("insert: %v", err)
 		return http.StatusServiceUnavailable, errDoc{Error: "unavailable", Key: &req.Key}
 	}
