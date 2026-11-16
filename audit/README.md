@@ -49,8 +49,9 @@ worst one there is.
 One axis no rule declares: `referentials`, the published benchmarks a rule
 answers for. Every rule is classified once in `references.go`, with the
 items it checks — CIS Docker Benchmark v1.9.0, CIS PostgreSQL 17 Benchmark
-v1.1.0, and the ANSSI's GNU/Linux configuration guide (ANSSI-BP-028 v2.0)
-and Docker technical sheet (ANSSI-FT-082 v1.0), by number, a `refs:` line
+v1.1.0, and the ANSSI's GNU/Linux configuration guide (ANSSI-BP-028 v2.0),
+Docker technical sheet (ANSSI-FT-082 v1.0) and TLS recommendations
+(SDE-NT-35 v1.2), by number, a `refs:` line
 under the finding — or with none: a rule is put on an item only when the
 item checks the same setting in the same direction. `-referentials cis`
 keeps the findings a CIS item carries, `-referentials anssi` those an

@@ -28,13 +28,14 @@ func (r Reference) String() string { return r.Benchmark + " " + r.ID }
 
 // The benchmarks cited, one version each: the one the study deploys
 // (PostgreSQL 17) or the latest at the time of writing (Docker, the ANSSI
-// guides: its GNU/Linux configuration guide and its Docker technical
-// sheet, both under the Licence Ouverte).
+// guides: its GNU/Linux configuration guide, its Docker technical sheet
+// and its TLS recommendations, all under the Licence Ouverte).
 const (
 	cisDocker   = "CIS Docker Benchmark v1.9.0"
 	cisPostgres = "CIS PostgreSQL 17 Benchmark v1.1.0"
 	anssiLinux  = "ANSSI-BP-028 v2.0"
 	anssiDocker = "ANSSI-FT-082 v1.0"
+	anssiTLS    = "ANSSI SDE-NT-35 v1.2"
 )
 
 func cis(benchmark string, ids ...string) []Reference { return refs("cis", benchmark, ids) }
@@ -52,7 +53,10 @@ func refs(referential, benchmark string, ids []string) []Reference {
 // references is every rule's, nil for a rule no benchmark item carries.
 var references = map[string][]Reference{
 	// The application and its stack: no benchmark of the audit's covers an
-	// application server's settings.
+	// application server's settings; its TLS is the ANSSI's TLS guide's,
+	// where an item checks the same thing — the certificate's lifetime
+	// (R25) is not its expiry, the way to resume a session (R21) not
+	// whether it is resumed.
 	"app/max-requests-per-conn":    nil,
 	"app/db-in-clear":              nil, // the client side; CIS PostgreSQL 6.8 is the server's
 	"app/db-conns":                 nil,
@@ -72,11 +76,11 @@ var references = map[string][]Reference{
 	"app/idle-timeout":             nil,
 	"app/read-timeouts":            nil,
 	"tls/cert-expiry":              nil,
-	"tls/cert-key":                 nil,
-	"tls/cert-chain":               nil,
-	"tls/legacy-version":           nil,
+	"tls/cert-key":                 anssi(anssiTLS, "R26"),
+	"tls/cert-chain":               anssi(anssiTLS, "R34"),
+	"tls/legacy-version":           anssi(anssiTLS, "R4"),
 	"tls/version-in-comparison":    nil,
-	"tls/weak-cipher":              nil,
+	"tls/weak-cipher":              anssi(anssiTLS, "R6", "R7", "R9", "R10"),
 	"tls/resumption-off":           nil,
 	"tls/resumption-in-comparison": nil,
 
@@ -160,12 +164,13 @@ var references = map[string][]Reference{
 	"postgres/superusers":            cis(cisPostgres, "4.3"),
 	"postgres/cve":                   slices.Concat(cis(cisPostgres, "1.5"), anssi(anssiLinux, "R61")),
 
-	// The proxy: no CIS NGINX or HAProxy benchmark is read yet; an advisory
-	// is the ANSSI's regular updates.
+	// The proxy: no CIS NGINX or HAProxy benchmark is read yet; its TLS
+	// protocols are the ANSSI TLS guide's R4, an advisory the ANSSI's
+	// regular updates.
 	"proxy/upstream-keepalive": nil,
 	"proxy/buffering":          nil,
 	"proxy/timeouts":           nil,
-	"proxy/tls-protocols":      nil,
+	"proxy/tls-protocols":      anssi(anssiTLS, "R4"),
 	"proxy/forwarded-for":      nil,
 	"proxy/cve":                anssi(anssiLinux, "R61"),
 }
