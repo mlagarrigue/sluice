@@ -225,6 +225,7 @@ func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 		// probes: a count would collapse it under a sender that pauses
 		// between small writes, which restarts this timer at every send
 		// without a single acknowledgement (§7.6.1).
+		var probed []int
 		for space, fired := range expired {
 			sp := &c.spaces[space]
 			if !fired {
@@ -244,9 +245,14 @@ func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 				if c.writers == 0 && c.cc.bytesInFlight() < c.cc.window() && c.checkAppLimitedLocked(now) {
 					c.appLimitedResends++
 				}
-				c.sendProbeLocked(space)
-				earlier(c.ptoDeadlineLocked(sp, space))
+				probed = append(probed, space)
 			}
+		}
+		// One expiry, two datagrams in all, whatever the spaces probed
+		// (§6.2.4, sendProbesLocked).
+		c.sendProbesLocked(probed)
+		for _, space := range probed {
+			earlier(c.ptoDeadlineLocked(&c.spaces[space], space))
 		}
 	}
 	earlier(c.paceDeadline)

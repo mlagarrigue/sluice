@@ -889,6 +889,17 @@ func (s *sentTracker) liftOldestResendable() ([]byte, bool) {
 	return nil, false
 }
 
+// oldestResendable is the payload liftOldestResendable would lift next,
+// left in place: a probe sizes it before it takes it (takeProbeLocked).
+func (s *sentTracker) oldestResendable() []byte {
+	for i := range s.packets {
+		if p := &s.packets[i]; p.ackEliciting && len(p.payload) > 0 {
+			return p.payload
+		}
+	}
+	return nil
+}
+
 // takeAll empties the tracker, returning every retransmittable payload — what
 // discarding a space's keys does to its in-flight state is drop it, and what
 // a Retry does is queue it again under new keys.

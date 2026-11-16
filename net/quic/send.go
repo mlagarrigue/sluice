@@ -1731,37 +1731,19 @@ func (c *Conn) sendProbeLocked(space int) {
 	if sp.discarded || sp.sealer == nil {
 		return
 	}
-	const probes = 2
-	var payloads [probes][]byte
-	// A payload fitLocked empties — frames of a stream reset since — fills
-	// no slot: the next one is looked at instead.
+	var payloads [probesPerSpace][]byte
+	// Taken before any is sent: the copies are recorded as they go, and
+	// the newest of them must not be the next one lifted. A payload
+	// fitLocked empties — frames of a stream reset since — fills no slot:
+	// the next one is looked at instead.
 	n := 0
-	for n < probes && len(sp.retrans) > 0 {
-		var rest []byte
-		payloads[n], rest = c.fitLocked(space, sp.retrans[0])
-		if rest != nil {
-			sp.retrans[0] = rest
-		} else {
-			sp.retrans = sp.retrans[1:]
-		}
-		if len(payloads[n]) > 0 {
-			n++
-		}
-	}
-	// Lifted before any is sent: the copies are recorded as they go, and
-	// the newest of them must not be the next one lifted. The packets
-	// lifted from stay in flight and in the count (RFC 9002 §7.5: probes
-	// are additionally in flight); only their payloads travel.
-	for n < probes {
-		payload, ok := sp.sent.liftOldestResendable()
+	for n < probesPerSpace {
+		payload, ok := c.takeProbeLocked(space, c.maxDatagram)
 		if !ok {
 			break
 		}
-		var rest []byte
-		if payloads[n], rest = c.fitLocked(space, payload); rest != nil {
-			sp.retrans = append([][]byte{rest}, sp.retrans...)
-		}
-		if len(payloads[n]) > 0 {
+		if len(payload) > 0 {
+			payloads[n] = payload
 			n++
 		}
 	}
@@ -1771,10 +1753,179 @@ func (c *Conn) sendProbeLocked(space int) {
 		return
 	case 1:
 		payloads[1] = payloads[0]
-		n = probes
+		n = probesPerSpace
 	}
 	for _, payload := range payloads[:n] {
 		_ = c.sendPacketLocked(space, payload, sendOpts{own: true})
+	}
+}
+
+// probesPerSpace is how many payloads a probe takes from one space, and
+// probeDatagrams how many datagrams one expiry of the probe timeout sends,
+// every space it probes together: RFC 9002 §6.2.4, "a sender MAY send up
+// to two full-sized datagrams containing ack-eliciting packets [...] to
+// transmit data from multiple packet number spaces".
+const (
+	probesPerSpace = 2
+	probeDatagrams = 2
+)
+
+// takeProbeLocked takes space's next payload to probe with, cut to room
+// bytes: the queue of declared losses first, then the oldest packet in
+// flight, whose payload is lifted (liftOldestResendable) — the packet
+// stays in flight and in the count (RFC 9002 §7.5: probes are
+// additionally in flight); only its payload travels. What is cut off goes
+// to the head of the queue. False when nothing is left, or when the next
+// payload leaves nothing within room: it is then taken from nowhere. An
+// empty payload with true is one fitLocked emptied, taken all the same.
+// Callers hold mu.
+func (c *Conn) takeProbeLocked(space, room int) ([]byte, bool) {
+	sp := &c.spaces[space]
+	queued := len(sp.retrans) > 0
+	next := sp.sent.oldestResendable()
+	if queued {
+		next = sp.retrans[0]
+	} else if next == nil {
+		return nil, false
+	}
+	now, rest := c.fitLocked(space, next)
+	if len(now) > room {
+		var cut []byte
+		if now, cut = fitFrames(now, room); len(now) > room {
+			return nil, false
+		}
+		rest = append(cut[:len(cut):len(cut)], rest...)
+	}
+	if queued {
+		sp.retrans = sp.retrans[1:]
+	} else {
+		sp.sent.liftOldestResendable()
+	}
+	if len(rest) > 0 {
+		sp.retrans = append([][]byte{rest}, sp.retrans...)
+	}
+	return now, true
+}
+
+// sendProbesLocked answers one expiry of the probe timeout in the spaces
+// given, in the order of their numbers: Initial first, since a client
+// reads nothing else before the ServerHello. One space is sendProbeLocked.
+// Several share its two datagrams: each space's payloads in turn, two at
+// most as sendProbeLocked takes them, coalesced (RFC 9000 §12.2,
+// gatherLocked), and a payload that would open a third datagram is cut to
+// the room left in the second (fitFrames) — its rest queued — or left
+// where it is when no room is left. Everything fitting in one datagram,
+// that datagram goes twice, as a lone payload does in sendProbeLocked.
+//
+// Two datagrams a space, as before, was four for a server whose Initial and
+// Handshake flights are both unacknowledged: two Initial datagrams padded
+// to 1200 bytes and two Handshake ones, 3 932 bytes a probe under the
+// three-to-one limit of an unvalidated client (§8.1), whose budget ran out
+// after two probes where it holds three or four: on a path that corrupts
+// the client's next datagrams, the server then waits, silent, for a client
+// whose own probes back off, until its handshake deadline closes the
+// connection. The packets are laid out
+// before any is sent, at a size never under the sealed one, so the
+// datagrams written are never more than counted here. Callers hold mu.
+func (c *Conn) sendProbesLocked(spaces []int) {
+	if len(spaces) == 1 {
+		c.sendProbeLocked(spaces[0])
+		return
+	}
+	type probe struct {
+		space   int
+		payload []byte
+		ping    bool
+	}
+	var plan []probe
+	used, fill := 0, 0
+	now := time.Now()
+	// over is what a packet of space carries besides its payload: header
+	// and tag, and the ACK that rides every packet of a handshake space
+	// once anything was received there (sendPacketLocked), with four bytes
+	// for its delay field to grow by the time it is encoded again.
+	over := func(space int) int {
+		n := c.packetOverhead(space)
+		if a := len(c.spaces[space].ack.encodeAck(nil, now)); a > 0 {
+			n += a + 4
+		}
+		return n
+	}
+	// place lays a packet of size bytes out: beside the gathered ones, or
+	// opening the next datagram while the budget has one. A 1-RTT packet
+	// is the last of its datagram (§12.2): nothing joins it.
+	place := func(space, size int) bool {
+		switch {
+		case fill > 0 && fill+size <= c.maxDatagram:
+			fill += size
+		case used < probeDatagrams:
+			used, fill = used+1, size
+		default:
+			return false
+		}
+		if space == spaceApplication {
+			fill = 0
+		}
+		return true
+	}
+	// room is the payload a packet of space may carry within the budget.
+	room := func(space int) int {
+		if used < probeDatagrams {
+			return c.maxDatagram - over(space)
+		}
+		if fill == 0 {
+			return 0
+		}
+		return c.maxDatagram - fill - over(space)
+	}
+	const minProbe = 32 // under it, a cut payload is not worth its packet (cryptoRoomLocked's floor)
+	for _, space := range spaces {
+		sp := &c.spaces[space]
+		if sp.discarded || sp.sealer == nil {
+			continue
+		}
+		n := 0
+		for n < probesPerSpace {
+			r := room(space)
+			if r < minProbe {
+				break
+			}
+			payload, ok := c.takeProbeLocked(space, r)
+			if !ok {
+				break
+			}
+			if len(payload) == 0 {
+				continue
+			}
+			place(space, over(space)+len(payload))
+			plan = append(plan, probe{space: space, payload: payload})
+			n++
+		}
+		// Nothing to resend but an answer owed: a ping, as sendProbeLocked.
+		if n == 0 && sp.sent.oldestResendable() == nil && len(sp.retrans) == 0 && place(space, over(space)+1) {
+			plan = append(plan, probe{space: space, payload: []byte{framePing}, ping: true})
+		}
+	}
+	if len(plan) == 0 {
+		return
+	}
+	gather := c.gather
+	c.gather = true
+	rounds := 1
+	if used == 1 {
+		rounds = probeDatagrams
+	}
+	for round := range rounds {
+		if round > 0 {
+			c.flushDatagramLocked()
+		}
+		for _, p := range plan {
+			_ = c.sendPacketLocked(p.space, p.payload, sendOpts{own: !p.ping})
+		}
+	}
+	c.gather = gather
+	if !gather {
+		c.flushDatagramLocked()
 	}
 }
 
