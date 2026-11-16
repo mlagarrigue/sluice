@@ -13,6 +13,12 @@
 // [web]'s — [web.Verifier], [web.Authorizer], [web.Report] — because two
 // spellings of the same boundary would drift apart.
 //
+// The bridge runs the other way too: [FromHTTP] serves a net/http handler on
+// the native transport, and [ServeH3] serves it over HTTP/3, so a program
+// written on [web] answers HTTP/3 without a second set of routes — at the
+// price of a goroutine and an *http.Request per request, which these stages
+// do not pay.
+//
 // It lives outside the core by the library's own test: nothing in the core
 // stops compiling if this package is removed. It is on the supported path,
 // held to a first real consumer (docs/guide/httpstream.md).

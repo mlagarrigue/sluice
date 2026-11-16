@@ -233,6 +233,29 @@ var render = stream.Renderer{Refused: func(e *stream.Exchange) (int, any) {
 }}
 ```
 
+A program written on `web` and an `http.ServeMux` serves HTTP/3 as well
+without rewriting its routes. `stream.ServeH3(ctx, srv, grace, certFile,
+keyFile, closers...)` is `web.ServeTLS` for HTTP/3: the same
+`http.Server`, its address in UDP, the same stop in two steps. Underneath,
+`stream.FromHTTP(h)` turns a `net/http` handler into a batch handler:
+each request of the batch gets its own goroutine, as under `net/http`,
+and a `Flush` turns the response into a stream.
+
+That is the convenience path. The throughput path remains this package's
+batch stages, which pay neither a goroutine nor an `*http.Request` per
+request. Measured on one core on a unit read
+([benchmarks](../benchmarks.md#a-nethttp-handler-on-the-native-transport)):
+about 3.3 µs per request more through `FromHTTP` than through the batch
+stages, ×11 in a batch of one and ×8.7 in a batch of eight (2026-11-16); little beside
+the HTTP/3 transport and a database round trip, but not nothing. `ServeH3` is experimental, like the
+`net/quic` under it, and serves HTTP/3 alone: serving the three protocols
+from one call is the next step.
+
+```go
+srv := &http.Server{Addr: ":8443", Handler: mux, TLSConfig: tlsCfg}
+err := stream.ServeH3(ctx, srv, 10*time.Second, "", "", gw)
+```
+
 ## `pushdown` — supported
 
 A reader that knows where it is can help its source: "skip to key X", "I

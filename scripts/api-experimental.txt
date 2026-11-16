@@ -8,3 +8,4 @@ net/httpstream.ServeH3Conn
 net/httpstream.(*Server).ServeQUIC
 net/httpstream.Config.QUICConfig
 gateway.Partitions
+web/stream.ServeH3

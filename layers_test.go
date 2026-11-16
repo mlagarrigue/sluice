@@ -36,7 +36,7 @@ var allowed = map[string][]string{
 	"parallel":                 {"", "internal/batch", "internal/handoff"},
 	"web":                      {"", "diagnostics", "web/internal/reqbody"},
 	"web/internal/reqbody":     {"diagnostics"},
-	"web/stream":               {"", "diagnostics", "net/httpstream", "web", "web/internal/reqbody"},
+	"web/stream":               {"", "diagnostics", "net/httpstream", "net/quic", "web", "web/internal/reqbody"},
 	"net/httpstream":           {"", "internal/ipkey", "internal/varint", "net/quic"},
 	"net/quic":                 {"internal/ipkey", "internal/varint", "net/quic/udp"},
 	"net/quic/udp":             nil,

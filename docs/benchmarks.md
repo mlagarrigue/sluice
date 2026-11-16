@@ -30,6 +30,7 @@ figure that differs, to the character, from the median of its row.
 - [Arrays, one way to write them](#arrays-one-way-to-write-them)
 - [Two changes read as noise, paired](#two-changes-read-as-noise-paired)
 - [A streamed HTTP/2 response on a goroutine of its own](#a-streamed-http2-response-on-a-goroutine-of-its-own)
+- [A net/http handler on the native transport](#a-nethttp-handler-on-the-native-transport)
 - [HTTP/3 without a socket](#http3-without-a-socket)
 - [HTTP/1.1, watching for a client that leaves](#http11-watching-for-a-client-that-leaves)
 - [QUIC, on an emulated path](#quic-on-an-emulated-path)
@@ -935,6 +936,34 @@ growing each new goroutine's stack to what the pull needs. That run was
 taken while the benchmark's connection still kept every byte it was given;
 since this change it drops them, since the growing buffer was most of what
 `chunks=64` measured, and put that run over the container's memory.
+
+## A net/http handler on the native transport
+
+`stream.FromHTTP` serves a `net/http` handler on `net/httpstream`, which is
+how `stream.ServeH3` answers HTTP/3 with the `ServeMux` a program already
+has. It gives each request a goroutine and an `*http.Request`, which the
+batch stages of `web/stream` do not. `BenchmarkUnitRead` (in `web/stream`)
+answers a batch of unit reads without a socket both ways: the same route
+and JSON document, on the stages and through `FromHTTP`. Ten runs of
+`-benchtime 300ms` on one core under `GOMAXPROCS=1`, medians, 2026-11-16,
+go1.26.10.
+
+| benchmark | ns per request | allocations per request | × the stages |
+|---|---|---|---|
+| `BenchmarkUnitRead/stages/batch=1` | 322 | 7 | — |
+| `BenchmarkUnitRead/stages/batch=8` | 375 | 6 | — |
+| `BenchmarkUnitRead/fromhttp/batch=1` | 3,585 | 44 | ×11 |
+| `BenchmarkUnitRead/fromhttp/batch=8` | 3,280 | 41 | ×8.7 |
+
+About 3.3 µs per request more, ×11 the stages in a batch of one and ×8.7
+in a batch of eight. A CPU profile puts most of it in what a goroutine per
+request costs — starting it, growing its stack to what the handler needs,
+waking it — and the rest in building the `*http.Request` and its header
+map. Unpinned, on a machine otherwise idle, the figure is about 8 µs,
+the difference being the runtime waking an idle thread for each
+goroutine, which a loaded server does not pay. That is the price of the
+convenience path, small beside an HTTP/3 request's transport and a
+database round trip; the stages remain the throughput path.
 
 ## HTTP/3 without a socket
 
