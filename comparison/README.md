@@ -616,13 +616,14 @@ ships (direct, then all), and the concepts one must know to write it.
 Sluice.go's line is `sluice/reference/` (see [`sluice/`](#sluice--the-server-of-the-internal-study)),
 its contract lines `sluice/internal/contract`, and its dependencies those
 `go version -m` reads in its binary, the framework counted as one of
-them. On 2026-11-16: 327 lines, the most of the table, against 233 for
+them. On 2026-11-16: 307 lines, the most of the table, against 233 for
 the optimised Go contender, which serves the same three protocols. They
 were 440 that morning: the HTTP/3 path wrote every route a second time on
 `web/stream`, and now serves the same `ServeMux` through `stream.ServeH3`,
-as the Go contender hands it to quic-go's `http3`. The rest of the gap is
-what the connector leaves to the program: a channel of connections, the
-decoding of each column, the gateway's pipeline. One
+as the Go contender hands it to quic-go's `http3`; and the rows are
+hydrated by a function `sluicegen` generates rather than decoded column by
+column by hand. The rest of the gap is what the connector leaves to the
+program: a channel of connections and the gateway's pipeline. One
 direct dependency, four in all: the framework, `x/crypto`, `x/sys`,
 `x/text`.
 

@@ -53,6 +53,8 @@ import (
 	"github.com/mlagarrigue/sluice/web/stream"
 )
 
+//go:generate go run github.com/mlagarrigue/sluice/cmd/sluicegen -type order
+
 type order struct {
 	ID    int64  `json:"id"`
 	Total int64  `json:"total"`
@@ -107,23 +109,12 @@ func connect() (*postgres.Conn, error) {
 	})
 }
 
-func decodeOrder(r postgres.Row) (order, error) {
-	id, _ := r.Value(0)
-	total, _ := r.Value(1)
-	label, _ := r.Value(2)
-	var o order
-	var err1, err2 error
-	o.ID, err1 = pgtype.DecodeInt8(id)
-	o.Total, err2 = pgtype.DecodeInt8(total)
-	o.Label = pgtype.DecodeText(label)
-	return o, errors.Join(err1, err2)
-}
-
 // pipeline is the gateway's, built once: the keys of a batch leave as one
 // array parameter, and every call gets its row or a miss.
 func (s *server) pipeline(conn *postgres.Conn) func(sluice.Stream[*gateway.Call[int64, order]]) {
 	return func(calls sluice.Stream[*gateway.Call[int64, order]]) {
 		var ids []int64
+		var rows []order
 		found := make(map[int64]order, batchSize)
 		calls(func(b sluice.Batch[*gateway.Call[int64, order]]) bool {
 			var err error
@@ -136,14 +127,10 @@ func (s *server) pipeline(conn *postgres.Conn) func(sluice.Stream[*gateway.Call[
 			keys := pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: ids}, pgtype.Int8Codec())
 			src := conn.Query(context.Background(), unitQuery, []postgres.Param{{OID: pgtype.OIDInt8Array, Value: keys}},
 				postgres.QueryConfig{BatchRows: batchSize + 1}) // one more than a batch can hold: one round trip
-			for rows := range src.Stream() {
-				for _, r := range rows.Items {
-					o, derr := decodeOrder(r)
-					err = cmp.Or(err, derr)
-					found[o.ID] = o
-				}
+			rows, err = collectOrder(rows[:0], src)
+			for _, o := range rows {
+				found[o.ID] = o
 			}
-			err = cmp.Or(err, src.Err())
 			for _, c := range b.Items {
 				o, ok := found[c.In]
 				switch {
@@ -183,17 +170,11 @@ func (s *server) list(ctx context.Context, from int64, limit int) (status int, b
 	conn := <-s.conns
 	defer func() { s.conns <- conn }()
 	src := conn.Query(ctx, listQuery, int8Params(from, int64(limit)), postgres.QueryConfig{BatchRows: 1024})
-	items := make([]order, 0, limit)
-	for rows := range src.Stream() {
-		for _, r := range rows.Items {
-			o, err := decodeOrder(r)
-			if err != nil {
-				return http.StatusInternalServerError, errDoc{Error: "decode", Key: &from}
-			}
-			items = append(items, o)
-		}
-	}
-	if err := src.Err(); err != nil {
+	items, err := collectOrder(make([]order, 0, limit), src)
+	switch {
+	case errors.Is(err, pgtype.ErrCodec):
+		return http.StatusInternalServerError, errDoc{Error: "decode", Key: &from}
+	case err != nil:
 		log.Printf("list: %v", err)
 		return http.StatusServiceUnavailable, errDoc{Error: "unavailable", Key: &from}
 	}
