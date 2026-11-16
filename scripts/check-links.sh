@@ -12,8 +12,10 @@
 #
 # Some sites refuse a client that is not a browser whatever the page; they
 # are listed in skipped() with the reason, and reported rather than checked.
-# An address whose host has no dot (http://h, in a comment's example) or
-# names an example domain is not one anybody follows.
+# An address whose host has no dot (http://h, in a comment's example),
+# names an example domain, or is a machine's own — loopback, or link-local
+# like a cloud's metadata service at 169.254.169.254, which answers only
+# from inside its VM — is not one anybody follows.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -31,7 +33,7 @@ skipped() {
   git grep -hoE "$url_pattern" -- '*.md' '*.yml' '*.yaml'
   git grep -hE "^[[:space:]]*//.*https?://" -- '*.go' | grep -oE "$url_pattern"
 } | sed "s/[.,;:']*\$//" | grep -E '^https?://[^/:?#]+\.[^/:?#]+' |
-  grep -vE '^https?://(127\.0\.0\.1|example\.com|example\.org)[:/?#]' | sort -u >"${TMPDIR:-/tmp}/check-links.$$"
+  grep -vE '^https?://(127\.0\.0\.1|169\.254\.[0-9.]+|example\.com|example\.org)[:/?#]' | sort -u >"${TMPDIR:-/tmp}/check-links.$$"
 
 status=0
 checked=0
