@@ -29,11 +29,13 @@ The figures are a laptop's ([measurements](#measurements-what-is-missing)).
   errors, the diagnostic codes — and what it leaves free, the experimental
   packages, is in [ADR 0020](../design/adr/0020-compatibility.md), which
   `scripts/check-api.sh` applies.
-- **One machine.** Everything fits in one process. Spreading a pipeline
-  over several machines, or resuming on another machine after a crash, is
-  neither provided nor decided: the question is whether that is the job of
-  a library or of the orchestrator around it (Kubernetes, message queues).
-  It will be settled by a written decision before any code.
+- **One machine per process.** sluice does not distribute a pipeline:
+  placing processes on machines and restarting them is the orchestrator's
+  job (Kubernetes, systemd), sharing the work among them the message
+  broker's — several processes reading one Redis consumer group or one
+  JetStream consumer. A long job resumes on another machine when its state
+  is in PostgreSQL (`postgres.PhaseStore`). The decision is
+  [ADR 0028](../design/adr/0028-distribution.md).
 - **No resumption of a long job.** A pipeline that runs for eight hours and
   whose process dies starts over. The architecture names what is missing —
   a "phase runner", a unit of resumption that outlives the process — and

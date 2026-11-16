@@ -20,6 +20,8 @@ theme, the question each one settles beside its title.
   — which connectors come next, in what order, and where they live.
 - [ADR 0027 — The phase runner: resuming a long job where it died](0027-phase-runner.md)
   — how a job of several hours resumes after its process dies, and where its state lives.
+- [ADR 0028 — Several machines: the orchestrator and the broker, not the library](0028-distribution.md)
+  — what the library does, and does not, for a deployment over several machines.
 
 ## Joins (`join`)
 
