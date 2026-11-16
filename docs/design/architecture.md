@@ -1856,15 +1856,17 @@ up unable to resume.
 | Composition | pipelined, concurrent | sequential, barrier between |
 | State | in memory | persisted, validated on resume |
 | Failure | unwinds the pipeline | marked failed; the rest is resumable |
-| Provided here | `Stream[T]` | *nothing, deliberately* |
+| Provided here | `Stream[T]` | `phase`, decided in [ADR 0027](adr/0027-phase-runner.md), not built yet |
 
 sluice has an excellent model of the left column and none of the right. For a
 request/response cycle that is correct — there is nothing to resume. For an
 eight-hour ingest it is the difference between a job you can run overnight and
 one you cannot. The distinction is named here so that the two are not
-conflated; the machinery is deliberately absent, because a phase runner needs
-somewhere to persist its state and that somewhere is the application's schema,
-not the library's.
+conflated. A phase runner needs somewhere to persist its state, and that
+somewhere is the application's schema, not the library's — which is why the
+machinery was left out at first, and why [ADR 0027](adr/0027-phase-runner.md)
+gives it a store the application chooses instead: the library brings the
+mechanism and owns none of the state.
 
 Three properties are what make a phase runner work rather than merely exist,
 and they are recorded because each was learned expensively in production

@@ -36,10 +36,11 @@ The figures are a laptop's ([measurements](#measurements-what-is-missing)).
   It will be settled by a written decision before any code.
 - **No resumption of a long job.** A pipeline that runs for eight hours and
   whose process dies starts over. The architecture names what is missing —
-  a "phase runner", a unit of resumption that outlives the process, with
-  its state recorded in the application's schema — and explains why it is
-  not built: its state must live with you, not in the library. It is the
-  first item on the ETL side of the roadmap.
+  a "phase runner", a unit of resumption that outlives the process — and
+  [ADR 0027](../design/adr/0027-phase-runner.md) decides its shape: a
+  package `phase` whose state lives in a store you choose (a directory, or
+  a table in your own PostgreSQL schema), never in the library. It is
+  decided, not built yet: the first item on the ETL side of the roadmap.
 - **Dependencies are decided case by case.** Today, the standard library
   plus `golang.org/x/crypto` and `golang.org/x/text`, and nothing enters
   without a written decision
