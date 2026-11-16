@@ -28,7 +28,7 @@ import (
 // for readers; TestScopeListIsRepeatedVerbatim keeps the copies honest.
 var scopes = []string{
 	"core", "join", "window", "parallel", "distinct", "postgres", "encoding", "redis", "nats", "quic",
-	"httpstream", "web", "gateway", "diagnostics", "bench", "docs", "ci",
+	"httpstream", "web", "gateway", "diagnostics", "phase", "bench", "docs", "ci",
 	"devcontainer", "audit",
 }
 

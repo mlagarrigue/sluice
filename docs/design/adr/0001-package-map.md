@@ -1,7 +1,7 @@
 # ADR 0001 — The package map: a core that retains nothing, operators by what they retain, the periphery by external system
 
 - **Created:** 2026-10-07
-- **Revised:** 2026-11-10 (stage in `architecture.md`'s sense: any step, an operator one of its two forms); 3 earlier, from 2026-10-23, in its `git log`
+- **Revised:** 2026-11-16 (`phase`, a cross-cutting extension, ADR 0027); 4 earlier, from 2026-10-23, in its `git log`
 - **Theme:** core
 
 ## Problem
@@ -56,8 +56,9 @@ gateway's.
 The periphery is grouped like the standard library, by external system:
 `database/postgres`, `net/quic` (with `net/quic/udp`), `net/httpstream`,
 and `web` with `web/stream` beside it. Cross-cutting extensions
-(`diagnostics`, `gateway`, `probe`, `pushdown`) stay as root-level
-packages. Shared machinery is internal: `internal/batch`, `internal/dgram`,
+(`diagnostics`, `gateway`, `probe`, `pushdown`, and `phase`, which keeps
+nothing between two batches but a job's record between two processes, in
+a store the application chooses — ADR 0027) stay as root-level packages. Shared machinery is internal: `internal/batch`, `internal/dgram`,
 `internal/handoff`, `internal/ipkey`, `internal/pgwire`, `internal/streamtest`,
 `internal/varint` for the module, `internal/bench` and its two commands for
 the measurements, and an `internal/` under the one package

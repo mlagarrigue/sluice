@@ -26,6 +26,8 @@ place.
   acknowledged by your code.
 - [Files](guide/files.md) — CSV and JSON Lines read and written in
   batches, each record bounded.
+- [Long jobs](guide/long-jobs.md) — a job of several hours that resumes
+  where its process died, and only on the same input.
 - [Web](guide/web.md) — the supported path over `net/http`, the gateway,
   diagnostics and remedies.
 - [Native HTTP](guide/httpstream.md) — `net/httpstream`, HTTP/1.1, 2 and 3
@@ -61,6 +63,7 @@ place.
 | understand an error | [Troubleshooting: By what you see](reference/troubleshooting.md#by-what-you-see) |
 | move to a newer version | [Migrating between versions](migration.md) |
 | watch a running pipeline | [Deployments: What to watch](guide/deployments.md#what-to-watch-in-production) |
+| resume a job of several hours after its process died | [Long jobs: A job](guide/long-jobs.md#a-job) |
 
 ## I am running it in production
 

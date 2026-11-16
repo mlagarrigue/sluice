@@ -25,6 +25,7 @@ body:
         - web — web, web/stream
         - gateway
         - diagnostics — diagnostics, probe, pushdown
+        - phase — phase, resuming a long job
         - bench — benchmarks, comparison, the measurements
         - docs — docs, README, CONTRIBUTING
         - ci — scripts, workflows, templates

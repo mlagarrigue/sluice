@@ -118,6 +118,13 @@ question for a CPU profile: no counter can answer it.
 | `jsonl.ErrRecordTooLong` | A JSON Lines line passed `ReadConfig.MaxRecordBytes`. The read stopped; the values before it were delivered. The message names the line. | Check that the file is JSON Lines and not one JSON document spread over lines; if the line is legitimate, raise `MaxRecordBytes`. |
 | `*csv.ParseError` (from `csvstream.Read`) | A record that `encoding/csv` cannot parse: a stray quote, or a field count that differs from `FieldsPerRecord`. It carries the line and the column. | Fix the input, or set `LazyQuotes` for stray quotes and `FieldsPerRecord` to a negative value for ragged rows. |
 
+## Long jobs: `phase`
+
+| Error | When | What to do |
+|---|---|---|
+| `phase.ErrBusy` | Another process holds the job: its lease is live. The message names the process and the host, and when the lease runs out. | Let the other run finish; if its process is dead, the next run after the lease expires (30 seconds by default) takes it over. |
+| `phase.ErrLeaseLost` | The job's lease was lost while it ran: the process was frozen longer than the lease, or another process took it over, or the lease file was removed. Nothing more was written. | Run the job again: it resumes at the phase that was running. If it happens without a freeze, raise `DirStore.Lease`. |
+
 ## Web and gateway: `web`, `gateway`
 
 | Error | When | What to do |

@@ -1856,7 +1856,7 @@ up unable to resume.
 | Composition | pipelined, concurrent | sequential, barrier between |
 | State | in memory | persisted, validated on resume |
 | Failure | unwinds the pipeline | marked failed; the rest is resumable |
-| Provided here | `Stream[T]` | `phase`, decided in [ADR 0027](adr/0027-phase-runner.md), not built yet |
+| Provided here | `Stream[T]` | `phase` ([ADR 0027](adr/0027-phase-runner.md)), its state in a store the application chooses |
 
 sluice has an excellent model of the left column and none of the right. For a
 request/response cycle that is correct — there is nothing to resume. For an

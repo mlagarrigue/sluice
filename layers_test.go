@@ -25,6 +25,7 @@ var allowed = map[string][]string{
 	"":                         {"internal/batch"},
 	"internal/batch":           nil,
 	"diagnostics":              nil,
+	"phase":                    nil,
 	"join":                     {""},
 	"distinct":                 {""},
 	"gateway":                  {""},
