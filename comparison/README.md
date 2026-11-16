@@ -44,7 +44,7 @@ counts (§1.1), since the server's own lines count every axis. HTTP/1.1
 and HTTP/2 go through `net/http`, a `ServeMux` with method patterns, the
 `web` helpers and `web.ServeTLS`; HTTP/3 through `stream.ServeH3`, which
 serves the same mux over `net/httpstream` and a QUIC listener; `database/postgres`
-with one connection for the gateway and a channel of `STUDY_DB_POOL`
+with one connection for the gateway and a `postgres.Pool` of `STUDY_DB_POOL`
 for lists and writes; gzip at level 1 under `STUDY_COMPRESSION=gzip`.
 It reads the contract's variables alone (`STUDY_*`, `PG*`) and answers
 as R does, error documents included: `comparison/chain/conform.sh
@@ -616,16 +616,17 @@ ships (direct, then all), and the concepts one must know to write it.
 Sluice.go's line is `sluice/reference/` (see [`sluice/`](#sluice--the-server-of-the-internal-study)),
 its contract lines `sluice/internal/contract`, and its dependencies those
 `go version -m` reads in its binary, the framework counted as one of
-them. On 2026-11-16: 280 lines, the most of the table, against 233 for
+them. On 2026-11-16: 265 lines, the most of the table, against 233 for
 the optimised Go contender, which serves the same three protocols. They
 were 440 that morning: the HTTP/3 path wrote every route a second time on
 `web/stream`, and now serves the same `ServeMux` through `stream.ServeH3`,
 as the Go contender hands it to quic-go's `http3`; the rows are hydrated
 by a function `sluicegen` generates rather than decoded column by column
-by hand; the gateway's pipeline is written by `gateway.Lookup` and the
-parameters by `postgres.Arg`. The rest of the gap is the channel of
-connections the connector leaves to the program, and the gateway itself,
-which the Go contender has none of: Sluice.go groups its unit reads. One
+by hand; the gateway's pipeline is written by `gateway.Lookup`, the
+parameters by `postgres.Arg`, and the channel of connections is a
+`postgres.Pool`, which replaces a broken one. The rest of the gap is the
+gateway itself, which the Go contender has none of: Sluice.go groups its
+unit reads. One
 direct dependency, four in all: the framework, `x/crypto`, `x/sys`,
 `x/text`.
 

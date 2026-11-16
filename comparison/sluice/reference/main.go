@@ -12,9 +12,8 @@
 //     the three protocols: HTTP/1.1 and HTTP/2 through net/http and
 //     web.ServeTLS, HTTP/3 through web/stream's ServeH3, which serves the
 //     same mux over net/httpstream on a QUIC listener;
-//   - database/postgres, one connection for the gateway and a channel of
-//     STUDY_DB_POOL connections for lists and writes: the connector has no
-//     pool, and a fixed number of connections needs none;
+//   - database/postgres, one connection for the gateway and a pool of
+//     STUDY_DB_POOL connections for lists and writes;
 //   - a gateway of 64 keys or 2 ms in front of the unit reads, one
 //     `= ANY($1)` query per batch;
 //   - buffered answers, and gzip at level 1 when STUDY_COMPRESSION=gzip and
@@ -93,15 +92,15 @@ var errNotFound = errors.New("no such key")
 
 type server struct {
 	gw      *gateway.Gateway[int64, order]
-	conns   chan *postgres.Conn // lists and writes; the gateway has a connection of its own
+	db      *postgres.Pool // lists and writes; the gateway has a connection of its own
 	batches contract.BatchStats
 	static  contract.Static
 	gzip    bool
 }
 
 // connect opens one connection to the server PGHOST and its siblings name.
-func connect() (*postgres.Conn, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+func connect(ctx context.Context) (*postgres.Conn, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	addr := net.JoinHostPort(os.Getenv("PGHOST"), cmp.Or(os.Getenv("PGPORT"), "5432"))
 	return postgres.Connect(ctx, postgres.DialTCP(addr), postgres.Config{
@@ -138,10 +137,8 @@ func unitAnswer(id int64, o order, err error) (status int, body any) {
 }
 
 func (s *server) list(ctx context.Context, from int64, limit int) (status int, body any) {
-	conn := <-s.conns
-	defer func() { s.conns <- conn }()
 	params := []postgres.Param{postgres.Arg(pgtype.Int8Codec(), from), postgres.Arg(pgtype.Int8Codec(), int64(limit))}
-	src := conn.Query(ctx, listQuery, params, postgres.QueryConfig{BatchRows: 1024})
+	src := s.db.Query(ctx, listQuery, params, postgres.QueryConfig{BatchRows: 1024})
 	items, err := collectOrder(make([]order, 0, limit), src)
 	switch {
 	case errors.Is(err, pgtype.ErrCodec):
@@ -168,9 +165,7 @@ func listArgs(fromArg, limitArg string) (from int64, limit int, refused *errDoc)
 }
 
 func (s *server) write(ctx context.Context, req writeReq) (status int, body any) {
-	conn := <-s.conns
-	defer func() { s.conns <- conn }()
-	if _, err := conn.ExecParams(ctx, writeQuery, []postgres.Param{postgres.Arg(pgtype.Int8Codec(), req.Key), postgres.Arg(pgtype.Int8Codec(), req.Total)}); err != nil {
+	if _, err := s.db.ExecParams(ctx, writeQuery, []postgres.Param{postgres.Arg(pgtype.Int8Codec(), req.Key), postgres.Arg(pgtype.Int8Codec(), req.Total)}); err != nil {
 		log.Printf("insert: %v", err)
 		return http.StatusServiceUnavailable, errDoc{Error: "unavailable", Key: &req.Key}
 	}
@@ -290,20 +285,9 @@ func run(ctx context.Context) error {
 	if err := cfg.Offers([]string{"h1", "h2", "h3"}, []string{"gzip"}); err != nil {
 		return err
 	}
-	s := &server{conns: make(chan *postgres.Conn, cfg.Pool), static: contract.StaticDoc(), gzip: cfg.Compression == "gzip"}
-	defer func() {
-		for len(s.conns) > 0 {
-			_ = (<-s.conns).Close()
-		}
-	}()
-	for range cfg.Pool {
-		conn, err := connect()
-		if err != nil {
-			return err
-		}
-		s.conns <- conn
-	}
-	gwConn, err := connect()
+	s := &server{db: postgres.NewPool(cfg.Pool, connect), static: contract.StaticDoc(), gzip: cfg.Compression == "gzip"}
+	defer func() { _ = s.db.Close() }()
+	gwConn, err := connect(ctx)
 	if err != nil {
 		return err
 	}
