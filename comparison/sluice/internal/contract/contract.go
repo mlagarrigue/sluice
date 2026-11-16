@@ -132,8 +132,8 @@ func (c Config) ALPN() string {
 // TLSConfig is the TLS of every contender (comparison/README.md, "The TLS
 // every contender runs under"): TLS 1.3 only, the campaign's certificate or
 // an ECDSA P-256 one made at startup when none is named, ALPN naming the
-// run's one protocol, tickets only when asked. Over QUIC the listener issues
-// the tickets (quic.ListenerConfig), so SessionTicketsDisabled is left to it.
+// run's one protocol, tickets only when asked — over QUIC too, where the
+// listener ServeH3 builds issues them as SessionTicketsDisabled says.
 func (c Config) TLSConfig() (*tls.Config, error) {
 	var cert tls.Certificate
 	var err error
@@ -149,9 +149,8 @@ func (c Config) TLSConfig() (*tls.Config, error) {
 		Certificates: []tls.Certificate{cert},
 		MinVersion:   tls.VersionTLS13,
 		NextProtos:   []string{c.ALPN()},
-	}
-	if c.Protocol != "h3" {
-		cfg.SessionTicketsDisabled = !c.Resume
+
+		SessionTicketsDisabled: !c.Resume,
 	}
 	return cfg, nil
 }

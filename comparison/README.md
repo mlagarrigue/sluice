@@ -42,8 +42,8 @@ Beside it, `sluice/reference/` is the configuration R and nothing else,
 written as the guides teach it: the program whose lines the writing cost
 counts (§1.1), since the server's own lines count every axis. HTTP/1.1
 and HTTP/2 go through `net/http`, a `ServeMux` with method patterns, the
-`web` helpers and `web.ServeTLS`; HTTP/3 through `net/httpstream` on a
-QUIC listener, the batch routed by `web/stream`; `database/postgres`
+`web` helpers and `web.ServeTLS`; HTTP/3 through `stream.ServeH3`, which
+serves the same mux over `net/httpstream` and a QUIC listener; `database/postgres`
 with one connection for the gateway and a channel of `STUDY_DB_POOL`
 for lists and writes; gzip at level 1 under `STUDY_COMPRESSION=gzip`.
 It reads the contract's variables alone (`STUDY_*`, `PG*`) and answers
@@ -616,15 +616,13 @@ ships (direct, then all), and the concepts one must know to write it.
 Sluice.go's line is `sluice/reference/` (see [`sluice/`](#sluice--the-server-of-the-internal-study)),
 its contract lines `sluice/internal/contract`, and its dependencies those
 `go version -m` reads in its binary, the framework counted as one of
-them. On 2026-11-16: 440 lines, the most of the table, against 233 for
-the optimised Go contender, which serves the same three protocols. Ten
-of them came that day, when the HTTP/3 path started answering its
-refusals in R's error document through `web/stream` (one `Renderer`)
-rather than reading its parameters by hand. Most
-of the gap is two request paths — `net/http` for HTTP/1.1 and HTTP/2,
-`net/httpstream` for HTTP/3, where quic-go's `http3` takes the same
-`ServeMux` — and what the connector leaves to the program: a channel of
-connections, the decoding of each column, the gateway's pipeline. One
+them. On 2026-11-16: 327 lines, the most of the table, against 233 for
+the optimised Go contender, which serves the same three protocols. They
+were 440 that morning: the HTTP/3 path wrote every route a second time on
+`web/stream`, and now serves the same `ServeMux` through `stream.ServeH3`,
+as the Go contender hands it to quic-go's `http3`. The rest of the gap is
+what the connector leaves to the program: a channel of connections, the
+decoding of each column, the gateway's pipeline. One
 direct dependency, four in all: the framework, `x/crypto`, `x/sys`,
 `x/text`.
 

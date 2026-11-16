@@ -8,10 +8,10 @@
 //
 // What R is, and so what this program does:
 //
-//   - HTTP/1.1 and HTTP/2 through net/http, a ServeMux with method
-//     patterns, the web package's helpers, and web.ServeTLS for the clean
-//     stop; HTTP/3 through net/httpstream on a QUIC listener, the batch of
-//     requests routed by web/stream;
+//   - one ServeMux with method patterns and the web package's helpers for
+//     the three protocols: HTTP/1.1 and HTTP/2 through net/http and
+//     web.ServeTLS, HTTP/3 through web/stream's ServeH3, which serves the
+//     same mux over net/httpstream on a QUIC listener;
 //   - database/postgres, one connection for the gateway and a channel of
 //     STUDY_DB_POOL connections for lists and writes: the connector has no
 //     pool, and a fixed number of connections needs none;
@@ -31,14 +31,12 @@ import (
 	"cmp"
 	"compress/gzip"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -51,8 +49,6 @@ import (
 	"github.com/mlagarrigue/sluice/database/postgres"
 	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/gateway"
-	"github.com/mlagarrigue/sluice/net/httpstream"
-	"github.com/mlagarrigue/sluice/net/quic"
 	"github.com/mlagarrigue/sluice/web"
 	"github.com/mlagarrigue/sluice/web/stream"
 )
@@ -285,129 +281,6 @@ func (s *server) mux() *http.ServeMux {
 	return mux
 }
 
-// --- HTTP/3: net/httpstream and web/stream ---------------------------------
-
-const (
-	routeStatic = iota
-	routeMetrics
-	routeUnit
-	routeList
-	routeWrite
-)
-
-var router = stream.NewRouter(
-	stream.Route{Method: "GET", Pattern: "/static"},
-	stream.Route{Method: "GET", Pattern: "/study/metrics"},
-	stream.Route{Method: "GET", Pattern: "/orders/{id}"},
-	stream.Route{Method: "GET", Pattern: "/orders"},
-	stream.Route{Method: "POST", Pattern: "/orders"},
-)
-
-// render answers the refusals in R's error document, which is the
-// contract: a key that is not an integer, a body that will not decode. The
-// router's own refusals keep the package's report.
-var render = stream.Renderer{Refused: func(e *stream.Exchange) (int, any) {
-	switch e.RouteIndex {
-	case routeUnit:
-		return http.StatusBadRequest, errDoc{Error: "bad key"}
-	case routeWrite:
-		return http.StatusBadRequest, errDoc{Error: "bad body"}
-	}
-	return e.Status, e.Report()
-}}
-
-// batch answers a batch of requests: the unit reads go to the gateway
-// together (DoBatch), the others are answered one by one.
-func (s *server) batch(ctx context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
-	ex := stream.Exchanges(nil, b)
-	router.Route(ex)
-	status, bodies := make([]int, len(ex)), make([]any, len(ex))
-	var units []int
-	var keys []int64
-	for i := range ex {
-		e := &ex[i]
-		switch e.RouteIndex {
-		case routeStatic:
-			status[i], bodies[i] = http.StatusOK, s.static
-		case routeMetrics:
-			status[i], bodies[i] = http.StatusOK, contract.Read(&s.batches)
-		case routeUnit:
-			id, ok := stream.PathInt64(e, 0, "id")
-			if !ok {
-				continue // refused: render answers it
-			}
-			units, keys = append(units, i), append(keys, id)
-		case routeList:
-			_, query, _ := strings.Cut(string(e.Request.Target), "?")
-			q, _ := url.ParseQuery(query)
-			from, limit, refused := listArgs(q.Get("from"), q.Get("limit"))
-			if refused != nil {
-				status[i], bodies[i] = http.StatusBadRequest, *refused
-				continue
-			}
-			status[i], bodies[i] = s.list(ctx, from, limit)
-		case routeWrite:
-			var req writeReq
-			if !stream.DecodeJSON(e, maxBody, &req) {
-				continue
-			}
-			if req.Key == 0 {
-				status[i], bodies[i] = http.StatusBadRequest, errDoc{Error: "bad body"}
-				continue
-			}
-			status[i], bodies[i] = s.write(ctx, req)
-		}
-	}
-	if len(keys) > 0 {
-		for j, oc := range s.gw.DoBatch(ctx, keys) {
-			status[units[j]], bodies[units[j]] = unitAnswer(keys[j], oc.Out, oc.Err)
-		}
-	}
-	out := render.Render(ex, func(i int) (int, any) { return status[i], bodies[i] })
-	for i := range out.Items {
-		if r := &out.Items[i]; s.gzip && r.Body != nil && acceptsGzip(string(b.Items[i].Get("accept-encoding"))) {
-			r.Body = gzipped(r.Body)
-			r.Headers = append(r.Headers[:len(r.Headers):len(r.Headers)],
-				httpstream.Header{Name: []byte("content-encoding"), Value: []byte("gzip")},
-				httpstream.Header{Name: []byte("vary"), Value: []byte("Accept-Encoding")})
-		}
-	}
-	return out
-}
-
-// serveH3 serves HTTP/3 until ctx is cancelled, then drains as the
-// httpstream guide's two-step stop does.
-func (s *server) serveH3(ctx context.Context, cfg contract.Config, tlsCfg *tls.Config) error {
-	pc, err := net.ListenPacket("udp", cfg.Listen)
-	if err != nil {
-		return err
-	}
-	hcfg := httpstream.Config{MaxBodyBytes: maxBody}
-	params, err := hcfg.QUICConfig()
-	if err != nil {
-		return err
-	}
-	ln, err := quic.NewListener(pc, tlsCfg, params, quic.ListenerConfig{SessionTickets: cfg.Resume})
-	if err != nil {
-		return err
-	}
-	srv := &httpstream.Server{Config: hcfg, Handler: s.batch}
-	served := make(chan error, 1)
-	go func() { served <- srv.ServeQUIC(ln) }()
-	select {
-	case err := <-served:
-		return err
-	case <-ctx.Done():
-	}
-	grace, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(grace); err != nil {
-		_ = srv.Close()
-	}
-	<-served
-	return s.gw.Close()
-}
-
 // --- gzip ------------------------------------------------------------------
 
 var gzipWriters = sync.Pool{New: func() any {
@@ -499,11 +372,12 @@ func run(ctx context.Context) error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "sluice-reference: %s on %s (%s)\n", cfg.Protocol, cfg.Listen, cfg.Summary(tlsCfg))
-	if cfg.Protocol == "h3" {
-		return s.serveH3(ctx, cfg, tlsCfg)
-	}
-	// The run's one protocol, so that ALPN offers it alone.
+	// The run's one protocol, so that ALPN offers it alone; HTTP/3 serves
+	// the same mux.
 	srv.TLSConfig = tlsCfg
+	if cfg.Protocol == "h3" {
+		return stream.ServeH3(ctx, srv, 10*time.Second, "", "", s.gw)
+	}
 	srv.Protocols = new(http.Protocols)
 	srv.Protocols.SetHTTP1(cfg.Protocol == "h1")
 	srv.Protocols.SetHTTP2(cfg.Protocol == "h2")
