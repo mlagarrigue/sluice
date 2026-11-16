@@ -1,7 +1,7 @@
-# ADR 0022 — The PostgreSQL connector's shape: one connection, binary, the codec apart
+# ADR 0022 — The PostgreSQL connector's shape: one connection and a fixed pool, binary, the codec apart
 
 - **Created:** 2026-10-23
-- **Revised:** 2026-10-28 (written in the present tense; the statement cache sized once; `NewConn` takes `Config`), 2026-11-03 (the Problem told in the past tense)
+- **Revised:** 2026-10-28 (written in the present tense; the statement cache sized once; `NewConn` takes `Config`), 2026-11-03 (the Problem told in the past tense), 2026-11-16 (a fixed pool beside the connection: its reversal condition met)
 - **Theme:** postgres
 
 ## Problem
@@ -16,11 +16,22 @@ mixed two things. `go doc -short` listed 190 lines, about 120 of them codec
 `cmd/sluicegen` emitted about twenty. A reader looking for how to open a
 connection and read a batch read a hundred encoding functions first.
 
+A program that served independent range reads on several connections — the
+comparison study's reference program, under `STUDY_DB_POOL` — held them in a
+channel written by hand, which never replaced a broken connection: every
+request that drew it answered 503 until the process restarted.
+
 ## Decision
 
-**One connection, no pool.** A `Conn` is one connection; holding several is
-the caller's business, and `gateway` does with one connection what a pool
-does with several, by grouping the calls.
+**One connection, and a fixed pool beside it.** A `Conn` is one
+connection. Grouping calls stays `gateway`'s job, which does with one
+connection what a pool does with several for keyed reads. `Pool` holds at
+most N connections for what remains — independent queries that grouping
+merges only by running them one after the other on a single server
+process: it opens them when first needed, lends one per call (for `Query`,
+as long as its stream is read), and closes a broken one when it comes back,
+so that the next call opens a new one. No idle timeout, no lifetime, no
+health check.
 
 **The transport is the caller's.** `Connect` takes a recipe (`DialTCP`,
 `DialTLS`, `DialTLSDirect` or the caller's own); the `tls.Config` is the
@@ -85,9 +96,21 @@ the cache, the message bound, the logger — so a transport someone else
 authenticated differs from one `Connect` opens by its defaults, never by
 what it can be set to.
 
+The reversal condition this decision first carried — a need for a pool
+that `gateway` does not cover — was met: N range scans grouped into one
+query run one after the other on one server process, where N connections
+run them side by side; and the channel every program wrote in the pool's
+place kept a broken connection. The pool stays minimal because its
+settings — idle timeout, lifetime, health — are a deployment's, and a pool
+that needs them is a module of its own: a connection terminated while it
+waited fails the call that finds it, and the next gets a new one (shown
+against PostgreSQL 17 with `pg_terminate_backend`).
+
 What is lost: one import for the whole connector, one more break in the
-breaking release, resizing an open connection's cache.
+breaking release, resizing an open connection's cache, and "no pool" as a
+rule a reader keeps in one line.
 
 Reversal condition: a caller who cannot write their code without importing
-both packages for an operation that needs one, a need for a pool that
-`gateway` does not cover.
+both packages for an operation that needs one, a need for pool settings —
+idle timeout, lifetime, health check — which would go into a module of its
+own.

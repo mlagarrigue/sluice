@@ -1,7 +1,7 @@
 # ADR 0027 — The phase runner: resuming a long job where it died
 
 - **Created:** 2026-11-16
-- **Revised:** 2026-11-16 (the lock's connection is the job's own: the connector has no pool; the lock's key)
+- **Revised:** 2026-11-16 (the lock's connection is the job's own: the connector has no pool; the lock's key), 2026-11-16 (the lock's connection is never one a pool lends)
 - **Theme:** core
 
 ## Problem
@@ -96,8 +96,8 @@ forces a restart with the same input.
 PostgreSQL: a session-level advisory lock (`pg_try_advisory_lock`), which
 "is held until explicitly released or the session ends", so the server
 releases it when the process dies. It is taken on a connection of the job's
-own, opened for its whole run — the connector has no pool to share it
-with, and one session may take the lock twice — and the record is written
+own, opened for its whole run — never one a pool lends, which would hand
+the session to other calls, and one session may take the lock twice — and the record is written
 on that same connection: a lost connection — and the lock with it — fails
 the next write and stops the job. The lock's key is a 64-bit hash of the
 table and the job's name, computed by the client.

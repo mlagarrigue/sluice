@@ -33,7 +33,7 @@ theme, the question each one settles beside its title.
 
 ## PostgreSQL (`postgres`)
 
-- [ADR 0022 — The PostgreSQL connector's shape: one connection, binary, the codec apart](0022-postgres-connector-shape.md)
+- [ADR 0022 — The PostgreSQL connector's shape: one connection and a fixed pool, binary, the codec apart](0022-postgres-connector-shape.md)
   — the connector's shape, and why each part of it holds.
 - [ADR 0023 — Logical replication is a `Source` of changes, acknowledged by the consumer](0023-logical-replication.md)
   — how logical replication becomes a source the consumer acknowledges.

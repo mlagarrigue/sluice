@@ -530,8 +530,10 @@ func TestLimitsAbsencesHold(t *testing.T) {
 			isBuffer := func(n string) bool { return n == "Buffer" }
 			return append(named(".", isBuffer), named("parallel", isBuffer)...)
 		}},
-		{"No connection pool", func() []string {
-			return named("database/postgres", func(n string) bool { return strings.Contains(n, "Pool") })
+		{"A fixed pool, without settings", func() []string {
+			return named("database/postgres", func(n string) bool {
+				return strings.Contains(n, "Lifetime") || strings.Contains(n, "Health") || strings.HasPrefix(n, "MaxIdle")
+			})
 		}},
 		{"No COPY TO STDOUT", func() []string {
 			return named("database/postgres", func(n string) bool {

@@ -84,9 +84,11 @@ The figures are a laptop's ([measurements](#measurements-what-is-missing)).
   inventory stays first on the roadmap, and will pick the next ones by
   demand, by what the batch model brings to each, and by whether they can
   be written without a dependency.
-- **No connection pool** — on purpose. How many connections to open is
-  your application's decision; batching does with one connection what a
-  pool does with many.
+- **A fixed pool, without settings** — on purpose. `postgres.Pool` holds
+  at most N connections and replaces a broken one; there is no idle
+  timeout, lifetime or health check, which are a deployment's tuning
+  (ADR 0022). Batching still does with one connection what a pool does
+  with many for reads by key.
 
 ### Authentication, types and certificates
 

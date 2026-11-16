@@ -68,11 +68,12 @@ Demanding more of the server — that it ask for a password, that the proof
 be bound to its certificate — is set further down, in
 [Demanding more of authentication](#demanding-more-of-authentication).
 
-> **In plain words: no pool.** A *pool* is a reserve of open connections
-> shared by everyone. There is none here, because batching calls
-> (`gateway`, see [Web](web.md)) does with **one** connection what a pool
-> does with sixty-four, and how many connections to open is a decision for
-> your application, not for the library.
+> **In plain words: a small pool, kept apart.** A *pool* is a reserve of
+> open connections shared by everyone. Batching calls (`gateway`, see
+> [Web](web.md)) does with **one** connection what a pool does with
+> sixty-four for reads by key; for independent queries that must run at
+> the same time, `postgres.NewPool(n, connect)` lends one connection per
+> call and replaces a broken one. How many to open stays your decision.
 
 A wrong password arrives as a server error whose SQLSTATE — the
 standardised five-character code every server error carries — is `28P01`; an

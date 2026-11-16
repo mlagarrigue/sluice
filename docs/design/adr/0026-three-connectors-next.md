@@ -1,7 +1,7 @@
 # ADR 0026 — The three connectors after PostgreSQL: CSV and JSON Lines, Redis, NATS JetStream
 
 - **Created:** 2026-11-12
-- **Revised:** 2026-11-12 (each protocol fact read in its published text and cited; Redis and NATS written, the acknowledged shape confirmed twice; NATS over TLS and publishing acknowledged by the stream added)
+- **Revised:** 2026-11-12 (each protocol fact read in its published text and cited; Redis and NATS written, the acknowledged shape confirmed twice; NATS over TLS and publishing acknowledged by the stream added), 2026-11-16 (ADR 0022's fixed pool)
 - **Theme:** core
 
 ## Problem
@@ -51,7 +51,7 @@ the same caller imports — the rule that already gave `net/httpstream`.
 
 **What they take from [ADR 0022](0022-postgres-connector-shape.md):** the
 transport is the caller's (a dial recipe, the caller's `tls.Config`); one
-connection and no pool — grouping calls is `gateway`'s job; batches asked
+connection, and a fixed pool only for what grouping cannot merge — grouping calls is `gateway`'s job; batches asked
 for ahead where the protocol allows it. **From ADR 0023:** a source that
 cannot replay is acknowledged by its consumer, once it has finished a
 batch, never by the connector as it reads.
