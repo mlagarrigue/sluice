@@ -13,9 +13,10 @@ import (
 // batch of JSON responses — the batch-shaped sibling of writing a
 // [web.Report] with [web.WriteJSON].
 //
-// A refused exchange is answered with the status its stage chose and the
-// [web.Report] of its problems and remedies, which is what makes a refusal
-// actionable rather than merely correct. For the rest, serve is called with
+// A refused exchange is answered with the status its stage chose and its
+// [Exchange.Report], which is what makes a refusal actionable rather than
+// merely correct; a [Renderer] answers it in a document of the caller's
+// choosing instead. For the rest, serve is called with
 // the exchange's index and returns the status and body of the business
 // answer; it is not called for a refused one. The two decisions that matter
 // — the status and what the body says — stay in the caller's callback,
@@ -31,7 +32,7 @@ import (
 // response that streams is not this function's: build it directly and skip
 // Render for that batch.
 func Render(exchanges []Exchange, serve func(i int) (status int, body any)) sluice.Batch[httpstream.Response] {
-	return RenderOpen(exchanges, func(i, _ int) (int, any) { return serve(i) })
+	return Renderer{}.Render(exchanges, serve)
 }
 
 // RenderOpen is [Render] for the handler that submitted one call per open
@@ -56,19 +57,58 @@ func Render(exchanges []Exchange, serve func(i int) (status int, body any)) slui
 // The contract it rests on is that loop's: an exchange left open without a
 // call shifts every later rank, so anything skipped is refused.
 func RenderOpen(exchanges []Exchange, serve func(i, open int) (status int, body any)) sluice.Batch[httpstream.Response] {
+	return Renderer{}.RenderOpen(exchanges, serve)
+}
+
+// A Renderer is [Render] and [RenderOpen] with the refusals answered in the
+// caller's document: a framework built on these stages keeps its own error
+// format, as one built on [web] does by answering the diagnostic
+// [web.PathInt64] or [web.DecodeJSON] hands back. Its zero value is the
+// package's Render and RenderOpen.
+//
+// One Renderer, built where the error format is decided, answers every
+// refusal of every stage — the router's 404, 405 and 501, credentials,
+// grants, a parameter or a body that would not read — so the format is
+// written once rather than at each stage that can refuse:
+//
+//	var render = stream.Renderer{Refused: func(e *stream.Exchange) (int, any) {
+//	    return e.Status, apiError{Code: e.Diagnostics[0].Code}
+//	}}
+//	...
+//	return render.Render(ex, func(i int) (int, any) { return 200, results[i] })
+//
+// Everything else is Render's: the headers, the statuses without content,
+// a body that will not marshal.
+type Renderer struct {
+	// Refused returns the status and body that answer a refused exchange.
+	// The stage that refused it chose e.Status, recorded why in
+	// e.Diagnostics and how to recover in e.Affordances; returning another
+	// status is the caller's decision to make, as it is under [web]. A nil
+	// Refused answers e.Status and [Exchange.Report]. It runs once per
+	// refused exchange, in batch order, and must not modify e: the
+	// exchange's headers still go out on the answer.
+	Refused func(e *Exchange) (status int, body any)
+}
+
+// Render is the package's [Render], refusals answered by r.Refused.
+func (r Renderer) Render(exchanges []Exchange, serve func(i int) (status int, body any)) sluice.Batch[httpstream.Response] {
+	return r.RenderOpen(exchanges, func(i, _ int) (int, any) { return serve(i) })
+}
+
+// RenderOpen is the package's [RenderOpen], refusals answered by r.Refused.
+func (r Renderer) RenderOpen(exchanges []Exchange, serve func(i, open int) (status int, body any)) sluice.Batch[httpstream.Response] {
 	out := make([]httpstream.Response, len(exchanges))
 	open := 0
 	for i := range exchanges {
 		e := &exchanges[i]
 		var status int
 		var body any
-		if e.Refused() {
-			status = e.Status
-			body = web.Report{
-				Problems: web.Problems(e.Diagnostics),
-				Remedies: web.Remedies(e.Affordances),
-			}
-		} else {
+		switch {
+		case e.Refused() && r.Refused != nil:
+			status, body = r.Refused(e)
+		case e.Refused():
+			status, body = e.Status, e.Report()
+		default:
 			status, body = serve(i, open)
 			open++
 		}
@@ -108,6 +148,17 @@ func RenderOpen(exchanges []Exchange, serve func(i, open int) (status int, body 
 		out[i] = httpstream.Response{Status: status, Headers: headers, Body: append(buf, '\n')}
 	}
 	return sluice.Batch[httpstream.Response]{Items: out}
+}
+
+// Report is the document [Render] answers a refused exchange with: the
+// problems its diagnostics name and the remedies its affordances offer. A
+// [Renderer.Refused] that keeps this document for some refusals returns it
+// for those.
+func (e *Exchange) Report() web.Report {
+	return web.Report{
+		Problems: web.Problems(e.Diagnostics),
+		Remedies: web.Remedies(e.Affordances),
+	}
 }
 
 // The one field every answer carries, shared rather than rebuilt per

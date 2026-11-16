@@ -303,10 +303,21 @@ var router = stream.NewRouter(
 	stream.Route{Method: "POST", Pattern: "/orders"},
 )
 
+// render answers the refusals in R's error document, which is the
+// contract: a key that is not an integer, a body that will not decode. The
+// router's own refusals keep the package's report.
+var render = stream.Renderer{Refused: func(e *stream.Exchange) (int, any) {
+	switch e.RouteIndex {
+	case routeUnit:
+		return http.StatusBadRequest, errDoc{Error: "bad key"}
+	case routeWrite:
+		return http.StatusBadRequest, errDoc{Error: "bad body"}
+	}
+	return e.Status, e.Report()
+}}
+
 // batch answers a batch of requests: the unit reads go to the gateway
-// together (DoBatch), the others are answered one by one. The parameters
-// are read with strconv rather than stream.PathInt64 and DecodeJSON,
-// whose refusals are a web.Report: R's error document is the contract.
+// together (DoBatch), the others are answered one by one.
 func (s *server) batch(ctx context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 	ex := stream.Exchanges(nil, b)
 	router.Route(ex)
@@ -321,10 +332,9 @@ func (s *server) batch(ctx context.Context, b sluice.Batch[httpstream.Request]) 
 		case routeMetrics:
 			status[i], bodies[i] = http.StatusOK, contract.Read(&s.batches)
 		case routeUnit:
-			id, err := strconv.ParseInt(string(e.Params[0]), 10, 64)
-			if err != nil {
-				status[i], bodies[i] = http.StatusBadRequest, errDoc{Error: "bad key"}
-				continue
+			id, ok := stream.PathInt64(e, 0, "id")
+			if !ok {
+				continue // refused: render answers it
 			}
 			units, keys = append(units, i), append(keys, id)
 		case routeList:
@@ -338,8 +348,10 @@ func (s *server) batch(ctx context.Context, b sluice.Batch[httpstream.Request]) 
 			status[i], bodies[i] = s.list(ctx, from, limit)
 		case routeWrite:
 			var req writeReq
-			body, err := e.Request.ReadAll(nil, maxBody) // a body sent after the headers is streamed
-			if err != nil || json.Unmarshal(body, &req) != nil || req.Key == 0 {
+			if !stream.DecodeJSON(e, maxBody, &req) {
+				continue
+			}
+			if req.Key == 0 {
 				status[i], bodies[i] = http.StatusBadRequest, errDoc{Error: "bad body"}
 				continue
 			}
@@ -351,7 +363,7 @@ func (s *server) batch(ctx context.Context, b sluice.Batch[httpstream.Request]) 
 			status[units[j]], bodies[units[j]] = unitAnswer(keys[j], oc.Out, oc.Err)
 		}
 	}
-	out := stream.Render(ex, func(i int) (int, any) { return status[i], bodies[i] })
+	out := render.Render(ex, func(i int) (int, any) { return status[i], bodies[i] })
 	for i := range out.Items {
 		if r := &out.Items[i]; s.gzip && r.Body != nil && acceptsGzip(string(b.Items[i].Get("accept-encoding"))) {
 			r.Body = gzipped(r.Body)

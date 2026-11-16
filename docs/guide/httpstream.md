@@ -219,6 +219,20 @@ The router is a table compiled once: first match wins in table order,
 `{name}` matches one segment, and nothing is percent-decoded
 ([ADR 0010](../design/adr/0010-routing-table.md)).
 
+A refused exchange — no route, no token, a parameter that is not an
+integer — is answered with the status its stage chose and a `web.Report`
+(the problems and the remedies). A framework with its own error document
+writes it once, in a `stream.Renderer`, and calls its `Render` method in
+place of the package's function: every refusal, from every stage, goes
+out in that document. `Exchange.Report` gives back the package's document
+for the refusals the framework does not rewrite.
+
+```go
+var render = stream.Renderer{Refused: func(e *stream.Exchange) (int, any) {
+    return e.Status, apiError{Code: e.Diagnostics[0].Code}
+}}
+```
+
 ## `pushdown` — supported
 
 A reader that knows where it is can help its source: "skip to key X", "I

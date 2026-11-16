@@ -7,6 +7,7 @@ import (
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/diagnostics"
 	"github.com/mlagarrigue/sluice/net/httpstream"
+	"github.com/mlagarrigue/sluice/web"
 )
 
 func TestRenderAnswersPositionally(t *testing.T) {
@@ -230,6 +231,94 @@ func TestRenderSendsTheDefensiveHeaders(t *testing.T) {
 		}
 		if (want[i] == "" && cache != nil) || (want[i] != "" && (len(cache) != 1 || cache[0] != want[i])) {
 			t.Errorf("response %d (status %d): Cache-Control %q, want %q", i, r.Status, cache, want[i])
+		}
+	}
+}
+
+// A Renderer answers a refusal in the caller's document, with the status the
+// caller picks, and leaves everything else as Render does: the served
+// exchanges, the headers a stage put on the refused one, the defensive pair.
+// A refusal the caller does not map keeps the package's document through
+// Exchange.Report.
+func TestRendererAnswersARefusalInTheCallersDocument(t *testing.T) {
+	rt := NewRouter(Route{Method: "GET", Pattern: "/orders/{id}"})
+	ex := []Exchange{
+		exchangeFor("GET", "/orders/7"),
+		exchangeFor("GET", "/orders/seven"),
+		exchangeFor("DELETE", "/orders/7"),
+	}
+	rt.Route(ex)
+	ids := make([]int64, len(ex))
+	for i := range ex {
+		ids[i], _ = PathInt64(&ex[i], 0, "id")
+	}
+
+	type apiError struct {
+		Code  string `json:"code"`
+		Param string `json:"param"`
+	}
+	var refused []int
+	render := Renderer{Refused: func(e *Exchange) (int, any) {
+		refused = append(refused, e.RouteIndex)
+		if e.RouteIndex == RouteNone {
+			return e.Status, e.Report()
+		}
+		return 422, apiError{Code: e.Diagnostics[0].Code, Param: e.Diagnostics[0].Path.String()}
+	}}
+	served := 0
+	out := render.Render(ex, func(i int) (int, any) {
+		served++
+		return 200, map[string]int64{"id": ids[i]}
+	})
+
+	if served != 1 || len(refused) != 2 || refused[0] != 0 || refused[1] != RouteNone {
+		t.Fatalf("serve ran %d times, Refused saw routes %v; want 1 and [0 %d]", served, refused, RouteNone)
+	}
+	if body := string(out.Items[0].Body); out.Items[0].Status != 200 || body != `{"id":7}`+"\n" {
+		t.Errorf("served exchange = %d %q", out.Items[0].Status, body)
+	}
+
+	if out.Items[1].Status != 422 {
+		t.Errorf("parameter refusal status = %d, want the caller's 422", out.Items[1].Status)
+	}
+	var doc apiError
+	if err := json.Unmarshal(out.Items[1].Body, &doc); err != nil {
+		t.Fatalf("parameter refusal body %q: %v", out.Items[1].Body, err)
+	}
+	if want := (apiError{Code: web.CodeInvalidParam, Param: "id"}); doc != want {
+		t.Errorf("parameter refusal = %+v, want %+v", doc, want)
+	}
+	if got := headerOf(out.Items[1], "cache-control"); got != "no-store" {
+		t.Errorf("parameter refusal Cache-Control = %q, want no-store", got)
+	}
+
+	if out.Items[2].Status != 405 || headerOf(out.Items[2], "allow") == "" {
+		t.Errorf("router refusal = %d with Allow %q, want 405 with the router's Allow",
+			out.Items[2].Status, headerOf(out.Items[2], "allow"))
+	}
+	var report struct {
+		Problems []struct{ Code string } `json:"problems"`
+	}
+	if err := json.Unmarshal(out.Items[2].Body, &report); err != nil || len(report.Problems) != 1 {
+		t.Fatalf("router refusal body %q (%v), want the package's report", out.Items[2].Body, err)
+	}
+}
+
+// The zero Renderer is the package's Render: the same responses, byte for
+// byte, refusals included.
+func TestTheZeroRendererIsRender(t *testing.T) {
+	batch := func() []Exchange {
+		ex := []Exchange{exchangeFor("GET", "/a"), exchangeFor("GET", "/b")}
+		ex[1].Refuse(404, diagnostics.NewDiagnostic(diagnostics.Error, CodeNoRoute, diagnostics.Path{}).
+			WithMessage("NoRoute", nil))
+		return ex
+	}
+	serve := func(int) (int, any) { return 200, "ok" }
+	want, got := Render(batch(), serve), Renderer{}.Render(batch(), serve)
+	for i := range want.Items {
+		w, g := want.Items[i], got.Items[i]
+		if w.Status != g.Status || string(w.Body) != string(g.Body) || len(w.Headers) != len(g.Headers) {
+			t.Errorf("response %d: Renderer{} = %d %q, Render = %d %q", i, g.Status, g.Body, w.Status, w.Body)
 		}
 	}
 }

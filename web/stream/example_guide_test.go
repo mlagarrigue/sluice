@@ -67,6 +67,30 @@ func ExampleRender() {
 	// 409
 }
 
+// A framework with its own error document answers every refusal in it,
+// whichever stage refused: here a wildcard that is not an integer.
+func ExampleRenderer() {
+	type apiError struct {
+		Error string `json:"error"`
+		Param string `json:"param,omitempty"`
+	}
+	render := stream.Renderer{Refused: func(e *stream.Exchange) (int, any) {
+		d := e.Diagnostics[0]
+		return e.Status, apiError{Error: d.Code, Param: d.Path.String()}
+	}}
+
+	rt := stream.NewRouter(stream.Route{Method: "GET", Pattern: "/orders/{order}"})
+	ex := stream.Exchanges(nil, sluice.Batch[httpstream.Request]{Items: []httpstream.Request{
+		{Method: []byte("GET"), Target: []byte("/orders/x")},
+	}})
+	rt.Route(ex)
+	order, _ := stream.PathInt64(&ex[0], 0, "order")
+	out := render.Render(ex, func(int) (int, any) { return 200, order })
+	fmt.Print(out.Items[0].Status, " ", string(out.Items[0].Body))
+	// Output:
+	// 400 {"error":"Transport.Request.InvalidParameter","param":"order"}
+}
+
 // Every exchange's principal from its bearer token, along the batch: one
 // without a valid token is refused with 401 and its challenge.
 func ExampleAuthenticate() {

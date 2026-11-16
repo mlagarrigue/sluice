@@ -47,7 +47,9 @@
 // the *wrong* caller, because HTTP/1.1 correlates by position. So no stage
 // shortens the batch. A stage that refuses an exchange records a status and
 // a diagnostic on it ([Exchange.Refuse]) and every later stage steps over it;
-// [Render] answers refused and served alike, positionally. A handler that
+// [Render] answers refused and served alike, positionally, a refusal in the
+// package's document ([Exchange.Report]) or, through a [Renderer], in the
+// caller's. A handler that
 // sent only the exchanges still open to a later stage, and holds one answer
 // per open exchange, uses [RenderOpen], which hands it each exchange's rank
 // among the open ones instead of rebuilding that count itself.
