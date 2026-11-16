@@ -81,7 +81,8 @@ func proxyFindings(t *testing.T, config, version string, sel Selection) []Findin
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range findings {
+	for i := range findings {
+		f := &findings[i]
 		if f.Current == "" || f.Proposed == "" || f.Why == "" || f.Doc == "" || f.Goal == "" {
 			t.Errorf("a finding of %s is missing one of its five fields: %+v", f.Rule, f)
 		}
@@ -91,7 +92,8 @@ func proxyFindings(t *testing.T, config, version string, sel Selection) []Findin
 
 func ruleNames(fs []Finding) []string {
 	var out []string
-	for _, f := range fs {
+	for i := range fs {
+		f := &fs[i]
 		out = append(out, f.Rule)
 	}
 	return out

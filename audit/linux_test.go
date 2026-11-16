@@ -83,7 +83,8 @@ func firedOnRoot(t *testing.T, files map[string]string, module string) []string 
 		t.Fatal(err)
 	}
 	var out []string
-	for _, f := range findings {
+	for i := range findings {
+		f := &findings[i]
 		if f.Current == "" || f.Proposed == "" || f.Why == "" || f.Doc == "" || f.Goal == "" {
 			t.Errorf("a finding of %s is missing one of its five fields: %+v", f.Rule, f)
 		}

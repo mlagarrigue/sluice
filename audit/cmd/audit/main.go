@@ -255,13 +255,22 @@ func printReport(out *os.File, asJSON bool, current audit.Report, diff *audit.Di
 		_, _ = fmt.Fprintf(out, "nothing to propose under this selection\n")
 		return nil
 	}
-	for _, f := range findings {
+	for i := range findings {
+		f := &findings[i]
 		head := f.Rule + " (" + f.Goal + ")"
 		if f.Verdict != "" {
 			head += " — " + f.Verdict
 		}
-		_, _ = fmt.Fprintf(out, "%s\n  found:    %s\n  proposed: %s\n  why:      %s\n  doc:      %s\n\n",
+		_, _ = fmt.Fprintf(out, "%s\n  found:    %s\n  proposed: %s\n  why:      %s\n  doc:      %s\n",
 			head, f.Current, f.Proposed, wrap(f.Why, 72, "            "), f.Doc)
+		if len(f.Refs) > 0 {
+			refs := make([]string, len(f.Refs))
+			for k, r := range f.Refs {
+				refs[k] = r.String()
+			}
+			_, _ = fmt.Fprintf(out, "  refs:     %s\n", strings.Join(refs, "; "))
+		}
+		_, _ = fmt.Fprintln(out)
 	}
 	return nil
 }
@@ -289,14 +298,16 @@ func writeFixes(dir string, findings []audit.Finding) error {
 // printDiff writes a comparison: what appeared, what changed, what went,
 // and the lines of the system table that moved.
 func printDiff(out *os.File, d *audit.Diff) {
-	for _, f := range d.Appeared {
+	for i := range d.Appeared {
+		f := &d.Appeared[i]
 		_, _ = fmt.Fprintf(out, "appeared  %s: %s\n", f.Rule, f.Current)
 	}
 	for i := range d.Modified {
 		m := &d.Modified[i]
 		_, _ = fmt.Fprintf(out, "changed   %s: %s\n          was: %s\n", m.Is.Rule, m.Is.Current, m.Was.Current)
 	}
-	for _, f := range d.Resolved {
+	for i := range d.Resolved {
+		f := &d.Resolved[i]
 		_, _ = fmt.Fprintf(out, "resolved  %s: %s\n", f.Rule, f.Current)
 	}
 	for _, s := range d.System {

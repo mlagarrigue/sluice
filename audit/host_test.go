@@ -28,7 +28,8 @@ func hostRules(t *testing.T, target *Target, sel Selection) []string {
 		t.Fatal(err)
 	}
 	var out []string
-	for _, f := range findings {
+	for i := range findings {
+		f := &findings[i]
 		out = append(out, f.Rule+": "+f.Current)
 	}
 	return out

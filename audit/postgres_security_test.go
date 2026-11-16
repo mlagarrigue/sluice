@@ -57,9 +57,10 @@ func cveFindings(t *testing.T, version, hba string) []Finding {
 		t.Fatal(err)
 	}
 	var out []Finding
-	for _, f := range findings {
+	for i := range findings {
+		f := &findings[i]
 		if f.Rule == "postgres/cve" {
-			out = append(out, f)
+			out = append(out, *f)
 		}
 	}
 	return out

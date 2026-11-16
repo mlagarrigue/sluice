@@ -68,9 +68,10 @@ func tlsFindings(t *testing.T, chain string) map[string][]Finding {
 		t.Fatal(err)
 	}
 	out := map[string][]Finding{}
-	for _, f := range findings {
+	for i := range findings {
+		f := &findings[i]
 		if strings.HasPrefix(f.Rule, "tls/") {
-			out[f.Rule] = append(out[f.Rule], f)
+			out[f.Rule] = append(out[f.Rule], *f)
 		}
 	}
 	return out

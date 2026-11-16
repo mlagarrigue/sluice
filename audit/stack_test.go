@@ -16,14 +16,16 @@ func stackFindings(t *testing.T, spec Spec) map[string][]Finding {
 		t.Fatal(err)
 	}
 	out := map[string][]Finding{}
-	for _, f := range findings {
-		out[f.Rule] = append(out[f.Rule], f)
+	for i := range findings {
+		f := &findings[i]
+		out[f.Rule] = append(out[f.Rule], *f)
 	}
 	return out
 }
 
 func mentions(fs []Finding, text string) bool {
-	for _, f := range fs {
+	for i := range fs {
+		f := &fs[i]
 		if strings.Contains(f.Current, text) {
 			return true
 		}

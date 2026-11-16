@@ -46,6 +46,18 @@ know, are both refused: those are the two ways to ask for nothing by
 accident, and a report that found nothing because it ran nothing is the
 worst one there is.
 
+One axis no rule declares: `referentials`, the published benchmarks a rule
+answers for. Every rule is classified once in `references.go`, with the
+CIS Benchmark items it checks — CIS Docker Benchmark v1.9.0 and CIS
+PostgreSQL 17 Benchmark v1.1.0, by number, a `refs:` line under the
+finding — or with none: a rule is put on an item only when the item checks
+the same setting in the same direction. `-referentials cis` keeps the
+findings a CIS item carries, `-referentials none` the others; the two make
+the whole report. Most performance and reliability rules carry none, the
+benchmarks being hardening guides; one goes the other way on purpose,
+`container/network`, whose `--network host` for a comparison is what CIS
+Docker 5.10 advises against in production.
+
 Two questions have no answer in anything readable — what the machine does,
 and whether it is reachable from the internet. Each has a default, so a
 run in CI answers nothing and still gets a report; `-answer role=build`

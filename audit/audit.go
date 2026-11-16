@@ -53,6 +53,12 @@ const (
 
 	// Output is the shape of the report.
 	Output Axis = "output"
+
+	// Referentials is the published benchmarks a rule answers for
+	// (references.go): a selection of "cis" keeps the rules a CIS
+	// Benchmark item carries, "none" the rules no benchmark does. A rule
+	// never declares it: Register derives it from the rule's references.
+	Referentials Axis = "referentials"
 )
 
 // The values of each axis. A rule declares the ones it needs, and
@@ -60,12 +66,13 @@ const (
 // value would otherwise silently select nothing, and an audit that found
 // nothing because it ran nothing is the worst report of all.
 var axisValues = map[Axis][]string{
-	Components: {"gobuild", "linux", "docker", "go", "postgres", "proxy", "firewall", "host", "app"},
-	Goals:      {"performance", "security", "reliability"},
-	Profile:    {"comparative", "production"},
-	CVEs:       {"yes", "no"},
-	Sources:    {"binary", "config", "logs", "tools", "network"},
-	Output:     {"text", "json"},
+	Components:   {"gobuild", "linux", "docker", "go", "postgres", "proxy", "firewall", "host", "app"},
+	Goals:        {"performance", "security", "reliability"},
+	Profile:      {"comparative", "production"},
+	CVEs:         {"yes", "no"},
+	Sources:      {"binary", "config", "logs", "tools", "network"},
+	Output:       {"text", "json"},
+	Referentials: {"cis", "none"},
 }
 
 // Axes returns the axes in a fixed order: a report's own order must not
@@ -188,6 +195,10 @@ type Finding struct {
 	// person to apply. Nil when the fix needs a judgment — a certificate,
 	// a memory size — the report's Proposed then says it.
 	Fix *Fix `json:"fix,omitempty"`
+
+	// Refs is the benchmark items the rule answers for, its rule's
+	// (references.go); empty for a rule no benchmark carries.
+	Refs []Reference `json:"refs,omitempty"`
 }
 
 // A Rule reads a target and says what it would change. Needs are the axis
@@ -198,6 +209,10 @@ type Rule struct {
 	Needs Selection
 	Doc   string // the official documentation; a rule without it is refused
 	Check func(*Target, Answers) []Finding
+
+	// Refs is the benchmark items the rule answers for, set by Register
+	// from references.go.
+	Refs []Reference
 }
 
 // rules is the registry, in registration order so that a report's order
@@ -205,7 +220,17 @@ type Rule struct {
 var rules []Rule
 
 // Register adds a rule. It is called from the init of each family's file.
-func Register(r Rule) { rules = append(rules, r) }
+// The rule's references and its value on the referentials axis come from
+// references.go, never from the rule's own declaration.
+func Register(r Rule) {
+	r.Refs = references[r.Name]
+	r.Needs = maps.Clone(r.Needs)
+	if r.Needs == nil {
+		r.Needs = Selection{}
+	}
+	r.Needs[Referentials] = referentialsOf(r.Refs)
+	rules = append(rules, r)
+}
 
 // Rules returns the registry.
 func Rules() []Rule { return slices.Clone(rules) }
@@ -275,6 +300,7 @@ func Run(sel Selection, answers Answers, t *Target) ([]Finding, error) {
 			if f.Goal == "" {
 				f.Goal = r.Needs[Goals][0]
 			}
+			f.Refs = r.Refs
 			out = append(out, *f)
 		}
 	}

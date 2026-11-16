@@ -32,8 +32,9 @@ func handshakeFindings(t *testing.T, profile string, transcripts ...string) map[
 		t.Fatal(err)
 	}
 	out := map[string][]Finding{}
-	for _, f := range findings {
-		out[f.Rule] = append(out[f.Rule], f)
+	for i := range findings {
+		f := &findings[i]
+		out[f.Rule] = append(out[f.Rule], *f)
 	}
 	return out
 }

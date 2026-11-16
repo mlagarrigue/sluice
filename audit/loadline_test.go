@@ -26,9 +26,10 @@ func perConnection(t *testing.T, line string, extra Spec) []Finding {
 		t.Fatal(err)
 	}
 	var out []Finding
-	for _, f := range findings {
+	for i := range findings {
+		f := &findings[i]
 		if f.Rule == "app/requests-per-connection" {
-			out = append(out, f)
+			out = append(out, *f)
 		}
 	}
 	return out

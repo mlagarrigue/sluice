@@ -149,7 +149,8 @@ func Gate(gates []string, findings []Finding, d *Diff) ([]string, error) {
 		}
 	}
 	var out []string
-	for _, f := range fresh {
+	for i := range fresh {
+		f := &fresh[i]
 		switch {
 		case slices.Contains(gates, "new"):
 			out = append(out, "new: "+f.Rule+": "+f.Current)
