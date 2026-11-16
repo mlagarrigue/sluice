@@ -21,6 +21,7 @@ import (
 type LoadLine struct {
 	Path        string
 	Sent        int // requests sent, the fresh connections' included
+	Rate        int // requests a second the stage was set to send
 	Conns       int // the budget: connections kept between requests
 	NewConnsPct int // the share of requests sent on a fresh connection of their own
 	Closed      int // connections of the budget the server ended
@@ -49,6 +50,7 @@ func openLoadLine(path string) (*LoadLine, error) {
 		var v struct {
 			Window   *int `json:"window"`
 			Sent     *int `json:"sent"`
+			Rate     int  `json:"rate"`
 			Conns    *int `json:"conns"`
 			NewConns int  `json:"new_conns_pct"`
 			Closed   *int `json:"closed"`
@@ -62,7 +64,7 @@ func openLoadLine(path string) (*LoadLine, error) {
 		if v.Sent == nil || v.Conns == nil || v.Closed == nil {
 			return nil, fmt.Errorf("%s: a line without sent, conns and closed: want the load generator's stage line", path)
 		}
-		found = &LoadLine{Path: path, Sent: *v.Sent, Conns: *v.Conns, NewConnsPct: v.NewConns, Closed: *v.Closed}
+		found = &LoadLine{Path: path, Sent: *v.Sent, Rate: v.Rate, Conns: *v.Conns, NewConnsPct: v.NewConns, Closed: *v.Closed}
 	}
 	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
@@ -122,6 +124,9 @@ func init() {
 			l := t.Load
 			if l == nil || l.Closed <= 0 {
 				return nil
+			}
+			if _, idle := idleClosures(t); len(idle) > 0 {
+				return nil // app/idle-timeout: the closures are an idle timeout's
 			}
 			kept := l.Sent - l.Fresh()
 			// Each connection of the budget carries kept / conns requests and

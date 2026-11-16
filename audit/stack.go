@@ -9,22 +9,57 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // The settings a contender's stack starts with, read from the file that
 // holds them, each kind recognised by its content: a Spring Boot
 // application.properties (or the SPRING_ and SERVER_ variables of its
 // environment, the same keys relaxed), the command line that starts
-// uvicorn, a Node server's source, an ASP.NET Core appsettings.json and
-// the Npgsql connection string in it. A setting left out is the stack's
-// default, which the rules below name with the place it is documented.
+// uvicorn, a Node server's source, an ASP.NET Core appsettings.json with
+// its Kestrel limits and the Npgsql connection string in it. A setting
+// left out is the stack's default, which the rules below name with the
+// place it is documented.
 
 // Stack is the settings files read, by kind.
 type Stack struct {
 	Spring  *springConfig
 	Uvicorn *uvicornConfig
 	Node    *nodeConfig
+	Kestrel *kestrelConfig
 	Npgsql  *npgsqlConfig
+}
+
+// timeout is a delay a stack's server keeps: how long it waits for a
+// request to arrive, or for the next one on an idle connection.
+type timeout struct {
+	setting string        // as the file names it
+	d       time.Duration // negative: no limit
+	set     bool          // the file sets it; false is the stack's default
+	known   bool          // d was read; false for an expression the audit does not evaluate
+}
+
+// where says where a timeout's value comes from.
+func (o timeout) where(path string) string {
+	if o.set {
+		return "in " + path
+	}
+	return "the default, " + path + " leaves it out"
+}
+
+// String is the timeout as a person reads it.
+func (o timeout) String() string {
+	switch {
+	case !o.known:
+		return o.setting + " set to an expression"
+	case o.d < 0:
+		return o.setting + " with no limit"
+	}
+	return o.setting + " " + o.d.String()
+}
+
+func defaultTimeout(setting string, d time.Duration) timeout {
+	return timeout{setting: setting, d: d, known: true}
 }
 
 type springConfig struct {
@@ -51,15 +86,43 @@ type uvicornConfig struct {
 
 type nodeConfig struct {
 	Path      string
-	keepAlive bool // server.keepAliveTimeout assigned
-	poolMax   bool // a pg Pool given its max
-	pool      bool // a pg Pool built at all
+	keepAlive timeout // server.keepAliveTimeout, 5 s
+	headers   timeout // server.headersTimeout, 60 s
+	request   timeout // server.requestTimeout, 300 s
+	// requestOption: requestTimeout given to createServer, where it also
+	// sets the default of headersTimeout, "the minimum between
+	// server.requestTimeout or 60000".
+	requestOption bool
+	poolMax       bool // a pg Pool given its max
+	pool          bool // a pg Pool built at all
+}
+
+// kestrelConfig is the Kestrel:Limits section of an appsettings.json,
+// which ASP.NET Core binds onto KestrelServerOptions.
+type kestrelConfig struct {
+	Path      string
+	keepAlive timeout // Limits.KeepAliveTimeout, 130 s
+	headers   timeout // Limits.RequestHeadersTimeout, 30 s
 }
 
 type npgsqlConfig struct {
 	Path    string
 	maxPool string // Maximum Pool Size, empty when left out
 }
+
+// The defaults, each from the server's own documentation: Node's
+// http.Server, Tomcat's HTTP connector (connectionTimeout, which
+// keepAliveTimeout follows when it is not set), Kestrel's
+// KestrelServerLimits, uvicorn's settings.
+const (
+	nodeKeepAliveDefault  = 5 * time.Second
+	nodeHeadersDefault    = 60 * time.Second
+	nodeRequestDefault    = 300 * time.Second
+	tomcatTimeoutDefault  = 60 * time.Second
+	kestrelKeepAliveDflt  = 130 * time.Second
+	kestrelHeadersDefault = 30 * time.Second
+	uvicornKeepAliveDflt  = 5 * time.Second
+)
 
 // openStack reads every file named, comma-separated.
 func openStack(paths string) (*Stack, error) {
@@ -75,7 +138,7 @@ func openStack(paths string) (*Stack, error) {
 		case ext == ".js" || ext == ".mjs" || ext == ".cjs" || ext == ".ts":
 			st.Node = parseNode(path, text)
 		case ext == ".json":
-			if st.Npgsql, err = parseAppSettings(path, b); err != nil {
+			if st.Kestrel, st.Npgsql, err = parseAppSettings(path, b); err != nil {
 				return nil, err
 			}
 		case uvicornLine.MatchString(text):
@@ -84,7 +147,7 @@ func openStack(paths string) (*Stack, error) {
 			st.Spring = parseSpring(path, text)
 		default:
 			return nil, fmt.Errorf("%s: not a stack's settings this audit reads: want application.properties, "+
-				"the command line that starts uvicorn, a Node server's source or appsettings.json", path)
+				"the command line that starts uvicorn, a Node server's source or an appsettings.json", path)
 		}
 	}
 	return st, nil
@@ -113,6 +176,16 @@ func parseSpring(path, text string) *springConfig {
 	return s
 }
 
+// idleTimeout is --timeout-keep-alive, in seconds.
+func (u *uvicornConfig) idleTimeout() timeout {
+	v, set := u.flags["--timeout-keep-alive"]
+	if !set {
+		return defaultTimeout("--timeout-keep-alive", uvicornKeepAliveDflt)
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	return timeout{setting: "--timeout-keep-alive", d: time.Duration(f * float64(time.Second)), set: true, known: err == nil}
+}
+
 func parseUvicorn(path, text string) *uvicornConfig {
 	u := &uvicornConfig{Path: path, flags: map[string]string{}}
 	f := strings.Fields(text[uvicornLine.FindStringIndex(text)[0]:])
@@ -131,13 +204,40 @@ func parseUvicorn(path, text string) *uvicornConfig {
 }
 
 var (
-	nodeKeepAlive = regexp.MustCompile(`\.keepAliveTimeout\s*=|keepAliveTimeout\s*:`)
-	nodePool      = regexp.MustCompile(`new\s+(pg\.)?Pool\s*\(([^)]*)\)`)
-	nodePoolMax   = regexp.MustCompile(`\bmax\s*:`)
+	nodePool    = regexp.MustCompile(`new\s+(pg\.)?Pool\s*\(([^)]*)\)`)
+	nodePoolMax = regexp.MustCompile(`\bmax\s*:`)
 )
 
+// nodeTimeout reads a timeout of Node's http.Server, assigned to the
+// server (server.name = …) or given to createServer (name: …); the last
+// in the file wins, as it would when the code runs. The value is in
+// milliseconds: a literal, 75_000, or a product of literals, 75 * 1000.
+func nodeTimeout(text, name string, def time.Duration) (o timeout, option bool) {
+	o = defaultTimeout("server."+name, def)
+	re := regexp.MustCompile(`(\.` + name + `\s*=|\b` + name + `\s*:)\s*([^=,;)}\n][^,;)}\n]*)`)
+	ms := re.FindAllStringSubmatch(text, -1)
+	if len(ms) == 0 {
+		return o, false
+	}
+	m := ms[len(ms)-1]
+	o.d, o.set, o.known = 0, true, false
+	product := int64(1)
+	for _, f := range strings.Split(strings.ReplaceAll(m[2], "_", ""), "*") {
+		n, err := strconv.ParseInt(strings.TrimSpace(f), 10, 64)
+		if err != nil {
+			return o, strings.HasSuffix(m[1], ":")
+		}
+		product *= n
+	}
+	o.d, o.known = time.Duration(product)*time.Millisecond, true
+	return o, strings.HasSuffix(m[1], ":")
+}
+
 func parseNode(path, text string) *nodeConfig {
-	n := &nodeConfig{Path: path, keepAlive: nodeKeepAlive.MatchString(text)}
+	n := &nodeConfig{Path: path}
+	n.keepAlive, _ = nodeTimeout(text, "keepAliveTimeout", nodeKeepAliveDefault)
+	n.headers, _ = nodeTimeout(text, "headersTimeout", nodeHeadersDefault)
+	n.request, n.requestOption = nodeTimeout(text, "requestTimeout", nodeRequestDefault)
 	for _, m := range nodePool.FindAllStringSubmatch(text, -1) {
 		n.pool = true
 		if nodePoolMax.MatchString(m[2]) {
@@ -147,14 +247,138 @@ func parseNode(path, text string) *nodeConfig {
 	return n
 }
 
-func parseAppSettings(path string, b []byte) (*npgsqlConfig, error) {
-	var doc struct {
-		ConnectionStrings map[string]string `json:"ConnectionStrings"`
+// springDuration reads a Spring Boot Duration: a number of milliseconds
+// (the unit of the server.tomcat timeouts), a number with its unit (20s,
+// 500ms, 1d) or ISO-8601 (PT20S). -1 is no limit.
+func springDuration(v string) (time.Duration, bool) {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+		return time.Duration(n) * time.Millisecond, true
 	}
+	if iso, ok := strings.CutPrefix(strings.TrimPrefix(v, "-"), "pt"); ok {
+		d, err := time.ParseDuration(iso)
+		if strings.HasPrefix(v, "-") {
+			d = -d
+		}
+		return d, err == nil
+	}
+	if days, ok := strings.CutSuffix(v, "d"); ok {
+		n, err := strconv.ParseInt(days, 10, 64)
+		return time.Duration(n) * 24 * time.Hour, err == nil
+	}
+	d, err := time.ParseDuration(v)
+	return d, err == nil
+}
+
+// tomcatTimeout is a server.tomcat timeout of a Spring Boot application,
+// its default when the file leaves it out.
+func (s *springConfig) tomcatTimeout(key string, def timeout) timeout {
+	v, set := s.get(key)
+	if !set {
+		return def
+	}
+	d, ok := springDuration(v)
+	return timeout{setting: key, d: d, set: true, known: ok}
+}
+
+// idleTimeout is how long Tomcat keeps a connection idle between two
+// requests: keep-alive-timeout, or connection-timeout when it is left out
+// (the connector's keepAliveTimeout "is to use the value that has been
+// set for the connectionTimeout attribute").
+func (s *springConfig) idleTimeout() timeout {
+	conn := s.tomcatTimeout("server.tomcat.connection-timeout",
+		defaultTimeout("server.tomcat.connection-timeout", tomcatTimeoutDefault))
+	return s.tomcatTimeout("server.tomcat.keep-alive-timeout", conn)
+}
+
+// timeSpan reads a .NET TimeSpan as configuration binds it:
+// [-][d.]hh:mm:ss[.fffffff], or a whole number of days.
+func timeSpan(v string) (time.Duration, bool) {
+	v = strings.TrimSpace(v)
+	neg := strings.HasPrefix(v, "-")
+	v = strings.TrimPrefix(v, "-")
+	parts := strings.Split(v, ":")
+	var days int64
+	if len(parts) == 1 {
+		n, err := strconv.ParseInt(v, 10, 64)
+		return time.Duration(n) * 24 * time.Hour, err == nil
+	}
+	if len(parts) > 3 {
+		return 0, false
+	}
+	if d, h, ok := strings.Cut(parts[0], "."); ok {
+		n, err := strconv.ParseInt(d, 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		days, parts[0] = n, h
+	}
+	units := []time.Duration{time.Hour, time.Minute, time.Second}
+	d := time.Duration(days) * 24 * time.Hour
+	for i, p := range parts {
+		f, err := strconv.ParseFloat(p, 64)
+		if err != nil || f < 0 {
+			return 0, false
+		}
+		d += time.Duration(f * float64(units[i]))
+	}
+	if neg {
+		d = -d
+	}
+	return d, true
+}
+
+// lookup is a configuration key read as .NET reads it, case ignored.
+func lookup(m map[string]json.RawMessage, key string) (json.RawMessage, bool) {
+	for k, v := range m {
+		if strings.EqualFold(k, key) {
+			return v, true
+		}
+	}
+	return nil, false
+}
+
+// parseAppSettings reads an ASP.NET Core appsettings.json: the
+// Kestrel:Limits section, and the Npgsql connection string under
+// ConnectionStrings, either left out. A JSON file is taken for one by its
+// name (appsettings*.json) or by one of the two sections.
+func parseAppSettings(path string, b []byte) (*kestrelConfig, *npgsqlConfig, error) {
+	var doc map[string]json.RawMessage
 	if err := json.Unmarshal(b, &doc); err != nil {
-		return nil, fmt.Errorf("%s: not appsettings.json: %w", path, err)
+		return nil, nil, fmt.Errorf("%s: not appsettings.json: %w", path, err)
 	}
-	for _, cs := range doc.ConnectionStrings {
+	var limits, strs map[string]json.RawMessage
+	if raw, ok := lookup(doc, "Kestrel"); ok {
+		var kestrel map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &kestrel); err != nil {
+			return nil, nil, fmt.Errorf("%s: Kestrel: %w", path, err)
+		}
+		if raw, ok := lookup(kestrel, "Limits"); ok {
+			if err := json.Unmarshal(raw, &limits); err != nil {
+				return nil, nil, fmt.Errorf("%s: Kestrel:Limits: %w", path, err)
+			}
+		}
+	}
+	_, hasKestrel := lookup(doc, "Kestrel")
+	raw, hasStrings := lookup(doc, "ConnectionStrings")
+	if hasStrings {
+		if err := json.Unmarshal(raw, &strs); err != nil {
+			return nil, nil, fmt.Errorf("%s: ConnectionStrings: %w", path, err)
+		}
+	}
+	if !hasKestrel && !hasStrings && !strings.HasPrefix(strings.ToLower(filepath.Base(path)), "appsettings") {
+		return nil, nil, errors.New(path + ": neither Kestrel nor ConnectionStrings: not an appsettings.json")
+	}
+	k := &kestrelConfig{
+		Path:      path,
+		keepAlive: limitOf(limits, "KeepAliveTimeout", kestrelKeepAliveDflt),
+		headers:   limitOf(limits, "RequestHeadersTimeout", kestrelHeadersDefault),
+	}
+	for _, raw := range strs {
+		var cs string
+		if json.Unmarshal(raw, &cs) != nil {
+			continue
+		}
 		n := &npgsqlConfig{Path: path}
 		npgsql := false
 		for _, kv := range strings.Split(cs, ";") {
@@ -167,10 +391,25 @@ func parseAppSettings(path string, b []byte) (*npgsqlConfig, error) {
 			}
 		}
 		if npgsql {
-			return n, nil
+			return k, n, nil
 		}
 	}
-	return nil, errors.New(path + ": no Npgsql connection string under ConnectionStrings")
+	return k, nil, nil
+}
+
+// limitOf is one of Kestrel's limits, its default when left out.
+func limitOf(limits map[string]json.RawMessage, name string, def time.Duration) timeout {
+	setting := "Kestrel:Limits:" + name
+	raw, ok := lookup(limits, name)
+	if !ok {
+		return defaultTimeout(setting, def)
+	}
+	var v string
+	if json.Unmarshal(raw, &v) != nil {
+		return timeout{setting: setting, set: true}
+	}
+	d, known := timeSpan(v)
+	return timeout{setting: setting, d: d, set: true, known: known}
 }
 
 func init() {
@@ -267,7 +506,7 @@ func init() {
 				return nil
 			}
 			var out []Finding
-			if !n.keepAlive {
+			if !n.keepAlive.set {
 				out = append(out, Finding{
 					Current:  "server.keepAliveTimeout left at 5 seconds, in " + n.Path,
 					Proposed: "server.keepAliveTimeout above the longest pause of the clients, and above a proxy's own keep-alive towards it",

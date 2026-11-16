@@ -57,6 +57,10 @@ DB_POOL=${DB_POOL:-8}
 MAX_CONNECTIONS=${MAX_CONNECTIONS:-400}
 NOFILE=${NOFILE:-65536}
 WEB_MEMORY=${WEB_MEMORY:-2g}
+# Sysctls of web's network namespace, name=value whitespace-split: none for
+# a campaign; a setting made wrong on purpose to see the audit put a
+# symptom on it (net.core.somaxconn=8, audit/README.md).
+WEB_SYSCTLS=${WEB_SYSCTLS:-}
 DBPASS=study # a throwaway database on a private network
 
 # The network of §3.4, never on web: the whole client round trip on the
@@ -269,9 +273,11 @@ launch() {
     sleep 0.05
   done
   local t0; t0=$(date +%s%N)
+  local sysctls=() s
+  for s in $WEB_SYSCTLS; do sysctls+=(--sysctl "$s"); done
   # shellcheck disable=SC2086 # WEB_ARGS is a list of flags, split on purpose
   docker create --name "$web" --network "$back" --cpuset-cpus "$WEB_CPUS" \
-    --memory "$WEB_MEMORY" --ulimit nofile="$NOFILE:$NOFILE" \
+    --memory "$WEB_MEMORY" --ulimit nofile="$NOFILE:$NOFILE" ${sysctls[@]+"${sysctls[@]}"} \
     -e PGHOST="$db" -e PGUSER=study -e PGPASSWORD="$DBPASS" -e PGDATABASE=study \
     -e STUDY_DB_POOL="$DB_POOL" -e STUDY_PROTOCOL="$PROTO" \
     "$WEB_IMAGE" $WEB_ARGS >/dev/null

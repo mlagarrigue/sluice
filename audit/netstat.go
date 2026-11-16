@@ -113,20 +113,35 @@ func init() {
 				return nil
 			}
 			current := fmt.Sprintf("ListenOverflows +%d, ListenDrops +%d between %s and %s", overflows, drops, c.BeforePath, c.AfterPath)
-			proposed := "net.core.somaxconn and net.ipv4.tcp_max_syn_backlog at 1024 at least (see linux/somaxconn), " +
-				"and a program that accepts as fast as connections arrive"
-			if n, ok := t.hostInt("proc/sys/net/core/somaxconn"); ok {
-				current += fmt.Sprintf(", with somaxconn = %d", n)
-				if n >= 1024 {
-					proposed = "the queue is already 1024 or more: the program accepts too slowly for the burst — " +
-						"more accepting goroutines or processes, or somaxconn raised further with the program's own backlog"
+			// The kernel counts every drop in ListenDrops, an accept queue
+			// full in ListenOverflows as well: the drops past the
+			// overflows are connections still in their handshake, the SYN
+			// queue's, which net.ipv4.tcp_max_syn_backlog bounds and
+			// somaxconn does not. Each counter is put on its own setting.
+			var proposed []string
+			if overflows > 0 {
+				p := "net.core.somaxconn at 1024 at least (see linux/somaxconn), and a program that accepts as fast as connections arrive"
+				if n, ok := t.hostInt("proc/sys/net/core/somaxconn"); ok {
+					current += fmt.Sprintf(", with somaxconn = %d", n)
+					p = fmt.Sprintf("net.core.somaxconn at 1024 at least (see linux/somaxconn): it capped every accept queue at %d, "+
+						"whatever backlog the program asked for", n)
+					if n >= 1024 {
+						p = "the queue is already 1024 or more: the program accepts too slowly for the burst — " +
+							"more accepting goroutines or processes, or somaxconn raised further with the program's own backlog"
+					}
 				}
+				proposed = append(proposed, p)
+			}
+			if syn := drops - overflows; syn > 0 {
+				proposed = append(proposed, fmt.Sprintf("net.ipv4.tcp_max_syn_backlog at 1024 at least, or net.ipv4.tcp_syncookies=1: "+
+					"%d drops were no accept queue's, connections dropped in their handshake", syn))
 			}
 			return []Finding{{
 				Current:  current,
-				Proposed: proposed,
+				Proposed: strings.Join(proposed, "; and "),
 				Why: "each overflow is a connection the kernel dropped because the listening socket's accept " +
-					"queue was full: the client waits a SYN timeout, one second and doubling, and retries. " +
+					"queue was full, each other drop because its SYN queue was: the client waits a SYN timeout, " +
+					"one second and doubling, and retries. " +
 					"The application never sees it; the latency of those clients is that second",
 			}}
 		},

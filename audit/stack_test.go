@@ -75,9 +75,10 @@ func TestSpringRelaxedBinding(t *testing.T) {
 
 func TestStackFileRefused(t *testing.T) {
 	for name, body := range map[string]string{
-		"notes.txt":        "nothing a stack reads\n",
-		"appsettings.json": `{"Logging": {}}`,
-		"broken.json":      "{",
+		"notes.txt":                   "nothing a stack reads\n",
+		"logging.json":                `{"Logging": {}}`,
+		"broken.json":                 "{",
+		"appsettings.Production.json": `{"Kestrel": {"Limits": []}}`,
 	} {
 		if _, err := Open(Spec{StackConfig: seedFile(t, name, body)}); err == nil {
 			t.Errorf("%s: read", name)

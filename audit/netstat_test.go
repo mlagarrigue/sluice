@@ -41,8 +41,19 @@ func TestOverflowsAreTheListenQueue(t *testing.T) {
 	got := countersFindings(t, netstat(5, 5, 0, 0), netstat(125, 125, 0, 0), root)
 	if len(got) != 1 || got[0].Rule != "linux/listen-overflows" ||
 		!strings.Contains(got[0].Current, "ListenOverflows +120") || !strings.Contains(got[0].Current, "somaxconn = 128") ||
-		!strings.Contains(got[0].Proposed, "somaxconn") {
-		t.Fatalf("%+v", got)
+		!strings.Contains(got[0].Proposed, "capped every accept queue at 128") ||
+		strings.Contains(got[0].Proposed, "tcp_max_syn_backlog") || strings.Contains(got[0].Proposed, "accepts as fast") {
+		t.Fatalf("the overflows put on somaxconn alone: %+v", got)
+	}
+	// Drops past the overflows are the SYN queue's: put on its own setting.
+	got = countersFindings(t, netstat(5, 5, 0, 0), netstat(125, 165, 0, 0), root)
+	if len(got) != 1 || !strings.Contains(got[0].Proposed, "somaxconn") ||
+		!strings.Contains(got[0].Proposed, "tcp_max_syn_backlog at 1024 at least, or net.ipv4.tcp_syncookies=1: 40 drops") {
+		t.Fatalf("40 drops past the overflows: %+v", got)
+	}
+	got = countersFindings(t, netstat(5, 5, 0, 0), netstat(5, 45, 0, 0), root)
+	if len(got) != 1 || strings.Contains(got[0].Proposed, "somaxconn") || !strings.Contains(got[0].Proposed, "tcp_max_syn_backlog") {
+		t.Fatalf("drops and no overflow: %+v", got)
 	}
 }
 
