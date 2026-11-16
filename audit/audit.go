@@ -56,7 +56,8 @@ const (
 
 	// Referentials is the published benchmarks a rule answers for
 	// (references.go): a selection of "cis" keeps the rules a CIS
-	// Benchmark item carries, "none" the rules no benchmark does. A rule
+	// Benchmark item carries, "anssi" those an ANSSI recommendation does,
+	// "none" the rules no benchmark does. A rule
 	// never declares it: Register derives it from the rule's references.
 	Referentials Axis = "referentials"
 )
@@ -67,12 +68,12 @@ const (
 // nothing because it ran nothing is the worst report of all.
 var axisValues = map[Axis][]string{
 	Components:   {"gobuild", "linux", "docker", "go", "postgres", "proxy", "firewall", "host", "app"},
-	Goals:        {"performance", "security", "reliability"},
+	Goals:        {"performance", "security", "reliability", "compliance"},
 	Profile:      {"comparative", "production"},
 	CVEs:         {"yes", "no"},
 	Sources:      {"binary", "config", "logs", "tools", "network"},
 	Output:       {"text", "json"},
-	Referentials: {"cis", "none"},
+	Referentials: {"cis", "anssi", "none"},
 }
 
 // Axes returns the axes in a fixed order: a report's own order must not
@@ -153,6 +154,10 @@ var Questions = []Question{
 	{Key: "exposure", Ask: "is it reachable from the internet?", Default: "private", Choices: []string{"internet", "private"}},
 	{Key: "pools", Ask: "how many connections can every client's pool open at most, all processes together?", Default: "unknown"},
 	{Key: "requests", Ask: "how many requests did the load step serve, between the two counter readings?", Default: "unknown"},
+	{
+		Key: "licenses", Ask: "which licences may the binary's modules carry (SPDX identifiers, comma-separated)?",
+		Default: "MIT,Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC",
+	},
 }
 
 // Answers holds what was answered; a key left out is the question's

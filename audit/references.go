@@ -3,7 +3,8 @@ package audit
 import "slices"
 
 // The published benchmarks a rule answers for. A reader held to a CIS
-// Benchmark wants to know which of its recommendations the audit checks:
+// Benchmark or to an ANSSI guide wants to know which of its
+// recommendations the audit checks:
 // every rule is listed here, with the items it covers, or with none — said
 // once, so that a rule added without a look at the benchmarks fails
 // TestEveryRuleIsClassified instead of passing for one that covers none.
@@ -26,16 +27,24 @@ type Reference struct {
 func (r Reference) String() string { return r.Benchmark + " " + r.ID }
 
 // The benchmarks cited, one version each: the one the study deploys
-// (PostgreSQL 17) or the latest at the time of writing (Docker).
+// (PostgreSQL 17) or the latest at the time of writing (Docker, the ANSSI
+// guides: its GNU/Linux configuration guide and its Docker technical
+// sheet, both under the Licence Ouverte).
 const (
 	cisDocker   = "CIS Docker Benchmark v1.9.0"
 	cisPostgres = "CIS PostgreSQL 17 Benchmark v1.1.0"
+	anssiLinux  = "ANSSI-BP-028 v2.0"
+	anssiDocker = "ANSSI-FT-082 v1.0"
 )
 
-func cis(benchmark string, ids ...string) []Reference {
+func cis(benchmark string, ids ...string) []Reference { return refs("cis", benchmark, ids) }
+
+func anssi(guide string, ids ...string) []Reference { return refs("anssi", guide, ids) }
+
+func refs(referential, benchmark string, ids []string) []Reference {
 	out := make([]Reference, 0, len(ids))
 	for _, id := range ids {
-		out = append(out, Reference{Referential: "cis", Benchmark: benchmark, ID: id})
+		out = append(out, Reference{Referential: referential, Benchmark: benchmark, ID: id})
 	}
 	return out
 }
@@ -75,30 +84,36 @@ var references = map[string][]Reference{
 	// runtime, and §4.1 for the user the image or --user sets.
 	"container/nofile":            nil, // CIS 5.19 asks the opposite: override the default only when needed
 	"container/cpuset":            nil,
-	"container/memory":            cis(cisDocker, "5.11"),
-	"container/network":           nil, // comparative profile only; CIS 5.10 asks the host's namespace not be shared
+	"container/memory":            slices.Concat(cis(cisDocker, "5.11"), anssi(anssiDocker, "R10")),
+	"container/network":           nil, // comparative profile only; CIS 5.10 and ANSSI-FT-082 R4 ask the host's namespace not be shared
 	"container/log-driver":        nil,
-	"container/capabilities":      cis(cisDocker, "5.4", "5.5"),
+	"container/capabilities":      slices.Concat(cis(cisDocker, "5.4", "5.5"), anssi(anssiDocker, "R8", "R8-")),
 	"container/no-new-privileges": cis(cisDocker, "5.26"),
 	"container/seccomp":           cis(cisDocker, "5.22"),
-	"container/apparmor":          cis(cisDocker, "5.2"),
-	"container/read-only":         cis(cisDocker, "5.13"),
+	"container/apparmor":          slices.Concat(cis(cisDocker, "5.2"), anssi(anssiLinux, "R45")),
+	"container/read-only":         slices.Concat(cis(cisDocker, "5.13"), anssi(anssiDocker, "R12")),
 	"container/user":              cis(cisDocker, "4.1"),
-	"container/docker-socket":     cis(cisDocker, "5.32"),
+	"container/docker-socket":     slices.Concat(cis(cisDocker, "5.32"), anssi(anssiDocker, "R15"), anssi(anssiLinux, "R52")),
 
 	// The Dockerfile: CIS Docker §4, the images and their build.
 	"docker/pinned-base":     nil, // CIS 4.2 asks for a trusted base, not a digest
 	"docker/multi-stage":     nil,
-	"docker/minimal-runtime": cis(cisDocker, "4.3"),
+	"docker/minimal-runtime": slices.Concat(cis(cisDocker, "4.3"), anssi(anssiLinux, "R58")),
 	"docker/user":            cis(cisDocker, "4.1"),
 	"docker/no-secret":       cis(cisDocker, "4.9"),
 	"docker/dockerignore":    nil,
+
+	// The image in its registry: CIS Docker 4.11 asks signatures be
+	// validated, which an unsigned image cannot be.
+	"docker/image-signature":  cis(cisDocker, "4.11"),
+	"docker/image-provenance": nil,
 
 	// Go: its build, its runtime, its modules.
 	"go/godebug":        nil,
 	"go/gomaxprocs":     nil,
 	"deps/cve":          nil,
 	"deps/gosum":        nil,
+	"deps/license":      nil,
 	"gobuild/trimpath":  nil,
 	"gobuild/cgo":       nil,
 	"gobuild/goamd64":   nil,
@@ -127,7 +142,7 @@ var references = map[string][]Reference{
 	"linux/reconnections":         nil,
 	"linux/listen-overflows":      nil,
 	"linux/time-wait":             nil,
-	"firewall/postgres-exposed":   cis(cisPostgres, "5.2"),
+	"firewall/postgres-exposed":   slices.Concat(cis(cisPostgres, "5.2"), anssi(anssiLinux, "R80")),
 
 	// PostgreSQL: its authentication (§5), its TLS (§6.8), its roles
 	// (§4.3), its patches (§1.5).
@@ -143,15 +158,16 @@ var references = map[string][]Reference{
 	"postgres/checkpoints":           nil,
 	"postgres/too-many-clients":      nil,
 	"postgres/superusers":            cis(cisPostgres, "4.3"),
-	"postgres/cve":                   cis(cisPostgres, "1.5"),
+	"postgres/cve":                   slices.Concat(cis(cisPostgres, "1.5"), anssi(anssiLinux, "R61")),
 
-	// The proxy: no CIS NGINX or HAProxy benchmark is read yet.
+	// The proxy: no CIS NGINX or HAProxy benchmark is read yet; an advisory
+	// is the ANSSI's regular updates.
 	"proxy/upstream-keepalive": nil,
 	"proxy/buffering":          nil,
 	"proxy/timeouts":           nil,
 	"proxy/tls-protocols":      nil,
 	"proxy/forwarded-for":      nil,
-	"proxy/cve":                nil,
+	"proxy/cve":                anssi(anssiLinux, "R61"),
 }
 
 // referentialsOf is the values of the referentials axis a rule's

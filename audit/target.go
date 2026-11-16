@@ -30,6 +30,10 @@ type Target struct {
 	// given.
 	ModuleDir string
 
+	// ModCache is the module cache the binary's modules are read from for
+	// their licences, empty when none was given.
+	ModCache string
+
 	// DockerfilePath is the Dockerfile read as text, empty when none was
 	// given. The text is what a build was told to do; reading the image
 	// that came out of it is another source and another rule.
@@ -120,6 +124,10 @@ type Target struct {
 	// CPUTime is what the CPUs spent during a load, by kind, nil when the
 	// two readings of /proc/stat were not given.
 	CPUTime *CPUTime
+
+	// Image is what an image's registry holds beside it — signatures,
+	// provenance — nil when no image was named.
+	Image *ImageChain
 
 	// Azure is the virtual machine as Azure's metadata service described
 	// it, nil when its answer was not given.
@@ -229,6 +237,14 @@ type Spec struct {
 	// IMDS is a file holding what Azure's Instance Metadata Service
 	// answered at /metadata/instance.
 	IMDS string
+
+	// Image is an image reference, [registry/]repository[:tag][@digest],
+	// whose registry is asked for the image's signatures and provenance.
+	Image string
+
+	// ModCache is the go command's module cache (go env GOMODCACHE),
+	// where the licences of a binary's modules are read.
+	ModCache string
 }
 
 // Open reads what a [Spec] names. Anything named must be readable: a path
@@ -239,7 +255,7 @@ type Spec struct {
 // application); PostgreSQL; the network's configuration (firewall,
 // proxy); the application's command line; the readings taken around a
 // load (netstat, the vulnerability database, metrics, ss, stat); the
-// cloud's instance metadata.
+// cloud's instance metadata; an image's registry.
 func Open(s Spec) (*Target, error) {
 	t := &Target{Now: s.Now}
 	if t.Now.IsZero() {
@@ -421,6 +437,19 @@ func Open(s Spec) (*Target, error) {
 		}
 		t.Azure = a
 	}
+	if s.ModCache != "" {
+		if info, err := os.Stat(s.ModCache); err != nil || !info.IsDir() {
+			return nil, fmt.Errorf("%s: not a module cache directory", s.ModCache)
+		}
+		t.ModCache = s.ModCache
+	}
+	if s.Image != "" {
+		c, err := openImage(s.Image)
+		if err != nil {
+			return nil, err
+		}
+		t.Image = c
+	}
 	return t, nil
 }
 
@@ -477,6 +506,11 @@ type Module struct {
 	Version string `json:"version"`
 	Sum     string `json:"sum,omitempty"`
 	Main    bool   `json:"main,omitempty"`
+
+	// License is the SPDX identifier of the licence the module ships in
+	// the module cache (license.go), several joined by " AND ", empty when
+	// the cache was not given or holds none.
+	License string `json:"license,omitempty"`
 }
 
 // SBOM is the binary's bill of materials: the main module, the toolchain,
@@ -497,5 +531,6 @@ func SBOM(t *Target) []Module {
 		}
 		out = append(out, Module{Path: m.Path, Version: m.Version, Sum: m.Sum})
 	}
+	licensesOf(t, out)
 	return out
 }

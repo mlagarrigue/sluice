@@ -93,6 +93,8 @@ func run(args []string, out *os.File) error {
 	stackConfig := fs.String("stack-config", "", "a contender's configuration files, comma-separated: application.properties, the uvicorn command line, a Node server's source, appsettings.json")
 	statBefore := fs.String("stat-before", "", "a copy of /proc/stat taken before a load")
 	statAfter := fs.String("stat-after", "", "a copy of /proc/stat taken after it")
+	modcache := fs.String("modcache", defaultModCache(), "the module cache a binary's modules are read from for their licences (go env GOMODCACHE)")
+	image := fs.String("image", "", "an image reference, [registry/]repository[:tag][@digest], whose registry is asked for its signatures and provenance (needs the network source)")
 	imds := fs.String("imds", "", "a file holding Azure's metadata: curl -H Metadata:true 'http://169.254.169.254/metadata/instance?api-version=2025-04-07'")
 	appArgs := fs.String("app-args", "", "a file holding how the comparison's server was started: NAME=value lines (env), then its command line")
 	compare := fs.String("compare", "", "an earlier JSON report (-output json) of the same target: report what appeared, went and changed since")
@@ -124,9 +126,9 @@ func run(args []string, out *os.File) error {
 		*container == "" && *containerJSON == "" && *kernelLog == "" && *appLog == "" && *tlsChain == "" && *tlsHandshake == "" &&
 		*pgSettings == "" && *pgHBA == "" && *pgLog == "" && *pgRoles == "" && *firewall == "" && *proxyConfig == "" && *appArgs == "" &&
 		*netstatBefore == "" && *netstatAfter == "" && *pgActivity == "" &&
-		*statBefore == "" && *statAfter == "" && *imds == "" &&
+		*statBefore == "" && *statAfter == "" && *imds == "" && *image == "" &&
 		*metricsBefore == "" && *metricsAfter == "" && *ss == "" && *loadLine == "" && *stackConfig == "" {
-		return errors.New("name what to read: -binary, -module, -dockerfile, -root, -container, -container-json, -kernel-log, -app-log, -tls-chain, -tls-handshake, -pg-settings, -pg-hba, -pg-log, -pg-roles, -pg-activity, -firewall, -proxy-config, -app-args, -imds, -ss, -load-line, -stack-config, -metrics-before and -metrics-after, or -netstat-before and -netstat-after, or -stat-before and -stat-after")
+		return errors.New("name what to read: -binary, -module, -dockerfile, -root, -container, -container-json, -kernel-log, -app-log, -tls-chain, -tls-handshake, -pg-settings, -pg-hba, -pg-log, -pg-roles, -pg-activity, -firewall, -proxy-config, -app-args, -imds, -image, -ss, -load-line, -stack-config, -metrics-before and -metrics-after, or -netstat-before and -netstat-after, or -stat-before and -stat-after")
 	}
 
 	sel := audit.Selection{}
@@ -138,6 +140,9 @@ func run(args []string, out *os.File) error {
 	if err := sel.Validate(); err != nil {
 		return err
 	}
+	if *image != "" && !sel.Has(audit.Sources, "network") {
+		return errors.New("-image asks the image's registry, and the selected sources do not allow the network: add network to -sources")
+	}
 	if *container != "" && !sel.Has(audit.Sources, "tools") {
 		return errors.New("-container calls docker inspect, and the selected sources do not allow tools: " +
 			"add tools to -sources, or save docker inspect's output and name it with -container-json")
@@ -148,7 +153,7 @@ func run(args []string, out *os.File) error {
 		PGSettings: *pgSettings, PGHBA: *pgHBA, PGLog: *pgLog, PGRoles: *pgRoles, PGActivity: *pgActivity,
 		Firewall: *firewall, ProxyConfig: *proxyConfig, ProxyVersion: *proxyVersion,
 		AppArgs: *appArgs, NetstatBefore: *netstatBefore, NetstatAfter: *netstatAfter,
-		StatBefore: *statBefore, StatAfter: *statAfter, IMDS: *imds, VulnDB: *vulndb,
+		StatBefore: *statBefore, StatAfter: *statAfter, IMDS: *imds, Image: *image, ModCache: *modcache, VulnDB: *vulndb,
 		MetricsBefore: *metricsBefore, MetricsAfter: *metricsAfter, SS: *ss, LoadLine: *loadLine, StackConfig: *stackConfig,
 	})
 	if err != nil {
@@ -339,6 +344,26 @@ func (a *answerFlag) Set(v string) error {
 	}
 	(*a)[key] = value
 	return nil
+}
+
+// defaultModCache is where the go command keeps its module cache unless
+// told otherwise — GOMODCACHE, else the first GOPATH entry's pkg/mod,
+// else ~/go/pkg/mod — read without calling the go command, which the
+// sources may not allow. Empty when that directory does not exist.
+func defaultModCache() string {
+	dir := os.Getenv("GOMODCACHE")
+	if dir == "" {
+		gopath := filepath.SplitList(os.Getenv("GOPATH"))
+		if len(gopath) > 0 && gopath[0] != "" {
+			dir = filepath.Join(gopath[0], "pkg", "mod")
+		} else if home, err := os.UserHomeDir(); err == nil {
+			dir = filepath.Join(home, "go", "pkg", "mod")
+		}
+	}
+	if info, err := os.Stat(dir); dir == "" || err != nil || !info.IsDir() { //nolint:gosec // G703: the go command's own cache, named by its environment
+		return ""
+	}
+	return dir
 }
 
 // wrap folds a reason to a width, so a terminal reads it as a paragraph.

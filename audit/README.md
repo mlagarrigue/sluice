@@ -48,15 +48,17 @@ worst one there is.
 
 One axis no rule declares: `referentials`, the published benchmarks a rule
 answers for. Every rule is classified once in `references.go`, with the
-CIS Benchmark items it checks — CIS Docker Benchmark v1.9.0 and CIS
-PostgreSQL 17 Benchmark v1.1.0, by number, a `refs:` line under the
-finding — or with none: a rule is put on an item only when the item checks
-the same setting in the same direction. `-referentials cis` keeps the
-findings a CIS item carries, `-referentials none` the others; the two make
-the whole report. Most performance and reliability rules carry none, the
-benchmarks being hardening guides; one goes the other way on purpose,
-`container/network`, whose `--network host` for a comparison is what CIS
-Docker 5.10 advises against in production.
+items it checks — CIS Docker Benchmark v1.9.0, CIS PostgreSQL 17 Benchmark
+v1.1.0, and the ANSSI's GNU/Linux configuration guide (ANSSI-BP-028 v2.0)
+and Docker technical sheet (ANSSI-FT-082 v1.0), by number, a `refs:` line
+under the finding — or with none: a rule is put on an item only when the
+item checks the same setting in the same direction. `-referentials cis`
+keeps the findings a CIS item carries, `-referentials anssi` those an
+ANSSI recommendation carries, `-referentials none` the others. Most
+performance and reliability rules carry none, the benchmarks being
+hardening guides; one goes the other way on purpose, `container/network`,
+whose `--network host` for a comparison is what CIS Docker 5.10 and
+ANSSI-FT-082 R4 advise against in production.
 
 Two questions have no answer in anything readable — what the machine does,
 and whether it is reachable from the internet. Each has a default, so a
@@ -69,6 +71,8 @@ sets one.
 |---|---|---|
 | `gobuild/*` | the binary | what the build fixed: `-trimpath`, `CGO_ENABLED`, `GOAMD64`, the profile, the toolchain, the revision stamped |
 | `deps/*` | the module, and `govulncheck` | the requirements, their sums, and every advisory with its verdict |
+| `deps/license` | the binary, and the module cache (`-modcache`, `go env GOMODCACHE` by default) | the licence each linked module ships, named by its SPDX identifier from its clauses, against `-answer licenses=` (MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC by default); a module with no licence file, or no cache at all, said unread — the `compliance` goal |
+| `docker/image-signature`, `docker/image-provenance` | an image's registry (`-image ref`, the `network` source) | a signature beside the image — cosign's `.sig` tag, an OCI 1.1 referrer (cosign, Notation, a Sigstore bundle), the referrers tag schema on a registry without the API — and a provenance attestation (BuildKit's attestation manifest, an in-toto referrer, cosign's `.att` tag); the manifest's digest computed, never taken from the registry; whether a signature verifies is the reader's policy, not read |
 | `docker/*` | the Dockerfile's text | stages, the bases and their digests, the runtime image, `USER`, secrets in layers, `.dockerignore` |
 | `linux/*` | `/proc` and `/sys` under `-root` | the listen and device queues, the UDP buffers, the ephemeral ports, connection tracking, swap, hugepages, the CPU governor, and the process's own `nofile` under `-pid` |
 | `container/*` | `docker inspect`, or its saved output | what a container was run with: `nofile`, pinned cores, a memory bound, the network, the log driver, capabilities, `no-new-privileges`, seccomp, AppArmor, a read-only root, the user, the Docker socket |
@@ -95,7 +99,7 @@ sets one.
 | `app/*` | how the comparison's Sluice.go server was started, saved: its `NAME=value` environment and its command line | a connection closed every few requests, a remote database reached in clear and unauthenticated, more connections than the database's slots, TLS off on the internet, session resumption in a comparison; the server's flags in the system table |
 | `firewall/postgres-exposed` | `nft list ruleset` or `iptables-save`, saved | PostgreSQL's port reachable from any address: accepted by an input chain — the chains it jumps to followed, ufw's and firewalld's — or by its policy, or published by a DNAT (Docker's `-p`, which never crosses INPUT); "undetermined" when a jump cannot be followed |
 | `go/*` | the cgroup, the module's `go` directive, the environment | whether the runtime will read the CPU quota, or use every core of the machine; a `GODEBUG` that restores an older behaviour |
-| `-sbom` | the binary | the bill of materials: the main module, the toolchain, every dependency linked |
+| `-sbom` | the binary | the bill of materials: the main module, the toolchain, every dependency linked, each with its licence when the module cache is there |
 
 **The build is read in the binary, not in the files that built it.** A
 Dockerfile says what it meant to do; `debug/buildinfo` says what was done.

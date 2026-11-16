@@ -85,6 +85,15 @@ func TestTheReportFiltersByReferential(t *testing.T) {
 			t.Errorf("%s not reported under cis", want)
 		}
 	}
+	withANSSI := run(Selection{Components: {"docker"}, Referentials: {"anssi"}})
+	if !slices.ContainsFunc(withANSSI, func(f Finding) bool {
+		return f.Rule == "container/capabilities" && slices.ContainsFunc(f.Refs, func(r Reference) bool { return r.String() == "ANSSI-FT-082 v1.0 R8" })
+	}) {
+		t.Error("container/capabilities not reported under anssi with ANSSI-FT-082 R8")
+	}
+	if slices.ContainsFunc(withANSSI, func(f Finding) bool { return f.Rule == "docker/no-secret" }) {
+		t.Error("docker/no-secret, which no ANSSI recommendation carries, reported under anssi")
+	}
 	if !slices.ContainsFunc(withCIS, func(f Finding) bool {
 		return f.Rule == "container/capabilities" && slices.ContainsFunc(f.Refs, func(r Reference) bool { return r.String() == "CIS Docker Benchmark v1.9.0 5.5" })
 	}) {
