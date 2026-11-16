@@ -5,6 +5,7 @@
 //	auth.go          Config, the startup and authentication
 //	scram.go         SCRAM-SHA-256; saslprep*.go the password's SASLprep
 //	conn.go          Conn: queries, Rows, batches asked for ahead
+//	arg.go           Arg, ArrayArg: a parameter from a codec
 //	messages.go      backend messages parsed, the server's Error
 //	scan.go          Scan*: a batch's column into Go values
 //	prepare.go       the statement cache

@@ -32,6 +32,15 @@ func ExampleAppendText() {
 	// Output: 68c3a9
 }
 
+// The codec of text: its OID and its array's, and the pair that writes and
+// reads one value — what an array, a range or a parameter is built from.
+func ExampleTextCodec() {
+	c := pgtype.TextCodec()
+	v, err := c.Decode(c.Append(nil, "hé"))
+	fmt.Println(c.OID == pgtype.OIDText, c.ArrayOID == pgtype.OIDTextArray, v, err)
+	// Output: true true hé <nil>
+}
+
 // An int8[] parameter, whole: header, dimensions, then each element with its
 // length. DecodeArray reads it back with the type's codec.
 func ExampleAppendArray() {
