@@ -25,6 +25,7 @@ import (
 	"strings"
 	"text/template"
 	"unicode"
+	"unicode/utf8"
 )
 
 // column is one field of the entity, resolved to how it is decoded.
@@ -44,7 +45,7 @@ type column struct {
 // the generated code calls: it changes when the generated code's shape
 // changes, so a file produced by an older generator can be told apart from
 // one that merely needs regenerating.
-const generatedFormat = 2
+const generatedFormat = 3
 
 // entity is what the template renders.
 type entity struct {
@@ -52,6 +53,11 @@ type entity struct {
 	Type    string
 	Columns []column
 	Format  int
+
+	// The generated names: Bind, Hydrate and Collect followed by the type's
+	// name, and the type's name followed by Plan, unexported when the type
+	// is — a hydrator is as visible as what it hydrates.
+	Plan, Bind, Hydrate, Collect string
 }
 
 // typeMapping says how each supported Go type is decoded and which PostgreSQL
@@ -106,7 +112,12 @@ func generate(src []byte, filename, typeName string) ([]byte, error) {
 		return nil, err
 	}
 
-	e := entity{Package: file.Name.Name, Type: typeName, Format: generatedFormat}
+	e := entity{Package: file.Name.Name, Type: typeName, Format: generatedFormat, Plan: typeName + "Plan"}
+	e.Bind, e.Hydrate, e.Collect = "Bind"+typeName, "Hydrate"+typeName, "Collect"+typeName
+	if first, size := utf8.DecodeRuneInString(typeName); !unicode.IsUpper(first) {
+		title := string(unicode.ToUpper(first)) + typeName[size:]
+		e.Bind, e.Hydrate, e.Collect = "bind"+title, "hydrate"+title, "collect"+title
+	}
 	for _, f := range st.Fields.List {
 		if len(f.Names) == 0 {
 			return nil, fmt.Errorf("%s: embedded fields are not supported — name the columns explicitly", typeName)
@@ -368,26 +379,28 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/database/postgres"
 	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 )
 
-// {{.Type}}Plan binds {{.Type}}'s fields to the columns of one result.
+// {{.Plan}} binds {{.Type}}'s fields to the columns of one result.
 //
 // Binding happens once per result rather than once per row, and it is where
 // two mistakes are caught that would otherwise be silent: a column that moved
 // (columns are matched by name, never by position) and a column whose type
-// changed under the entity.
-type {{.Type}}Plan struct {
+// changed under the entity. Both fail with an error that wraps
+// pgtype.ErrCodec: the result does not match what {{.Type}} declares.
+type {{.Plan}} struct {
 {{- range .Columns}}
 	col{{.Field}} int
 {{- end}}
 }
 
-// Bind{{.Type}} resolves the columns {{.Type}} needs in the result described
+// {{.Bind}} resolves the columns {{.Type}} needs in the result described
 // by fields.
-func Bind{{.Type}}(fields []postgres.Field) ({{.Type}}Plan, error) {
-	var p {{.Type}}Plan
+func {{.Bind}}(fields []postgres.Field) ({{.Plan}}, error) {
+	var p {{.Plan}}
 {{range .Columns}}	p.col{{.Field}} = -1
 {{end}}	for i, f := range fields {
 		switch f.Name {
@@ -398,27 +411,27 @@ func Bind{{.Type}}(fields []postgres.Field) ({{.Type}}Plan, error) {
 				// does it. Last-wins binding would pick one silently, and
 				// which one is a property of the SELECT's column order:
 				// wrong data with no error. Alias one side instead.
-				return p, fmt.Errorf("column %q appears more than once in the result and {{$.Type}}.{{.Field}} cannot choose between them — alias one in the query", f.Name)
+				return p, fmt.Errorf("column %q appears more than once in the result and {{$.Type}}.{{.Field}} cannot choose between them — alias one in the query: %w", f.Name, pgtype.ErrCodec)
 			}
 			if {{range $i, $oid := .OIDs}}{{if $i}} && {{end}}f.TypeOID != {{$oid}}{{end}} {
-				return p, fmt.Errorf("column %q is OID %d, which {{$.Type}}.{{.Field}} cannot hold", f.Name, f.TypeOID)
+				return p, fmt.Errorf("column %q is OID %d, which {{$.Type}}.{{.Field}} cannot hold: %w", f.Name, f.TypeOID, pgtype.ErrCodec)
 			}
 			p.col{{.Field}} = i
 {{- end}}
 		}
 	}
 {{range .Columns}}	if p.col{{.Field}} < 0 {
-		return p, fmt.Errorf("the result has no column %q for {{$.Type}}.{{.Field}}", {{printf "%q" .Name}})
+		return p, fmt.Errorf("the result has no column %q for {{$.Type}}.{{.Field}}: %w", {{printf "%q" .Name}}, pgtype.ErrCodec)
 	}
 {{end}}	return p, nil
 }
 
-// Hydrate{{.Type}} appends one batch of rows to dst.
+// {{.Hydrate}} appends one batch of rows to dst.
 //
 // On an error dst is returned as it stood before this batch — capacity and
 // prior contents intact — so a caller that logs and moves on keeps its reuse
 // buffer rather than having it replaced by nil.
-func Hydrate{{.Type}}(dst []{{.Type}}, rows *postgres.Rows, p {{.Type}}Plan) ([]{{.Type}}, error) {
+func {{.Hydrate}}(dst []{{.Type}}, rows *postgres.Rows, p {{.Plan}}) ([]{{.Type}}, error) {
 	before := len(dst)
 	// Reserved up front with amortized growth: the batch's row count is
 	// known, and slices.Grow both skips append's per-batch reallocation on a
@@ -443,7 +456,7 @@ func Hydrate{{.Type}}(dst []{{.Type}}, rows *postgres.Rows, p {{.Type}}Plan) ([]
 			}
 {{- else}}
 			if isNull {
-				return dst[:before], fmt.Errorf("row %d: column %q is NULL and {{$.Type}}.{{.Field}} cannot hold it", i, {{printf "%q" .Name}})
+				return dst[:before], fmt.Errorf("row %d: column %q is NULL and {{$.Type}}.{{.Field}} cannot hold it: %w", i, {{printf "%q" .Name}}, postgres.ErrNullValue)
 			}
 {{- if .Infallible}}
 			e.{{.Field}} = {{.Decode}}
@@ -457,6 +470,38 @@ func Hydrate{{.Type}}(dst []{{.Type}}, rows *postgres.Rows, p {{.Type}}Plan) ([]
 {{- end}}
 		}
 {{end}}		dst = append(dst, e)
+	}
+	return dst, nil
+}
+
+// {{.Collect}} appends every row of src to dst: the columns bound by name on
+// the first batch that holds a row, as {{.Bind}} binds them, and every batch
+// hydrated as {{.Hydrate}} hydrates it. A result {{.Type}} cannot hold — a
+// column missing, doubled or of another type, a value that will not decode,
+// a NULL in a field that cannot say it — fails with an error that wraps
+// pgtype.ErrCodec, and src's own failure with its error as it is; on either,
+// dst is returned as it stood and the rest of src is not read.
+func {{.Collect}}(dst []{{.Type}}, src sluice.Source[postgres.Row]) ([]{{.Type}}, error) {
+	before := len(dst)
+	var p {{.Plan}}
+	bound := false
+	for b := range src.Stream() {
+		if b.Len() == 0 {
+			continue
+		}
+		var err error
+		if !bound {
+			if p, err = {{.Bind}}(b.Items[0].Fields()); err != nil {
+				return dst[:before], err
+			}
+			bound = true
+		}
+		if dst, err = {{.Hydrate}}(dst, b.Items[0].Rows(), p); err != nil {
+			return dst[:before], err
+		}
+	}
+	if err := src.Err(); err != nil {
+		return dst[:before], err
 	}
 	return dst, nil
 }

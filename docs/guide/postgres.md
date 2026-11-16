@@ -224,7 +224,16 @@ type Order struct {
 }
 ```
 
-`go generate ./...` produces a file beside it, with two functions:
+`go generate ./...` produces a file beside it, with three functions. The
+shortest to call gathers the whole result:
+
+```go
+orders, err := entity.CollectOrder(orders[:0], src) // the whole result, bound once
+```
+
+To work batch by batch without keeping everything, the other two do the
+same in two steps: `BindOrder` binds once, `HydrateOrder` fills a slice per
+batch.
 
 ```go
 var plan entity.OrderPlan
@@ -243,7 +252,12 @@ for b := range src.Stream() {
 position, and checks the **types**: if a migration changed a column from
 `int4` to `bigint`, or a `SELECT` reordered two columns, the error comes
 when the result opens, not in the middle of a batch as plausible, wrong
-values. `HydrateOrder` then fills a slice from each batch.
+values. `HydrateOrder` then fills a slice from each batch. A binding
+refused, a value that will not decode, or a NULL a field cannot express
+returns an error that wraps `pgtype.ErrCodec`: `errors.Is(err,
+pgtype.ErrCodec)` tells them from a failure of the server or the
+connection. For an unexported type (`order` in a `package main`), the
+functions are unexported too: `bindOrder`, `hydrateOrder`, `collectOrder`.
 
 > **In plain words.** The generated file is committed with your code, and a
 > test regenerates it and compares: if someone changes the struct without

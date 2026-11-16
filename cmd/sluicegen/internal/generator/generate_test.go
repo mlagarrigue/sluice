@@ -138,6 +138,13 @@ type Thing struct {
 		// last-wins with no error: silent wrong data chosen by the SELECT's
 		// column order. The binder must refuse a column it already bound.
 		{"a doubled column is refused at bind time", "appears more than once in the result", true},
+		// The bind-once loop every caller wrote by hand, emitted once.
+		{"a collection over the source", "func CollectThing(dst []Thing, src sluice.Source[postgres.Row]) ([]Thing, error)", true},
+		// What the result cannot fit is told apart from a transport failure
+		// by errors.Is, which needs every such error to wrap the sentinel.
+		{"a bind refusal wraps ErrCodec", "cannot hold: %w\", f.Name, f.TypeOID, pgtype.ErrCodec)", true},
+		{"a missing column wraps ErrCodec", `for Thing.TotalCost: %w", "total_cost", pgtype.ErrCodec)`, true},
+		{"an unexpected NULL wraps ErrNullValue", "postgres.ErrNullValue)", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -145,6 +152,30 @@ type Thing struct {
 				t.Errorf("output contains %q = %v, want %v\n%s", tt.want, !tt.found, tt.found, got)
 			}
 		})
+	}
+}
+
+// An unexported type gets unexported hydrators, so that a program's own
+// struct — in package main, say — exports nothing it did not mean to; an
+// exported one keeps the names it always had.
+func TestGeneratedNamesFollowTheType(t *testing.T) {
+	for _, tc := range []struct {
+		typ  string
+		want []string
+	}{
+		{"order", []string{"type orderPlan struct", "func bindOrder(", "func hydrateOrder(", "func collectOrder("}},
+		{"Order", []string{"type OrderPlan struct", "func BindOrder(", "func HydrateOrder(", "func CollectOrder("}},
+	} {
+		src := []byte("package main\n\ntype " + tc.typ + " struct {\n\tID int64 `json:\"id\"`\n}\n")
+		out, err := generate(src, "main.go", tc.typ)
+		if err != nil {
+			t.Fatalf("generate(%s) returned %v", tc.typ, err)
+		}
+		for _, w := range tc.want {
+			if !strings.Contains(string(out), w) {
+				t.Errorf("%s: the output lacks %q", tc.typ, w)
+			}
+		}
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/database/postgres"
 	"github.com/mlagarrigue/sluice/database/postgres/internal/entity"
 	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
@@ -28,6 +29,22 @@ func (replay) Close() error                { return nil }
 // is as long as the first: the server cuts a result at the row limit the
 // client asks for, and the first batch's length is that limit.
 func eachBatch(tb testing.TB, fields []postgres.Field, batches [][][]byte, fn func(rows *postgres.Rows)) {
+	tb.Helper()
+	src := scriptedQuery(tb, fields, batches, false)
+	for b := range src.Stream() {
+		if b.Len() > 0 {
+			fn(b.Items[0].Rows())
+		}
+	}
+	if err := src.Err(); err != nil {
+		tb.Fatalf("the scripted query failed: %v", err)
+	}
+}
+
+// scriptedQuery is the query eachBatch runs, as a source: the result's
+// columns, its batches of DataRow bodies, and an end that is the command's
+// completion or, when fail is set, the server's error in its place.
+func scriptedQuery(tb testing.TB, fields []postgres.Field, batches [][][]byte, fail bool) sluice.Source[postgres.Row] {
 	tb.Helper()
 	var script []byte
 	msg := func(typ byte, body []byte) {
@@ -51,22 +68,18 @@ func eachBatch(tb testing.TB, fields []postgres.Field, batches [][][]byte, fn fu
 			msg('s', nil) // PortalSuspended
 		}
 	}
-	msg('C', fmt.Appendf(nil, "SELECT %d\x00", total))
+	if fail {
+		msg('E', []byte("SERROR\x00VERROR\x00C57014\x00Mcanceling statement due to user request\x00\x00"))
+	} else {
+		msg('C', fmt.Appendf(nil, "SELECT %d\x00", total))
+	}
 	msg('Z', []byte("I"))
 
 	conn := postgres.NewConn(replay{bytes.NewReader(script)}, postgres.Config{})
-	src := conn.Query(tb.Context(), "SELECT", nil, postgres.QueryConfig{
-		BatchRows: len(batches[0]),
+	return conn.Query(tb.Context(), "SELECT", nil, postgres.QueryConfig{
+		BatchRows: max(len(batches[0]), 1),
 		Fetch:     postgres.FetchBatches,
 	})
-	for b := range src.Stream() {
-		if b.Len() > 0 {
-			fn(b.Items[0].Rows())
-		}
-	}
-	if err := src.Err(); err != nil {
-		tb.Fatalf("the scripted query failed: %v", err)
-	}
 }
 
 // rowDescription builds a RowDescription body for fields, every column in
