@@ -24,6 +24,7 @@
 package httpstream
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -227,6 +228,19 @@ func refusedMethod(err error) []byte {
 	return nil
 }
 
+// lineMethod is the method of a request refused before parseRequest read
+// it — a line too long, a version not served, a fourth field — for the one
+// method the answer depends on: a HEAD's refusal carries no body (RFC 9110
+// §9.3.2). A prefix of the buffer, behind the one empty line RFC 9112 §2.2
+// lets come first, not a second parse of the line; nil for anything else.
+func lineMethod(buf []byte) []byte {
+	buf = bytes.TrimPrefix(buf, []byte("\r\n"))
+	if bytes.HasPrefix(buf, headMethod) && len(buf) > len(headMethod) && buf[len(headMethod)] == ' ' {
+		return headMethod
+	}
+	return nil
+}
+
 // next fills the buffer and parses everything complete in it.
 func (r *h1Conn) next() ([]Request, bool) {
 	for {
@@ -350,7 +364,11 @@ func (r *h1Conn) parseBuffered() (batch []Request, used int, err error) {
 			if len(r.batch) > 0 {
 				break
 			}
-			return nil, 0, refused{method: req.Method, err: perr}
+			method := req.Method
+			if method == nil {
+				method = lineMethod(r.buf[used:r.n])
+			}
+			return nil, 0, refused{method: method, err: perr}
 		}
 		r.bounds = append(r.bounds, [3]int{start, start + len(req.Headers), len(r.headers)})
 		r.batch = append(r.batch, req)
