@@ -1096,6 +1096,42 @@ func TestCheckRunsTheNestedTestsCIRuns(t *testing.T) {
 	}
 }
 
+// TestCILintsTheModulesCheckLints: scripts/check.sh lints and tests every
+// nested module of its loop, and the lint job of ci.yml lints each in a step
+// of its own. The two lists are written twice; comparison/go-nethttp was in
+// the script's and missing from the workflow's, so a lint finding there
+// turned check.sh red and CI green.
+func TestCILintsTheModulesCheckLints(t *testing.T) {
+	check, err := os.ReadFile("scripts/check.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	loop := regexp.MustCompile(`(?m)^for m in ([^;]+); do`).FindSubmatch(check)
+	if loop == nil {
+		t.Fatal("scripts/check.sh: no `for m in …; do` loop over the nested modules")
+	}
+	ci, err := os.ReadFile(".github/workflows/ci.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, job, ok := strings.Cut(string(ci), "\n  lint:\n")
+	if !ok {
+		t.Fatal("ci.yml: no lint job")
+	}
+	if next := regexp.MustCompile(`(?m)^ {2}[a-z][a-z0-9-]*:$`).FindStringIndex(job); next != nil {
+		job = job[:next[0]]
+	}
+	linted := map[string]bool{}
+	for _, m := range regexp.MustCompile(`working-directory:\s*(\S+)`).FindAllStringSubmatch(job, -1) {
+		linted[m[1]] = true
+	}
+	for _, m := range strings.Fields(string(loop[1])) {
+		if !linted[m] {
+			t.Errorf("scripts/check.sh lints %s, the lint job of ci.yml does not", m)
+		}
+	}
+}
+
 // TestDockerImagesArePinned: a tag moves, a digest does not. The interop
 // image is published, so its base is pinned for the same reason the
 // workflows pin every action by commit; Dependabot moves the digests. The

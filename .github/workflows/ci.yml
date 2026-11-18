@@ -916,7 +916,8 @@ jobs:
 
   # The nested modules (interop/, benchmarks/, comparison/*, audit/) are
   # linted with the root's configuration, which golangci-lint finds by
-  # walking up from each working directory; scripts/check.sh runs the same six.
+  # walking up from each working directory; scripts/check.sh runs the same
+  # six (TestCILintsTheModulesCheckLints).
   lint:
     runs-on: ubuntu-latest
     env:
@@ -952,6 +953,11 @@ jobs:
         with:
           version: v2.12.2
           working-directory: comparison/loadgen
+      - name: Lint (comparison/go-nethttp)
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.12.2
+          working-directory: comparison/go-nethttp
       - name: Lint (audit)
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
