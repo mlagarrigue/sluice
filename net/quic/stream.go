@@ -581,8 +581,8 @@ func takeStreamFrame(n int) ([]byte, bool) {
 
 // releaseStreamFrame hands back the buffer frame was built in by
 // takeStreamFrame: frame starts at the buffer's first byte, so its capacity
-// is the whole array. A variable, so that a test sees what comes back.
-var releaseStreamFrame = func(frame []byte) {
+// is the whole array.
+func releaseStreamFrame(frame []byte) {
 	streamFrames.Put((*frameBuf)(frame[:len(frameBuf{})]))
 }
 

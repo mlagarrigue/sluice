@@ -211,6 +211,10 @@ type sentTracker struct {
 	// free before it — where append alone allocated a new array each time,
 	// the record of a steady flow regrowing every window or so.
 	store []sentPacket
+	// handBack, when set, receives the acknowledged spare frames in place
+	// of streamFrames: a test's tracker sees what comes back without
+	// touching what every connection shares. Nil on a connection's.
+	handBack func([]byte)
 	// limit is the record's bound, maxTrackedPackets when zero (see
 	// there); a test lowers it.
 	limit int
@@ -673,7 +677,11 @@ func (s *sentTracker) release(now time.Time, rtt *rttEstimator, cc congestionCon
 		if p.spare {
 			// Acknowledged: nothing resends these bytes now, and the
 			// record held the one reference (sentPacket.spare).
-			releaseStreamFrame(p.payload)
+			if s.handBack != nil {
+				s.handBack(p.payload)
+			} else {
+				releaseStreamFrame(p.payload)
+			}
 			p.payload, p.spare = nil, false
 		}
 		if !s.onPath(p) {

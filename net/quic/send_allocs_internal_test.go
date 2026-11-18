@@ -92,11 +92,7 @@ func TestSentRecordOfASteadyFlowKeepsItsArray(t *testing.T) {
 // payload that is not spare is the garbage collector's.
 func TestStreamFrameBufferReturnsOnAcknowledgementAlone(t *testing.T) {
 	var back [][]byte
-	release := releaseStreamFrame
-	releaseStreamFrame = func(frame []byte) { back = append(back, frame) }
-	defer func() { releaseStreamFrame = release }()
-
-	var s sentTracker
+	s := sentTracker{handBack: func(frame []byte) { back = append(back, frame) }}
 	take := func(text string) []byte {
 		frame, spare := takeStreamFrame(len(text))
 		if !spare {
@@ -127,7 +123,7 @@ func TestStreamFrameBufferReturnsOnAcknowledgementAlone(t *testing.T) {
 
 	// The buffer goes back whole: a frame that starts at its first byte
 	// converts back to the array it was cut from.
-	release(back[0])
+	releaseStreamFrame(back[0])
 
 	if _, spare := takeStreamFrame(len(frameBuf{}) + 1); spare {
 		t.Error("a frame larger than a spare buffer was given one")
