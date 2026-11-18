@@ -73,6 +73,10 @@ func (s *Server) init() error {
 	return s.err
 }
 
+// acceptWarnEvery is how often Serve logs temporary Accept failures that go
+// on: the first, then at most one a minute.
+const acceptWarnEvery = time.Minute
+
 // Serve accepts connections on ln and serves each one, HTTP/1.1 or HTTP/2,
 // until the server stops. It returns nil when Shutdown or Close closed ln,
 // without waiting for the connections — Shutdown is what waits — and an
@@ -105,6 +109,7 @@ func (s *Server) Serve(ln net.Listener) error {
 
 	stopped := s.live.draining.Done()
 	var tempDelay time.Duration // how long to wait after a temporary Accept failure
+	var warned time.Time        // when the last failure was logged
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -117,11 +122,15 @@ func (s *Server) Serve(ln net.Listener) error {
 				// The same shape as the QUIC read loop's readBackoff and
 				// deliberately not shared with it: four lines are cheaper
 				// than a dependency between the two packages.
-				if tempDelay == 0 {
-					// The first failure of a burst is logged, the retries
-					// are not: descriptors run out (EMFILE) without any
-					// other trace on this side, and a shortage that lasts
-					// would otherwise write a line a second.
+				if now := time.Now(); now.Sub(warned) >= acceptWarnEvery {
+					// One line per acceptWarnEvery while failures go on:
+					// descriptors run out (EMFILE) without any other trace
+					// on this side, and the retries are not logged. Not
+					// one per burst: under a shortage where each closed
+					// connection frees a descriptor for one accept, every
+					// failure opens a burst, and the lines came at the
+					// rate of the connections the peer makes.
+					warned = now
 					s.cfg.logger().Warn("httpstream: accepting failed; retrying with backoff until it succeeds",
 						"addr", ln.Addr().String(), "err", err)
 				}

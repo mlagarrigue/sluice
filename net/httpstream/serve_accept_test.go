@@ -190,3 +190,53 @@ func TestATemporaryAcceptFailureIsLoggedOncePerBurst(t *testing.T) {
 		t.Errorf("the Accept failure is not logged at the warn level:\n%s", got)
 	}
 }
+
+// alternatingListener fails every other Accept with a temporary error and
+// passes the others to the real listener: descriptors that ran out and come
+// back one at a time, as each closed connection frees one.
+type alternatingListener struct {
+	net.Listener
+	mu sync.Mutex
+	n  int
+}
+
+func (l *alternatingListener) Accept() (net.Conn, error) {
+	l.mu.Lock()
+	l.n++
+	fail := l.n%2 == 1
+	l.mu.Unlock()
+	if fail {
+		return nil, temporaryError{}
+	}
+	return l.Listener.Accept()
+}
+
+// A shortage that lets one Accept through per freed descriptor is one
+// shortage, not a burst per failure: the line was written once per
+// failure and success, at the rate of the connections the peer makes. It
+// is written once, then at most once a minute.
+func TestAcceptFailuresBetweenSuccessesAreLoggedOnce(t *testing.T) {
+	inner, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln := &alternatingListener{Listener: inner}
+	var log lockedBuffer
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(ctx, ln, Config{Logger: slog.New(slog.NewTextHandler(&log, nil))}, echoTarget)
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	const conns = 6
+	for i := range conns {
+		c := dial(t, ln.Addr().String())
+		ask(t, c, "/"+string(rune('a'+i)))
+	}
+	if n := strings.Count(log.String(), "too many open files"); n != 1 {
+		t.Errorf("%d log lines for one shortage across %d accepted connections, want 1:\n%s", n, conns, log.String())
+	}
+}
