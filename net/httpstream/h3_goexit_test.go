@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/net/quic"
@@ -55,8 +56,19 @@ func h3AnswerOf(t *testing.T, handle Handler) (retired, answered int32, left int
 	ran.Go(func() { answerH3(t.Context(), c, nil, b, handle, writeBoundOf(Config{}.mustResolve()), &writers) })
 	ran.Wait()
 	writers.Wait()
-	calls.mu.Lock()
-	left = len(calls.m)
-	calls.mu.Unlock()
+	// A writer signals writers before it retires its stream and releases
+	// the batch, both in the same deferred call: the release is waited
+	// for, bounded, rather than read the moment writers lets go (a
+	// Windows runner read 2 streams still registered).
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		calls.mu.Lock()
+		left = len(calls.m)
+		calls.mu.Unlock()
+		if left == 0 && nRetired.Load() == int32(len(ids)) || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
 	return nRetired.Load(), nAnswered.Load(), left
 }
