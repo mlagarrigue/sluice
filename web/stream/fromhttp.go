@@ -231,7 +231,11 @@ func (c *httpCall) run(h http.Handler) {
 // signalled, the request's context cancelled as net/http cancels it.
 func (c *httpCall) finish() {
 	p := recover()
-	defer c.cancel()
+	// Cancelled first, before the answer is decided: the batch may hand
+	// the response on the moment it is, and a context still live then
+	// outlived its handler for whoever reads it (a shuffled CI run saw
+	// TestFromHTTPBuildsTheRequest do so). Nothing below reads it.
+	c.cancel()
 	c.body.end()
 	if p != nil {
 		c.fail(p, debug.Stack())
