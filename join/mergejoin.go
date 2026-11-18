@@ -86,6 +86,7 @@ func MergeJoin[L, R any, K any](
 		defer lc.stop()
 		rc := newCursor[R](right, keyR, cmp)
 		defer rc.stop()
+		lc.peer, rc.peer = rc.keep, lc.keep
 
 		out := newEmitter(yield)
 

@@ -27,11 +27,11 @@ type cursor[T, K any] struct {
 	lastKey K
 	hasLast bool
 	run     []T // scratch for joinEqual's many-to-many run, reused between calls
-	// own holds the batch being read: a copy, since the cursor keeps it
-	// while the other side is pulled, and two branches of one Split share a
-	// source that pull advances (the architecture's S14). Reused from one
-	// batch to the next.
-	own []T
+	// own, owned and peer: what is left of the batch moves to own when the
+	// other side is about to pull, as for walker (zip.go).
+	own   []T
+	owned bool
+	peer  func()
 }
 
 func newCursor[T any, K any](s sluice.Stream[T], key func(T) K, cmp func(K, K) int) *cursor[T, K] {
@@ -56,13 +56,15 @@ func (c *cursor[T, K]) peek() (elem T, key K, ok bool) {
 			)
 			return zeroT, zeroK, false
 		}
+		if c.peer != nil {
+			c.peer()
+		}
 		b, ok := c.pull()
 		if !ok {
 			c.done = true
 			continue
 		}
-		c.own = append(c.own[:0], b.Items...)
-		c.batch, c.pos = c.own, 0
+		c.batch, c.pos, c.owned = b.Items, 0, false
 	}
 
 	v := c.batch[c.pos]
@@ -77,6 +79,14 @@ func (c *cursor[T, K]) peek() (elem T, key K, ok bool) {
 
 	c.cur, c.curKey, c.cached = v, k, true
 	return v, k, true
+}
+
+// keep moves what is left of the batch to own, before the other side pulls.
+func (c *cursor[T, K]) keep() {
+	if !c.owned && c.pos < len(c.batch) {
+		c.own = append(c.own[:0], c.batch[c.pos:]...)
+		c.batch, c.pos, c.owned = c.own, 0, true
+	}
 }
 
 // next consumes the current element, invalidating the cache.

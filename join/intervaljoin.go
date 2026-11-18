@@ -144,6 +144,7 @@ func Interval[L, R any, K comparable, Out any](
 		defer lc.stop()
 		rc := newCursor[R](right, tsR, time.Time.Compare)
 		defer rc.stop()
+		lc.peer, rc.peer = rc.keep, lc.keep
 
 		lbuf := newIntervalBuffer[K, L]()
 		rbuf := newIntervalBuffer[K, R]()

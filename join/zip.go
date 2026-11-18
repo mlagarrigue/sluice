@@ -39,6 +39,7 @@ func ZipLongest[L, R any](left sluice.Stream[L], right sluice.Stream[R]) sluice.
 		defer lc.stop()
 		rc := newWalker[R](right)
 		defer rc.stop()
+		lc.peer, rc.peer = rc.keep, lc.keep
 
 		out := newEmitter(yield)
 
@@ -94,11 +95,16 @@ type walker[T any] struct {
 	batch []T
 	pos   int
 	done  bool
-	// own holds the batch being walked: a copy, since the walker keeps it
-	// while the other side is pulled, and two branches of one Split share a
-	// source that pull advances (the architecture's S14). Reused from one
-	// batch to the next.
-	own []T
+	// The other side's pull may advance this side's source: two branches of
+	// one Split share one, and a buffer-reusing upstream rewrites the batch
+	// held here. So the other side calls keep before it pulls, and what is
+	// left of this batch moves to own (the architecture's S14): the copy is
+	// paid only for a remainder, often none at all, never for a batch
+	// walked to its end before the other side refills. peer is the other
+	// side's keep; owned says batch is own already.
+	own   []T
+	owned bool
+	peer  func()
 }
 
 func newWalker[T any](s sluice.Stream[T]) *walker[T] {
@@ -117,15 +123,25 @@ func (w *walker[T]) ready() bool {
 		if w.done {
 			return false
 		}
+		if w.peer != nil {
+			w.peer()
+		}
 		b, ok := w.pull()
 		if !ok {
 			w.done = true
 			continue
 		}
-		w.own = append(w.own[:0], b.Items...)
-		w.batch, w.pos = w.own, 0
+		w.batch, w.pos, w.owned = b.Items, 0, false
 	}
 	return true
+}
+
+// keep moves what is left of the batch to own, before the other side pulls.
+func (w *walker[T]) keep() {
+	if !w.owned && w.pos < len(w.batch) {
+		w.own = append(w.own[:0], w.batch[w.pos:]...)
+		w.batch, w.pos, w.owned = w.own, 0, true
+	}
 }
 
 // left reports how many elements remain in the current batch, without touching
