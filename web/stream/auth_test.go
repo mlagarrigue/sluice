@@ -54,6 +54,7 @@ func TestBearerAgreesWithWebBearerOnTheSameRule(t *testing.T) {
 		{name: "a space inside the token", header: "Bearer go od"},
 		{name: "a tab inside the token", header: "Bearer go\tod"},
 		{name: "two spaces before the token", header: "Bearer  good"},
+		{name: "spaces and no token", header: "Bearer   "},
 		{name: "a tab before the token", header: "Bearer \tgood"},
 		{name: "scheme with nothing after it", header: "Bearer"},
 		{name: "scheme and one trailing space, no token", header: "Bearer "},

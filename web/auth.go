@@ -532,10 +532,12 @@ const CodeUnauthenticated = "Transport.Request.Unauthenticated"
 
 // Bearer extracts the token from an Authorization header.
 //
-// The scheme is matched case-insensitively, as RFC 9110 §11.1 says, and exactly
-// one space separates it from the token — a header this package will not parse
-// creatively, because creative parsing at an authentication boundary is how
-// two components disagree about what the credential was.
+// The scheme is matched case-insensitively, as RFC 9110 §11.1 says, and
+// spaces separate it from the token — one or more, the 1*SP of RFC 9110
+// §11.4 and RFC 6750 §2.1, and nothing else: a tab, or a blank inside the
+// token, is refused. The grammar is followed to the letter rather than
+// creatively, because at an authentication boundary that is how two
+// components agree about what the credential was.
 func Bearer(r *http.Request) (string, diagnostics.Diagnostic, bool) {
 	// Two Authorization fields is two credentials for one request: Get would
 	// quietly authenticate on the first while another hop may pick the
@@ -552,10 +554,8 @@ func Bearer(r *http.Request) (string, diagnostics.Diagnostic, bool) {
 	if len(h) <= len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) {
 		return "", unauthenticated("CredentialsNotBearer", nil), false
 	}
-	// Never empty here: the length check above already excludes an h of
-	// exactly len(prefix), which is the only way this slice could be.
-	token := h[len(prefix):]
-	if strings.ContainsAny(token, " \t") {
+	token := strings.TrimLeft(h[len(prefix):], " ")
+	if token == "" || strings.ContainsAny(token, " \t") {
 		return "", unauthenticated("CredentialsMalformed", nil), false
 	}
 	return token, diagnostics.Diagnostic{}, true

@@ -82,8 +82,9 @@ func authorization(headers []httpstream.Header) (raw []byte, duplicated bool) {
 
 // bearer extracts the token from a raw authorization value, under the same
 // rules as [web.Bearer]: the scheme case-insensitive as RFC 9110 §11.1 says,
-// exactly one space, no creative parsing at an authentication boundary. A
-// failure is named by the message identifier the refusal carries.
+// then the 1*SP of RFC 9110 §11.4 — spaces, no tab — and a token with no
+// blank inside. A failure is named by the message identifier the refusal
+// carries.
 func bearer(raw []byte) (token, messageID string) {
 	if len(raw) == 0 {
 		return "", "CredentialsMissing"
@@ -92,8 +93,8 @@ func bearer(raw []byte) (token, messageID string) {
 	if len(raw) <= len(prefix) || !foldEqual(raw[:len(prefix)], prefix) {
 		return "", "CredentialsNotBearer"
 	}
-	t := raw[len(prefix):]
-	if bytes.IndexByte(t, ' ') >= 0 || bytes.IndexByte(t, '\t') >= 0 {
+	t := bytes.TrimLeft(raw[len(prefix):], " ")
+	if len(t) == 0 || bytes.IndexByte(t, ' ') >= 0 || bytes.IndexByte(t, '\t') >= 0 {
 		return "", "CredentialsMalformed"
 	}
 	return string(t), ""

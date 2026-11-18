@@ -525,6 +525,11 @@ func TestBearer(t *testing.T) {
 		{"no space", "Bearerabc", "", false},
 		{"two tokens", "Bearer abc def", "", false},
 		{"tab in the token", "Bearer abc\tdef", "", false},
+		// RFC 9110 §11.4 and RFC 6750 §2.1 write 1*SP after the scheme:
+		// spaces, any number; a tab is not SP.
+		{"two spaces before the token", "Bearer  abc.def.ghi", "abc.def.ghi", true},
+		{"a tab before the token", "Bearer \tabc.def.ghi", "", false},
+		{"spaces and nothing after them", "Bearer   ", "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
