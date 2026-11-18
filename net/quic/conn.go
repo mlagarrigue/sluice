@@ -531,7 +531,8 @@ type Conn struct {
 	// (paramsRemembered) once earlySealer, the 0-RTT write keys, is in;
 	// earlyRejected says the server refused it (rejectEarlyLocked).
 	// peerParamsRaw is the server's parameters as they arrived, kept with
-	// the tickets this connection stores.
+	// the tickets this connection stores; ticketsStored counts those
+	// tickets, up to maxStoredTickets (storeSession).
 	wantsEarly       bool
 	remembered       TransportParameters
 	earlySealer      *packetSealer
@@ -547,6 +548,7 @@ type Conn struct {
 	limitsHeld    bool
 	earlyRejected bool
 	peerParamsRaw []byte
+	ticketsStored int
 	// hsComplete is closed when the handshake completes
 	// (Conn.HandshakeComplete).
 	hsComplete chan struct{}

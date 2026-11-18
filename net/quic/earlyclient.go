@@ -301,14 +301,30 @@ func (c *Conn) applyRememberedLocked(p TransportParameters) {
 	c.peerMaxStreamsUni = p.InitialMaxStreamsUni
 }
 
+// maxStoredTickets is how many of the server's tickets one connection
+// stores. RFC 9846 §4.7.1 lets a server send any number, and each stored
+// ticket carries a copy of the server's transport parameters, a block the
+// server sizes itself. crypto/tls ends a QUIC connection at its seventeenth
+// post-handshake message (maxUselessRecords, never reset outside TCP), an
+// internal limit this bound does not lean on. A server sends one or two
+// (crypto/tls one, OpenSSL two by default); the default cache keeps one
+// per server; a cache keeping several single-use tickets (RFC 9846 C.4)
+// gets four from a connection.
+const maxStoredTickets = 4
+
 // storeSession keeps a ticket from the server, with what a later DialEarly
 // needs to send 0-RTT under it: the parameters this connection's handshake
 // brought (rememberedParams), and the group the server chose, which
 // DialEarly offers alone so that no HelloRetryRequest meets its 0-RTT
 // (earlyTLSConfig). Session events being on, crypto/tls stores nothing
 // itself. A ticket that fails to store is one resumption less, not a
-// reason to end this connection.
+// reason to end this connection. Past maxStoredTickets on one connection,
+// a ticket is dropped unstored.
 func (c *Conn) storeSession(s *tls.SessionState) {
+	if c.ticketsStored >= maxStoredTickets {
+		return
+	}
+	c.ticketsStored++
 	if raw := c.peerParamsRaw; raw != nil {
 		s.Extra = append(s.Extra, rememberedEntry(raw))
 	}
