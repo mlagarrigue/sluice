@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/mlagarrigue/sluice"
@@ -2726,21 +2727,40 @@ func TestH2StalledStreamDoesNotDelayTheNext(t *testing.T) {
 // makes the field, and not the default, the reason the body arrives whole —
 // so the 8 KiB answer takes four timeouts.
 func TestH2SlowReaderAboveTheProgressFloorIsServedToTheEnd(t *testing.T) {
+	synctest.Test(t, testH2SlowReaderAboveTheProgressFloorIsServedToTheEnd)
+}
+
+// testH2SlowReaderAboveTheProgressFloorIsServedToTheEnd runs under synctest,
+// over net.Pipe: the timeouts are the protocol's alone. On a shared macOS
+// runner the real clock reset the stream at 7 500 bytes of 8 192, a grant
+// arriving late against the 300 ms timeout.
+func testH2SlowReaderAboveTheProgressFloorIsServedToTheEnd(t *testing.T) {
 	const (
 		timeout = 300 * time.Millisecond
 		grant   = 1500
 	)
 	body := bytes.Repeat([]byte{'s'}, 8192)
-	addr, _ := serveH2(t, Config{WriteTimeout: timeout, WriteProgressBytes: 1024},
-		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
-			res := make([]Response, b.Len())
-			for i := range res {
-				res[i] = Response{Status: 200, Body: body}
-			}
-			return sluice.Batch[Response]{Items: res}
-		})
-	c := dialH2(t, addr)
-	defer func() { _ = c.conn.Close() }()
+	client, server := net.Pipe()
+	ctx, cancel := context.WithCancel(t.Context())
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		_ = ServeH2Conn(ctx, server, Config{WriteTimeout: timeout, WriteProgressBytes: 1024},
+			func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+				res := make([]Response, b.Len())
+				for i := range res {
+					res[i] = Response{Status: 200, Body: body}
+				}
+				return sluice.Batch[Response]{Items: res}
+			})
+	}()
+	defer func() {
+		cancel()
+		_ = client.Close()
+		_ = server.Close()
+		<-served
+	}()
+	c := h2clientOn(t, client)
 
 	c.frame(h2Frame{Type: frameSettings, Payload: settingsPayload([2]uint32{settingInitialWindowSize, 0})})
 	c.request(1, "GET", "/slow")
