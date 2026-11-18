@@ -15,6 +15,13 @@ func TestShutdownEndsWhenTheLossTimerEmptiesTheFlight(t *testing.T) {
 	c, _ := appConn(t)
 	ackInFlight(t, c)
 	c.mu.Lock()
+	// A round trip of 100 ms, so that the loss delay (9/8 of it) is far
+	// above a coarse clock's tick: under a near-zero sample it fell to its
+	// 1 ms floor, and on Windows the probe was declared lost by the ACK
+	// itself, before the timer this test fires was ever armed.
+	c.rtt.sampled = true
+	c.rtt.latest, c.rtt.min, c.rtt.smoothed = 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond
+	c.rtt.variance = 50 * time.Millisecond
 	sp := &c.spaces[spaceApplication]
 	if err := c.sendPacketLocked(spaceApplication, []byte{framePing}, sendOpts{noRetrans: true}); err != nil {
 		c.mu.Unlock()
