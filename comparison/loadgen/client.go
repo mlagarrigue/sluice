@@ -368,7 +368,10 @@ func (c *client) warm(ctx context.Context, conns int) []result {
 		c.conns = append(c.conns, c.dial(true))
 	}
 	c.mu.Unlock()
-	results := make([]result, conns-from)
+	// A stage whose budget is under the one before keeps the connections
+	// it has and opens none: -rates in any order, a lower rate after a
+	// higher one included.
+	results := make([]result, max(conns-from, 0))
 	var wg sync.WaitGroup
 	for i := from; i < conns; i++ {
 		wg.Go(func() {

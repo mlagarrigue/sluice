@@ -196,3 +196,22 @@ func TestABudgetThatWillNotOpenIsAStage(t *testing.T) {
 		t.Fatalf("held %v cause %q sent %d refused %d ok %d, want a broken stage of refusals", rep.Held, rep.Cause, rep.Sent, rep.Refused, rep.OK)
 	}
 }
+
+// A stage whose budget is smaller than the one before — the budget follows
+// the rate, and -rates 1000,100 asks for it — keeps the connections opened
+// and opens none. warm sized its results by the difference, negative here,
+// and panicked in the middle of the campaign.
+func TestAStageOfASmallerBudgetWarmsNothingNew(t *testing.T) {
+	c := &client{conns: make([]conn, 5)}
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("warm with a budget of 2 and 5 connections kept panicked: %v", r)
+		}
+	}()
+	if failed := c.warm(context.Background(), 2); len(failed) != 0 {
+		t.Errorf("failed openings: %v", failed)
+	}
+	if len(c.conns) != 5 {
+		t.Errorf("%d connections kept, want the 5 opened", len(c.conns))
+	}
+}
