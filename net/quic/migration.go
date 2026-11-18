@@ -1505,8 +1505,9 @@ func (c *Conn) holdResponseLocked(responses []byte) {
 
 // sendHeldResponseLocked sends the held PATH_RESPONSE once the window has
 // room for its datagram, expanded to 1200 bytes as §8.2.2 asks; one held
-// for a path no longer in use is dropped. Callers hold mu.
-func (c *Conn) sendHeldResponseLocked() {
+// for a path no longer in use is dropped. leaving sends it as the path being
+// left's (sendOpts.leaving). Callers hold mu.
+func (c *Conn) sendHeldResponseLocked(leaving bool) {
 	h := &c.heldResponse
 	if !h.owed {
 		return
@@ -1519,7 +1520,7 @@ func (c *Conn) sendHeldResponseLocked() {
 		return
 	}
 	h.owed = false
-	_ = c.sendPacketLocked(spaceApplication, h.frame[:], sendOpts{noRetrans: true, padTo: 1200})
+	_ = c.sendPacketLocked(spaceApplication, h.frame[:], sendOpts{noRetrans: true, padTo: 1200, leaving: leaving})
 }
 
 // maxOffPathAnswers is how many packets sent off the path in use — answers
@@ -1876,7 +1877,14 @@ func (c *Conn) sendOldPathChallengeLocked() {
 	c.pathProbe.oldSentOnce = true
 	payload := varint.Append(nil, framePathChallenge)
 	payload = append(payload, c.pathProbe.oldData[:]...)
-	c.flushControlLocked()
+	// What waits in the control queue goes first. Before the move — the
+	// call from migrateLocked — it leaves on the path being left, as the
+	// challenge does, and like it is kept off the new path's books (§9.4):
+	// its send time follows the new path's start, so neither its address
+	// nor its socket would tell it apart. A resend after the move flushes
+	// onto the path in use, as any flush does.
+	moved := c.pc != c.pathProbe.oldPC || !sameAddr(c.peer, c.pathProbe.oldPeer)
+	c.flushControlOnLocked(sendOpts{leaving: !moved})
 	_ = c.sendPacketLocked(spaceApplication, payload, sendOpts{
 		noRetrans: true, to: c.pathProbe.oldPeer, via: c.pathProbe.oldPC, dcid: dcid, padTo: 1200, leaving: true,
 	})

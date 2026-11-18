@@ -1258,21 +1258,32 @@ func (c *Conn) sendCrypto(l tls.QUICEncryptionLevel, data []byte) error {
 // deficit, made up here — this runs after every processed packet — once
 // the packet before freed the room.
 func (c *Conn) flushControlLocked() {
+	c.flushControlOnLocked(sendOpts{})
+}
+
+// flushControlOnLocked is flushControlLocked with every packet sent under
+// opts. leaving is the one it takes (sendOldPathChallengeLocked): what
+// drains just before a migration leaves on the path being left, and RFC
+// 9000 §9.4 keeps it off the new path's books; probing that path's MTU is
+// then pointless, and the probe waits for the new one.
+func (c *Conn) flushControlOnLocked(opts sendOpts) {
 	if c.spaces[spaceApplication].sealer == nil {
 		return
 	}
 	// The DPLPMTUD probe waits on the same things the control queue does —
 	// a validated path, room in the window — and is retried from the same
 	// place, and so is a PATH_RESPONSE a full window held back.
-	c.maybeProbePMTULocked()
-	c.sendHeldResponseLocked()
+	if !opts.leaving {
+		c.maybeProbePMTULocked()
+	}
+	c.sendHeldResponseLocked(opts.leaving)
 	for {
 		c.issueLocalCIDsLocked()
 		before := len(c.grants) + len(c.control)
 		if before == 0 {
 			return
 		}
-		if err := c.sendPacketLocked(spaceApplication, nil, sendOpts{}); err != nil {
+		if err := c.sendPacketLocked(spaceApplication, nil, opts); err != nil {
 			return
 		}
 		if len(c.grants)+len(c.control) == before {
