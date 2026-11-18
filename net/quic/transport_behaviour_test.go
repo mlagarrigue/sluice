@@ -906,59 +906,64 @@ func longChainTLS(t *testing.T) *tls.Config {
 // can raise the budget, and every probe timeout doubles the wait: at one
 // datagram per probe the eighth leaves after 63 intervals, at two after 7
 // (RFC 9002 §6.2.4). A 40 ms one-way latency makes the interval 120 ms,
-// which puts the two strategies on either side of the deadline.
+// which puts the two strategies on either side of the deadline. Under
+// synctest the clock is the protocol's alone: on a shared macOS runner the
+// real one put the eighth datagram at 2.07 s and 3.7 s, the handshake's
+// own work counted in the intervals.
 func TestClientProbesUnblockAnAmplificationLimitedServer(t *testing.T) {
-	serverPC, clientPC := dgram.Pair()
-	defer serverPC.Close()
-	defer clientPC.Close()
+	synctest.Test(t, func(t *testing.T) {
+		serverPC, clientPC := dgram.Pair()
+		defer serverPC.Close()
+		defer clientPC.Close()
 
-	clientHooked := &hookedConn{PacketConn: clientPC}
-	clientDatagrams := 0
-	dropped := 0
-	var first, eighth time.Time
-	clientHooked.mu.Lock()
-	clientHooked.filterWrite = func(b []byte) [][]byte {
-		clientDatagrams++
-		switch {
-		case clientDatagrams == 1:
-			first = time.Now()
-		case clientDatagrams <= 7:
-			dropped++
-			return nil
-		case clientDatagrams == 8:
-			eighth = time.Now()
-		}
-		return [][]byte{b}
-	}
-	clientHooked.mu.Unlock()
-
-	connCh, errCh := startEchoServerTLS(t, &delayedConn{PacketConn: serverPC, delay: 40 * time.Millisecond}, longChainTLS(t))
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	conn, err := quic.Dial(ctx, clientHooked, serverPC.LocalAddr(), clientTLS(), quic.DefaultConfig())
-	if err != nil {
+		clientHooked := &hookedConn{PacketConn: clientPC}
+		clientDatagrams := 0
+		dropped := 0
+		var first, eighth time.Time
 		clientHooked.mu.Lock()
-		n, dr := clientDatagrams, dropped
+		clientHooked.filterWrite = func(b []byte) [][]byte {
+			clientDatagrams++
+			switch {
+			case clientDatagrams == 1:
+				first = time.Now()
+			case clientDatagrams <= 7:
+				dropped++
+				return nil
+			case clientDatagrams == 8:
+				eighth = time.Now()
+			}
+			return [][]byte{b}
+		}
 		clientHooked.mu.Unlock()
-		t.Fatalf("the handshake did not complete in 5 s (%d client datagrams, %d dropped): %v", n, dr, err)
-	}
-	defer conn.Close()
-	select {
-	case sc := <-connCh:
-		defer sc.Close()
-	case err := <-errCh:
-		t.Fatalf("the server: %v", err)
-	}
-	clientHooked.mu.Lock()
-	dr, gap := dropped, eighth.Sub(first)
-	clientHooked.mu.Unlock()
-	if dr != 6 {
-		t.Fatalf("%d client datagrams were dropped, want 6; the test proved nothing", dr)
-	}
-	// Seven intervals of 120 ms, with room for the scheduler.
-	if gap > 2*time.Second {
-		t.Errorf("the eighth client datagram left %v after the first; two probes per timeout put it under a second", gap)
-	}
+
+		connCh, errCh := startEchoServerTLS(t, &delayedConn{PacketConn: serverPC, delay: 40 * time.Millisecond}, longChainTLS(t))
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		conn, err := quic.Dial(ctx, clientHooked, serverPC.LocalAddr(), clientTLS(), quic.DefaultConfig())
+		if err != nil {
+			clientHooked.mu.Lock()
+			n, dr := clientDatagrams, dropped
+			clientHooked.mu.Unlock()
+			t.Fatalf("the handshake did not complete in 5 s (%d client datagrams, %d dropped): %v", n, dr, err)
+		}
+		defer conn.Close()
+		select {
+		case sc := <-connCh:
+			defer sc.Close()
+		case err := <-errCh:
+			t.Fatalf("the server: %v", err)
+		}
+		clientHooked.mu.Lock()
+		dr, gap := dropped, eighth.Sub(first)
+		clientHooked.mu.Unlock()
+		if dr != 6 {
+			t.Fatalf("%d client datagrams were dropped, want 6; the test proved nothing", dr)
+		}
+		// Seven intervals of 120 ms, with room for the scheduler.
+		if gap > 2*time.Second {
+			t.Errorf("the eighth client datagram left %v after the first; two probes per timeout put it under a second", gap)
+		}
+	})
 }
 
 // Several streams written at once against a connection window that binds:

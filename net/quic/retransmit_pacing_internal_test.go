@@ -2,7 +2,10 @@ package quic
 
 import (
 	"testing"
+	"testing/synctest"
 	"time"
+
+	"github.com/mlagarrigue/sluice/internal/dgram"
 )
 
 // queueLostPayloads sets a connection up as the tail of a long transfer
@@ -61,29 +64,43 @@ func TestRetransmitPassIsBoundedByTheInitialWindow(t *testing.T) {
 // The twin: what the pacer held back leaves on its own, pass after pass at
 // the pace deadline the timer loop answers, without an ACK to prompt it and
 // well before the probe timeout — a retransmission delayed past its PTO
-// would answer loss with more loss.
+// would answer loss with more loss. Under synctest, over an in-memory pair:
+// on a shared macOS runner the real clock let the first pass drain the
+// queue (run 43908454823), the bucket refilling while the pass ran.
 func TestRetransmitRestLeavesByTheTimerBeforeThePTO(t *testing.T) {
-	c, _ := newKeyedConn(t)
-	c.mu.Lock()
-	sp, _ := queueLostPayloads(t, c)
-	start := time.Now()
-	c.retransmitLocked()
-	left := len(sp.retrans)
-	pto := c.rtt.pto(c.peerMaxAckDelayLocked())
-	c.mu.Unlock()
-	if left == 0 {
-		t.Fatal("the first pass drained the queue: nothing left for the timer to send")
-	}
-	for {
+	synctest.Test(t, func(t *testing.T) {
+		pcA, pcB := dgram.Pair()
+		t.Cleanup(func() { _ = pcA.Close(); _ = pcB.Close() })
+		go func() { // the peer reads, so that no write waits on a full queue
+			buf := make([]byte, 2048)
+			for {
+				if _, _, err := pcB.ReadFrom(buf); err != nil {
+					return
+				}
+			}
+		}()
+		c, _ := newKeyedConnOn(t, pcA, pcB)
 		c.mu.Lock()
-		left = len(sp.retrans)
+		sp, _ := queueLostPayloads(t, c)
+		start := time.Now()
+		c.retransmitLocked()
+		left := len(sp.retrans)
+		pto := c.rtt.pto(c.peerMaxAckDelayLocked())
 		c.mu.Unlock()
 		if left == 0 {
-			break
+			t.Fatal("the first pass drained the queue: nothing left for the timer to send")
 		}
-		if time.Since(start) > pto {
-			t.Fatalf("%d payloads still queued after the probe timeout (%v): the pace deadline did not bring them out", left, pto)
+		for {
+			c.mu.Lock()
+			left = len(sp.retrans)
+			c.mu.Unlock()
+			if left == 0 {
+				break
+			}
+			if time.Since(start) > pto {
+				t.Fatalf("%d payloads still queued after the probe timeout (%v): the pace deadline did not bring them out", left, pto)
+			}
+			time.Sleep(time.Millisecond)
 		}
-		time.Sleep(time.Millisecond)
-	}
+	})
 }
