@@ -185,6 +185,63 @@ func TestH2WriterShedKeepsTwoOrdinaryBatches(t *testing.T) {
 	}
 }
 
+// The writer's queue keeps no pointer to a job it let go of. A filter in
+// place left the jobs it dropped in the tail of the queue's array, past its
+// length, where they kept the whole job list of their batch reachable after
+// shed had let go of it: 50 KB a connection where 25 KB was live.
+func TestH2WriterQueueKeepsNoDroppedJob(t *testing.T) {
+	stale := func(name string, w *h2Writer) {
+		t.Helper()
+		for i, j := range w.jobs[len(w.jobs):cap(w.jobs)] {
+			if j != nil {
+				t.Errorf("%s: slot %d past the queue still points at stream %d", name, len(w.jobs)+i, j.id)
+			}
+		}
+	}
+	queue := func(w *h2Writer) {
+		w.jobs = []*h2Job{
+			{id: 1, head: []byte{0}, closes: true},
+			{id: 3, headSent: true, data: make([]byte, 4), deadline: time.Now().Add(time.Hour)},
+			{id: 5, head: []byte{0}, closes: true},
+		}
+	}
+
+	w := testWriter(1, 3, 5)
+	w.connWind = 0 // stream 3 waits for credit; 1 and 5 finish
+	queue(w)
+	w.fill()
+	if len(w.jobs) != 1 {
+		t.Fatalf("fill kept %d jobs, want 1", len(w.jobs))
+	}
+	stale("fill", w)
+
+	w = testWriter(1, 3, 5)
+	queue(w)
+	w.forgetLocked(1)
+	stale("forget", w)
+
+	w = testWriter(1, 3, 5)
+	w.connWind = 0
+	queue(w)
+	w.jobs[0].deadline, w.jobs[2].deadline = time.Now().Add(-time.Second), time.Now().Add(-time.Second)
+	w.jobs[0].head, w.jobs[2].head = nil, nil
+	w.jobs[0].headSent, w.jobs[2].headSent = true, true
+	w.jobs[0].data, w.jobs[2].data = make([]byte, 4), make([]byte, 4)
+	w.expire()
+	if len(w.jobs) != 1 {
+		t.Fatalf("expire kept %d jobs, want 1", len(w.jobs))
+	}
+	stale("expire", w)
+
+	// Idle, the queue lets go of a list a burst grew.
+	w = testWriter()
+	w.jobs = make([]*h2Job, 0, h2KeptJobs+1)
+	w.shed()
+	if w.jobs != nil {
+		t.Error("an idle queue kept a list grown past an ordinary batch")
+	}
+}
+
 // A table size update the peer is owed once is written once.
 func TestH2WriterTableUpdateOfOneSize(t *testing.T) {
 	w := testWriter()

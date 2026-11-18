@@ -419,7 +419,7 @@ func (w *h2Writer) expire() {
 		// would report on has already been answered.
 		_ = w.appendCtrl32(frameRSTStream, j.id, errCancel)
 	}
-	w.jobs = kept
+	w.jobs = dropTail(w.jobs, kept)
 	w.turn = 0
 }
 
@@ -496,7 +496,7 @@ func (w *h2Writer) fill() []*h2Job {
 			kept = append(kept, j)
 		}
 	}
-	w.jobs = kept
+	w.jobs = dropTail(w.jobs, kept)
 	if len(w.jobs) > 0 {
 		w.turn = (w.turn + 1) % len(w.jobs)
 	} else {
@@ -705,14 +705,18 @@ func (w *h2Writer) settle(j *h2Job, err error) {
 // grows a batch to one job per request and its frame buffer to every head,
 // and the free list to one batch per call in flight, and kept at that
 // high-water mark an idle connection held some twenty kilobytes more than
-// an HTTP/1.1 one after a hundred requests at once. The free list keeps two
-// batches, each no more than an ordinary batch needs; the next burst
-// allocates again, once. Nothing is touched while a job is queued.
+// an HTTP/1.1 one after a hundred requests at once. The queue lets go of a
+// list a burst grew, and the free list keeps two batches, each no more than
+// an ordinary batch needs; the next burst allocates again, once. Nothing is
+// touched while a job is queued.
 func (w *h2Writer) shed() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if len(w.jobs) != 0 {
 		return
+	}
+	if cap(w.jobs) > h2KeptJobs {
+		w.jobs = nil
 	}
 	if len(w.free) > 2 {
 		clear(w.free[2:])
@@ -726,6 +730,17 @@ func (w *h2Writer) shed() {
 			b.out = nil
 		}
 	}
+}
+
+// dropTail returns kept, the jobs filtered in place out of all, after
+// clearing what kept no longer covers. A pointer left there is a pointer
+// into a batch's job list: shed lets go of the list, but the stale pointer
+// keeps the whole of it reachable, and how many stay depends on how many
+// batches a burst was split into — an HTTP/2 connection on a slow runner
+// held 50 KB after a hundred requests at once where a fast machine held 42.
+func dropTail(all, kept []*h2Job) []*h2Job {
+	clear(all[len(kept):])
+	return kept
 }
 
 // h2KeptJobs and h2KeptOut are what a batch keeps of its job list and frame
@@ -1238,7 +1253,7 @@ func (w *h2Writer) forgetLocked(id uint32) {
 		}
 		w.settle(j, errStreamGone)
 	}
-	w.jobs = kept
+	w.jobs = dropTail(w.jobs, kept)
 	w.turn = 0
 	w.wakeAll()
 }
