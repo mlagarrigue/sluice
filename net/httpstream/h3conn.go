@@ -614,6 +614,14 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []quic
 		a.queued, a.fin = 0, f.Fin
 		err := a.drain(st)
 		a.fin = false
+		if err != nil {
+			// Every error below drops the stream or ends the connection.
+			// drain returns it with the buffer as the delivery left it, and
+			// the body bytes it copied out of the buffer are in it twice:
+			// counted as retained in both, they were released twice, once by
+			// the drop and once more as the release below fell negative.
+			st.buf = st.buf[:0]
+		}
 		a.assembling += len(st.buf) + len(st.req.Body) - before
 		// What drain consumed outright — header blocks decoded, frame
 		// headers parsed — stopped being retained now; the body bytes it

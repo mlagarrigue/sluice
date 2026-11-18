@@ -170,6 +170,41 @@ func TestH3AssemblerDropReleasesWhatItHeld(t *testing.T) {
 	}
 }
 
+// A stream refused after body frames it had kept releases every byte it
+// delivered once: the body copied out of the buffer was counted in both and
+// released twice, its frames ahead of a refused frame as much as the small
+// DATA frames ahead of one past MaxBodyBytes.
+func TestH3ARefusedStreamReleasesEachByteOnce(t *testing.T) {
+	const ahead = 40
+	for _, tt := range []struct {
+		name  string
+		cfg   Config
+		typ   uint64
+		bound func(Config) int
+	}{
+		{"headers over the bound, streamed", Config{BodyDelivery: BodyStreamed}, h3Headers, func(c Config) int { return c.MaxBodyBytes }},
+		{"data over the bound, whole", Config{BodyDelivery: BodyWhole}, h3Data, func(c Config) int { return c.MaxBodyBytes }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			a := testAssembler(tt.cfg)
+			released := 0
+			a.Credit = func(_ quic.StreamID, n uint64) { released += int(n) } //nolint:gosec // G115: a few bytes
+			delivered := h3Request("POST", "/x")
+			for range ahead {
+				delivered = append(delivered, data("x")...)
+			}
+			delivered = append(varint.Append(varint.Append(delivered, tt.typ), uint64(tt.bound(a.cfg))+1), 1, 2, 3) //nolint:gosec // G115: positive config
+			_, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, delivered, false)})
+			if err != nil || len(failed) != 1 {
+				t.Fatalf("failed %v, err %v; want the stream refused", failed, err)
+			}
+			if released != len(delivered) || a.assembling != 0 {
+				t.Errorf("%d of %d delivered bytes released, %d still counted", released, len(delivered), a.assembling)
+			}
+		})
+	}
+}
+
 func TestH3AssemblerAdmitTracksTheHighestStream(t *testing.T) {
 	a := testAssembler(Config{})
 	a.admit(0)
