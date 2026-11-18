@@ -34,6 +34,19 @@
 #
 # One binary, built from the working tree; one transfer per benchmark and
 # round (BENCHTIME 1x), unpinned for the reasons gate-path.sh gives.
+#
+# A median criterion that fails is read again, a whole second series, and
+# judged on that one; both series are printed. A shared runner has episodes:
+# on 2026-11-11 (run 43901112486) half the rounds of one job shifted, the
+# RTT80Shallow median read 1.135 where seven neighbouring jobs read 1.205 to
+# 1.235, on a commit that changed only the changelog. One series judged
+# alone turned that episode into a red build; a controller that really
+# misses its bound misses it twice. The per-round bound of bbr is not read
+# again: a round over it is the failure, not noise around a median.
+#
+# GATE_CC_METRIC, when set, names a command run instead of the benchmark
+# binary, with the controller, the benchmark and the unit as arguments, and
+# nothing is built: the script's own judgement, played on series made up.
 set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 ROUNDS="${1:-8}"
@@ -53,39 +66,71 @@ esac
 
 BINDIR="$(mktemp -d)"
 trap 'rm -rf "$BINDIR"' EXIT
-echo "building from the working tree..."
-go test -c -o "$BINDIR/bench" "$ROOT/$PKG"
+if [ -z "${GATE_CC_METRIC:-}" ]; then
+  echo "building from the working tree..."
+  go test -c -o "$BINDIR/bench" "$ROOT/$PKG"
+fi
 
 # metric <controller> <benchmark> <unit>: one transfer, the figure printed
 # before unit. A benchmark that does not run prints nothing, and the caller
 # fails on the empty value rather than reading it as zero.
 metric() {
+  if [ -n "${GATE_CC_METRIC:-}" ]; then
+    "$GATE_CC_METRIC" "$1" "$2" "$3"
+    return
+  fi
   SLUICE_QUIC_CC="$1" "$BINDIR/bench" -test.run='^$' -test.bench="^$2\$" \
     -test.benchtime=1x -test.count=1 2>/dev/null |
     awk -v u="$3" '/^Benchmark/ { for (i = 3; i <= NF; i++) if ($i == u) print $(i-1) }'
 }
 
+median() {
+  tr ' ' '\n' <<<"$1" | grep . | sort -g | awk '{ a[NR] = $1 } END { print (NR % 2) ? a[(NR + 1) / 2] : (a[NR / 2] + a[NR / 2 + 1]) / 2 }'
+}
+
+# judge <name> <series-function> <comparison> <bound>: runs the series, and
+# a second one when the first's median is out of bound (comparison "over":
+# above it; "under": below it), and prints each. Sets fail when the last
+# series read is out of bound.
+judge() {
+  local name="$1" series="$2" cmp="$3" bound="$4" try values m verdict
+  for try in 1 2; do
+    values="$("$series")"
+    m="$(median "$values")"
+    verdict=ok
+    if [ "$cmp" = over ] && awk -v m="$m" -v b="$bound" 'BEGIN { exit !(m > b) }'; then verdict=OVER; fi
+    if [ "$cmp" = under ] && awk -v m="$m" -v b="$bound" 'BEGIN { exit !(m < b) }'; then verdict=UNDER; fi
+    echo "$name, series $try:$values, median $m, bound $bound — $verdict"
+    [ "$verdict" = ok ] && return
+    [ "$try" = 1 ] && echo "$name: read again — one series out of bound may be the runner's episode"
+  done
+  fail=1
+}
+
 fail=0
 need() {
   if [ -z "$2" ]; then
-    echo "controller gate: $1 printed no figure — the gate did not measure it"
+    echo "controller gate: $1 printed no figure — the gate did not measure it" >&2
     exit 1
   fi
 }
 
-shares=""
-for r in $(seq 1 "$ROUNDS"); do
-  s="$(metric "$CC" BenchmarkTransferTwoFlowsVsReno share)"
-  need "BenchmarkTransferTwoFlowsVsReno round $r" "$s"
-  shares="$shares $s"
-done
-median="$(tr ' ' '\n' <<<"$shares" | grep . | sort -g | awk '{ a[NR] = $1 } END { print (NR % 2) ? a[(NR + 1) / 2] : (a[NR / 2] + a[NR / 2 + 1]) / 2 }')"
-verdict=ok
-if awk -v m="$median" -v b="$MAXSHARE" 'BEGIN { exit !(m > b) }'; then verdict=OVER; fail=1; fi
-echo "TwoFlowsVsReno ($CC): share$shares, median $median, bound $MAXSHARE — $verdict"
+# shares prints a series of TwoFlowsVsReno shares.
+shares() {
+  local r s out=""
+  for r in $(seq 1 "$ROUNDS"); do
+    s="$(metric "$CC" BenchmarkTransferTwoFlowsVsReno share)"
+    need "BenchmarkTransferTwoFlowsVsReno round $r" "$s"
+    out="$out $s"
+  done
+  echo "$out"
+}
+judge "TwoFlowsVsReno ($CC): share" shares over "$MAXSHARE"
 
-if [ "$CC" = cubic ]; then
-  gains=""
+# gains prints a series of RTT80Shallow gains, Reno's time over CUBIC's,
+# each round's detail on stderr.
+gains() {
+  local r c n gain out=""
   for r in $(seq 1 "$ROUNDS"); do
     # Alternate which side runs first, so a drift within the round does not
     # always land on the same controller.
@@ -99,14 +144,15 @@ if [ "$CC" = cubic ]; then
     need "BenchmarkTransferRTT80Shallow round $r" "$c"
     need "BenchmarkTransferRTT80Shallow round $r" "$n"
     gain="$(awk -v n="$n" -v c="$c" 'BEGIN { printf "%.2f", n / c }')"
-    gains="$gains $gain"
+    out="$out $gain"
     awk -v r="$r" -v n="$n" -v c="$c" -v g="$gain" \
-      'BEGIN { printf "RTT80Shallow round %d: Reno %.2f s, CUBIC %.2f s, gain %s\n", r, n / 1e9, c / 1e9, g }'
+      'BEGIN { printf "RTT80Shallow round %d: Reno %.2f s, CUBIC %.2f s, gain %s\n", r, n / 1e9, c / 1e9, g }' >&2
   done
-  median="$(tr ' ' '\n' <<<"$gains" | grep . | sort -g | awk '{ a[NR] = $1 } END { print (NR % 2) ? a[(NR + 1) / 2] : (a[NR / 2] + a[NR / 2 + 1]) / 2 }')"
-  verdict=ok
-  if awk -v m="$median" -v b="$MINGAIN" 'BEGIN { exit !(m < b) }'; then verdict=UNDER; fail=1; fi
-  echo "RTT80Shallow ($CC): gain$gains, median $median, bound $MINGAIN — $verdict"
+  echo "$out"
+}
+
+if [ "$CC" = cubic ]; then
+  judge "RTT80Shallow ($CC): gain" gains under "$MINGAIN"
 fi
 
 if [ "$CC" = bbr ]; then
