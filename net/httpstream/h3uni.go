@@ -22,6 +22,9 @@ func (a *h3Assembler) uni(f quic.Frame) error {
 		u = &h3Uni{kind: -1}
 		a.unis[f.StreamID] = u
 	}
+	// in is what the stream's reader goes through: the delivery itself
+	// when nothing was parked, read in place (joined, keep).
+	var in []byte
 	switch u.kind {
 	case -1:
 		// The whole delivery is appended, but only an incomplete type varint
@@ -38,6 +41,7 @@ func (a *h3Assembler) uni(f quic.Frame) error {
 			return nil
 		}
 		u.buf = keepRest(u.buf, rest)
+		in = u.buf
 		switch typ {
 		case h3StreamControl:
 			if a.hasControl {
@@ -83,26 +87,26 @@ func (a *h3Assembler) uni(f quic.Frame) error {
 		// would refuse a long GREASE frame the section says to ignore.
 		data, skip := skipAhead(f.Data, u.skip)
 		u.skip = skip
-		u.buf = append(u.buf, data...)
+		in = u.joined(data)
 	case h3StreamQPACKEncode, h3StreamQPACKDecode:
 		// Each instruction is consumed as soon as it is whole, so what parks
 		// here is at most one integer's few bytes.
-		u.buf = append(u.buf, f.Data...)
+		in = u.joined(f.Data)
 	}
+	var rest []byte
+	var err error
 	switch u.kind {
 	case h3StreamControl:
-		if err := a.controlFrames(u); err != nil {
-			return err
-		}
+		rest, err = a.controlFrames(u, in)
 	case h3StreamQPACKEncode:
-		if err := a.encoderInstructions(u); err != nil {
-			return err
-		}
+		rest, err = a.encoderInstructions(in)
 	case h3StreamQPACKDecode:
-		if err := a.decoderInstructions(u); err != nil {
-			return err
-		}
+		rest, err = a.decoderInstructions(in)
 	}
+	if err != nil {
+		return err
+	}
+	u.keep(in, rest)
 	if f.Fin {
 		kind := u.kind
 		delete(a.unis, f.StreamID)
@@ -115,25 +119,23 @@ func (a *h3Assembler) uni(f quic.Frame) error {
 // SETTINGS first and once (§6.2.1, §7.2.4), nothing that belongs on a
 // request stream, and the frames a non-pushing server has no action for
 // skipped.
-func (a *h3Assembler) controlFrames(u *h3Uni) error {
-	if !a.controlSettings && len(u.buf) > 0 {
+func (a *h3Assembler) controlFrames(u *h3Uni, in []byte) (rest []byte, err error) {
+	if !a.controlSettings && len(in) > 0 {
 		// §6.2.1: SETTINGS must be the control stream's very first frame.
 		// parseH3Frames below skips GREASE frame types, as §7.2.8 wants
 		// everywhere else — so the first frame's type is read here, before
 		// the skip can hide a GREASE frame standing where SETTINGS has to be.
-		if typ, _, err := varint.Read(u.buf); err == nil && typ != h3Settings {
-			return h3ConnectionError{Code: h3MissingSettings, Err: fmt.Errorf(
+		if typ, _, err := varint.Read(in); err == nil && typ != h3Settings {
+			return nil, h3ConnectionError{Code: h3MissingSettings, Err: fmt.Errorf(
 				"%w: the control stream opened with frame %#x, not SETTINGS", ErrH3Protocol, typ)}
 		}
 	}
 	// In passes of h3FramesKept frames, as drain parses a request stream:
 	// a delivery of three-byte frames regrows no scratch.
-	var rest []byte
-	for buf, more := u.buf, true; more; buf = rest {
+	for buf, more := in, true; more; buf = rest {
 		prev := len(a.frames)
 		var frames []h3Frame
 		var skip uint64
-		var err error
 		frames, rest, skip, more, err = parseH3FramesUpTo(a.frames[:0], buf, a.cfg.MaxHeaderBytes, h3FramesKept)
 		// Added, not set: a skip still owed emptied the buffer before the parse,
 		// which then started none; a parse that started one found none owed.
@@ -146,19 +148,19 @@ func (a *h3Assembler) controlFrames(u *h3Uni) error {
 			// is §7.2.8's H3_FRAME_UNEXPECTED.
 			if typ, _, e := varint.Read(rest); e == nil && errors.Is(err, ErrTooLarge) {
 				if fault := controlTypeFault(typ, a.controlSettings || len(frames) > 0); fault != nil {
-					return fault
+					return nil, fault
 				}
 			}
 			code := uint64(h3FrameError)
 			if errors.Is(err, errH3FrameUnexpected) {
 				code = h3FrameUnexpected
 			}
-			return h3ConnectionError{Code: code, Err: err}
+			return nil, h3ConnectionError{Code: code, Err: err}
 		}
 		for _, fr := range frames {
 			if !a.controlSettings {
 				if fr.Type != h3Settings {
-					return h3ConnectionError{Code: h3MissingSettings, Err: fmt.Errorf(
+					return nil, h3ConnectionError{Code: h3MissingSettings, Err: fmt.Errorf(
 						"%w: the control stream opened with frame %#x, not SETTINGS", ErrH3Protocol, fr.Type)}
 				}
 				if err := a.settings(fr.Payload); err != nil {
@@ -169,13 +171,13 @@ func (a *h3Assembler) controlFrames(u *h3Uni) error {
 					if errors.Is(err, errH3FrameLayout) {
 						code = h3FrameError
 					}
-					return h3ConnectionError{Code: code, Err: err}
+					return nil, h3ConnectionError{Code: code, Err: err}
 				}
 				a.controlSettings = true
 				continue
 			}
 			if fault := controlTypeFault(fr.Type, true); fault != nil {
-				return fault
+				return nil, fault
 			}
 			switch fr.Type {
 			case h3GoAway, h3MaxPushID, h3CancelPush:
@@ -186,13 +188,12 @@ func (a *h3Assembler) controlFrames(u *h3Uni) error {
 				// §7.2.3 and §7.2.7 — each a MUST for a connection error, and
 				// each a peer whose framer or push state is wrong.
 				if err := a.controlIdentifier(fr); err != nil {
-					return err
+					return nil, err
 				}
 			}
 		}
 	}
-	u.buf = keepRest(u.buf, rest)
-	return nil
+	return rest, nil
 }
 
 // controlTypeFault is the connection error a control-stream frame of type
@@ -251,18 +252,16 @@ func (a *h3Assembler) controlIdentifier(fr h3Frame) error {
 // and which §4.3.1 gives no ground to refuse. An insert, a duplicate, or a
 // capacity above the advertised zero is the connection error
 // QPACK_ENCODER_STREAM_ERROR (§4.2, §8.3).
-func (a *h3Assembler) encoderInstructions(u *h3Uni) error {
-	// One pass over the buffer, one compaction at the end (keepRest):
-	// moving the rest to the front after each instruction made a delivery of
+func (a *h3Assembler) encoderInstructions(buf []byte) (rest []byte, err error) {
+	// One pass over the buffer, one compaction at the end (keep): moving
+	// the rest to the front after each instruction made a delivery of
 	// one-byte instructions quadratic.
-	buf := u.buf
-	defer func() { u.buf = keepRest(u.buf, buf) }()
 	for len(buf) > 0 {
 		if buf[0]&0xe0 != 0x20 {
 			// Insert With Name Reference (1xxxxxxx), Insert With Literal
 			// Name (01xxxxxx) and Duplicate (000xxxxx) all grow or read a
 			// table whose capacity cannot leave zero.
-			return h3ConnectionError{Code: qpackEncoderStreamError, Err: fmt.Errorf(
+			return nil, h3ConnectionError{Code: qpackEncoderStreamError, Err: fmt.Errorf(
 				"%w: encoder instruction %#x against a dynamic-table capacity of zero", ErrH3Protocol, buf[0])}
 		}
 		capacity, rest, err := hpackInt(buf, 5)
@@ -270,18 +269,18 @@ func (a *h3Assembler) encoderInstructions(u *h3Uni) error {
 			// An integer that runs off the end has not all arrived yet; one
 			// wider than 62 bits (RFC 9204 §4.1.1) never will be legal.
 			if errors.Is(err, errIntegerShort) {
-				return nil
+				return buf, nil
 			}
-			return h3ConnectionError{Code: qpackEncoderStreamError, Err: fmt.Errorf(
+			return nil, h3ConnectionError{Code: qpackEncoderStreamError, Err: fmt.Errorf(
 				"%w: a dynamic-table capacity wider than 62 bits", ErrH3Protocol)}
 		}
 		if capacity != 0 {
-			return h3ConnectionError{Code: qpackEncoderStreamError, Err: fmt.Errorf(
+			return nil, h3ConnectionError{Code: qpackEncoderStreamError, Err: fmt.Errorf(
 				"%w: a dynamic-table capacity of %d, but zero was advertised", ErrH3Protocol, capacity)}
 		}
 		buf = rest
 	}
-	return nil
+	return buf, nil
 }
 
 // decoderInstructions consumes the client's QPACK decoder stream (RFC 9204
@@ -293,16 +292,15 @@ func (a *h3Assembler) encoderInstructions(u *h3Uni) error {
 // with nothing to acknowledge and an Insert Count Increment (§4.4.3) counts
 // inserts never sent, and both are QPACK_DECODER_STREAM_ERROR. Discarding the
 // stream unread, as before, accepted either without a word.
-func (a *h3Assembler) decoderInstructions(u *h3Uni) error {
-	buf := u.buf // one pass, one compaction, as in encoderInstructions
-	defer func() { u.buf = keepRest(u.buf, buf) }()
+func (a *h3Assembler) decoderInstructions(buf []byte) (rest []byte, err error) {
+	// One pass, one compaction, as in encoderInstructions.
 	for len(buf) > 0 {
 		switch b := buf[0]; {
 		case b&0x80 != 0:
-			return h3ConnectionError{Code: qpackDecoderStreamError, Err: fmt.Errorf(
+			return nil, h3ConnectionError{Code: qpackDecoderStreamError, Err: fmt.Errorf(
 				"%w: a Section Acknowledgment, but no field section used the dynamic table", ErrH3Protocol)}
 		case b&0x40 == 0:
-			return h3ConnectionError{Code: qpackDecoderStreamError, Err: fmt.Errorf(
+			return nil, h3ConnectionError{Code: qpackDecoderStreamError, Err: fmt.Errorf(
 				"%w: an Insert Count Increment, but nothing was ever inserted", ErrH3Protocol)}
 		}
 		// Stream Cancellation: a stream identifier with a 6-bit prefix, and
@@ -317,14 +315,14 @@ func (a *h3Assembler) decoderInstructions(u *h3Uni) error {
 			// As in encoderInstructions: an integer that runs off the end
 			// has not all arrived yet.
 			if errors.Is(err, errIntegerShort) {
-				return nil
+				return buf, nil
 			}
-			return h3ConnectionError{Code: qpackDecoderStreamError, Err: fmt.Errorf(
+			return nil, h3ConnectionError{Code: qpackDecoderStreamError, Err: fmt.Errorf(
 				"%w: a Stream Cancellation naming a stream wider than 62 bits", ErrH3Protocol)}
 		}
 		buf = rest
 	}
-	return nil
+	return buf, nil
 }
 
 // peerMaxFieldSection is the MAX_FIELD_SECTION_SIZE the client advertised, or

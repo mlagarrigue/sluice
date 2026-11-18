@@ -48,8 +48,8 @@ func TestH3UnknownControlFramesCostNothingHere(t *testing.T) {
 			if kept := len(a.unis[2].buf); kept != 0 {
 				t.Errorf("the control stream kept %d bytes of unknown frames, want none", kept)
 			}
-			// Per frame, nothing: the allocations of a delivery do not grow
-			// with the frames in it.
+			// Nothing at all: a delivery with nothing parked before it is
+			// read in place, whatever the frames in it.
 			perCall := func(n int) float64 {
 				frames := flood(n)
 				return testing.AllocsPerRun(5, func() {
@@ -58,8 +58,8 @@ func TestH3UnknownControlFramesCostNothingHere(t *testing.T) {
 					}
 				})
 			}
-			if ten, thousand := perCall(10), perCall(1000); thousand > ten {
-				t.Errorf("%v allocations for 1000 unknown frames against %v for 10: the flood is paid on this side's heap", thousand, ten)
+			if ten, thousand := perCall(10), perCall(1000); ten > 0 || thousand > 0 {
+				t.Errorf("%v allocations for 1000 unknown frames, %v for 10, want none: the flood is paid on this side's heap", thousand, ten)
 			}
 		})
 	}

@@ -278,6 +278,28 @@ type h3Uni struct {
 	skip uint64
 }
 
+// joined is what the stream's reader goes through for a delivery: the
+// delivery itself, read in place, when nothing is parked — a stream that
+// lasts the connection then holds no buffer of a delivery's size — else
+// the parked bytes with the delivery appended.
+func (u *h3Uni) joined(data []byte) []byte {
+	if len(u.buf) == 0 {
+		return data
+	}
+	u.buf = append(u.buf, data...)
+	return u.buf
+}
+
+// keep parks rest, the unread suffix of in, for the next delivery: copied
+// out when in was a delivery read in place, which the transport owns.
+func (u *h3Uni) keep(in, rest []byte) {
+	if len(u.buf) > 0 {
+		u.buf = keepRest(u.buf, rest)
+		return
+	}
+	u.buf = append(u.buf[:0], rest...)
+}
+
 // uniKindUnknown marks a typed unidirectional stream this server does not
 // read — reserved and extension types, which §6.2 says to discard without
 // erroring.

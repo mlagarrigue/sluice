@@ -17,7 +17,7 @@ func TestQPACKInstructionStreamsAreLinear(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		insn    byte
-		consume func(*h3Uni) error
+		consume func([]byte) ([]byte, error)
 	}{
 		{"encoder", 0x20, a.encoderInstructions},
 		{"decoder", 0x40, a.decoderInstructions},
@@ -36,12 +36,12 @@ func TestQPACKInstructionStreamsAreLinear(t *testing.T) {
 					rounds := 0
 					start := time.Now()
 					for rounds == 0 || time.Since(start) < 20*time.Millisecond {
-						u := &h3Uni{buf: append([]byte(nil), src...)}
-						if err := tc.consume(u); err != nil {
+						rest, err := tc.consume(append([]byte(nil), src...))
+						if err != nil {
 							t.Fatal(err)
 						}
-						if len(u.buf) != 0 {
-							t.Fatalf("%d bytes left after %d whole instructions", len(u.buf), n)
+						if len(rest) != 0 {
+							t.Fatalf("%d bytes left after %d whole instructions", len(rest), n)
 						}
 						rounds++
 					}

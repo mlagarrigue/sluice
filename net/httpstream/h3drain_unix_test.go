@@ -51,9 +51,11 @@ func TestH3DrainIncompleteFrameLeavesBufferInPlace(t *testing.T) {
 	u := &h3Uni{kind: h3StreamControl, buf: readOnlyPage(t, hdr, 32)}
 	first, length, capacity = &u.buf[0], len(u.buf), cap(u.buf)
 	if wrote := faults(func() {
-		if err := a.controlFrames(u); err != nil {
+		rest, err := a.controlFrames(u, u.buf)
+		if err != nil {
 			t.Fatalf("controlFrames: %v", err)
 		}
+		u.keep(u.buf, rest)
 	}); wrote {
 		t.Fatalf("controlFrames wrote into a buffer it consumed nothing of (%d bytes)", length)
 	}
