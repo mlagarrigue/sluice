@@ -132,7 +132,8 @@ func ServeH3Conn(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) 
 // connection's end, wake what is still waiting and wait for the calls and
 // writers, the forced stop bounding that wait.
 func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Handler) error {
-	// The handshake is done: one copy for every request of the connection.
+	// The state as the connection was handed over, the handshake possibly
+	// still under way for a connection accepted in 0-RTT (h3Serving.tlsState).
 	state := c.ConnectionState()
 	if err := refuseH3Conn(c, cfg); err != nil {
 		return err
@@ -416,13 +417,19 @@ func armH3Drain(drain, forced context.Context, c *quic.Conn, control *quic.Strea
 // streams (the connection lock serialises packets), and one goroutine per
 // stream keeps that stream's own writes ordered.
 type h3Serving struct {
-	c       *quic.Conn
-	cfg     Config
-	handle  Handler
-	forced  context.Context
-	state   tls.ConnectionState
-	control *quic.Stream
-	a       *h3Assembler
+	c      *quic.Conn
+	cfg    Config
+	handle Handler
+	forced context.Context
+	state  tls.ConnectionState
+	// stateDone is the TLS state once the handshake completed, taken once
+	// (doneOnce) by the first batch handled after it: state is the copy
+	// taken when the connection was handed over, before the handshake of a
+	// connection accepted in 0-RTT has completed (tlsState).
+	stateDone tls.ConnectionState
+	doneOnce  sync.Once
+	control   *quic.Stream
+	a         *h3Assembler
 
 	calls, writers sync.WaitGroup
 	launchMu       sync.Mutex
@@ -706,15 +713,29 @@ func (s *h3Serving) onFrames(frames []quic.Frame) error {
 			s.launch(&s.calls, func() {
 				select {
 				case <-c.HandshakeComplete():
-					answerH3(s.forced, c, &s.state, b, s.handle, writeBoundOf(s.cfg), &s.writers)
+					answerH3(s.forced, c, s.tlsState(), b, s.handle, writeBoundOf(s.cfg), &s.writers)
 				case <-c.Done():
 				}
 			})
 			return nil
 		}
 	}
-	s.launch(&s.calls, func() { answerH3(s.forced, c, &s.state, b, s.handle, writeBoundOf(s.cfg), &s.writers) })
+	s.launch(&s.calls, func() { answerH3(s.forced, c, s.tlsState(), b, s.handle, writeBoundOf(s.cfg), &s.writers) })
 	return nil
+}
+
+// tlsState is the TLS state a batch handled now carries in Request.TLS: the
+// copy taken when the connection was handed over while the handshake has not
+// completed — a batch of 0-RTT requests is handled under it — and the
+// completed state after, for every batch handled from then on.
+func (s *h3Serving) tlsState() *tls.ConnectionState {
+	select {
+	case <-s.c.HandshakeComplete():
+		s.doneOnce.Do(func() { s.stateDone = s.c.ConnectionState() })
+		return &s.stateDone
+	default:
+		return &s.state
+	}
 }
 
 // refuse is one stream's refusal, on that stream. The connection and every
