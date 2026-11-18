@@ -2,6 +2,7 @@ package pgtype
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"maps"
 	"math"
@@ -172,4 +173,33 @@ func FuzzDecodeVector(f *testing.F) {
 			t.Fatalf("DecodeVector(%x) -> %v -> %x", b, v, got)
 		}
 	})
+}
+
+// A value refused at its second pair costs what was read, not the table
+// its count announced: the count is bounded by the bytes (eight a pair) but
+// an entry of the table weighs several times that, and the table was made
+// whole before the first pair. Two empty keys in a row are refused as a
+// duplicate whatever the count says.
+func TestDecodeHstoreAllocatesForThePairsRead(t *testing.T) {
+	refused := func(n int) []byte {
+		b := binary.BigEndian.AppendUint32(nil, uint32(n)) //nolint:gosec // G115: a test's small count
+		for range n {
+			b = binary.BigEndian.AppendUint32(b, 0)          // an empty key
+			b = binary.BigEndian.AppendUint32(b, 0xffffffff) // a NULL value
+		}
+		return b
+	}
+	allocs := func(n int) float64 {
+		b := refused(n)
+		return testing.AllocsPerRun(20, func() {
+			if _, err := DecodeHstore(b); err == nil {
+				t.Fatal("a duplicate key was accepted")
+			}
+		})
+	}
+	// Equal counts, within the one or two the race detector adds to a
+	// pass; the whole table cost thirty more at 10 000.
+	if few, many := allocs(100), allocs(10000); many > few+3 {
+		t.Errorf("a value refused at its second pair costs %v allocations announcing 10 000 pairs, %v announcing 100", many, few)
+	}
 }

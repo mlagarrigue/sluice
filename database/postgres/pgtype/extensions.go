@@ -71,7 +71,9 @@ func DecodeHstore(b []byte) (Hstore, error) {
 	if n < 0 || n > len(body)/8 {
 		return nil, fmt.Errorf("%w: hstore declares %d pairs in %d bytes", ErrCodec, n, len(body))
 	}
-	h := make(Hstore, n)
+	// Sized for the first pairs only: the count is the sender's word, and a
+	// value refused at its second pair cost the table it announced.
+	h := make(Hstore, min(n, 16))
 	for i := range n {
 		key, rest, isNull, err := nextElement(body, i)
 		switch {
