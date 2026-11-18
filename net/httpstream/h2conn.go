@@ -359,10 +359,22 @@ type h2Conn struct {
 	// memory a peer can park by never finishing its uploads.
 	assembling int
 	// assemblyDue is the earliest deadline of a request still assembling,
-	// zero when none is: computed by expireAssembly at the end of each frame
-	// batch, read by the frame reader to bound its next read. Both on the
+	// zero when none is: set as a stream opens (deadlines come in the order
+	// streams open), recomputed by expireAssembly once it has passed, read
+	// by the frame reader to bound its next read. A request that completes
+	// leaves it early, which costs one sweep that finds nothing. All on the
 	// reader's goroutine.
 	assemblyDue time.Time
+	// closedBodies lists the handed-over streams whose handler returned
+	// from a body still arriving, appended from the handler's goroutine
+	// under closedMu (bodyQueue.onClose); the next frame batch forgets
+	// them, without a look at every stream.
+	// closedAny, set after each append, spares the reader the lock while
+	// nothing was appended.
+	closedMu     sync.Mutex
+	closedBodies []uint32
+	closedSpare  []uint32 // the reader's, outside closedMu
+	closedAny    atomic.Bool
 	// pending is the streams whose head completed in this frame batch with
 	// their body still to come, when bodies stream: at the end of the batch
 	// each one still open is handed over with a streamed body. handed counts

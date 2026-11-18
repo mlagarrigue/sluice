@@ -88,7 +88,9 @@ func (s *h2Conn) handOver(ready []Request, ids []uint32) (reqs []Request, stream
 
 // expireAssembly resets every stream whose request has been assembling for
 // ReadTimeout or longer, and notes in assemblyDue when the next one will
-// have.
+// have. The streams are visited only once assemblyDue has passed: a batch
+// before it — the common case, a DATA frame among uploads in progress —
+// costs nothing per stream.
 //
 // It runs once per frame batch, and the frame reader ends a read at
 // assemblyDue with an empty batch (framesWith's due), so it runs both when
@@ -103,21 +105,29 @@ func (s *h2Conn) handOver(ready []Request, ids []uint32) (reqs []Request, stream
 //
 // A stream handed over with its body streaming has no such deadline — each
 // wait for its bytes has ReadTimeout, on the handler's side — and is
-// forgotten here once its handler has returned: nobody reads it, and its
-// response resets it if the peer is still sending.
+// forgotten here once its handler has returned (forgetClosedBodies, which
+// the handler's return tells): nobody reads it, and its response resets it
+// if the peer is still sending.
 func (s *h2Conn) expireAssembly() error {
-	s.assemblyDue = time.Time{}
-	if s.open.Load() == 0 && s.handed == 0 {
+	if s.closedAny.Load() && s.closedAny.Swap(false) {
+		s.forgetClosedBodies()
+	}
+	if s.open.Load() == 0 {
+		s.assemblyDue = time.Time{} // nothing assembling: no deadline to wait for
+		return nil
+	}
+	if s.assemblyDue.IsZero() {
 		return nil
 	}
 	now := time.Now()
+	if now.Before(s.assemblyDue) {
+		return nil // no request has been assembling for ReadTimeout yet
+	}
+	s.assemblyDue = time.Time{}
 	s.expired = s.expired[:0]
 	for id, st := range s.streams {
 		if st.handed {
-			if st.stream.isClosed() {
-				s.retire(id, stateClosed)
-			}
-			continue
+			continue // its body's waits have ReadTimeout, on the handler's side
 		}
 		switch {
 		case !now.Before(st.deadline):
@@ -134,6 +144,25 @@ func (s *h2Conn) expireAssembly() error {
 		}
 	}
 	return nil
+}
+
+// forgetClosedBodies retires the handed-over streams whose handler returned
+// from a body still arriving: nobody reads them, and the response resets
+// them if the peer is still sending. A stream retired since, by a reset or
+// its body's end, is left as it is. The list is taken under the lock and
+// read outside it, its storage swapped with closedSpare so that neither
+// is allocated again.
+func (s *h2Conn) forgetClosedBodies() {
+	s.closedMu.Lock()
+	closed := s.closedBodies
+	s.closedBodies = s.closedSpare[:0]
+	s.closedMu.Unlock()
+	for _, id := range closed {
+		if st := s.streams[id]; st != nil && st.handed {
+			s.retire(id, stateClosed)
+		}
+	}
+	s.closedSpare = closed[:0]
 }
 
 // reset ends one stream: RST_STREAM to the peer, the state closed on this
@@ -1058,6 +1087,9 @@ func (s *h2Conn) stream(id uint32) (*h2Stream, error) {
 	s.streams[id] = st
 	s.open.Add(1)
 	s.w.open(id)
+	if s.assemblyDue.IsZero() {
+		s.assemblyDue = st.deadline
+	}
 	return st, nil
 }
 

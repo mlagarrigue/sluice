@@ -128,6 +128,13 @@ func (s *h2Conn) newH2Body(st *h2Stream) *bodyQueue {
 	b.initial = int32(s.cfg.InitialWindowSize) //nolint:gosec // G115: capped by resolve
 	b.window, b.grace = st.recvWind, st.windowGrace
 	b.interim = func() error { return s.w.interim(st.id, 100) }
+	id := st.id
+	b.onClose = func() {
+		s.closedMu.Lock()
+		s.closedBodies = append(s.closedBodies, id)
+		s.closedMu.Unlock()
+		s.closedAny.Store(true)
+	}
 	s.assembling -= len(st.body)
 	st.body = nil
 	return b
@@ -370,14 +377,6 @@ func (b *bodyQueue) unread() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return !b.ended
-}
-
-// isClosed reports whether the handler has returned. Called by the reader,
-// which then forgets the stream: nobody reads it any more.
-func (b *bodyQueue) isClosed() bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.closed
 }
 
 // next returns the next piece of the body, nil once it has ended, or the

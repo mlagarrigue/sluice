@@ -289,3 +289,34 @@ func BenchmarkH2SettingsThatRepeatTheWindow(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkH2BatchBesideOpenUploads is a frame batch on a connection with n
+// uploads in progress — streams handed over with their bodies still
+// arriving — that carries nothing for them: a connection-level
+// WINDOW_UPDATE. expireAssembly visits every stream at each batch.
+func BenchmarkH2BatchBesideOpenUploads(b *testing.B) {
+	for _, n := range []int{1, 100, 1000} {
+		b.Run(fmt.Sprintf("streams=%d", n), func(b *testing.B) {
+			s := newBenchH2Server(Config{MaxConcurrentStreams: n})
+			heads := make([]h2Frame, 0, n)
+			for i := range n {
+				block := appendHPACK(nil, ":method", "POST")
+				block = appendHPACK(block, ":path", "/upload")
+				block = appendHPACK(block, ":scheme", "https")
+				block = appendHPACK(block, ":authority", "example.com")
+				block = appendHPACK(block, "content-length", "1048576")
+				heads = append(heads, h2Frame{Type: frameHeaders, Flags: flagEndHeaders, StreamID: uint32(2*i + 1), Payload: block}) //nolint:gosec // G115: a thousand at most
+			}
+			ready, _, err := s.consume(heads)
+			if err != nil || len(ready) != n {
+				b.Fatalf("%d of %d uploads handed over: %v", len(ready), n, err)
+			}
+			update := []h2Frame{{Type: frameWindowUpdate, Payload: []byte{0, 0, 0, 1}}}
+			for b.Loop() {
+				if _, _, err := s.consume(update); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

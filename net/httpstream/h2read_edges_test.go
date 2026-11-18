@@ -173,6 +173,48 @@ func TestH2ReturnedStreamedRequestIsForgotten(t *testing.T) {
 	}
 }
 
+// stall moves every stream's assembly deadline a second into the past, and
+// the connection's earliest with them: ReadTimeout has passed.
+func stall(s *h2Conn) {
+	past := time.Now().Add(-time.Second)
+	for _, st := range s.streams {
+		st.deadline = past
+	}
+	s.assemblyDue = past
+}
+
+// The deadline sweep visits the streams only once the earliest deadline has
+// passed: a batch before it costs nothing per stream, where every batch used
+// to walk them all — 13 µs at a thousand uploads in progress
+// (BenchmarkH2BatchBesideOpenUploads). Deadlines come in the order streams
+// open, so the earliest is known as each one opens; here the streams' own
+// deadlines are moved past while the connection's is not, and nothing is
+// reset.
+func TestH2DeadlineSweepWaitsForTheEarliestDeadline(t *testing.T) {
+	s := newBenchH2Server(Config{BodyDelivery: BodyWhole})
+	feed(t, s,
+		headersFrame(1, flagEndHeaders, headBlock("POST", "/")),
+		headersFrame(3, flagEndHeaders, headBlock("POST", "/")))
+	if s.assemblyDue.IsZero() || !s.assemblyDue.After(time.Now()) {
+		t.Fatalf("assemblyDue = %v, want the first stream's deadline, ahead", s.assemblyDue)
+	}
+	for _, st := range s.streams {
+		st.deadline = time.Now().Add(-time.Second)
+	}
+	feed(t, s)
+	if got := queued(t, s); len(framesOn(got, frameRSTStream, 1))+len(framesOn(got, frameRSTStream, 3)) != 0 {
+		t.Fatal("a stream was reset before the earliest deadline the connection holds: the sweep ran")
+	}
+	stall(s)
+	feed(t, s)
+	got := queued(t, s)
+	for _, id := range []uint32{1, 3} {
+		if len(framesOn(got, frameRSTStream, id)) != 1 {
+			t.Errorf("stalled stream %d was not reset once the deadline passed", id)
+		}
+	}
+}
+
 // Every stream past its assembly deadline is reset in the same batch, not the
 // first of them.
 func TestH2EveryStalledStreamIsReset(t *testing.T) {
@@ -180,9 +222,7 @@ func TestH2EveryStalledStreamIsReset(t *testing.T) {
 	feed(t, s,
 		headersFrame(1, flagEndHeaders, headBlock("POST", "/")),
 		headersFrame(3, flagEndHeaders, headBlock("POST", "/")))
-	for _, st := range s.streams {
-		st.deadline = time.Now().Add(-time.Second)
-	}
+	stall(s)
 	feed(t, s)
 	got := queued(t, s)
 	for _, id := range []uint32{1, 3} {
@@ -219,9 +259,7 @@ func TestH2BlockCutByTheDeadlineStillReachesTheDecoder(t *testing.T) {
 			frames = append(frames, headersFrame(id, flagEndHeaders, headBlock("POST", "/")))
 		}
 		feed(t, s, frames...)
-		for _, st := range s.streams {
-			st.deadline = time.Now().Add(-time.Second)
-		}
+		stall(s)
 		feed(t, s, headersFrame(1, flagEndStream, trailer[:3]))
 		queued(t, s)
 		ready := feed(t, s,
