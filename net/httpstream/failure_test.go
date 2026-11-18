@@ -1,7 +1,9 @@
 package httpstream
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -268,5 +270,16 @@ func TestAPeerClosingMidRequestIsNotLoggedAsAnError(t *testing.T) {
 				t.Errorf("warn records %q, want logged = %v", w, tc.logged)
 			}
 		})
+	}
+}
+
+// net.Conn lets RemoteAddr be nil; a connection that ended on a protocol
+// break with no peer address is logged as "unknown", not dereferenced on
+// the connection's goroutine, which nothing recovers.
+func TestReportConnEndTakesANilPeer(t *testing.T) {
+	var buf bytes.Buffer
+	reportConnEnd(slog.New(slog.NewTextHandler(&buf, nil)), "h2", nil, errors.New("protocol break"))
+	if !strings.Contains(buf.String(), "peer=unknown") {
+		t.Errorf("logged %q, want the peer named unknown", buf.String())
 	}
 }

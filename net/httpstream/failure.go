@@ -66,5 +66,14 @@ func reportConnEnd(log *slog.Logger, proto string, peer net.Addr, err error) {
 		errors.Is(err, net.ErrClosed) || errors.Is(err, os.ErrDeadlineExceeded) || isConnReset(err) {
 		return
 	}
-	log.Warn("httpstream: connection ended in error", "proto", proto, "peer", peer.String(), "err", err)
+	// net.Conn lets RemoteAddr be nil when the address is unknown — a
+	// listener of the host's own may hand such connections — and the rest
+	// of the package already takes it: a nil peer is logged as such rather
+	// than dereferenced on the connection's goroutine, which nothing
+	// recovers.
+	addr := "unknown"
+	if peer != nil {
+		addr = peer.String()
+	}
+	log.Warn("httpstream: connection ended in error", "proto", proto, "peer", addr, "err", err)
 }
