@@ -434,6 +434,7 @@ type h3Serving struct {
 	calls, writers sync.WaitGroup
 	launchMu       sync.Mutex
 	ended          bool // under launchMu; see launch
+	running        int  // under launchMu: launched goroutines not yet returned
 	// cancels maps each request stream handed to a handler to its batch's
 	// context: a RESET_STREAM or STOP_SENDING from the client takes the
 	// request out of it, the connection's end takes them all.
@@ -545,9 +546,34 @@ func (s *h3Serving) launch(wg *sync.WaitGroup, f func()) bool {
 	s.launchMu.Lock()
 	defer s.launchMu.Unlock()
 	if !s.ended {
-		wg.Go(f)
+		s.running++
+		wg.Add(1)
+		go s.run(wg, f)
 	}
 	return !s.ended
+}
+
+// run is a launched goroutine: f, then its count in wg and in running.
+func (s *h3Serving) run(wg *sync.WaitGroup, f func()) {
+	defer wg.Done()
+	defer func() {
+		s.launchMu.Lock()
+		s.running--
+		s.launchMu.Unlock()
+	}()
+	f()
+}
+
+// inFlight ends launching, as the wait in end does, and reports whether a
+// launched call or writer has not returned: the forced stop is
+// ErrShutdownForced only then. Looking at finished alone raced its own
+// goroutine, which an idle connection closed at the grace had only just
+// started.
+func (s *h3Serving) inFlight() bool {
+	s.launchMu.Lock()
+	defer s.launchMu.Unlock()
+	s.ended = true
+	return s.running > 0
 }
 
 // arm sets the expiry timer to the assembler's earliest deadline. Callers
@@ -816,13 +842,13 @@ func (s *h3Serving) end() error {
 		select {
 		case <-finished:
 		default:
-			if !s.idleClosing.Load() {
+			if s.inFlight() && !s.idleClosing.Load() {
 				return ErrShutdownForced
 			}
-			// The idle close owns the end, with nothing in flight: the
-			// grace ran out during the wait for its GOAWAY's
-			// acknowledgement, not during an answer, and finished closes
-			// as soon as its goroutine runs.
+			// Nothing in flight — an idle connection whose peer let the
+			// drain's PING or the idle close's GOAWAY go unacknowledged:
+			// the grace ran out during that wait, not during an answer,
+			// and finished closes as soon as its goroutine runs.
 			<-finished
 		}
 	}
