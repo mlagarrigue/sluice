@@ -169,10 +169,12 @@ func (c *campaign) run(ctx context.Context, rounds io.Writer) (summary, error) {
 		fs, lines, err := c.family(ctx, f)
 		s.Families = append(s.Families, fs)
 		if err != nil {
+			s.Publishable = false // the summary of a campaign cut short is written, never published
 			return s, fmt.Errorf("%s: %w", f, err)
 		}
 		for i := range lines {
 			if err := enc.Encode(&lines[i]); err != nil {
+				s.Publishable = false
 				return s, err
 			}
 		}

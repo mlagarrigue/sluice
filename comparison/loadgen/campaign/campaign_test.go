@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -386,5 +387,28 @@ func TestKeyspaceCheckedAfterSurvey(t *testing.T) {
 		if r.Phase != "survey" {
 			t.Fatalf("a %s %s stage was played after the survey: %+v", r.Phase, r.Kind, r)
 		}
+	}
+}
+
+// failingUp is a chain that cannot be built: the campaign stops at its
+// first family.
+type failingUp struct{ *fake }
+
+func (failingUp) up(context.Context, family, string) error {
+	return errors.New("the chain did not come up")
+}
+
+// A campaign that stops on an error writes its summary all the same — the
+// partial family included — and main writes it without condition, so the
+// summary says it is not publishable: Publishable was set from the matrix
+// alone, and an interrupted campaign's summary read as a finished one.
+func TestAnInterruptedCampaignIsNotPublishable(t *testing.T) {
+	m := testMatrix(t, false, 21, 21, 1)
+	o, err := playMatrix(t, m, failingUp{newFake(map[string]float64{"A": 1000, "B": 1200}, nil)})
+	if err == nil {
+		t.Fatal("a campaign whose chain did not come up finished")
+	}
+	if o.summary.Publishable {
+		t.Errorf("the summary of a campaign stopped by %q is marked publishable", err)
 	}
 }
