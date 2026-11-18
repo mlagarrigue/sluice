@@ -64,7 +64,9 @@ var ErrSplitDrained = batch.NewSentinel("sluice: Split branch consumed after the
 //     is a data race, not detected — build with -race.
 //   - The batch is shared by its destinations without copying, and valid until
 //     the source advances, which any branch can make it do: copy it to keep
-//     it, or before calling next on a sibling.
+//     it, or before calling next on a sibling. A batch still waiting for its
+//     branch when a sibling pulls the next is copied by Split first, so an
+//     upstream that reuses its buffer does not rewrite it.
 //   - A branch that stops early keeps the source open for its siblings. If
 //     the last one read stops early and the others are never read, the
 //     source's coroutine stays parked for the life of the process (S9 in
@@ -101,6 +103,11 @@ func Split[T any](s Stream[T], n int, route func(Batch[T]) []int) []Stream[T] {
 type branch[T any] struct {
 	slot    Batch[T] // at most one pending batch
 	pending bool
+	// owned: slot is a copy in own, no longer the source's buffer. own is
+	// kept from one copy to the next, so that a branch read behind its
+	// siblings costs one buffer, not an allocation per batch.
+	owned   bool
+	own     []T
 	started bool
 	done    bool // detached, by exhaustion or early stop
 
@@ -169,7 +176,7 @@ func (sp *splitter[T]) serve(i int, yield func(Batch[T]) bool) {
 	}
 	br.started = true
 	defer func() {
-		br.done = true
+		br.done, br.own = true, nil
 		sp.release()
 	}()
 
@@ -257,7 +264,7 @@ func (sp *splitter[T]) place() bool {
 			continue
 		}
 		br := &sp.branches[dst]
-		br.slot, br.pending, br.routed = sp.held, true, true
+		br.slot, br.pending, br.routed, br.owned = sp.held, true, true, false
 	}
 	sp.held, sp.holding, sp.dests = Batch[T]{}, false, nil
 	return true
@@ -275,7 +282,7 @@ func (sp *splitter[T]) detach() bool {
 	for i := range sp.branches {
 		br := &sp.branches[i]
 		if !br.started && !br.done && br.pending {
-			br.slot, br.pending = Batch[T]{}, false
+			br.slot, br.pending, br.own = Batch[T]{}, false, nil
 			br.done, br.detached = true, true
 			freed = true
 		}
@@ -296,6 +303,16 @@ func (sp *splitter[T]) advance() bool {
 	if sp.next == nil {
 		sp.next, sp.stop = pull(sp.src)
 		sp.src = nil
+	}
+	// A batch still pending for a branch outlives this pull, which an
+	// upstream reusing its buffer answers by rewriting it (the architecture's
+	// S14): copied first. Branches read in alternation have none pending
+	// here, and keep sharing the source's batch.
+	for i := range sp.branches {
+		if br := &sp.branches[i]; br.pending && !br.owned {
+			br.own = append(br.own[:0], br.slot.Items...)
+			br.slot.Items, br.owned = br.own, true
+		}
 	}
 	b, ok := sp.next()
 	if !ok {

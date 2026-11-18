@@ -36,6 +36,44 @@ func TestSplitSharesBatchWithoutCopying(t *testing.T) {
 	}
 }
 
+// A batch pending for one branch while a sibling pulls the next is retained
+// past that pull, and an upstream that reuses its buffer — as the reuse
+// contract allows — rewrites it there: Split copies it first (the
+// architecture's S14). Branch 0 is routed [0 1] and [2 3], branch 1 [4 5] and
+// [6 7]; read in alternation, branch 0 got [0 1] then [4 5].
+func TestSplitKeepsAPendingBatchOfABufferReusingUpstream(t *testing.T) {
+	for _, fresh := range []bool{true, false} {
+		src := Stream[int](func(yield func(Batch[int]) bool) {
+			buf := make([]int, 2)
+			for i := 0; i < 8; i += 2 {
+				out := buf
+				if fresh {
+					out = make([]int, 2)
+				}
+				out[0], out[1] = i, i+1
+				if !yield(Batch[int]{Items: out}) {
+					return
+				}
+			}
+		})
+		branches := Split(src, 2, func(b Batch[int]) []int { return []int{b.Items[0] / 4} })
+		next0, stop0 := pullBranch(branches[0])
+		next1, stop1 := pullBranch(branches[1])
+		var got0, got1 [][]int
+		for range 2 {
+			a, _ := next0()
+			got0 = append(got0, slices.Clone(a.Items))
+			b, _ := next1()
+			got1 = append(got1, slices.Clone(b.Items))
+		}
+		stop0()
+		stop1()
+		if !slices.EqualFunc(got0, [][]int{{0, 1}, {2, 3}}, slices.Equal) || !slices.EqualFunc(got1, [][]int{{4, 5}, {6, 7}}, slices.Equal) {
+			t.Errorf("fresh batches %v: branch 0 got %v, want [[0 1] [2 3]]; branch 1 got %v, want [[4 5] [6 7]]", fresh, got0, got1)
+		}
+	}
+}
+
 // pullBranch drives a branch one batch at a time, which is how concurrent
 // branches must be consumed.
 func pullBranch[T any](s Stream[T]) (next func() (Batch[T], bool), stop func()) {
