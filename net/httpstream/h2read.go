@@ -621,7 +621,7 @@ func (s *h2Conn) headers(f h2Frame) (*h2Stream, error) {
 		// stream has already been reset, and refusing an oversized block on
 		// it would send a second RST_STREAM — and charge a second reset —
 		// for a stream that is gone.
-		s.discard = fields
+		s.keepDiscard(fields)
 		return nil, nil
 	}
 	if st.state == stateHalfClosed || st.bodyEnded {
@@ -672,7 +672,7 @@ func (s *h2Conn) headers(f h2Frame) (*h2Stream, error) {
 			st.stream.setTrailers(fields)
 		}
 		if st.handed {
-			s.discard = fields
+			s.keepDiscard(fields) // the body queue copied them
 			return s.finish(st)
 		}
 		if len(fields) > 0 && st.stream == nil {
@@ -1158,4 +1158,14 @@ func (s *h2Conn) applySettings(payload []byte) (table tableSizes, err error) {
 type tableSizes struct {
 	low, last uint32
 	set       bool
+}
+
+// keepDiscard keeps fields' storage for the next block decoded to nobody,
+// its contents let go: each Header points into the arena the decoder
+// allocated for the block's literals, and kept whole the slice held that
+// arena, and the fields, until the next discarded block or the end of the
+// connection.
+func (s *h2Conn) keepDiscard(fields []Header) {
+	clear(fields)
+	s.discard = fields[:0]
 }
