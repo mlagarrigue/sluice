@@ -1049,7 +1049,9 @@ round trip (`RTT40`, `RTT80`).
 
 Each benchmark also prints `rtt_x`, the
 sender's final smoothed RTT over the smallest it sampled: one when the
-controller keeps the queue empty, six when it keeps 200 ms of buffer full.
+controller keeps the queue empty, eleven when it keeps `DeepBuffer`'s
+200 ms of buffer full (ten round trips of its 20 ms path); a 4 MiB
+transfer ends near six, before the queue is full.
 Each benchmark also prints `retx_B` and `lost`: the bytes the sender put
 back in its queue for the losses it declared, and the packets it declared
 lost. On a path that loses nothing, they count only spurious losses: a
@@ -1102,7 +1104,7 @@ bound the benchmark sets. Does the transfer then lose more than
 (`SLUICE_QUIC_SS`) changes neither figure. Not gated: the figure comes
 behind two seconds of messages.
 
-The six profiles below `Loss1pct`, plus `RTT80Shallow`, are the ones the
+The seven profiles below `Loss1pct`, plus `RTT80Shallow`, are the ones the
 congestion-control palette has to prove itself on, and the Reno rows are
 the starting ceiling, not a target. Reno fills a 200 ms buffer to the
 brim, declares loss on the reordering profile that the path never had,
@@ -1144,8 +1146,9 @@ half, and the curve refills in seconds what Reno refills a datagram per
 round trip; the 1.24× on `Loss1pct` and 1.59× on `BurstLoss` are the same
 two facts on a short path. On the clean and bottleneck profiles it sits
 within 2.5% of Reno, which is the Reno-friendly region (RFC 9438 §4.3)
-doing its job; on the deep buffer it fills the queue exactly as Reno does
-(`rtt_x` 6.0 against 5.9): CUBIC reads loss and nothing else, and a buffer
+doing its job; on the deep buffer it filled the queue as Reno does
+(`rtt_x` 6.0 against 5.9) before HyStart++, and leaves it fuller since
+(8.1, see HyStart++ below): CUBIC reads loss and nothing else, and a buffer
 that does not drop is a buffer it fills. `RTT80` itself moves 4%: an 8 MiB
 transfer is slow start and the handshake, not avoidance.
 
@@ -1168,7 +1171,7 @@ within that round — the loss comes first, and the exit is the loss as
 before.
 
 ```
-for r in 1 2 3 4 5 6 7 8; do for cc in newreno cubic; do
+for r in 1 2 3 4 5 6 7 8; do for cc in reno cubic; do
   SLUICE_QUIC_CC=$cc go test -run=XXX -bench='BenchmarkTransfer' -benchtime=1x -count=1 ./net/quic/ \
     | sed "s/^/$cc /" >> ab.txt
 done; done
@@ -1186,7 +1189,8 @@ trips and keeps about two bandwidth-delay products of window, probing
 for more bandwidth one round in eight and draining the path for 200 ms
 every ten seconds to re-measure its propagation delay; loss is not a
 signal to it. Measured the same way as CUBIC, eight rounds on
-2026-10-14, interleaved with the same binary and `SLUICE_QUIC_CC=bbr1`,
+2026-10-14, interleaved with the same binary and `SLUICE_QUIC_CC=bbr1`
+(a value removed with version 1),
 on the four profiles the controller was written for:
 
 | Benchmark | Reno, same pass | BBRv1 | Reno / BBRv1 | BBRv1 goodput | Spread |
