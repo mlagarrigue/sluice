@@ -592,9 +592,33 @@ the runtime's internal locks (352 ms → 623 ms in the same profile),
 `sendmsg` kept its share of the CPU (20%, then 22%) and the scheduler its
 own (a quarter of the samples). `bulk` sends its requests one at a time,
 with one writer per connection: what bounds its throughput is the round
-trip between goroutines, not mutual exclusion. The change was not kept;
-contention on `mu` is no longer an item to treat until a benchmark with
-several writers per connection shows it.
+trip between goroutines, not mutual exclusion. The change was not kept
+then: `bulk` has one writer per connection, and contention on `mu` waited
+for a benchmark with several.
+
+**Taken up again with several writers per connection (measured
+2026-11-18).** The review profiles of 2026-11-17 supplied that benchmark:
+the comparison study's HTTP/3 scenarios (`static-h3`, `list1000-h3`, 64
+requests at once over one connection) spent 40% (static) and 72% (list) of
+their wait on `mu` in `Stream.Write`, and the process used 4.7 cores where
+HTTP/1.1 used 8. The same queue was carried over to today's code, with two
+corrections the memory profile asked for: a batch's buffer is taken at the
+size the write announces (a buffer grown packet by packet, together with
+the buffers going round the queue, took `list1000-h3` from 322 to 476 KB
+allocated per request), and the buffers kept for the next batches go back
+to one only once the connection is idle (nothing in flight, no writer, the
+queue empty). Paired A/B (`ab.sh`, twelve rounds, every core) of
+`comparison/sluice`'s h3 variant: `BenchmarkStatic` −24.9%,
+`BenchmarkList1000` −13.8%, eleven rounds of eleven each;
+`BenchmarkH3FromQuicGo` (`plain`, `bulk`, one core and every core) stays
+in the noise, as in October. Bytes allocated per request unchanged (320
+against 322 KB on `list1000-h3`). The change is kept.
+
+> **In plain words.** When several responses leave on one connection, each
+> used to wait for the one before to finish handing its packets to the
+> kernel. Now one goroutine hands them over while the others prepare the
+> next ones: a quarter less time per request when 64 requests share a
+> connection, nothing changed when there is only one.
 
 **One datagram per exchange (measured 2026-10-23).** Three commits made a
 small HTTP/3 exchange cost the server one datagram rather than several: the response's data and the end of its stream (FIN) leave in one

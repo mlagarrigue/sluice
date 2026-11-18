@@ -1,6 +1,7 @@
 package quic
 
 import (
+	"cmp"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -2186,6 +2187,12 @@ func (c *Conn) waitOnLocked(cond *sync.Cond, deadline time.Time) error {
 	// while holding the 0-RTT packets of other writers would keep the peer
 	// waiting for the very data that opens it.
 	c.flushDatagramLocked()
+	if c.sendOutLocked() {
+		// mu was released to write the queue: what the writer waits for
+		// may have arrived meanwhile, and its own loop looks again before
+		// parking.
+		return nil
+	}
 	c.batching = false
 	// The flush's error is this writer's, kept aside while it sleeps: the
 	// writers that take mu meanwhile reset the field as they start and
@@ -2380,21 +2387,41 @@ func (c *Conn) kickTimer() {
 // effort — loss recovery resends what a failed write lost — so the error
 // stops there, and the count is what keeps a socket refusing every send
 // from being silent.
+//
+// The datagram never overtakes one sealed before it. While a writer has
+// sendQ out of mu (sendOutLocked), it joins the queue, copied, and returns
+// nil: its failure is counted when the sender writes it. Otherwise what
+// the queue still holds leaves first, under mu. A packet number arriving
+// ahead of lower ones reads to the peer as a gap, which it acknowledges at
+// once (RFC 9000 §13.2.1), and the acknowledgement as a loss here.
 func (c *Conn) writeLocked(pc net.PacketConn, b []byte, to net.Addr, ecn uint8) error {
 	if c.closing.capturing {
 		c.keepClosingDatagramLocked(pc, b, to) // the CONNECTION_CLOSE, for the closing state
 	}
-	var err error
-	if ecn != ecnNotECT {
-		c.oobScratch, err = writeMarked(pc, b, to, ecn, c.oobScratch)
-	} else {
-		_, err = pc.WriteTo(b, to)
+	if c.sending {
+		c.sendQ = append(c.sendQ, queuedWrite{
+			b: append([]byte(nil), b...), seg: len(b), n: 1, pc: pc, to: to, ecn: ecn,
+		})
+		return nil
 	}
-	return c.wroteLocked(err)
+	c.drainLocked()
+	return c.wroteLocked(c.writeOne(pc, b, to, ecn))
+}
+
+// writeOne is one datagram's system call. Its caller owns oobScratch: it
+// holds mu while nobody is sending, or it is the sender.
+func (c *Conn) writeOne(pc net.PacketConn, b []byte, to net.Addr, ecn uint8) error {
+	if ecn != ecnNotECT {
+		var err error
+		c.oobScratch, err = writeMarked(pc, b, to, ecn, c.oobScratch)
+		return err
+	}
+	_, err := pc.WriteTo(b, to)
+	return err
 }
 
 // wroteLocked is writeLocked's accounting of one write's outcome, shared
-// with the batched writes of flushBatchLocked. Callers hold mu.
+// with the queued writes (settleLocked). Callers hold mu.
 func (c *Conn) wroteLocked(err error) error {
 	if err != nil {
 		c.writeFailures++
@@ -2426,11 +2453,14 @@ const (
 // packet that cannot join — larger than the batch's segments, after a
 // shorter one closed it, or past the bounds — first flushes the batch and
 // opens the next. The recovery bookkeeping is sealLocked's, as for any
-// packet; only the write is deferred, to flushBatchLocked. Callers hold mu.
+// packet; only the write is deferred, to sendOutLocked. Callers hold mu.
 func (c *Conn) batchLocked(p *pendingPacket, size int) error {
 	if c.batchN > 0 && (c.batchShort || size > c.batchSeg || p.ecn != c.batchECN ||
 		c.batchN == maxBatchSegments || len(c.batch)+size > maxBatchBytes) {
 		c.flushBatchLocked() // one segmented write carries one ECN mark
+	}
+	if c.batchN == 0 && cap(c.batch) < max(c.batchHint, minBatchBuf) {
+		c.batch = c.batchBufLocked()
 	}
 	out, err := c.sealLocked(c.batch, p, 0, 0)
 	if err != nil {
@@ -2445,45 +2475,235 @@ func (c *Conn) batchLocked(p *pendingPacket, size int) error {
 		c.batchShort = true
 	}
 	c.batchN++
+	if c.batchN == maxBatchSegments || len(c.batch)+c.batchSeg > maxBatchBytes {
+		// Full: no packet of this size joins it, and closing it now leaves
+		// the writer's next turn with the batch empty, free to send it.
+		c.flushBatchLocked()
+	}
 	return nil
 }
 
-// flushBatchLocked writes what batchLocked gathered: in one system call
-// where the socket offers segmentation (writeSegments), one write per
-// datagram where it does not. The destination is the peer's current
-// address: batching only takes packets bound for it, and the peer cannot
-// change while the batch is open — that takes mu, which a batching writer
-// releases only through waitForCreditLocked, which flushes first. It
-// keeps the first write error in batchErr, which Stream.write returns as
-// it returned WriteTo's before; the packets themselves are recorded, and
-// loss recovery resends them like any lost datagram. Callers hold mu.
+// flushBatchLocked closes what batchLocked gathered and queues it for the
+// wire (sendQ), where it leaves in one system call where the socket offers
+// segmentation, one write per datagram where it does not (writeQueued).
+// The destination is the peer's current address: batching only takes
+// packets bound for it, and the peer cannot change while the batch is open
+// — that takes mu, which a batching writer releases only with the batch
+// empty (sendOutLocked, waitForCreditLocked). The batch's write errors go
+// to batchErr, which Stream.write returns as it returned WriteTo's before;
+// the packets themselves are recorded, and loss recovery resends them like
+// any lost datagram. Callers hold mu, and the queue then leaves at the
+// writer's next turn or ahead of the next datagram written.
 func (c *Conn) flushBatchLocked() {
 	if c.batchN == 0 {
 		return
 	}
-	b, seg, n := c.batch, c.batchSeg, c.batchN
-	c.batch, c.batchN, c.batchShort = c.batch[:0], 0, false
-	if n > 1 && !c.noGSO {
-		var ok bool
-		var err error
-		c.oobScratch, ok, err = writeSegments(c.pc, b, seg, c.peer, c.batchECN, c.oobScratch)
-		if ok {
-			c.segmented++
-			c.keepBatchErr(c.wroteLocked(err))
-			return
-		}
-		c.noGSO = true
-	}
-	for len(b) > 0 {
-		k := min(seg, len(b))
-		c.keepBatchErr(c.writeLocked(c.pc, b[:k], c.peer, c.batchECN))
-		b = b[k:]
-	}
+	c.sendQ = append(c.sendQ, queuedWrite{
+		b: c.batch, seg: c.batchSeg, n: c.batchN, pc: c.pc, to: c.peer, ecn: c.batchECN, batch: true,
+	})
+	c.batch, c.batchN, c.batchShort = nil, 0, false // batchLocked takes the next
 }
 
 func (c *Conn) keepBatchErr(err error) {
 	if c.batchErr == nil {
 		c.batchErr = err
+	}
+}
+
+// queuedWrite is one entry of sendQ: b holds n datagrams sealed back to
+// back, seg bytes each but a shorter last, bound for to through pc. batch
+// marks a flushed batch, whose errors Stream.write returns (batchErr). The
+// rest is the write's outcome, which settleLocked accounts under mu.
+type queuedWrite struct {
+	b     []byte
+	seg   int
+	n     int
+	pc    net.PacketConn
+	to    net.Addr
+	ecn   uint8
+	batch bool
+
+	segmented, refusedGSO bool
+	errs                  []error
+}
+
+// maxQueuedWrites is the queue a writer seals ahead of the sender before
+// it parks (sendOutLocked): enough to keep the sender busy, short enough
+// that a write never holds more than a few batches nobody has sent.
+// maxSendFree bounds the buffers kept for reuse.
+const (
+	maxQueuedWrites = 4
+	maxSendFree     = 64
+	// minBatchBuf is the least a batch buffer is made with: a datagram.
+	minBatchBuf = 2048
+)
+
+// batchBufLocked returns an empty buffer for a batch opening, of at least
+// batchHint bytes: the free one of the least capacity that holds them, or a
+// new one. A batch grown packet by packet from a small buffer reallocated
+// half a dozen times, and with the buffers going round the queue (sendFree)
+// a list1000-h3 answer allocated 476 KB per request where it allocated 322
+// before the queue; one of a whole batch's capacity for every batch held 64
+// KB per writer queued in a burst, one packet each. Callers hold mu.
+func (c *Conn) batchBufLocked() []byte {
+	need := min(max(c.batchHint, minBatchBuf), maxBatchBytes)
+	best := -1
+	for i, b := range c.sendFree {
+		if cap(b) >= need && (best < 0 || cap(b) < cap(c.sendFree[best])) {
+			best = i
+		}
+	}
+	if best < 0 {
+		return make([]byte, 0, need)
+	}
+	b := c.sendFree[best]
+	last := len(c.sendFree) - 1
+	c.sendFree[best] = c.sendFree[last]
+	c.sendFree[last] = nil
+	c.sendFree = c.sendFree[:last]
+	return b
+}
+
+// trimSendFreeLocked lets go of the written buffers but one once the
+// connection looks idle — an acknowledgement left nothing in flight, no
+// write is in progress, nothing waits to be written: a burst of writers
+// fills the list, and kept whole it would stay on an idle connection, up to
+// maxSendFree batches. The one kept serves the next lone write, whose batch
+// would otherwise be allocated anew each time. Trimmed at the end of every
+// write instead, it was emptied between two writes of a burst and the
+// buffers allocated again. Callers hold mu.
+func (c *Conn) trimSendFreeLocked() {
+	if c.writers != 0 || c.sending || len(c.sendQ) > 0 || len(c.sendFree) <= 1 {
+		return
+	}
+	big := 0 // the largest is kept: it serves any lone write
+	for i, b := range c.sendFree {
+		if cap(b) > cap(c.sendFree[big]) {
+			big = i
+		}
+	}
+	c.sendFree[0], c.sendFree[big] = c.sendFree[big], c.sendFree[0]
+	clear(c.sendFree[1:])
+	c.sendFree = c.sendFree[:1]
+}
+
+// sendOutLocked writes sendQ with mu released, so that the read loop and
+// the other writers take mu while the system call runs: on a bulk transfer
+// the call is most of what a Stream.Write held mu for. One goroutine sends
+// at a time (sending), and everyone else queues behind it, so the wire
+// order stays the sealing order. A writer that finds the queue taken
+// returns at once while the queue is short, and parks on sendCond once it
+// holds maxQueuedWrites entries; the sender then hands it the rest after
+// its current round instead of draining what that writer seals, so no
+// Write sends another's data for long. It reports whether mu was released.
+//
+// Callers hold mu with the batch empty, at a point where mu may be
+// released, as at waitForCreditLocked: Stream.write between two packets,
+// at its end, and before it parks on credit. Batching is off while mu is
+// released: whoever takes mu meanwhile writes as outside Stream.write.
+func (c *Conn) sendOutLocked() bool {
+	released := false
+	batching := c.batching
+	c.batching = false
+	// The caller's batch error is kept aside while mu is released: the
+	// writers that take mu meanwhile reset the field as they start and
+	// as they end. One the queue's writes report meanwhile joins it.
+	batchErr := c.batchErr
+	defer func() { c.batchErr = cmp.Or(batchErr, c.batchErr) }()
+	for c.sending && len(c.sendQ) >= maxQueuedWrites {
+		c.sendWaiters++
+		c.sendCond.Wait()
+		c.sendWaiters--
+		released = true
+	}
+	if !c.sending && len(c.sendQ) > 0 {
+		c.sending, released = true, true
+		for len(c.sendQ) > 0 {
+			q := c.sendQ
+			c.sendQ = c.sendSpare[:0]
+			noGSO := c.noGSO
+			c.mu.Unlock()
+			for i := range q {
+				c.writeQueued(&q[i], &noGSO)
+			}
+			c.mu.Lock()
+			for i := range q {
+				c.settleLocked(&q[i])
+				q[i] = queuedWrite{}
+			}
+			c.sendSpare = q[:0]
+			if c.sendWaiters > 0 {
+				break // a parked writer sends what is left
+			}
+		}
+		c.sending = false
+		if c.sendWaiters > 0 {
+			c.sendCond.Broadcast()
+		}
+	}
+	c.batching = batching
+	return released
+}
+
+// drainLocked writes sendQ under mu, for a datagram that must leave behind
+// it while nobody is sending (writeLocked). Callers hold mu.
+func (c *Conn) drainLocked() {
+	for i := range c.sendQ {
+		noGSO := c.noGSO
+		c.writeQueued(&c.sendQ[i], &noGSO)
+		c.settleLocked(&c.sendQ[i])
+		c.sendQ[i] = queuedWrite{}
+	}
+	c.sendQ = c.sendQ[:0]
+}
+
+// writeQueued writes one entry: in one system call where the socket offers
+// segmentation (writeSegments), one write per datagram where it does not.
+// noGSO starts as the connection's and records a refusal for the entries
+// after this one; the outcome stays in e for settleLocked. Its caller owns
+// oobScratch (writeOne).
+func (c *Conn) writeQueued(e *queuedWrite, noGSO *bool) {
+	if e.n > 1 && !*noGSO {
+		var ok bool
+		var err error
+		c.oobScratch, ok, err = writeSegments(e.pc, e.b, e.seg, e.to, e.ecn, c.oobScratch)
+		if ok {
+			e.segmented = true
+			if err != nil {
+				e.errs = append(e.errs, err)
+			}
+			return
+		}
+		e.refusedGSO, *noGSO = true, true
+	}
+	for b := e.b; len(b) > 0; {
+		k := min(e.seg, len(b))
+		if err := c.writeOne(e.pc, b[:k], e.to, e.ecn); err != nil {
+			e.errs = append(e.errs, err)
+		}
+		b = b[k:]
+	}
+}
+
+// settleLocked accounts a written entry as writeLocked accounts its own
+// write, and keeps its buffer for reuse. Callers hold mu.
+func (c *Conn) settleLocked(e *queuedWrite) {
+	if e.segmented {
+		c.segmented++
+	}
+	if e.refusedGSO {
+		c.noGSO = true
+	}
+	for _, err := range e.errs {
+		err = c.wroteLocked(err)
+		if e.batch {
+			c.keepBatchErr(err)
+		}
+	}
+	if e.batch && len(c.sendFree) < maxSendFree {
+		// A batch's buffer for the next batch (batchBufLocked); a single
+		// datagram's copy is its own size.
+		c.sendFree = append(c.sendFree, e.b[:0])
 	}
 }
 

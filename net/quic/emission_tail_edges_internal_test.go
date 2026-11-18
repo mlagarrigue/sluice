@@ -404,7 +404,9 @@ func batchConn(t *testing.T) *Conn {
 }
 
 // The batch at its edges: equal sizes join, a shorter one closes it, it
-// stops at 65507 bytes exactly, and one datagram is not a segmented write.
+// closes once no packet of its segment size fits under 65507 bytes — the
+// writer, back with the batch empty, sends it with mu released
+// (sendOutLocked) — and one datagram is not a segmented write.
 func TestBatchAtItsEdges(t *testing.T) {
 	c := batchConn(t)
 	c.mu.Lock()
@@ -425,13 +427,16 @@ func TestBatchAtItsEdges(t *testing.T) {
 	writeBatched(t, c, 1000)
 	base := c.batchSeg - 1000
 	c.flushBatchLocked()
-	// 63 segments of 1030 bytes and a last one of 616 make 65507 exactly.
-	for range 63 {
+	// 63 segments of 1030 bytes leave 617 of the 65507: no 64th fits.
+	for range 62 {
 		writeBatched(t, c, 1030-base)
 	}
-	writeBatched(t, c, maxBatchBytes-63*1030-base)
-	if c.batchN != 64 || len(c.batch) != maxBatchBytes {
-		t.Errorf("a batch reaching %d bytes exactly: %d packets, %d bytes", maxBatchBytes, c.batchN, len(c.batch))
+	if c.batchN != 62 {
+		t.Errorf("62 packets of 1030 bytes: %d in the batch", c.batchN)
+	}
+	writeBatched(t, c, 1030-base)
+	if last := c.sendQ[len(c.sendQ)-1]; c.batchN != 0 || last.n != 63 || len(last.b) != 63*1030 {
+		t.Errorf("a batch with no room for another segment: %d left open, %d packets of %d bytes queued", c.batchN, last.n, len(last.b))
 	}
 	c.mu.Unlock()
 
@@ -450,6 +455,7 @@ func TestBatchAtItsEdges(t *testing.T) {
 	defer c.mu.Unlock()
 	writeBatched(t, c, 500)
 	c.flushBatchLocked()
+	c.drainLocked()
 	if c.segmented != 0 {
 		t.Error("a batch of one datagram counted as a segmented write")
 	}

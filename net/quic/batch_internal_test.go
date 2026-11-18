@@ -4,6 +4,7 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 )
@@ -139,4 +140,173 @@ func BenchmarkStreamWriteBurst(b *testing.B) {
 	segmented := c.segmented
 	c.mu.Unlock()
 	b.ReportMetric(float64(segmented)/float64(b.N), "segmented/op")
+}
+
+// gatedConn records every datagram written and swallows it. A gate, when
+// set, holds the first write until the test opens it, after saying the
+// write began; nothing then comes back to the connection, whose loops
+// these tests do not run.
+type gatedConn struct {
+	net.PacketConn
+	mu      sync.Mutex
+	written [][]byte
+	entered chan struct{}
+	gate    chan struct{}
+}
+
+func (g *gatedConn) WriteTo(b []byte, _ net.Addr) (int, error) {
+	g.mu.Lock()
+	gate, entered := g.gate, g.entered
+	g.gate = nil
+	g.written = append(g.written, append([]byte(nil), b...))
+	g.mu.Unlock()
+	if gate != nil {
+		close(entered)
+		<-gate
+	}
+	return len(b), nil
+}
+
+// newGatedStreamConn is a keyed connection on a gatedConn, with credit for
+// everything a test writes, and an opener for the packets it seals.
+func newGatedStreamConn(t *testing.T) (*Conn, *gatedConn, *packetOpener) {
+	t.Helper()
+	pcA, pcB := newLoopbackPair(t)
+	g := &gatedConn{PacketConn: pcA}
+	c, _ := newKeyedConnOn(t, g, pcB)
+	sec, err := initialSecrets([]byte("app-secrets"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opener, err := newOpenerSuite(sec.Server, aes128Suite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	c.reno().cwnd = 1 << 30
+	c.connSend.max = 1 << 50
+	c.mu.Unlock()
+	return c, g, opener
+}
+
+func addSendStream(c *Conn, id StreamID) *Stream {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	s := newStream(c, id)
+	s.sendQ.max = 1 << 50
+	c.streams[id] = s
+	return s
+}
+
+// A Stream.Write does not hold the connection's lock across the system
+// call that sends its packets: while the socket holds the write, the lock
+// is free for the read loop and the other writers. Held, every
+// acknowledgement waits behind the write — on a bulk transfer the call is
+// most of what a write held the lock for.
+func TestStreamWriteReleasesTheLockAcrossTheSend(t *testing.T) {
+	c, g, _ := newGatedStreamConn(t)
+	s := addSendStream(c, 1)
+	g.mu.Lock()
+	g.gate, g.entered = make(chan struct{}), make(chan struct{})
+	gate, entered := g.gate, g.entered
+	g.mu.Unlock()
+
+	wrote := make(chan error, 1)
+	go func() {
+		_, err := s.Write(make([]byte, 4096))
+		wrote <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the write never reached the socket")
+	}
+	locked := make(chan struct{})
+	go func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		close(locked)
+	}()
+	select {
+	case <-locked:
+	case <-time.After(2 * time.Second):
+		close(gate)
+		<-wrote
+		t.Fatal("the connection's lock is held while the socket writes")
+	}
+	close(gate)
+	if err := <-wrote; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// With the lock released across the send, the datagrams still leave in the
+// order their packet numbers were taken, under two streams writing at once
+// and packets sent outside any write (a PING, as the read loop's
+// acknowledgements are): a number ahead of lower ones reads to the peer as
+// a gap, which it acknowledges at once (RFC 9000 §13.2.1), and that
+// acknowledgement as a loss here. Every packet sealed is written, once.
+func TestConcurrentWritesLeaveInPacketNumberOrder(t *testing.T) {
+	c, g, opener := newGatedStreamConn(t)
+	streams := []*Stream{addSendStream(c, 1), addSendStream(c, 5)}
+	const writes, size = 32, 16 << 10
+	var wg sync.WaitGroup
+	for _, s := range streams {
+		wg.Go(func() {
+			for range writes {
+				if _, err := s.Write(make([]byte, size)); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		})
+	}
+	stop := make(chan struct{})
+	pinged := make(chan struct{})
+	go func() {
+		defer close(pinged)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			c.mu.Lock()
+			err := c.sendPacketLocked(spaceApplication, []byte{framePing}, sendOpts{})
+			c.mu.Unlock()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			runtime.Gosched()
+		}
+	}()
+	wg.Wait()
+	close(stop)
+	<-pinged
+
+	c.mu.Lock()
+	queued, sending, sent := len(c.sendQ), c.sending, c.spaces[spaceApplication].nextPN
+	c.mu.Unlock()
+	if queued != 0 || sending {
+		t.Fatalf("%d writes still queued (sending %v) once every writer returned", queued, sending)
+	}
+	g.mu.Lock()
+	written := g.written
+	g.mu.Unlock()
+	pnOffset := 1 + len(c.dcid)
+	var last uint64
+	for i, d := range written {
+		_, pn, err := opener.Open(d, pnOffset, last)
+		if err != nil {
+			t.Fatalf("datagram %d does not open: %v", i, err)
+		}
+		if i > 0 && pn != last+1 {
+			t.Fatalf("datagram %d carries packet %d after packet %d", i, pn, last)
+		}
+		last = pn
+	}
+	if uint64(len(written)) != sent {
+		t.Fatalf("%d datagrams written for %d packets sealed", len(written), sent)
+	}
 }

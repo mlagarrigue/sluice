@@ -426,6 +426,9 @@ func (s *Stream) write(p []byte, fin bool) (int, error) {
 	// The packets one call builds leave together (batchLocked): a 4 KiB
 	// write is four datagrams, and one system call carries the four.
 	c.batching, c.batchErr = true, nil
+	// What this write seals, about: its bytes and, per packet, a header, a
+	// frame header and the AEAD tag.
+	c.batchHint = len(p) + (len(p)/c.maxStreamChunk()+1)*64
 	written, err := s.writeLocked(p, fin)
 	// Whatever ended the write — done, failed, or woken by a MAX_DATA it
 	// had no use for — the credit it leaves goes to the next parked writer.
@@ -435,6 +438,7 @@ func (s *Stream) write(p []byte, fin bool) (int, error) {
 	if c.writersIn.Add(-1) == 0 {
 		c.flushDatagramLocked()
 	}
+	c.sendOutLocked() // what this write queued leaves, with mu released
 	c.writeEndLocked()
 	if err == nil {
 		err = c.batchErr
@@ -472,6 +476,11 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 		return 0, os.ErrDeadlineExceeded
 	}
 	for {
+		if c.batchN == 0 {
+			// A batch the last packet filled leaves now, with mu released:
+			// what follows is checked after it, the stream's state first.
+			c.sendOutLocked()
+		}
 		if err := s.sendableLocked(); err != nil {
 			return written, err
 		}

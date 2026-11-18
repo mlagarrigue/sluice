@@ -1944,6 +1944,9 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 		}
 	}
 	sp.sent.release(now, &c.rtt, c.cc, &c.delivery, &out)
+	if len(sp.sent.packets) == 0 {
+		c.trimSendFreeLocked() // nothing in flight: perhaps idle
+	}
 	if out.newlyAcked > 0 {
 		// The controller heard each acknowledged packet; the window may
 		// have grown and a writer parked on it must look again — not one

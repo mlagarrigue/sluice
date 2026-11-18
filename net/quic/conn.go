@@ -99,7 +99,7 @@ type Conn struct {
 	peer net.Addr
 	// peerSeen is peer as RemoteAddr reads it, without mu: an HTTP/3
 	// server asks for it with every batch, and queued for mu behind the
-	// writers that hold it through sendmsg (2026-11-17 profiles, a sixth of
+	// writers that held it through sendmsg (2026-11-17 profiles, a sixth of
 	// static-h3's mutex wait). Stored with peer, by its one setter.
 	peerSeen atomic.Pointer[net.Addr]
 
@@ -250,7 +250,7 @@ type Conn struct {
 	// while batching is set (Stream.write), 1-RTT datagrams bound for the
 	// current path are sealed back to back into batch — every one batchSeg
 	// bytes, but a shorter last that closes it (batchShort) — and leave in
-	// one system call. noGSO records that the socket refused segmentation
+	// one system call (sendOutLocked). noGSO records that the socket refused segmentation
 	// offload once, so later batches go one write per datagram without
 	// asking again. batchErr is the first write error of the batches
 	// flushed since Stream.write began, which it returns. oobScratch is
@@ -264,6 +264,23 @@ type Conn struct {
 	segmented  int // batches that left in one segmented write, for tests
 	batchErr   error
 	oobScratch []byte
+	// sending, sendQ, sendWaiters and sendCond take the written datagrams
+	// out of mu. A flushed batch, and any datagram sealed while a write is
+	// in progress, joins sendQ in sealing order; one goroutine at a time —
+	// the one that set sending — writes the queue with mu released, and
+	// whoever holds mu meanwhile only queues behind it, so the wire order
+	// is the sealing order. sendWaiters counts the writers parked on
+	// sendCond for the queue to shorten (sendOutLocked); sendFree keeps a
+	// few written buffers for the next batches. See sendOutLocked.
+	sending   bool
+	sendQ     []queuedWrite
+	sendSpare []queuedWrite
+	sendFree  [][]byte
+	// batchHint is the size Stream.write expects its batch to reach, which
+	// a batch buffer is taken or made for (batchBufLocked).
+	batchHint   int
+	sendWaiters int
+	sendCond    sync.Cond
 	// parseScratch and batchScratch are the receive path's two per-packet
 	// frame slices, reusable because one receive goroutine processes one
 	// packet at a time and no consumer keeps either slice (see frames).
