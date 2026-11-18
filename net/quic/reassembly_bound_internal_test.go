@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 // The fragment bound of the reassembly (reassembly.go) closes the
@@ -30,5 +31,59 @@ func TestFragmentBoundClosesWithAStatedInternalError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "fragments") {
 		t.Errorf("reason = %q, want it to name the fragment bound", err)
+	}
+}
+
+// parkAtTheCeiling parks reassemblyChunkCeiling-1 disjoint runs, a hole of
+// one byte in front of the first.
+func parkAtTheCeiling(tb testing.TB) *reassembly {
+	tb.Helper()
+	const run = reassemblyChunkBytes + 1 // one chunk per 1024 bytes held keeps the ceiling reachable
+	r := &reassembly{}
+	off := uint64(2)
+	for i := range reassemblyChunkCeiling - 1 {
+		if err := r.add(off, make([]byte, run)); err != nil {
+			tb.Fatalf("filing run %d: %v", i, err)
+		}
+		off += run + 1 // a one-byte hole in between: the runs never touch
+	}
+	return r
+}
+
+// At the chunk ceiling, a byte filed in front of every parked run moves all
+// of them one slot: the move stays within reassemblyMoveBound, which the
+// comment on the ceiling states. A slot grown past 64 bytes doubles it.
+func TestAHeadInsertAtTheCeilingMovesWithinItsBound(t *testing.T) {
+	r := parkAtTheCeiling(t)
+	if got := len(r.chunks); got != reassemblyChunkCeiling-1 {
+		t.Fatalf("precondition: %d chunks parked, want %d", got, reassemblyChunkCeiling-1)
+	}
+	if err := r.add(0, []byte{1}); err != nil {
+		t.Fatalf("a byte filed at the head was refused: %v", err)
+	}
+	if got := len(r.chunks); got != reassemblyChunkCeiling {
+		t.Fatalf("%d chunks after the head insert, want %d", got, reassemblyChunkCeiling)
+	}
+	if moved := (len(r.chunks) - 1) * int(unsafe.Sizeof(rchunk{})); moved > reassemblyMoveBound {
+		t.Errorf("one byte filed at the head moved %d bytes of slots (%d a slot), over the %d the ceiling is set for",
+			moved, unsafe.Sizeof(rchunk{}), reassemblyMoveBound)
+	}
+}
+
+// BenchmarkReassemblyHeadInsertAtTheCeiling is the move the chunk ceiling
+// bounds: a byte filed in front of every parked run shifts all of them one
+// slot, and the byte that fills the hole behind it, merging the two, shifts
+// them back. The second shift is done here by hand, the run restored.
+func BenchmarkReassemblyHeadInsertAtTheCeiling(b *testing.B) {
+	r := parkAtTheCeiling(b)
+	for b.Loop() {
+		if err := r.add(0, []byte{1}); err != nil {
+			b.Fatal(err)
+		}
+		r.chunks = append(r.chunks[:0], r.chunks[1:]...)
+		r.held--
+	}
+	if len(r.chunks) != reassemblyChunkCeiling-1 {
+		b.Fatalf("%d chunks at the end, want %d", len(r.chunks), reassemblyChunkCeiling-1)
 	}
 }

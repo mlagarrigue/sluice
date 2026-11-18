@@ -29,11 +29,16 @@ import (
 // held, below the smallest datagram a path carries (RFC 9000 §14: 1200),
 // with a floor for a stream that holds little — hundreds of disjoint
 // slivers is a peer working at it — and a ceiling, because every insert
-// moves the slice's tail: the ceiling caps that move at half a megabyte.
+// moves the slice's tail: the ceiling caps that move at reassemblyMoveBound,
+// a mebibyte of 64-byte slots, which BenchmarkReassemblyHeadInsertAtTheCeiling
+// measures at a few microseconds. Reaching it takes 16 MiB parked behind a
+// gap, a stream window of that size; at the defaults the table stays under
+// a thousand chunks.
 const (
 	reassemblyChunkFloor   = 256
 	reassemblyChunkCeiling = 1 << 14
 	reassemblyChunkBytes   = 1024
+	reassemblyMoveBound    = 1 << 20
 )
 
 type rchunk struct {
