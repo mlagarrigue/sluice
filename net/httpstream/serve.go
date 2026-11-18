@@ -1383,7 +1383,7 @@ func watchPeerThen(c *prefixConn, limit int, ended func(*peerWatch)) *peerWatch 
 			// c.Conn, not c: c.head belongs to the request reader, and this
 			// goroutine only appends to it once stop has waited for it.
 			n, err := c.Conn.Read(scratch[:min(len(scratch), limit-len(w.got))])
-			w.got = append(w.got, scratch[:n]...)
+			w.got = appendWithin(w.got, scratch[:n], limit)
 			if err != nil {
 				switch {
 				case errors.Is(err, io.EOF):
@@ -1425,8 +1425,21 @@ func (w *peerWatch) stop() {
 	case len(w.c.head) == 0:
 		w.c.head = w.got
 	default:
-		w.c.head = append(w.c.head, w.got...)
+		w.c.head = appendWithin(w.c.head, w.got, len(w.c.head)+len(w.got))
 	}
+}
+
+// appendWithin is append whose growth stops at bound, which
+// len(dst)+len(src) never exceeds: the read-ahead is counted at its
+// limit (MaxConns's memory model), and append's own growth gave it a
+// capacity up to a quarter above that, uncounted.
+func appendWithin(dst, src []byte, bound int) []byte {
+	if need := len(dst) + len(src); need > cap(dst) {
+		grown := make([]byte, len(dst), min(max(2*cap(dst), need), bound))
+		copy(grown, dst)
+		dst = grown
+	}
+	return append(dst, src...)
 }
 
 // streamedIn reports whether any response in a batch produces its payload as

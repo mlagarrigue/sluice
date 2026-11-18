@@ -113,3 +113,44 @@ func readHead(t *testing.T, br *bufio.Reader) string {
 		}
 	}
 }
+
+// The watch's read-ahead is bounded by its limit, the figure MaxConns's
+// memory model counts: what it hands back to the connection is no larger
+// a buffer than that, where append's growth turned a one-megabyte limit
+// into a 1114112-byte buffer.
+func TestWatchReadAheadIsHeldAtItsLimit(t *testing.T) {
+	const limit = 1 << 20
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	pc := &prefixConn{Conn: server}
+	w := watchPeer(pc, limit)
+	go func() {
+		_, _ = client.Write(make([]byte, limit))
+	}()
+	select {
+	case <-w.done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the watch did not end at its limit")
+	}
+	w.stop()
+	if len(pc.head) != limit {
+		t.Fatalf("witness: read %d bytes, want %d", len(pc.head), limit)
+	}
+	if cap(pc.head) > limit {
+		t.Errorf("the read-ahead holds a %d-byte buffer for a %d-byte limit", cap(pc.head), limit)
+	}
+}
+
+// appendWithin grows a buffer to its bound and no further, and leaves one
+// with room as it is.
+func TestAppendWithinStopsAtItsBound(t *testing.T) {
+	got := appendWithin(make([]byte, 3, 4), []byte("abcd"), 7)
+	if string(got[3:]) != "abcd" || cap(got) != 7 {
+		t.Errorf("appendWithin = %q cap %d, want cap 7", got, cap(got))
+	}
+	got = appendWithin(make([]byte, 0, 8), []byte("ab"), 8)
+	if cap(got) != 8 {
+		t.Errorf("appendWithin regrew a buffer with room: cap %d", cap(got))
+	}
+}
