@@ -665,15 +665,27 @@ func (s *sentTracker) release(now time.Time, rtt *rttEstimator, cc congestionCon
 			cc.onAcked(ev)
 		}
 	}
-	// Close the gap the freed packets leave by moving whichever side is
-	// shorter. Moving the tail down — everything sent after the last packet
-	// freed — cost a window's worth of copying per ACK frame, since an ACK
-	// names packets a round trip old; the packets kept below the freed run
-	// are the few still waiting on reordering, so they move up instead and
-	// the slice advances from the front, as a queue does. The front slots
-	// are cleared for the payloads they still reference; append reallocates
-	// once the capacity behind the advanced front runs out, which amortises
-	// as any append does.
+	s.closeGap(kept, i)
+	if est != nil && out.newlyAckedCount > 0 {
+		est.finish(now, rtt.min)
+	}
+}
+
+// closeGap closes the gap freed packets leave in the record: kept is what
+// stays of s.packets[:i], compacted at its front, and s.packets[i:] is
+// untouched. It moves whichever side is shorter. Moving the tail down —
+// everything sent after the last packet freed — cost a window's worth of
+// copying per ACK frame, since an ACK names packets a round trip old, and
+// per loss-timer expiry; the packets kept below the freed run are the few
+// still waiting on reordering, so they move up instead and the slice
+// advances from the front, as a queue does. The front slots are cleared
+// for the payloads they still reference; append reallocates once the
+// capacity behind the advanced front runs out, which amortises as any
+// append does.
+func (s *sentTracker) closeGap(kept []sentPacket, i int) {
+	if len(kept) == i {
+		return // nothing freed
+	}
 	if tail := len(s.packets) - i; len(kept) < tail {
 		dst := i - len(kept)
 		copy(s.packets[dst:i], kept)
@@ -681,9 +693,6 @@ func (s *sentTracker) release(now time.Time, rtt *rttEstimator, cc congestionCon
 		s.packets = s.packets[dst:]
 	} else {
 		s.packets = append(kept, s.packets[i:]...)
-	}
-	if est != nil && out.newlyAckedCount > 0 {
-		est.finish(now, rtt.min)
 	}
 }
 
@@ -714,22 +723,27 @@ func (s *sentTracker) collectTimeLosses(now time.Time, rtt *rttEstimator, est *d
 	// (TestLossTimerDeclaresAtTheInstantItMatures).
 	lostBefore := now.Add(-threshold)
 	s.lossTime = time.Time{}
+	// The candidates are the record's head: numbers rise with the record,
+	// and the first packet past the largest acknowledged ends them. Past it,
+	// nothing is a candidate or a reason to re-arm the timer — the next ACK
+	// that covers something newer scans it (detectLost) — and nothing is
+	// visited: the whole record, up to maxTrackedPackets, was walked and
+	// rewritten at every expiry, which a peer leaving a young hole under a
+	// recent ACK re-arms.
 	kept := s.packets[:0]
-	for i := range s.packets {
+	i := 0
+	for ; i < len(s.packets) && s.packets[i].pn <= s.largestAcked; i++ {
 		p := &s.packets[i]
-		if p.pn <= s.largestAcked && !p.sentAt.After(lostBefore) {
+		if !p.sentAt.After(lostBefore) {
 			s.declareLost(&out, p, est)
 			continue
 		}
-		// Past the largest acknowledged, not a candidate and not a reason
-		// to re-arm the timer: the next ACK that covers something newer
-		// scans it (detectLost).
-		if p.pn <= s.largestAcked && s.lossTime.IsZero() {
+		if s.lossTime.IsZero() {
 			s.lossTime = p.sentAt.Add(threshold)
 		}
 		kept = append(kept, *p)
 	}
-	s.packets = kept
+	s.closeGap(kept, i)
 	if est != nil {
 		est.lost += out.lostBytes
 	}

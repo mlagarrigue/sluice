@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"net"
+	"strconv"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -1583,5 +1584,34 @@ func TestThePacketThresholdCountsFromTheLargestAcknowledgedField(t *testing.T) {
 	}
 	if n, largest := lost(10, 11); n != 1 {
 		t.Errorf("%d packets lost (largest acknowledged kept at %d) with 11 to 14 acknowledged above 10, 12 to 14 ACK-only: want packet 10", n, largest)
+	}
+}
+
+// BenchmarkCollectTimeLosses is a loss-timer expiry that declares nothing —
+// the young hole under a recent ACK a peer can keep re-arming — over a
+// record of N packets, the largest acknowledged at the fifth. Its cost
+// follows the record's head, not N: the whole record, up to
+// maxTrackedPackets, was walked and rewritten at every expiry.
+func BenchmarkCollectTimeLosses(b *testing.B) {
+	var rtt rttEstimator
+	rtt.sample(10*time.Millisecond, 0)
+	now := time.Now()
+	for _, n := range []int{64, 4096, 32768} {
+		b.Run(strconv.Itoa(n), func(b *testing.B) {
+			var s sentTracker
+			for pn := range uint64(n) {
+				s.record(sentPacket{pn: pn, sentAt: now, size: 1200, ackEliciting: true})
+			}
+			s.largestAcked = 5
+			for b.Loop() {
+				s.lossTime = now // matured: the head is visited, too young to declare
+				if out := s.collectTimeLosses(now, &rtt, nil); out.lostCount != 0 {
+					b.Fatalf("declared %d lost, want none", out.lostCount)
+				}
+			}
+			if len(s.packets) != n {
+				b.Fatalf("%d packets kept, want %d", len(s.packets), n)
+			}
+		})
 	}
 }
