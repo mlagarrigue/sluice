@@ -191,7 +191,13 @@ The figures are a laptop's ([measurements](#measurements-what-is-missing)).
   RESP2. The guides have the rest: [Redis](redis.md), [NATS](nats.md).
 - **Every reply is bounded**: `MaxReplyBytes` (Redis, 64 MiB by default)
   and `MaxPayloadBytes` (NATS, 8 MiB by default); past it the connection is
-  broken, the stream being in the middle of a reply.
+  broken, the stream being in the middle of a reply. The Redis bound counts
+  the bytes **on the wire**, not memory: once read, an array element takes a
+  64-byte `Reply` where it may have cost three bytes on the wire. An array
+  of the shortest elements — the `$-1` of an `MGET` of absent keys, an
+  `LRANGE` of one-byte values — so holds about twenty-one times its size on
+  the wire, a little more while the array grows. To bound a reply's memory,
+  count twenty-five times the bound.
 - **A batch is bounded** by `BatchEntries` (Redis, a consumer group) and
   `BatchMessages` (NATS); `Block` and `Expires` (one second by default) say
   how long a read waits, and so how long the stream takes to see its

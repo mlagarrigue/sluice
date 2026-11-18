@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"io"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -256,4 +257,31 @@ func FuzzReply(f *testing.F) {
 			}
 		}
 	})
+}
+
+// A reply within MaxReplyBytes holds at most twenty-five times it in memory,
+// the figure Config.MaxReplyBytes and the limits guide give: the bound counts
+// wire bytes, and an array element of three holds a Reply once read. The
+// array of the shortest elements is the worst case; its capacity, not only
+// its length, is counted, since append's growth is retained too.
+func TestAReplyHoldsAtMostTwentyFiveTimesTheBound(t *testing.T) {
+	const bound = 1 << 16
+	n := (bound - 16) / minElementBytes
+	in := "*" + strconv.Itoa(n) + "\r\n" + strings.Repeat("+\r\n", n)
+	if len(in) > bound {
+		t.Fatalf("setup: the reply is %d bytes, over the bound of %d", len(in), bound)
+	}
+	r := reader{br: bufio.NewReaderSize(strings.NewReader(in), 16)}
+	rep, err := r.read(bound)
+	if err != nil || len(rep.Array) != n {
+		t.Fatalf("a reply of %d bytes under a bound of %d: %d elements, %v", len(in), bound, len(rep.Array), err)
+	}
+	// Not a measure of the allocator: the elements held, times their size.
+	size := int(reflect.TypeFor[Reply]().Size())
+	held := cap(rep.Array) * size
+	if held > 25*bound {
+		t.Errorf("a reply of %d bytes within %d holds room for %d elements of %d bytes: %d bytes, %.1f times the bound the documentation gives as at most 25",
+			len(in), bound, cap(rep.Array), size, held, float64(held)/bound)
+	}
+	t.Logf("%d elements, room for %d, of %d bytes: %.1f times the bound", n, cap(rep.Array), size, float64(held)/bound)
 }

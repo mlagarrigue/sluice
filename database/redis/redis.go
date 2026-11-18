@@ -91,6 +91,12 @@ type Config struct {
 	// [ErrReplyTooLarge]: the stream is left mid-reply. Zero means
 	// [DefaultMaxReplyBytes]; a negative value is refused. The server's own
 	// bound on a value is 512 MB by default (proto-max-bulk-len).
+	//
+	// It is not the reply's memory: an array element costs as little as
+	// three bytes on the wire and holds a 64-byte [Reply] once read, so an
+	// array of the shortest elements — the nils of an MGET of absent keys —
+	// holds about twenty-one times its wire size, a little more while it
+	// grows. Count twenty-five times MaxReplyBytes for a reply's memory.
 	MaxReplyBytes int
 }
 
