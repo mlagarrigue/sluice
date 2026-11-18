@@ -54,17 +54,26 @@ func AdvanceBy[T any](s sluice.Stream[T], d *Demand, key func(T) []byte) sluice.
 		return s
 	}
 	return func(yield func(sluice.Batch[T]) bool) {
+		var last []byte // the last key, copied: reused from batch to batch
 		s(func(b sluice.Batch[T]) bool {
 			// The bound is published from the last element and after the
 			// batch was delivered: publishing earlier would tell the source
 			// to skip past rows this batch had not finished carrying. A
 			// refusal publishes nothing: the consumer may have stopped partway
 			// through the batch, so its last key is not a point it reached.
+			// The key is read, and copied, before the batch goes on: the
+			// stages downstream may rewrite it in place (sluice.Map does), and
+			// a key read after them was theirs, not the source's — a bound
+			// past rows the source still had to deliver.
+			n := b.Len()
+			if n > 0 {
+				last = append(last[:0], key(b.Items[n-1])...)
+			}
 			if !yield(b) {
 				return false
 			}
-			if n := b.Len(); n > 0 {
-				d.AdvanceTo(key(b.Items[n-1]))
+			if n > 0 {
+				d.AdvanceTo(last)
 			}
 			return true
 		})

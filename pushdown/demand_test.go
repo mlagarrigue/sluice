@@ -339,3 +339,39 @@ func TestDemandLimitToTable(t *testing.T) {
 		})
 	}
 }
+
+// AdvanceBy reads the bound's key before the batch goes on: a stage
+// downstream may rewrite the elements in place, as sluice.Map does, and the
+// key read after it was that stage's, not the source's. Behind a Map adding
+// 1000, the bound published was 1008 for a source whose last key is 8: the
+// source was told to skip rows it still had to deliver. The control has no
+// stage downstream.
+func TestAdvanceByReadsTheKeyBeforeTheBatchIsHandedOn(t *testing.T) {
+	src := []int64{1, 2, 3, 4, 5, 6, 7, 8}
+	for _, tc := range []struct {
+		name string
+		wrap func(sluice.Stream[int64]) sluice.Stream[int64]
+	}{
+		{"control", func(s sluice.Stream[int64]) sluice.Stream[int64] { return s }},
+		{"Map in place", func(s sluice.Stream[int64]) sluice.Stream[int64] {
+			return sluice.Map(s, func(v int64) int64 { return v + 1000 })
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &Demand{}
+			var bounds []uint64
+			tc.wrap(AdvanceBy(sluice.Of(src, 4), d, key))(func(sluice.Batch[int64]) bool {
+				if lb := d.Snapshot().LowerBound; lb != nil {
+					bounds = append(bounds, binary.BigEndian.Uint64(lb))
+				}
+				return true
+			})
+			if lb := d.Snapshot().LowerBound; lb != nil {
+				bounds = append(bounds, binary.BigEndian.Uint64(lb))
+			}
+			if want := []uint64{4, 8}; !slices.Equal(bounds, want) {
+				t.Errorf("bounds published %v, want %v: the source's own last keys", bounds, want)
+			}
+		})
+	}
+}
