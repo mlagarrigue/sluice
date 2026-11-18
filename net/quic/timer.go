@@ -189,6 +189,11 @@ func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 					c.cc.onLost(out.lossEvent(now))
 				}
 				c.retransmitLocked()
+				// The losses left the flight, and drain waits on cond for
+				// it to empty: a lost packet with nothing to resend (a
+				// probe, a PATH_CHALLENGE, a stale payload) queues and
+				// sends nothing that would wake it.
+				c.cond.Broadcast()
 			}
 			c.settleProbeLocked(out)
 		}
