@@ -168,6 +168,34 @@ func (s *h2Conn) reset(se streamError) error {
 		s.w.forget(se.id)
 		return s.w.control32(frameRSTStream, se.id, se.code)
 	}
+	if st := s.streams[se.id]; st != nil && st.handed {
+		// The request reached the handler, so the answer is the handler's: a
+		// refusal's head would follow a head already sent — to the client, a
+		// trailer section with :status, and the refusal's line inside the
+		// body it is reading — or land on a stream whose answer ended, which
+		// RFC 9113 §5.1 closes to every frame. An answer still being written
+		// is cut by the reset alone; an ended one is left as it is, and
+		// nothing is sent.
+		answering := s.w.answering(se.id)
+		if st.stream != nil {
+			st.stream.fail(se.err)
+		}
+		s.retire(se.id, stateClosed)
+		s.w.forget(se.id)
+		if !answering {
+			return nil
+		}
+		if err := s.countReset(); err != nil {
+			return fmt.Errorf("%w: %w", err, se.err)
+		}
+		code := se.code
+		if code == errNoError {
+			// NO_ERROR is §8.1's reset after a complete answer; this one is
+			// cut short.
+			code = errCancel
+		}
+		return s.w.control32(frameRSTStream, se.id, code)
+	}
 	if err := s.countReset(); err != nil {
 		return fmt.Errorf("%w: %w", err, se.err)
 	}
