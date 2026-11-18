@@ -52,12 +52,45 @@ func TestReadRefusesWhatIsNotNATS(t *testing.T) {
 	}
 }
 
+// endless answers its prefix, then fill without end, counting what it was
+// asked for; past sixteen megabytes it fails, so that a reader that never
+// stops ends the test rather than the machine.
+type endless struct {
+	prefix []byte
+	fill   byte
+	read   int
+}
+
+func (e *endless) Read(p []byte) (int, error) {
+	if e.read > 16<<20 {
+		return 0, io.ErrUnexpectedEOF
+	}
+	n := copy(p, e.prefix)
+	e.prefix = e.prefix[n:]
+	if n == 0 {
+		for i := range p {
+			p[i] = e.fill
+		}
+		n = len(p)
+	}
+	e.read += n
+	return n, nil
+}
+
 func TestReadBound(t *testing.T) {
 	if _, err := readOp("MSG a 1 100\r\n"+strings.Repeat("x", 100)+"\r\n", 64); !errors.Is(err, ErrTooLarge) {
 		t.Errorf("a payload past the bound: %v", err)
 	}
-	if _, err := readOp("INFO "+strings.Repeat("x", maxControlLine), 1<<20); !errors.Is(err, ErrTooLarge) {
+	// A control line with no end is refused once it passes maxControlLine,
+	// having read about that much: a finite one would be refused by the
+	// check after the gathering loop whether or not the loop stopped.
+	src := &endless{prefix: []byte("INFO "), fill: 'x'}
+	r := reader{br: bufio.NewReaderSize(src, 16), maxPayload: 64}
+	if _, err := r.read(); !errors.Is(err, ErrTooLarge) {
 		t.Errorf("a line with no end: %v", err)
+	}
+	if src.read > 2*maxControlLine {
+		t.Errorf("a line with no end: %d bytes read under a bound of %d, the gathering did not stop at it", src.read, maxControlLine)
 	}
 	if o, err := readOp("MSG a 1 64\r\n"+strings.Repeat("x", 64)+"\r\n", 64); err != nil || len(o.data) != 64 {
 		t.Errorf("a payload at the bound: %v", err)
