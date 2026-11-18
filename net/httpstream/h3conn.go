@@ -476,6 +476,13 @@ func (e h3ConnectionError) Unwrap() error { return e.Err }
 // charge in it went over a connection bound (excess); hand over the requests
 // whose head is complete (handOver); and keep the interim 100s still owed.
 func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []quic.StreamID, []h3StreamError, error) {
+	// The previous delivery's batch is the caller's copy by now: what the
+	// scratch still holds of it — each request with its whole body under
+	// BodyWhole — is let go, not kept past the length of the next batch,
+	// outside assembling and outside the requests in flight.
+	clear(a.batch)
+	clear(a.after)
+	clear(a.failed)
 	a.batch, a.ids, a.failed = a.batch[:0], a.ids[:0], a.failed[:0]
 	a.after, a.continues = a.after[:0], a.continues[:0]
 	now := time.Now() // one clock read per delivery, not per new stream

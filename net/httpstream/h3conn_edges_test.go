@@ -238,7 +238,10 @@ func TestH3AssemblerStreamedDataFollowedByFrames(t *testing.T) {
 				t.Fatalf("%s, delivery %d: %v, %v", tt.name, i, failed, err)
 			}
 			if batch.Len() == 1 {
-				req = &batch.Items[0]
+				// Copied, as ServeH3Conn copies the batch: the assembler's
+				// scratch is cleared at the next delivery.
+				r := batch.Items[0]
+				req = &r
 			}
 		}
 		if req == nil {

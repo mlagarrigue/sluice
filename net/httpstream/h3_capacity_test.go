@@ -232,3 +232,35 @@ func TestAHandedOverRequestLeavesNothingInTheFrameScratch(t *testing.T) {
 		}
 	}
 }
+
+// The batch scratch lets go of a batch the caller has taken: it was reset to
+// its zero length and never cleared, and the entries past the next batch's
+// length kept their Request — under BodyWhole the whole body of a request
+// already answered — until a batch as large wrote over them, outside
+// assembling and outside the requests in flight.
+func TestTheBatchScratchLetsGoOfRequestsHandedOver(t *testing.T) {
+	const body = 200 << 10
+	a := newH3Assembler(Config{BodyDelivery: BodyWhole}.mustResolve())
+	var frames []quic.Frame
+	for i := range 3 {
+		frames = append(frames, streamFrame(quic.StreamID(4*i), appendH3Frame(h3Request("POST", "/u"), h3Data, make([]byte, body)), true))
+	}
+	batch, _, failed, err := a.Frames(frames)
+	if err != nil || len(failed) > 0 || batch.Len() != 3 {
+		t.Fatalf("setup: batch %d, failed %v, err %v", batch.Len(), failed, err)
+	}
+	batch, _, failed, err = a.Frames([]quic.Frame{streamFrame(12, h3Request("GET", "/"), true)})
+	if err != nil || len(failed) > 0 || batch.Len() != 1 {
+		t.Fatalf("setup: batch %d, failed %v, err %v", batch.Len(), failed, err)
+	}
+	held, bytes := 0, 0
+	for _, r := range a.batch[len(a.batch):cap(a.batch)] {
+		if r.Body != nil {
+			held++
+			bytes += cap(r.Body)
+		}
+	}
+	if held > 0 {
+		t.Fatalf("%d requests of an earlier batch are still held past the batch's length, %d body bytes in all; want 0", held, bytes)
+	}
+}
