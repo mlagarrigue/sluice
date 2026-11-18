@@ -15,7 +15,8 @@
 //	h2respond.go     HTTP/2 responder: the handler called, its answers encoded
 //	h2write.go       HTTP/2 out: frames under flow control and deadlines
 //	hpack*.go        HPACK (RFC 7541): decoder, encoder, tables; huffman.go
-//	h3serve.go       HTTP/3: ServeH3Conn, a connection over a quic.Conn
+//	h3serve.go       HTTP/3: ServeH3Conn, a connection over a quic.Conn;
+//	                 workers.go the goroutines its calls and writers reuse
 //	h3conn.go        HTTP/3 requests assembled, and their errors
 //	h3.go            HTTP/3 frames; h3uni.go the control and QPACK streams
 //	h3response.go    HTTP/3 responses encoded; qpack_static.go QPACK's table

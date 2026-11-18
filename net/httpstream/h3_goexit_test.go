@@ -53,7 +53,9 @@ func h3AnswerOf(t *testing.T, handle Handler) (retired, answered int32, left int
 	b.retire = func() { nRetired.Add(1) }
 	b.answered = func() { nAnswered.Add(1) }
 	var writers, ran sync.WaitGroup
-	ran.Go(func() { answerH3(t.Context(), c, nil, b, handle, writeBoundOf(Config{}.mustResolve()), &writers) })
+	ran.Go(func() {
+		answerH3(t.Context(), c, nil, b, handle, writeBoundOf(Config{}.mustResolve()), &writers, &warmGoroutines{})
+	})
 	ran.Wait()
 	writers.Wait()
 	// A writer signals writers before it retires its stream and releases

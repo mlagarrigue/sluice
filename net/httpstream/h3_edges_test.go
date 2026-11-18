@@ -354,7 +354,7 @@ func TestH3BatchOfOneReleasesItsCalls(t *testing.T) {
 		}
 		b.ctx, b.calls = calls.register(t.Context(), ids), &calls
 		var writers sync.WaitGroup
-		answerH3(t.Context(), c, nil, b, echoTarget, writeBoundOf(Config{}.mustResolve()), &writers)
+		answerH3(t.Context(), c, nil, b, echoTarget, writeBoundOf(Config{}.mustResolve()), &writers, &warmGoroutines{})
 		writers.Wait()
 		deadline := time.Now().Add(5 * time.Second)
 		for {

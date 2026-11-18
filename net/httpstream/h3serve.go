@@ -432,9 +432,12 @@ type h3Serving struct {
 	a         *h3Assembler
 
 	calls, writers sync.WaitGroup
-	launchMu       sync.Mutex
-	ended          bool // under launchMu; see launch
-	running        int  // under launchMu: launched goroutines not yet returned
+	// warm runs the calls and the writers (warmGoroutines): a goroutine
+	// that has served one request keeps the stack it grew for the next.
+	warm     warmGoroutines
+	launchMu sync.Mutex
+	ended    bool // under launchMu; see launch
+	running  int  // under launchMu: launched goroutines not yet returned
 	// cancels maps each request stream handed to a handler to its batch's
 	// context: a RESET_STREAM or STOP_SENDING from the client takes the
 	// request out of it, the connection's end takes them all.
@@ -548,7 +551,7 @@ func (s *h3Serving) launch(wg *sync.WaitGroup, f func()) bool {
 	if !s.ended {
 		s.running++
 		wg.Add(1)
-		go s.run(wg, f)
+		s.warm.Go(func() { s.run(wg, f) })
 	}
 	return !s.ended
 }
@@ -739,14 +742,14 @@ func (s *h3Serving) onFrames(frames []quic.Frame) error {
 			s.launch(&s.calls, func() {
 				select {
 				case <-c.HandshakeComplete():
-					answerH3(s.forced, c, s.tlsState(), b, s.handle, writeBoundOf(s.cfg), &s.writers)
+					answerH3(s.forced, c, s.tlsState(), b, s.handle, writeBoundOf(s.cfg), &s.writers, &s.warm)
 				case <-c.Done():
 				}
 			})
 			return nil
 		}
 	}
-	s.launch(&s.calls, func() { answerH3(s.forced, c, s.tlsState(), b, s.handle, writeBoundOf(s.cfg), &s.writers) })
+	s.launch(&s.calls, func() { answerH3(s.forced, c, s.tlsState(), b, s.handle, writeBoundOf(s.cfg), &s.writers, &s.warm) })
 	return nil
 }
 
@@ -801,6 +804,7 @@ func (s *h3Serving) refuse(st *quic.Stream, se h3StreamError) error {
 // end is the connection's end: it wakes what is still waiting and waits for
 // the calls and writers, the forced stop bounding that wait.
 func (s *h3Serving) end() error {
+	defer s.warm.stop()
 	// Nobody is left to answer: the handlers still running learn it before
 	// they are waited for, and so does one waiting for a body's bytes.
 	s.cancels.leaveAll()
@@ -1049,7 +1053,7 @@ func h3GracefulCode() uint64 {
 //
 // A response that cannot be framed resets its own stream rather than failing
 // the connection: the caller's bug costs the caller's request.
-func answerH3(ctx context.Context, c *quic.Conn, state *tls.ConnectionState, b h3Batch, handle Handler, wb writeBound, writers *sync.WaitGroup) {
+func answerH3(ctx context.Context, c *quic.Conn, state *tls.ConnectionState, b h3Batch, handle Handler, wb writeBound, writers *sync.WaitGroup, warm *warmGoroutines) {
 	// The address as it stands now: a QUIC connection may have moved.
 	peer{addr: addrPortOf(c.RemoteAddr()), tls: state}.stamp(b.reqs)
 	// The batch's context, released by the last of its writers below.
@@ -1118,7 +1122,8 @@ func answerH3(ctx context.Context, c *quic.Conn, state *tls.ConnectionState, b h
 			if rb := b.reqs[i].body; rb != nil {
 				unread = rb.q.unread()
 			}
-			go func(id quic.StreamID, r Response, method []byte, after <-chan struct{}) {
+			r, method, after := res[i], b.reqs[i].Method, b.after[i]
+			warm.Go(func() {
 				if after != nil {
 					<-after // the interim 100 the head was owed leaves first
 				}
@@ -1147,7 +1152,7 @@ func answerH3(ctx context.Context, c *quic.Conn, state *tls.ConnectionState, b h
 						_ = s.StopSending(h3NoError)
 					}
 				}
-			}(id, res[i], b.reqs[i].Method, b.after[i])
+			})
 		}
 	}
 	answered := false
