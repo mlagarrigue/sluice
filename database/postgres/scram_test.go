@@ -419,3 +419,34 @@ func TestSCRAMEdgesOfTheServersText(t *testing.T) {
 		t.Errorf("splitAttr(\"r=\") = %q, %q, %v", n, v, ok)
 	}
 }
+
+// RFC 5802 §5.1 r: the client nonce is "different for each authentication",
+// printable ASCII without ','. TestSCRAMRefusesASecondChallenge, which the
+// register cited for it, builds its server-first from s.nonce and says
+// nothing of the nonce: a randRead that filled nothing passed it.
+func TestSCRAMNonceIsFreshAndPrintable(t *testing.T) {
+	a, b := newNonce(), newNonce()
+	if a == b {
+		t.Errorf("two nonces are the same: %q", a)
+	}
+	for _, n := range []string{a, b} {
+		for i := range len(n) {
+			if c := n[i]; c < 0x21 || c > 0x7e || c == ',' {
+				t.Errorf("nonce %q holds byte %#x, outside printable ASCII without ','", n, c)
+			}
+		}
+	}
+}
+
+// RFC 5802 §5.1: attribute names are case-sensitive. TestParseServerFinal,
+// cited next to it, never sent an upper-case name: a splitAttr that folded
+// case passed it.
+func TestSCRAMServerFinalAttributeNamesAreCaseSensitive(t *testing.T) {
+	if sig, err := parseServerFinal("V=" + rfcServerSignature); err == nil {
+		t.Errorf("parseServerFinal took an upper-case V as the signature: %x", sig)
+	}
+	// M is not m, the mandatory-extension attribute: the v after it is read.
+	if _, err := parseServerFinal("M=x,v=" + rfcServerSignature); err != nil {
+		t.Errorf("parseServerFinal(\"M=x,v=…\") refused an attribute that is not m: %v", err)
+	}
+}

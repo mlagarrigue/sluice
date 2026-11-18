@@ -1220,3 +1220,17 @@ func TestParameterBudgetAtItsBound(t *testing.T) {
 		t.Fatalf("a parameter one byte past the budget: %v, want ErrProtocol naming its 11 bytes", err)
 	}
 }
+
+// PostgreSQL 54.2.1: a NegotiateProtocolVersion may come once, after
+// AuthenticationOk included. TestStartupRefusesAMalformedNegotiation's "sent
+// twice" sends both before AuthenticationOk, where the first is never put in
+// question: a startup that forgot the first one at AuthenticationOk passed it.
+func TestStartupRefusesASecondNegotiationAfterAuthenticationOk(t *testing.T) {
+	msgs := append(beNegotiate(0), beAuth(0, "")...)
+	msgs = append(msgs, beNegotiate(0, "_pq_.x")...)
+	srv := &fakeServer{responses: [][]byte{append(msgs, beReady()...)}}
+	_, err := startup(srv, Config{User: "u", MaxProtocol: Protocol32, Params: map[string]string{"_pq_.x": "1"}})
+	if !errors.Is(err, ErrProtocol) {
+		t.Fatalf("Startup returned %v, want ErrProtocol for the second NegotiateProtocolVersion", err)
+	}
+}
