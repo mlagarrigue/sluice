@@ -1368,6 +1368,11 @@ func (l *Listener) bootstrapConn(datagram []byte, from net.Addr, h longHeader, r
 	l.mu.Lock()
 	if l.closed {
 		l.mu.Unlock()
+		// newServerConn started crypto/tls's handshake goroutine, and
+		// runHandshake, which ends it on its way out, never runs for a
+		// refused connection: ended here, by the only goroutine that has
+		// fed TLS so far, or it stays parked for the life of the process.
+		c.endTLS()
 		l.forget(c) // the preferred-address identifier may already route here
 		_ = c.Close()
 		return
@@ -1384,6 +1389,7 @@ func (l *Listener) bootstrapConn(datagram []byte, from net.Addr, h longHeader, r
 		// is read again where the connection is counted, and refused as an
 		// Initial at the bound is.
 		l.mu.Unlock()
+		c.endTLS()  // as for a closed listener above
 		l.forget(c) // the preferred-address identifier may already route here
 		c.abort(&transportError{code: transportConnectionRefused, err: fmt.Errorf(
 			"%w: the address has MaxConnsPerIP proven connections", ErrQUIC)})
