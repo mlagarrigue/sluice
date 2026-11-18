@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log"
 	"log/slog"
 	"strings"
 	"sync"
@@ -96,9 +97,12 @@ func TestGatewayPipelinePanicIsLogged(t *testing.T) {
 // Without a Logger, the panic goes to slog.Default, as httpstream's does.
 func TestGatewayPipelinePanicDefaultLogger(t *testing.T) {
 	var buf bytes.Buffer
-	prev := slog.Default()
+	prev, prevOut, prevFlags := slog.Default(), log.Writer(), log.Flags()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
-	t.Cleanup(func() { slog.SetDefault(prev) })
+	// SetDefault also points the log package at the new handler, and
+	// setting the previous default back does not undo that when it is the
+	// built-in one: the log package's output is restored apart.
+	t.Cleanup(func() { slog.SetDefault(prev); log.SetOutput(prevOut); log.SetFlags(prevFlags) })
 
 	gw := New(Config{Size: 1, Within: 5 * time.Millisecond}, panickingPipeline)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
