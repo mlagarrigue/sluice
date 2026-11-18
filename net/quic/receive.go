@@ -1595,14 +1595,14 @@ func (c *Conn) handleLimitGrant(f Frame) {
 			c.peerMaxStreamsBidi = f.value
 			c.bidiBlockedTold = false
 			c.rxProgress = true
-			c.wakeWindowLocked() // the openers wait on cond
+			c.openers.Broadcast()
 		}
 	default: // MAX_STREAMS for unidirectional streams
 		if f.value > c.peerMaxStreamsUni {
 			c.peerMaxStreamsUni = f.value
 			c.uniBlockedTold = false
 			c.rxProgress = true
-			c.wakeWindowLocked() // the openers wait on cond
+			c.openers.Broadcast()
 		}
 	}
 }

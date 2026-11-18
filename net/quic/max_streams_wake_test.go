@@ -5,10 +5,12 @@ import (
 	"testing/synctest"
 )
 
-// A MAX_STREAMS wakes the writers parked on the stream limit only when it
+// A MAX_STREAMS wakes the openers parked on the stream limit only when it
 // raises the limit, as MAX_DATA wakes them only when grant raises the
-// window. Woken on every one, a peer's two-byte frame bought a wake-up per
-// parked writer, each of which found nothing changed and parked again.
+// window, and it wakes them alone. Woken on every one, a peer's two-byte
+// frame bought a wake-up per parked writer, each of which found nothing
+// changed and parked again; and the openers waited on cond, where a raise
+// woke every writer parked on the congestion window with them.
 func TestAMaxStreamsThatRaisesNothingWakesNoOne(t *testing.T) {
 	for _, typ := range []byte{frameMaxStreams, frameMaxStreams + 1} {
 		synctest.Test(t, func(t *testing.T) {
@@ -20,12 +22,19 @@ func TestAMaxStreamsThatRaisesNothingWakesNoOne(t *testing.T) {
 			c.mu.Unlock()
 
 			woken := make(chan struct{}, 4)
+			windowWoken := make(chan struct{}, 4)
 			c.mu.Lock()
 			go func() {
 				c.mu.Lock()
-				c.cond.Wait()
+				c.openers.Wait()
 				c.mu.Unlock()
 				woken <- struct{}{}
+			}()
+			go func() { // a writer parked on the window, which no MAX_STREAMS opens
+				c.mu.Lock()
+				c.cond.Wait()
+				c.mu.Unlock()
+				windowWoken <- struct{}{}
 			}()
 			c.mu.Unlock()
 			synctest.Wait()
@@ -34,7 +43,7 @@ func TestAMaxStreamsThatRaisesNothingWakesNoOne(t *testing.T) {
 			synctest.Wait()
 			select {
 			case <-woken:
-				t.Fatalf("frame %#x at the current limit woke a parked writer", typ)
+				t.Fatalf("frame %#x at the current limit woke a parked opener", typ)
 			default:
 			}
 
@@ -43,8 +52,17 @@ func TestAMaxStreamsThatRaisesNothingWakesNoOne(t *testing.T) {
 			select {
 			case <-woken:
 			default:
-				t.Fatalf("frame %#x raising the limit left the parked writer asleep", typ)
+				t.Fatalf("frame %#x raising the limit left the parked opener asleep", typ)
 			}
+			select {
+			case <-windowWoken:
+				t.Fatalf("frame %#x raising the limit woke a writer parked on the window", typ)
+			default:
+			}
+			c.mu.Lock()
+			c.cond.Broadcast() // release the window's writer before the bubble ends
+			c.mu.Unlock()
+			<-windowWoken
 		})
 	}
 }

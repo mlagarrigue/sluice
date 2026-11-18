@@ -112,6 +112,12 @@ type Conn struct {
 	// end reach it too (wakeWritersLocked); an ACK, a pacing tick or a
 	// MAX_STREAMS, which give no credit, do not (wakeWindowLocked).
 	connCredit sync.Cond
+	// openers is where an OpenStream parks while the peer's stream limit is
+	// reached: a MAX_STREAMS that raises it wakes them, and only them — on
+	// cond it woke every writer parked on the window as well, a wake-up per
+	// writer for each two-byte frame. The end reaches it too
+	// (wakeAllLocked), and the opener's context (waitForStreamLocked).
+	openers sync.Cond
 
 	// writeRefusals counts sends refused by an ICMP surfacing on the
 	// socket, and writeRefusal keeps the last one; the handshake adds them

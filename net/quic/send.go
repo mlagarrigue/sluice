@@ -2020,6 +2020,7 @@ func (c *Conn) passCreditLocked() {
 // stream table. Callers hold mu.
 func (c *Conn) wakeAllLocked() {
 	c.wakeWritersLocked()
+	c.openers.Broadcast()
 	for _, s := range c.streams {
 		s.wakeCreditLocked()
 	}

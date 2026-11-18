@@ -959,7 +959,7 @@ func (c *Conn) localStreamCountersLocked(uni bool) (opened, limit *uint64) {
 func (c *Conn) waitStreamCreditLocked(ctx context.Context, uni bool) error {
 	stop := context.AfterFunc(ctx, func() {
 		c.mu.Lock()
-		c.wakeWindowLocked() // the openers wait on cond
+		c.openers.Broadcast()
 		c.mu.Unlock()
 	})
 	defer stop()
@@ -985,7 +985,7 @@ func (c *Conn) waitStreamCreditLocked(ctx context.Context, uni bool) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		c.cond.Wait()
+		c.openers.Wait()
 	}
 	return nil
 }
