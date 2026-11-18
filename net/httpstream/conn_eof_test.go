@@ -54,6 +54,36 @@ func TestAPartRequestReadWithEOFIsClosedMidRequest(t *testing.T) {
 	}
 }
 
+// The same for HTTP/2: whole frames read with io.EOF are read, then the
+// clean end; a frame cut short is still a close mid-frame, once the whole
+// frames ahead of it are read.
+func TestH2FramesReadWithEOFAreRead(t *testing.T) {
+	const settings = "\x00\x00\x00\x04\x00\x00\x00\x00\x00"
+	const ping = "\x00\x00\x08\x06\x00\x00\x00\x00\x00" + "12345678"
+	for _, tc := range []struct {
+		name   string
+		data   string
+		frames int
+		end    func(error) bool
+	}{
+		{"whole frames", Preface + settings + ping, 2, func(err error) bool { return err == io.EOF }}, //nolint:errorlint // the clean end is io.EOF itself
+		{"a frame cut short", Preface + settings + ping[:12], 1, func(err error) bool { return errors.Is(err, ErrH2Protocol) }},
+	} {
+		r := &frameReader{conn: dataThenEOF(tc.data), cfg: Config{}.mustResolve()}
+		frames := 0
+		for {
+			batch, ok := r.next()
+			if !ok {
+				break
+			}
+			frames += len(batch)
+		}
+		if frames != tc.frames || !tc.end(r.err) {
+			t.Errorf("%s read with io.EOF: %d frames, then %v", tc.name, frames, r.err)
+		}
+	}
+}
+
 // gatedTLSConn holds the server's first application Read until gate is
 // closed, so that the client's request and its close_notify are both in the
 // socket by then. Ordered by a channel, nothing timed.

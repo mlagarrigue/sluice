@@ -148,6 +148,9 @@ type frameReader struct {
 	// the window, fill moves the tail down when there is no room after it.
 	base []byte
 	err  error
+	// readErr is an error a Read returned with bytes, kept for the next
+	// fill (see there).
+	readErr error
 
 	prefaced bool
 	// settled is set once the first frame after the preface has been
@@ -427,7 +430,20 @@ func (r *frameReader) fill() error {
 		if err := r.conn.SetReadDeadline(deadline); err != nil {
 			return err
 		}
-		n, err := r.conn.Read(r.buf[r.n:])
+		var n int
+		var err error
+		if r.readErr != nil {
+			err, r.readErr = r.readErr, nil
+		} else {
+			n, err = r.conn.Read(r.buf[r.n:])
+			if n > 0 && err != nil {
+				// Bytes and an error from one Read, as io.Reader allows
+				// (crypto/tls under TLS 1.2, the peer's close_notify behind
+				// its last record): the frames are read first, and the
+				// error is the next round's, as in h1Conn.fill.
+				r.readErr, err = err, nil
+			}
+		}
 		r.n += n
 		if err == nil {
 			return nil
