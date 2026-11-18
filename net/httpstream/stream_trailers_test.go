@@ -169,3 +169,52 @@ func TestTrailersReadTheSameWayInBothModes(t *testing.T) {
 		})
 	}
 }
+
+// An HTTP/1.1 trailer section passes the framing rules HTTP/2 and HTTP/3 hold
+// a trailer to: a connection-specific field, or a TE but "trailers", is
+// refused, whatever its case, where it was handed to the handler — a hop that
+// would split a request on a Transfer-Encoding header would split it on the
+// trailer. Both paths: the body whole in the read that brought the head
+// (parseRequest), and the body streamed (bodyStream). An ordinary trailer is
+// the control.
+func TestAnHTTP1TrailerPassesTheTrailerCheck(t *testing.T) {
+	for _, tc := range []struct {
+		trailer string
+		refused bool
+	}{
+		{"X-Sum: 1", false},
+		{"Transfer-Encoding: chunked", true},
+		{"connection: close", true},
+		{"TE: gzip", true},
+		{"TE: trailers", false},
+	} {
+		t.Run("whole "+tc.trailer, func(t *testing.T) {
+			raw := []byte("POST /u HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n" + tc.trailer + "\r\n\r\n")
+			_, _, _, err := parseRequest(raw, Config{BodyDelivery: BodyWhole}.mustResolve(), nil, nil)
+			if (err != nil) != tc.refused {
+				t.Errorf("parseRequest = %v, want refused %v", err, tc.refused)
+			}
+		})
+		t.Run("streamed "+tc.trailer, func(t *testing.T) {
+			first := make(chan struct{})
+			addr, _ := serveTest(t, streamCfg(), trailersAfterStream(first))
+			c := dial(t, addr)
+			chunk := pattern(3000)
+			if _, err := fmt.Fprintf(c, "POST /up HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n%x\r\n%s", len(chunk), chunk); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-first:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the handler got no piece of the body")
+			}
+			if _, err := fmt.Fprint(c, "\r\n0\r\n"+tc.trailer+"\r\n\r\n"); err != nil {
+				t.Fatal(err)
+			}
+			status, got := readResponse(t, bufio.NewReader(c))
+			if refused := !strings.Contains(status, "200"); refused != tc.refused {
+				t.Errorf("streamed body with the trailer %q: %s %q, want refused %v", tc.trailer, status, got, tc.refused)
+			}
+		})
+	}
+}

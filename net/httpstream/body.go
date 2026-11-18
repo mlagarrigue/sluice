@@ -258,6 +258,9 @@ func (b *bodyStream) step() (data []byte, more bool, err error) {
 		}
 		b.trailerFields++
 		h, err := parseHeaderLine(line)
+		if err == nil {
+			err = checkHTTP1Trailer(h)
+		}
 		if err != nil {
 			return nil, false, err
 		}

@@ -208,6 +208,25 @@ func connectionSpecific(name []byte) bool {
 	return false
 }
 
+// checkHTTP1Trailer holds one HTTP/1.1 trailer field to the two rules of
+// checkRequestTrailer that are about framing, its names compared without
+// regard to case as HTTP/1.1 sends them: no connection-specific field and no
+// TE but "trailers". The others are parseHeaderLine's already, and HTTP/1.1
+// does not ask for lowercase. The same smuggling reason holds: a hop that
+// would split a request on a Transfer-Encoding header would split it on the
+// trailer, and HTTP/2 and HTTP/3 refused it where HTTP/1.1 handed it on.
+func checkHTTP1Trailer(h Header) error {
+	for _, name := range [...]string{"connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"} {
+		if equalFold(h.Name, name) {
+			return fmt.Errorf("%w: the connection-specific field %s in a trailer section", ErrMalformed, cite(h.Name))
+		}
+	}
+	if equalFold(h.Name, "te") && !equalFold(h.Value, "trailers") {
+		return fmt.Errorf("%w: TE may only be \"trailers\"", ErrMalformed)
+	}
+	return nil
+}
+
 // checkRequestTrailer holds one received trailer field to the rules a
 // request's header fields pass in buildRequest: no pseudo-header (RFC 9113
 // §8.1, RFC 9114 §4.1), a lowercase token for a name and no control
@@ -1507,6 +1526,9 @@ func walkChunks(buf []byte, cfg Config, p *chunkProgress, move bool, out []Heade
 		}
 		trailerFields++
 		h, err := parseHeaderLine(line)
+		if err == nil {
+			err = checkHTTP1Trailer(h)
+		}
 		if err != nil {
 			return 0, 0, out, err
 		}
