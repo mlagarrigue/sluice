@@ -39,6 +39,10 @@ type PhaseStore struct {
 	Table string
 }
 
+// phaseCreateLock is the first key of the lock that serialises a
+// PhaseStore's table creation; the second is a hash of the table's name.
+const phaseCreateLock = 0x736c6331 // "slc1"
+
 var phaseIdent = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // table is the store's table, each part quoted.
@@ -77,7 +81,18 @@ func (s *PhaseStore) Lock(ctx context.Context, job string) (phase.Lease, error) 
 		err = fmt.Errorf("%w: job %q of %s is locked by another session (advisory lock %d)", phase.ErrBusy, job, s.Table, key)
 	}
 	if err == nil {
-		err = conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS `+table+
+		// The job's lock does not serialise the table's creation: two jobs
+		// hold two locks, and the server does not serialise two CREATE TABLE
+		// IF NOT EXISTS of one name either — the second sees 23505, 42P07 or
+		// 42710. A lock of the table's own does, held to the end of the
+		// implicit transaction the two statements of one Query run in. It
+		// takes two int4 keys, a space that does not overlap the jobs'
+		// bigint keys (PostgreSQL, "Advisory Lock Functions"), so a job
+		// holding its lock for a whole run never stands in its way.
+		t := fnv.New32a()
+		_, _ = t.Write([]byte(s.Table))
+		err = conn.Exec(ctx, fmt.Sprintf(`SELECT pg_advisory_xact_lock(%d, %d); `, phaseCreateLock, int32(t.Sum32()))+ //nolint:gosec // G115: a hash's bits, reinterpreted as the int4 the lock takes
+			`CREATE TABLE IF NOT EXISTS `+table+
 			` (job text PRIMARY KEY, record jsonb NOT NULL, updated timestamptz NOT NULL DEFAULT now())`)
 	}
 	if err != nil {

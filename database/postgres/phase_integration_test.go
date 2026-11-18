@@ -3,9 +3,11 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/mlagarrigue/sluice/database/postgres"
@@ -132,5 +134,44 @@ func TestPhaseStoreTableIsAnIdentifier(t *testing.T) {
 	s := &postgres.PhaseStore{Table: "etl.phases", Config: postgres.Config{User: "etl"}, Dial: func(context.Context) (io.ReadWriteCloser, error) { return nil, refused }}
 	if _, err := s.Lock(t.Context(), "job"); !errors.Is(err, refused) {
 		t.Errorf("a server that cannot be reached: %v", err)
+	}
+}
+
+// TestIntegrationJobsLockingAFreshTableAtOnce: jobs of different names take
+// different locks, and nothing on the server serialises two CREATE TABLE IF
+// NOT EXISTS of the same name — the loser saw 23505, 42P07 or 42710, and Lock
+// failed for a job nothing else held. Sixteen jobs lock a fresh table at
+// once, forty times over: the race is not certain on any one round.
+func TestIntegrationJobsLockingAFreshTableAtOnce(t *testing.T) {
+	addr, cfg := pgTarget(t)
+	admin := dialWith(t, addr, cfg)
+	schema := testSchema(t, admin)
+	const sessions, rounds = 16, 40
+	for round := range rounds {
+		store := &postgres.PhaseStore{
+			Dial: postgres.DialTCP(addr), Config: cfg,
+			Table: fmt.Sprintf("%s.phases_%d", schema, round),
+		}
+		errs := make([]error, sessions)
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for i := range sessions {
+			wg.Go(func() {
+				<-start
+				lease, err := store.Lock(t.Context(), fmt.Sprintf("job-%d", i))
+				if err != nil {
+					errs[i] = err
+					return
+				}
+				errs[i] = lease.Release(t.Context())
+			})
+		}
+		close(start)
+		wg.Wait()
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("round %d: job-%d, which no other session locks, could not take its lock on a table being created: %v", round, i, err)
+			}
+		}
 	}
 }
