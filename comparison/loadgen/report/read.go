@@ -123,6 +123,43 @@ type stageLine struct {
 	} `json:"metrics"`
 }
 
+// stageCounters and webCounters are the counters of a stage line the report
+// publishes, each even at zero (§5): an int field reads a missing one as 0,
+// so they are asked for by name.
+var (
+	stageCounters = []string{
+		"sent", "ok", "bad_key", "timed_out", "errors", "status_4xx", "status_5xx",
+		"refused", "reset", "connect_timeout", "other", "closed", "reconnects",
+	}
+	webCounters = []string{"listen_overflows", "listen_drops"}
+)
+
+// missingCounters names the first published counter line does not carry,
+// or "" when it carries them all.
+func missingCounters(line []byte) string {
+	var top map[string]json.RawMessage
+	if json.Unmarshal(line, &top) != nil {
+		return "fields"
+	}
+	for _, k := range stageCounters {
+		if _, ok := top[k]; !ok {
+			return k
+		}
+	}
+	var roles struct {
+		Web map[string]json.RawMessage `json:"web"`
+	}
+	if json.Unmarshal(top["roles"], &roles) != nil || roles.Web == nil {
+		return "roles.web"
+	}
+	for _, k := range webCounters {
+		if _, ok := roles.Web[k]; !ok {
+			return "roles.web." + k
+		}
+	}
+	return ""
+}
+
 // metricsDoc is the contender's own counters, as the contract has it
 // (§1.2, §1.3): the batch sizes of the variants that group are read here
 // and nowhere else.
@@ -207,6 +244,9 @@ func read(dir, verdictsPath string) (*inputs, error) {
 		var l stageLine
 		if err := json.Unmarshal(r.Line, &l); err != nil {
 			return fmt.Errorf("%s line %d: its stage line: %w", raw, n, err)
+		}
+		if missing := missingCounters(r.Line); missing != "" {
+			return fmt.Errorf("%s line %d: its stage line carries no %s: a counter the report publishes, even at zero, is not read as zero when a campaign older than it, or a collector that lost it, did not write it", raw, n, missing)
 		}
 		in.stages = append(in.stages, stage{
 			family: r.Family, contender: r.Contender, measure: r.Measure,

@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -360,5 +361,29 @@ func TestReportOfATrialNeedsNoVerdicts(t *testing.T) {
 	}
 	if err := run(dir, "", "", filepath.Join(t.TempDir(), "report")); err != nil {
 		t.Errorf("a trial without verdicts: %v, want its report", err)
+	}
+}
+
+// A §5 counter missing from raw.jsonl — a campaign written before the
+// counter existed, or a collector that lost it — was read as 0 and
+// published as "0", which the report holds to be a result. The read refuses
+// the line instead, naming the counter, as the head of read.go promises.
+func TestAMissingCounterIsRefusedNotPublishedAsZero(t *testing.T) {
+	dir := synthetic(t)
+	p := filepath.Join(dir, "raw.jsonl")
+	b, err := os.ReadFile(p) //nolint:gosec // G304: the test's own fixture
+	if err != nil {
+		t.Fatal(err)
+	}
+	stripped := regexp.MustCompile(`"listen_overflows":\d+,`).ReplaceAll(b, nil)
+	if len(stripped) == len(b) {
+		t.Fatal("fixture: listen_overflows not found")
+	}
+	if err := os.WriteFile(p, stripped, 0o600); err != nil { //nolint:gosec // G703: the test's own fixture
+		t.Fatal(err)
+	}
+	err = run(dir, "", "", filepath.Join(t.TempDir(), "report"))
+	if err == nil || !strings.Contains(err.Error(), "roles.web.listen_overflows") {
+		t.Fatalf("a raw.jsonl without listen_overflows was read: %v", err)
 	}
 }
