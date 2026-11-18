@@ -1767,12 +1767,17 @@ func TestCheckTrailerRefusesFieldsSettledBeforeTheContent(t *testing.T) {
 	for _, name := range []string{
 		"content-length", "Trailer", "host", "Authorization", "www-authenticate",
 		"location", "vary", "Content-Type", "content-range", "expect", "te",
+		"Allow", // a response context field (§10.2), as location and server are
 	} {
 		if err := checkTrailer(Header{Name: []byte(name), Value: []byte("x")}); !errors.Is(err, ErrMalformed) {
 			t.Errorf("%s: got %v, want ErrMalformed", name, err)
 		}
 	}
-	for _, name := range []string{"etag", "grpc-status", "x-checksum"} {
+	// The fields whose definition permits the trailer section: Accept-Ranges
+	// (§14.3, "MAY be sent in a trailer section"), Authentication-Info and
+	// Proxy-Authentication-Info (§11.6.3, §11.7.3, when the scheme allows —
+	// the handler's to know).
+	for _, name := range []string{"etag", "grpc-status", "x-checksum", "accept-ranges", "Authentication-Info", "proxy-authentication-info"} {
 		if err := checkTrailer(Header{Name: []byte(name), Value: []byte("x")}); err != nil {
 			t.Errorf("%s: refused: %v", name, err)
 		}

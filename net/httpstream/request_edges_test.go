@@ -413,6 +413,23 @@ func TestStatusAtItsEdges(t *testing.T) {
 	}
 }
 
+// Every status the transport writes on its own carries its name, so a
+// client that sent a request line too long reads why (RFC 9110 §15.5.15).
+func TestTheTransportsStatusesHaveTheirNames(t *testing.T) {
+	for status, want := range map[int]string{
+		400: "400 Bad Request\n", 408: "408 Request Timeout\n", 413: "413 Content Too Large\n",
+		414: "414 URI Too Long\n", 431: "431 Request Header Fields Too Large\n",
+		501: "501 Not Implemented\n", 505: "505 HTTP Version Not Supported\n",
+	} {
+		if got := string(transportError(status).Body); got != want {
+			t.Errorf("transportError(%d).Body = %q, want %q", status, got, want)
+		}
+	}
+	if got := reason(415); got != "Unsupported Media Type" {
+		t.Errorf("reason(415) = %q: web/stream's DecodeJSON writes it", got)
+	}
+}
+
 // Close reports a cut only when a request was in flight: a connection idle
 // between two requests is closed without a word — on HTTP/2 too, whose
 // phase was left busy by the read that brought the request in until the

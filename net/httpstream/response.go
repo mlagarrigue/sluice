@@ -225,17 +225,20 @@ func checkTrailer(h Header) error {
 // trailer cannot announce more trailers; then routing (§7.2), authentication
 // (§11), the response controls (§10.2) and the content's format (§8.3 to
 // §8.7). Validators (§8.8) stay allowed: an ETag computed as the body went
-// out is what trailers are for. A field of another specification is not
-// here: this package does not keep that catalogue, and the handler knows
-// its own fields. The request's own fields are refused before this list,
-// by checkResponseField.
+// out is what trailers are for. So do the fields whose own definition
+// permits the trailer section, though their kind would refuse them:
+// Accept-Ranges ("MAY be sent in a trailer section", §14.3),
+// Authentication-Info and Proxy-Authentication-Info (§11.6.3, §11.7.3, when
+// the scheme allows it — the handler's to know). A field of another
+// specification is not here: this package does not keep that catalogue,
+// and the handler knows its own fields. The request's own fields are
+// refused before this list, by checkResponseField.
 var refusedTrailers = [...]string{
 	"content-length", "transfer-encoding", "trailer", "te",
 	"connection", "keep-alive", "proxy-connection", "upgrade",
 	"host",
 	"authorization", "proxy-authorization", "www-authenticate", "proxy-authenticate",
-	"authentication-info", "proxy-authentication-info",
-	"accept-ranges", "age", "location", "retry-after", "server", "vary",
+	"age", "allow", "location", "retry-after", "server", "vary",
 	"content-type", "content-encoding", "content-language", "content-location", "content-range",
 }
 
@@ -841,6 +844,10 @@ func reason(status int) string {
 		return "Length Required"
 	case 413:
 		return "Content Too Large"
+	case 414:
+		return "URI Too Long"
+	case 415:
+		return "Unsupported Media Type"
 	case 422:
 		return "Unprocessable Content"
 	case 425:
