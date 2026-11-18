@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"reflect"
 	"sync"
 )
 
@@ -98,19 +99,58 @@ func clientTLSConfig(cfg *tls.Config) *tls.Config {
 // concurrent use when the inner cache is, as the interface requires.
 type singleUseSessionCache struct{ inner tls.ClientSessionCache }
 
-// sessionCacheMu makes taking a ticket — the Get and the Put(nil) that
-// removes it — one step for every Dial, and DialEarly's look at the ticket
-// it will resume (earlyTLSConfig, a Get and a Put back) another. Two Dials
-// sharing a cache each wrap it in a singleUseSessionCache of their own, so
-// the lock cannot live in the wrapper; one for the package costs a
-// ClientHello's worth of waiting at most, once per handshake. Without it two
-// ClientHellos built at once read the same ticket before either removed it,
-// and the second connection presented it again.
-var sessionCacheMu sync.Mutex
+// cacheLocks makes taking a ticket — the Get and the Put(nil) that removes
+// it — one step for every Dial on one cache, and DialEarly's look at the
+// ticket it will resume (earlyTLSConfig, a Get and a Put back) another. Two
+// Dials sharing a cache each wrap it in a singleUseSessionCache of their own,
+// so the lock cannot live in the wrapper. Without it two ClientHellos built at
+// once read the same ticket before either removed it, and the second
+// connection presented it again. One lock per cache, not one for the package:
+// a cache whose Get blocks holds its own Dials, as crypto/tls's would, and no
+// other cache's. The table keeps a lock while someone holds or waits for it,
+// so it holds as many entries as there are caches in use at once.
+var cacheLocks = lockTable{locks: map[any]*cacheLock{}}
+
+type lockTable struct {
+	mu    sync.Mutex
+	locks map[any]*cacheLock
+}
+
+type cacheLock struct {
+	sync.Mutex
+	users int // holding or waiting, under lockTable.mu
+}
+
+// lock takes cache's lock and returns its release. A cache whose value is
+// not comparable — a struct holding a slice, say — cannot key the table:
+// every such cache shares one lock, the package-wide lock of before.
+func (t *lockTable) lock(cache tls.ClientSessionCache) (unlock func()) {
+	var key any = cache
+	if !reflect.ValueOf(cache).Comparable() {
+		key = reflect.TypeFor[lockTable]()
+	}
+	t.mu.Lock()
+	l := t.locks[key]
+	if l == nil {
+		l = &cacheLock{}
+		t.locks[key] = l
+	}
+	l.users++
+	t.mu.Unlock()
+	l.Lock()
+	return func() {
+		l.Unlock()
+		t.mu.Lock()
+		l.users--
+		if l.users == 0 {
+			delete(t.locks, key)
+		}
+		t.mu.Unlock()
+	}
+}
 
 func (c singleUseSessionCache) Get(key string) (*tls.ClientSessionState, bool) {
-	sessionCacheMu.Lock()
-	defer sessionCacheMu.Unlock()
+	defer cacheLocks.lock(c.inner)()
 	cs, ok := c.inner.Get(key)
 	if !ok {
 		return nil, false
@@ -139,8 +179,7 @@ func sessionCopy(cs *tls.ClientSessionState) *tls.ClientSessionState {
 // Put stores under the same lock, so that a ticket arriving between
 // another Dial's Get and its removal is not the one removed.
 func (c singleUseSessionCache) Put(key string, cs *tls.ClientSessionState) {
-	sessionCacheMu.Lock()
-	defer sessionCacheMu.Unlock()
+	defer cacheLocks.lock(c.inner)()
 	c.inner.Put(key, cs)
 }
 
