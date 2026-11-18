@@ -255,7 +255,9 @@ func (s *scram) begin(mechanisms []byte, password string, cs *tls.ConnectionStat
 // (TestIntegrationChannelBindingOverTLS). crypto/x509 names a PSS signature
 // only when its salt is as long as its hash; any other — OpenSSL's default
 // is the longest salt that fits — leaves SignatureAlgorithm unknown, and the
-// hash is then read from the certificate's own bytes (pssHash).
+// hash is then read from the certificate's own bytes (signatureHash). So is
+// the hash of a SHA-224 signature, RSA, DSA or ECDSA, which crypto/x509 does
+// not name at all.
 func tlsServerEndPoint(cert *x509.Certificate) ([]byte, error) {
 	var h hash.Hash
 	switch cert.SignatureAlgorithm {
@@ -267,7 +269,7 @@ func tlsServerEndPoint(cert *x509.Certificate) ([]byte, error) {
 	case x509.SHA512WithRSA, x509.SHA512WithRSAPSS, x509.ECDSAWithSHA512:
 		h = sha512.New()
 	default:
-		h = pssHash(cert.Raw)
+		h = signatureHash(cert.Raw)
 		if h == nil {
 			return nil, fmt.Errorf("%w: the server offers %s, and its certificate's signature algorithm %v defines no tls-server-end-point hash",
 				ErrAuthUnsupported, mechSCRAMSHA256Plus, cert.SignatureAlgorithm)
@@ -279,27 +281,40 @@ func tlsServerEndPoint(cert *x509.Certificate) ([]byte, error) {
 
 var (
 	oidSignatureRSAPSS = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 10}
-	oidSHA1            = asn1.ObjectIdentifier{1, 3, 14, 3, 2, 26}
-	oidSHA224          = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 4}
-	oidSHA256          = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 1}
-	oidSHA384          = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 2}
-	oidSHA512          = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 3}
+	// The SHA-224 signatures: sha224WithRSAEncryption (RFC 4055 §5),
+	// id-dsa-with-sha224 and ecdsa-with-SHA224 (RFC 5758 §3.1, §3.2).
+	oidSignatureRSASHA224   = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 14}
+	oidSignatureDSASHA224   = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 3, 1}
+	oidSignatureECDSASHA224 = asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 1}
+	oidSHA1                 = asn1.ObjectIdentifier{1, 3, 14, 3, 2, 26}
+	oidSHA224               = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 4}
+	oidSHA256               = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 1}
+	oidSHA384               = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 2}
+	oidSHA512               = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 3}
 )
 
-// pssHash returns the tls-server-end-point hash of a certificate signed with
-// RSASSA-PSS, read from the hashAlgorithm of its RSASSA-PSS-params
-// (RFC 4055 §3.1), or nil when der is not such a certificate or names a hash
-// this binding does not know. An absent hashAlgorithm is SHA-1, its DEFAULT,
-// which RFC 5929 §4.1 replaces with SHA-256. Only the hash is read: the
-// signature itself was the TLS library's to verify, or the caller's choice to
-// trust the certificate as it stands.
-func pssHash(der []byte) hash.Hash {
+// signatureHash returns the tls-server-end-point hash of a certificate whose
+// signature algorithm crypto/x509 leaves unnamed, read from the
+// certificate's own signatureAlgorithm: SHA-224 for a SHA-224 signature;
+// for RSASSA-PSS, the hashAlgorithm of its RSASSA-PSS-params (RFC 4055
+// §3.1). It is nil when der is neither or names a hash this binding does not
+// know. An absent PSS hashAlgorithm is SHA-1, its DEFAULT, which RFC 5929
+// §4.1 replaces with SHA-256. Only the hash is read: the signature itself
+// was the TLS library's to verify, or the caller's choice to trust the
+// certificate as it stands.
+func signatureHash(der []byte) hash.Hash {
 	var cert struct {
 		TBS       asn1.RawValue
 		Algorithm pkix.AlgorithmIdentifier
 		Signature asn1.BitString
 	}
-	if rest, err := asn1.Unmarshal(der, &cert); err != nil || len(rest) != 0 || !cert.Algorithm.Algorithm.Equal(oidSignatureRSAPSS) {
+	if rest, err := asn1.Unmarshal(der, &cert); err != nil || len(rest) != 0 {
+		return nil
+	}
+	switch alg := cert.Algorithm.Algorithm; {
+	case alg.Equal(oidSignatureRSASHA224), alg.Equal(oidSignatureDSASHA224), alg.Equal(oidSignatureECDSASHA224):
+		return sha256.New224()
+	case !alg.Equal(oidSignatureRSAPSS):
 		return nil
 	}
 	var params struct {

@@ -11,6 +11,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/base64"
 	"encoding/pem"
 	"errors"
@@ -27,6 +28,91 @@ import (
 // RFC 5929 §4.1: the certificate is hashed with its signature's hash, except
 // that MD5 and SHA-1 are replaced by SHA-256. The expected values are computed
 // here from the hash functions directly, not through the code under test.
+// A certificate signed with SHA-224 — sha224WithRSAEncryption (RFC 4055 §5),
+// id-dsa-with-sha224 or ecdsa-with-SHA224 (RFC 5758 §3.1, §3.2) — has one
+// hash, neither MD5 nor SHA-1, so RFC 5929 §4.1 binds it with SHA-224.
+// crypto/x509 names none of the three, and the certificate fell into the
+// refusal written for Ed25519. The certificate is an ECDSA one whose
+// signature OID is rewritten in both places of its DER: the signature no
+// longer verifies, which does not matter here — the binding hashes Raw.
+func TestTLSServerEndPointHashOfASHA224Signature(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "db"},
+		NotBefore: time.Unix(0, 0), NotAfter: time.Unix(1<<31, 0),
+		SignatureAlgorithm: x509.ECDSAWithSHA256,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// ecdsa-with-SHA256, 1.2.840.10045.4.3.2, as a DER OBJECT IDENTIFIER.
+	ecdsaSHA256 := []byte{0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02}
+	if n := bytes.Count(der, ecdsaSHA256); n != 2 {
+		t.Fatalf("setup: the signature OID appears %d times, want 2", n)
+	}
+	for _, tc := range []struct {
+		name string
+		oid  []byte // the same length as ecdsaSHA256, so the DER's lengths hold
+	}{
+		{"ecdsa-with-SHA224", []byte{0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x01}},
+		{"sha224WithRSAEncryption", []byte{0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0e}},
+		{"id-dsa-with-sha224", []byte{0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x01}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var raw []byte
+			if len(tc.oid) == len(ecdsaSHA256) {
+				cert, err := x509.ParseCertificate(bytes.ReplaceAll(der, ecdsaSHA256, tc.oid))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if cert.SignatureAlgorithm != x509.UnknownSignatureAlgorithm {
+					t.Fatalf("setup: crypto/x509 now names %v", cert.SignatureAlgorithm)
+				}
+				raw = cert.Raw
+			} else {
+				raw = withSignatureOID(t, der, tc.oid)
+			}
+			got, err := tlsServerEndPoint(&x509.Certificate{Raw: raw})
+			want := sha256.Sum224(raw)
+			if err != nil || !bytes.Equal(got, want[:]) {
+				t.Fatalf("binding = %x, %v; want the certificate's SHA-224 %x", got, err, want)
+			}
+		})
+	}
+}
+
+// withSignatureOID re-encodes a certificate with its outer signature
+// algorithm replaced by oid, a DER OBJECT IDENTIFIER, with no parameters.
+// The binding reads the outer one; the TBS copy is left as it was.
+func withSignatureOID(t *testing.T, der, oid []byte) []byte {
+	t.Helper()
+	var cert struct {
+		TBS       asn1.RawValue
+		Algorithm asn1.RawValue
+		Signature asn1.BitString
+	}
+	if _, err := asn1.Unmarshal(der, &cert); err != nil {
+		t.Fatal(err)
+	}
+	var id asn1.ObjectIdentifier
+	if _, err := asn1.Unmarshal(oid, &id); err != nil {
+		t.Fatal(err)
+	}
+	out, err := asn1.Marshal(struct {
+		TBS       asn1.RawValue
+		Algorithm pkix.AlgorithmIdentifier
+		Signature asn1.BitString
+	}{cert.TBS, pkix.AlgorithmIdentifier{Algorithm: id}, cert.Signature})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
 func TestTLSServerEndPointHash(t *testing.T) {
 	raw := []byte("not a real certificate, only its bytes")
 	s256 := sha256.Sum256(raw)
