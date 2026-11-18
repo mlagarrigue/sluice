@@ -812,10 +812,18 @@ func (s *h3Serving) end() error {
 // arrived before the handshake completed. Holding the whole batch for one
 // request it does not allow costs the others the rest of the handshake, a
 // round trip at most, and keeps every request of a batch in one call.
-func allowedEarly(reqs []Request, early func(*Request) bool) bool {
+func allowedEarly(reqs []Request, early func(*Request) bool) (ok bool) {
 	if early == nil {
 		return false
 	}
+	// The operator's predicate, on the QUIC read callback: a panic is a
+	// refusal here — the batch waits for the handshake — and apply, which
+	// asks the predicate again then, turns it into the error it reports.
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
 	for i := range reqs {
 		if !early(&reqs[i]) {
 			return false

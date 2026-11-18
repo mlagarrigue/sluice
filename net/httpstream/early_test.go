@@ -83,3 +83,30 @@ func TestServeAnswersEarlyDataWith425(t *testing.T) {
 		}
 	}
 }
+
+// The Config.EarlyData predicate is the operator's code, like the handler:
+// its panic becomes an error of apply — a 500 on the connection — and a
+// refusal in allowedEarly, where HTTP/3 asks it on the QUIC read callback.
+// It ran outside call, the one place a panic was recovered, and ended the
+// process on the connection's goroutine. The control is a panicking handler
+// under a predicate that holds.
+func TestAPanickingEarlyDataPredicateIsRecovered(t *testing.T) {
+	batch := func() sluice.Batch[Request] {
+		return sluice.Batch[Request]{Items: []Request{{Headers: []Header{{Name: []byte("early-data"), Value: []byte("1")}}}}}
+	}
+	panicking := func(context.Context, sluice.Batch[Request]) sluice.Batch[Response] { panic("handler") }
+	if _, err := apply(t.Context(), panicking, batch(), func(*Request) bool { return true }); err == nil {
+		t.Fatal("control: a panicking handler returned no error")
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("the predicate's panic escaped (%v): on a connection it ends the process", r)
+		}
+	}()
+	if _, err := apply(t.Context(), nopHandler, batch(), func(*Request) bool { panic("predicate") }); err == nil {
+		t.Error("apply: a panicking predicate returned no error")
+	}
+	if allowedEarly(batch().Items, func(*Request) bool { panic("predicate") }) {
+		t.Error("allowedEarly: a panicking predicate allowed the batch")
+	}
+}

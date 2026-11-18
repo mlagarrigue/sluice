@@ -652,6 +652,16 @@ func firstMethod(reqs []Request) []byte {
 // that early does not allow is answered 425 in its place without reaching
 // the handler (RFC 8470 §5.2), which sees the others in their order.
 func apply(ctx context.Context, handle Handler, b sluice.Batch[Request], early func(*Request) bool) (res []Response, err error) {
+	defer func() {
+		// The Config.EarlyData predicate runs here, outside call: the
+		// operator's code like the handler, and its panic is turned into an
+		// error the same way, not left to end the process on the
+		// connection's goroutine. call recovers the handler itself, so what
+		// reaches this is the predicate's.
+		if r := recover(); r != nil {
+			res, err = nil, recovered("Config.EarlyData", r)
+		}
+	}()
 	if tooEarly(b.Items, early) {
 		return applyTooEarly(ctx, handle, b, early)
 	}
