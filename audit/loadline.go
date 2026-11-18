@@ -64,6 +64,11 @@ func openLoadLine(path string) (*LoadLine, error) {
 		if v.Sent == nil || v.Conns == nil || v.Closed == nil {
 			return nil, fmt.Errorf("%s: a line without sent, conns and closed: want the load generator's stage line", path)
 		}
+		// Counts the generator never writes: a damaged file, refused here
+		// rather than divided by (Closed+Conns of zero, a negative share).
+		if *v.Sent < 0 || *v.Conns < 0 || *v.Closed < 0 || v.Rate < 0 || v.NewConns < 0 || v.NewConns > 100 {
+			return nil, fmt.Errorf("%s: a stage line with a negative count or a new-connection share outside 0 to 100: not the load generator's", path)
+		}
 		found = &LoadLine{Path: path, Sent: *v.Sent, Rate: v.Rate, Conns: *v.Conns, NewConnsPct: v.NewConns, Closed: *v.Closed}
 	}
 	if err := sc.Err(); err != nil {

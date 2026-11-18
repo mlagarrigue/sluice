@@ -92,3 +92,22 @@ func TestLoadLineRefused(t *testing.T) {
 		}
 	}
 }
+
+// A stage line with counts the generator never writes — a negative one, or a
+// new-connection share past 100 — is refused at read. conns:-5 with closed:5
+// made app/requests-per-connection divide by zero and took Run down with it;
+// new_conns_pct:250 printed negative request counts.
+func TestADamagedStageLineIsRefusedAtRead(t *testing.T) {
+	for _, line := range []string{
+		`{"rate":1000,"conns":-5,"new_conns_pct":0,"sent":10000,"closed":5}`,
+		`{"rate":1000,"conns":5,"new_conns_pct":250,"sent":10000,"closed":5}`,
+		`{"rate":1000,"conns":5,"new_conns_pct":0,"sent":-1,"closed":5}`,
+	} {
+		if _, err := Open(Spec{LoadLine: seedFile(t, "stage.jsonl", line+"\n")}); err == nil {
+			t.Errorf("%s: accepted", line)
+		}
+	}
+	if _, err := Open(Spec{LoadLine: seedFile(t, "stage.jsonl", `{"rate":1000,"conns":5,"new_conns_pct":100,"sent":10000,"closed":5}`+"\n")}); err != nil {
+		t.Errorf("a stage line at the bounds was refused: %v", err)
+	}
+}
