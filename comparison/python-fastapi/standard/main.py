@@ -18,7 +18,9 @@ import sys
 from typing import Annotated
 
 import uvicorn
-from fastapi import Depends, FastAPI, Query
+from fastapi import Depends, FastAPI, Query, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
@@ -72,6 +74,16 @@ if cfg.compression == "gzip":
 def fail(status, error, key=None):
     body = {"error": error} if key is None else {"error": error, "key": key}
     return JSONResponse(status_code=status, content=body)
+
+
+# A write body that does not validate — not JSON, JSON that goes on after
+# its value, or a document without its key — is R's 400 and its error
+# document, not FastAPI's 422; every other route keeps FastAPI's answer.
+@app.exception_handler(RequestValidationError)
+async def refused_body(request: Request, exc: RequestValidationError):
+    if request.method == "POST" and request.url.path == "/orders":
+        return fail(400, "bad body")
+    return await request_validation_exception_handler(request, exc)
 
 
 @app.get("/static")

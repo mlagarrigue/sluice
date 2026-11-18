@@ -561,10 +561,11 @@ go run -C comparison/loadgen . -no-verify -conformance https://127.0.0.1:8443 -u
 Before a series, every contender answers the requests a seed draws — unit
 reads, lists and writes in the mixed scenario's proportions, a static
 request every twentieth — one at a time, and so does the reference named
-by `-conformance`; then seven fixed requests no draw carries: a key, a
+by `-conformance`; then eight fixed requests no draw carries: a key, a
 `from` and a `limit` that do not parse or pass a bigint
-(`9223372036854775808`), and a write whose key does, which R refuses with
-a 400 and its error document. The two answers are compared as §4 asks: the status, the
+(`9223372036854775808`), a write whose key does, and a write whose body
+goes on after its value (`{"key":5,"total":1}x`), all of which R refuses
+with a 400 and its error document. The two answers are compared as §4 asks: the status, the
 `Content-Type` (media type and parameters, `charset=utf-8` counting as
 JSON's own), and the JSON after parsing — keys in any order, numbers by
 their exact value (`7`, `7.0` and `7e0` are one number; `0.1` and

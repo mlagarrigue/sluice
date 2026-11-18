@@ -126,6 +126,14 @@ async function serve(poolSize) {
     ...(cfg.tls ? { https: contract.tlsOptions(cfg) } : {}),
     ...(cfg.protocol === 'h2' ? { http2: true } : {}),
   });
+  // Fastify answers a JSON body that does not parse — one that goes on after
+  // its value included — with its own error document: R answers 400 and its error document.
+  fastify.setErrorHandler((err, request, reply) => {
+    if (err.code === 'FST_ERR_CTP_INVALID_JSON_BODY' || err.code === 'FST_ERR_CTP_EMPTY_JSON_BODY') {
+      return reply.code(400).send({ error: 'bad body' });
+    }
+    return reply.send(err);
+  });
   if (cfg.compression === 'gzip') {
     await fastify.register(compress, { encodings: ['gzip'], zlibOptions: { level: zlib.Z_BEST_SPEED } });
   }

@@ -23,6 +23,13 @@ for (const ddl of contract.writeTable) await pool.query(ddl);
 const app = express();
 if (cfg.compression === 'gzip') app.use(compression({ level: 1 }));
 app.use(express.json());
+// express.json() refuses a body that does not parse — one that goes on
+// after its value included — with an error, which Express answers in HTML:
+// R answers 400 and its error document.
+app.use((err, req, res, next) => {
+  if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'bad body' });
+  return next(err);
+});
 
 app.get('/static', (req, res) => {
   res.json(contract.staticDoc);
