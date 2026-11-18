@@ -32,7 +32,10 @@ func TestNextSecretMatchesRFC9001AppendixA5(t *testing.T) {
 		t.Errorf("next secret = %x, want %x", next.secret, want)
 	}
 	sample := unhex(t, "5e5cd55c41f69080575d7999c25a5bfb")
-	if next.hp.mask(sample) != k.hp.mask(sample) {
+	var a, b [16]byte
+	next.hp.mask(&a, sample)
+	k.hp.mask(&b, sample)
+	if a != b {
 		t.Error("the header-protection key changed across the update; §6.1 keeps it")
 	}
 }

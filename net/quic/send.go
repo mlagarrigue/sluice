@@ -112,6 +112,10 @@ type sendOpts struct {
 	// copying it — one whole-payload copy per packet on the hot paths that
 	// build their frame per call (Stream.Write, the retransmission queue).
 	own bool
+	// spare, with own, says the payload was built in a buffer of
+	// streamFrames (takeStreamFrame): the acknowledgement hands it back. A
+	// payload anything else may still read is not spare.
+	spare bool
 	// padTo expands a 1-RTT datagram with PADDING to this size — or, on a
 	// path still under the §8.1 limit, to as much of it as the budget
 	// allows. PATH_CHALLENGE and PATH_RESPONSE use it: §8.2.1 wants them
@@ -316,6 +320,8 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 		room := c.maxDatagram - c.packetOverhead(space) - len(ack) - len(payload)
 		if queued := c.takeQueuedLocked(room, len(ack)+len(payload)); len(queued) > 0 {
 			retransPart = append(queued, payload...)
+			// The record keeps queued's buffer now, not the caller's.
+			opts.spare = false
 			// Control frames are cheap to lose only if someone resends
 			// them; they carry window and stream grants, so they are
 			// retransmittable and ride the same recovery as the payload.
@@ -1151,7 +1157,7 @@ func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad, lengthWidth int) ([
 	}
 	if !p.opts.noRetrans && len(p.retransPart) > 0 {
 		if p.opts.own {
-			record.payload = p.retransPart
+			record.payload, record.spare = p.retransPart, p.opts.spare
 		} else {
 			record.payload = append([]byte(nil), p.retransPart...)
 		}

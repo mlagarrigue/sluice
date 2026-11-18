@@ -498,7 +498,12 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 		}
 
 		last := written+n >= len(p)
-		frame := varint.Append(nil, FrameStream|streamOFF|streamLEN|boolBit(fin && last, streamFIN))
+		// The frame is the packet's retransmission record (sendOpts.own),
+		// so it lives until the peer acknowledges it, and is then handed
+		// back for the next one (streamFrames). A type byte, three varints
+		// of at most eight bytes.
+		frame, spare := takeStreamFrame(1 + 3*8 + n)
+		frame = varint.Append(frame, FrameStream|streamOFF|streamLEN|boolBit(fin && last, streamFIN))
 		frame = appendStreamID(frame, s.id)
 		frame = varint.Append(frame, s.writeOff)
 		frame = varint.Append(frame, uint64(n))
@@ -516,7 +521,7 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 		// releases mu, and a STOP_SENDING read meanwhile would have ended
 		// this direction and declared this very offset final
 		// (sendOpts.recheck).
-		opts := sendOpts{waitCwnd: true, own: true, deadline: &s.writeDeadline, recheck: s.sendableLocked}
+		opts := sendOpts{waitCwnd: true, own: true, spare: spare, deadline: &s.writeDeadline, recheck: s.sendableLocked}
 		// A packet the socket refused after it was recorded is sent as far
 		// as the stream goes (errSentUnwritten): recovery resends the frame
 		// at this offset.
@@ -545,6 +550,40 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 			return written, nil
 		}
 	}
+}
+
+// streamFrames holds the buffers Stream.write builds its STREAM frames in,
+// handed back when the peer acknowledges the packet (sentTracker.release):
+// a buffer per packet sent was a tenth of the bytes a 1000-row HTTP/3
+// answer allocated. Only that path hands one back — a payload that left the
+// record, lifted by a probe or queued after a loss, may still be read and
+// is left to the garbage collector — and a pool rather than a list per
+// connection: a response leaves whole before its first acknowledgement,
+// so a list let go of when the record empties was never reused, and one
+// kept would stay on every idle connection.
+var streamFrames = sync.Pool{New: func() any { return new(frameBuf) }}
+
+// frameBuf is one STREAM frame's buffer: a Go size class above the frame
+// of the largest Internet datagram (1,472 bytes of UDP payload over IPv4
+// at a 1,500-byte MTU, less maxStreamChunk's margin). A frame for a larger
+// datagram, which DPLPMTUD finds on loopback or a jumbo-frame path, is
+// allocated as before.
+type frameBuf [1536]byte
+
+// takeStreamFrame returns an empty buffer of at least n bytes' capacity,
+// and whether it is streamFrames' to take back.
+func takeStreamFrame(n int) ([]byte, bool) {
+	if n > len(frameBuf{}) {
+		return make([]byte, 0, n), false
+	}
+	return streamFrames.Get().(*frameBuf)[:0], true
+}
+
+// releaseStreamFrame hands back the buffer frame was built in by
+// takeStreamFrame: frame starts at the buffer's first byte, so its capacity
+// is the whole array. A variable, so that a test sees what comes back.
+var releaseStreamFrame = func(frame []byte) {
+	streamFrames.Put((*frameBuf)(frame[:len(frameBuf{})]))
 }
 
 // Reset abandons this end's sending direction with an application error code

@@ -202,8 +202,12 @@ func chachaAEAD(key []byte) (cipher.AEAD, error) {
 // that hides a packet's first byte and packet number (RFC 9001 §5.4). Only
 // the mask's first five bytes are ever applied; the array keeps the two
 // implementations interchangeable at the call sites.
+//
+// The mask is written into dst rather than returned: an AES block encrypts
+// through an interface, so a local array escaped and cost the sealer one
+// allocation per packet. The sealer passes an array it owns.
 type headerProtector interface {
-	mask(sample []byte) [16]byte
+	mask(dst *[16]byte, sample []byte)
 }
 
 // aesProtector is §5.4.3: one AES-ECB block over the sample.
@@ -217,10 +221,8 @@ func newAESProtector(key []byte) (headerProtector, error) {
 	return aesProtector{block: block}, nil
 }
 
-func (p aesProtector) mask(sample []byte) [16]byte {
-	var m [16]byte
-	p.block.Encrypt(m[:], sample)
-	return m
+func (p aesProtector) mask(dst *[16]byte, sample []byte) {
+	p.block.Encrypt(dst[:], sample)
 }
 
 // chachaProtector is §5.4.4: the sample's first four bytes are a
@@ -235,8 +237,8 @@ func newChaChaProtector(key []byte) (headerProtector, error) {
 	return chachaProtector{key: append([]byte(nil), key...)}, nil
 }
 
-func (p chachaProtector) mask(sample []byte) [16]byte {
-	var m [16]byte
+func (p chachaProtector) mask(dst *[16]byte, sample []byte) {
+	*dst = [16]byte{}
 	c, err := chacha20.NewUnauthenticatedCipher(p.key, sample[4:16])
 	if err != nil {
 		// The key length was proven at construction and the nonce length by
@@ -244,8 +246,7 @@ func (p chachaProtector) mask(sample []byte) [16]byte {
 		panic("quic: chacha20 header protection: " + err.Error())
 	}
 	c.SetCounter(uint32(sample[0]) | uint32(sample[1])<<8 | uint32(sample[2])<<16 | uint32(sample[3])<<24)
-	c.XORKeyStream(m[:5], m[:5])
-	return m
+	c.XORKeyStream(dst[:5], dst[:5])
 }
 
 // keys are one direction's packet-protection material, with the §6.6 usage
@@ -325,6 +326,11 @@ type packetSealer struct {
 	// the connection's lock, like
 	// every call to Seal this package makes.
 	sealed uint64
+	// nonce and mask are Seal's scratch, under the same lock: the AEAD
+	// and the header protector take them through interfaces, where a local
+	// escaped. Every AEAD RFC 9001 §5.3 names has a twelve-byte nonce.
+	nonce [12]byte
+	mask  [16]byte
 }
 
 // Opener unprotects packets in one direction.
@@ -504,9 +510,13 @@ func verifyRetryTag(odcid, packet []byte) bool {
 // (RFC 9001 §5.3). Reusing a nonce under one key is what breaks GCM
 // completely, and this is the only thing standing between the protocol and
 // that: the packet number must never repeat.
-func (k keys) nonce(pn uint64) []byte {
-	out := make([]byte, len(k.iv))
-	copy(out, k.iv)
+func (k keys) nonce(pn uint64) []byte { return k.appendNonce(nil, pn) }
+
+// appendNonce is nonce written after dst, which the sealer passes empty over
+// an array it owns: the AEAD takes the nonce through an interface, so a
+// buffer of nonce's own escaped, one allocation per packet.
+func (k keys) appendNonce(dst []byte, pn uint64) []byte {
+	out := append(dst, k.iv...)
 	for i := range 8 {
 		out[len(out)-1-i] ^= byte(pn >> (8 * i)) //nolint:gosec // G115: keeps the low octet of each shift
 	}
@@ -536,7 +546,7 @@ func (s *packetSealer) Seal(dst, header, payload []byte, pn uint64, pnOffset, pn
 	// starts, never from the buffer's start.
 	base := len(dst)
 	out := append(dst, header...)
-	out = s.k.aead.Seal(out, s.k.nonce(pn), payload, header)
+	out = s.k.aead.Seal(out, s.k.appendNonce(s.nonce[:0], pn), payload, header)
 	s.sealed++
 	pkt := out[base:]
 
@@ -547,9 +557,9 @@ func (s *packetSealer) Seal(dst, header, payload []byte, pn uint64, pnOffset, pn
 	if sampleAt+16 > len(pkt) {
 		return nil, fmt.Errorf("%w: too short to sample for header protection", ErrQUIC)
 	}
-	mask := s.k.hp.mask(pkt[sampleAt : sampleAt+16])
-	maskFirstByte(pkt, mask)
-	maskPacketNumber(pkt, mask, pnOffset, pnLen)
+	s.k.hp.mask(&s.mask, pkt[sampleAt:sampleAt+16])
+	maskFirstByte(pkt, s.mask)
+	maskPacketNumber(pkt, s.mask, pnOffset, pnLen)
 	return out, nil
 }
 
@@ -593,7 +603,8 @@ func (o *packetOpener) openPhased(packet []byte, pnOffset int, largestPN uint64)
 	// step is what reveals how long the second one is: the packet-number
 	// length lives in the two low bits of the first byte, and those bits are
 	// themselves protected.
-	mask := o.k.hp.mask(buf[sampleAt : sampleAt+16])
+	var mask [16]byte
+	o.k.hp.mask(&mask, buf[sampleAt:sampleAt+16])
 	maskFirstByte(buf, mask)
 	pnLen := int(buf[0]&0x03) + 1
 	maskPacketNumber(buf, mask, pnOffset, pnLen)

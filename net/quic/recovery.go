@@ -192,6 +192,12 @@ type sentPacket struct {
 	// appLimited is the snapshot's last field: whether the sender was
 	// application-limited when the packet left.
 	appLimited bool
+	// spare marks a payload built in a buffer of streamFrames
+	// (sendOpts.spare), which the acknowledgement hands back. A path
+	// that moves the payload out of the record — a probe lifting it, a
+	// loss queueing it — leaves the mark behind: the buffer then lives as
+	// long as whoever took the payload.
+	spare bool
 }
 
 // sentTracker is one packet-number space's in-flight bookkeeping. Packets are
@@ -199,6 +205,12 @@ type sentPacket struct {
 // by construction and pruned from the front as acknowledgements arrive.
 type sentTracker struct {
 	packets []sentPacket
+	// store is the whole array packets lies in, from its first slot: an ACK
+	// advances packets from the front (closeGap), and record moves it back
+	// to the start once it reaches the array's end with most of the array
+	// free before it — where append alone allocated a new array each time,
+	// the record of a steady flow regrowing every window or so.
+	store []sentPacket
 	// limit is the record's bound, maxTrackedPackets when zero (see
 	// there); a test lowers it.
 	limit int
@@ -268,6 +280,19 @@ var errOptimisticAck = errors.New("quic: the peer acknowledged a packet number t
 func (s *sentTracker) record(p sentPacket) {
 	if p.offPath {
 		s.offPathOut++
+	}
+	if n := len(s.packets); n == cap(s.packets) {
+		if n < cap(s.store)/2 {
+			// Back to the front: the slots past n held packets now copied
+			// down or already freed, and are cleared for their payloads.
+			copy(s.store, s.packets)
+			clear(s.store[n:])
+			s.packets = s.store[:n]
+		} else {
+			s.packets = append(s.packets, p)
+			s.store = s.packets[:cap(s.packets)]
+			return
+		}
 	}
 	s.packets = append(s.packets, p)
 }
@@ -645,6 +670,12 @@ func (s *sentTracker) release(now time.Time, rtt *rttEstimator, cc congestionCon
 			continue
 		}
 		left--
+		if p.spare {
+			// Acknowledged: nothing resends these bytes now, and the
+			// record held the one reference (sentPacket.spare).
+			releaseStreamFrame(p.payload)
+			p.payload, p.spare = nil, false
+		}
 		if !s.onPath(p) {
 			continue
 		}
@@ -902,7 +933,7 @@ func (s *sentTracker) liftOldestResendable() ([]byte, bool) {
 	for i := range s.packets {
 		if p := &s.packets[i]; p.ackEliciting && len(p.payload) > 0 {
 			payload := p.payload
-			p.payload = nil
+			p.payload, p.spare = nil, false // the buffer goes with the payload
 			return payload, true
 		}
 	}
@@ -930,7 +961,7 @@ func (s *sentTracker) takeAll() (payloads [][]byte, bytes int) {
 			payloads = append(payloads, p.payload)
 		}
 	}
-	s.packets = nil
+	s.packets, s.store = nil, nil
 	s.offPathOut = 0
 	s.lossTime = time.Time{}
 	return payloads, bytes
