@@ -1,6 +1,8 @@
 package quic
 
 import (
+	"errors"
+	"io"
 	"testing"
 	"time"
 )
@@ -396,5 +398,31 @@ func TestARepeatedResetStreamIsReportedOnce(t *testing.T) {
 	}
 	if resets != 1 || c.nonProductive != before+1 {
 		t.Fatalf("a packet of copies alone: %d reports, non-productive count %d → %d; want no report and one more non-productive packet", resets-1, before, c.nonProductive)
+	}
+}
+
+// Conn.Stream of an identifier opened and since retired returns a stream
+// that already closed: a Read on it ends with io.EOF at once, where it
+// waited for an end nothing would signal, until the connection closed.
+func TestReadOnARetiredStreamsTombstoneReturns(t *testing.T) {
+	c := newResetReplayConn(t)
+	c.mu.Lock()
+	c.openedBidi = 1 // stream 0 was opened and has retired: absent from the table
+	c.mu.Unlock()
+	s, err := c.Stream(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := s.Read(make([]byte, 8)); done <- err }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, io.EOF) {
+			t.Errorf("Read on a tombstone = %v, want io.EOF", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		_ = c.Close()
+		<-done
+		t.Error("Read on the tombstone of a retired stream is still parked after 500 ms")
 	}
 }

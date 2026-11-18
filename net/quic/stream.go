@@ -1036,6 +1036,10 @@ func (c *Conn) Stream(id StreamID) (*Stream, error) {
 		s.writeReset = true
 		s.sendClosed = true
 		s.recvDone = true
+		// Its end handed to the reader and taken already: a Read answers
+		// io.EOF at once, where it waited for an end nothing would signal,
+		// and does not retire a stream the table no longer holds.
+		s.readEnded, s.endTaken = true, true
 		return s, nil
 	}
 	if count > limit {
