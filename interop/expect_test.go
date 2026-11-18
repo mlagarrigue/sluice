@@ -71,8 +71,16 @@ func TestExpectedResultsGuard(t *testing.T) {
 
 // A case marked random in the file accepts either outcome the losses can
 // draw, and still refuses one the case never yields: unsupported means the
-// image changed, not the dice.
+// image changed, not the dice. A case marked peer, failing for the peer's
+// defect, is held the same way.
 func TestExpectedResultsGuardTakesRandom(t *testing.T) {
+	for _, word := range []string{"random", "peer"} {
+		t.Run(word, func(t *testing.T) { expectTakesEitherOutcome(t, word) })
+	}
+}
+
+func expectTakesEitherOutcome(t *testing.T, word string) {
+	t.Helper()
 	if _, err := exec.LookPath("jq"); err != nil {
 		t.Skip("jq is not installed")
 	}
@@ -84,7 +92,7 @@ func TestExpectedResultsGuardTakesRandom(t *testing.T) {
 	if err := json.Unmarshal(b, &want); err != nil {
 		t.Fatal(err)
 	}
-	want["quic-go"]["server"]["handshake"] = "random: the test's own"
+	want["quic-go"]["server"]["handshake"] = word + ": the test's own"
 	dir := t.TempDir()
 	expected := filepath.Join(dir, "expected.json")
 	b, err = json.Marshal(want)
@@ -109,10 +117,10 @@ func TestExpectedResultsGuardTakesRandom(t *testing.T) {
 			cmd.Env = append(os.Environ(), "EXPECTED="+expected)
 			out, err := cmd.CombinedOutput()
 			if tc.accept && err != nil {
-				t.Fatalf("a random case that %s was refused: %v\n%s", tc.result, err, out)
+				t.Fatalf("a %s case that %s was refused: %v\n%s", word, tc.result, err, out)
 			}
 			if !tc.accept && err == nil {
-				t.Fatalf("a random case that came out %s was accepted:\n%s", tc.result, out)
+				t.Fatalf("a %s case that came out %s was accepted:\n%s", word, tc.result, out)
 			}
 		})
 	}

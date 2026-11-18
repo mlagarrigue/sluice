@@ -11,7 +11,8 @@
 # that succeeded in none of the last RANDOM_PASSES passes that ran it (six
 # unless set): a client that has stopped succeeding, which no single pass can
 # tell from bad luck. A pass that did not run the case does not count, and a
-# case with fewer runs on record is not judged yet.
+# case with fewer runs on record is not judged yet. A case marked peer, which
+# fails for a defect of the peer's (interop-expect.sh), is not judged here.
 #
 # Six because a pass already runs a failed case once more: the least stable
 # case on record, kwik's client under handshakeloss, failed two attempts in

@@ -246,8 +246,8 @@
       "transfercorruption": "succeeded",
       "ipv6": "succeeded",
       "v2": "unsupported: QUIC version 2 is not implemented",
-      "rebind-port": "random: nginx sometimes sends no PATH_CHALLENGE on a new path, which the runner refuses; left unvalidated, the path holds nginx to three times the bytes it received",
-      "rebind-addr": "random: nginx sometimes sends no PATH_CHALLENGE on a new path, which the runner refuses; left unvalidated, the path holds nginx to three times the bytes it received",
+      "rebind-port": "peer: nginx's server mostly sends no PATH_CHALLENGE on a new path, which the runner refuses - it validated the path in one of the eight passes on record up to 2026-11-17; left unvalidated, the path holds nginx to three times the bytes it received",
+      "rebind-addr": "peer: nginx's server mostly sends no PATH_CHALLENGE on a new path, which the runner refuses - it validated the path in one of the eight passes on record up to 2026-11-17; left unvalidated, the path holds nginx to three times the bytes it received",
       "connectionmigration": "unsupported: nginx's image does not implement the case"
     }
   },

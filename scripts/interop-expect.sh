@@ -23,10 +23,15 @@
 # and exports its results anyway, so such a pass is not hypothetical.
 #
 # An expected value is the runner's own word — succeeded, unsupported or
-# failed — and, after a colon, why: a failed case carries its cause. One
-# word is the file's own: random, for a case whose outcome follows the
-# losses the simulator draws, accepts succeeded and failed alike and
-# carries its cause the same way; unsupported is still refused there.
+# failed — and, after a colon, why: a failed case carries its cause. Two
+# words are the file's own, and accept succeeded and failed alike, carrying
+# their cause the same way; unsupported is still refused there. random is a
+# case whose outcome follows the losses the simulator draws, and
+# interop-random-history.sh judges it over the passes. peer is a case the
+# peer mostly fails for a defect of its own the cause names — nginx's server
+# validating a new path one pass in eight — which no history can tell from
+# a regression of this end: marked failed, its rare success turned a pass
+# red; marked random, its six failures in a row did.
 set -eu
 [ $# -eq 3 ] || {
   echo "usage: interop-expect.sh <peer> <results as server> <results as client>" >&2
@@ -56,7 +61,7 @@ jq -r -n --arg peer "$1" \
             | (($w[$side] // {})[.name]) as $e
             | if $e == null then
                 "interop-expect: \($peer), sluice \($side), \(.name): \(.result), which the file does not list"
-              elif ($e | split(":")[0]) == "random" and (.result == "succeeded" or .result == "failed") then
+              elif (($e | split(":")[0]) == "random" or ($e | split(":")[0]) == "peer") and (.result == "succeeded" or .result == "failed") then
                 empty
               elif ($e | split(":")[0]) != .result then
                 "interop-expect: \($peer), sluice \($side), \(.name): \(.result), expected \($e)"
