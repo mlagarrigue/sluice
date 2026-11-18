@@ -1506,14 +1506,20 @@ func (c *Conn) answerPathChallengesLocked(responses []byte, now time.Time) {
 	}
 	const responseLen = 1 + 8 // type, data
 	per := c.maxStreamChunk() / responseLen * responseLen
-	for len(responses) > 0 {
+	// Every datagram that carries a PATH_RESPONSE is expanded to 1200
+	// bytes, as far as the amplification limit allows (§8.2.2 — the MUST
+	// is per datagram, not per answer): the first was, and those behind
+	// it, when one packet brought more challenges than a datagram answers,
+	// left at a few dozen bytes. The first was let through by the gate
+	// above; the others pass it here, at the size they will have.
+	for first := true; len(responses) > 0; first = false {
 		n := min(len(responses), per)
 		payload := responses[:n:n]
 		if len(probe) > 0 {
 			payload = append(payload, probe...)
 			probe = nil
 		}
-		if gated && padTo == 0 && !c.canSendLocked(len(payload)+64) {
+		if gated && !first && !c.canSendLocked(padTo) {
 			c.holdResponseLocked(responses)
 			return
 		}
@@ -1522,7 +1528,6 @@ func (c *Conn) answerPathChallengesLocked(responses []byte, now time.Time) {
 		}
 		_ = c.sendPacketLocked(spaceApplication, payload, sendOpts{noRetrans: true, to: c.rxFrom, via: c.rxVia, dcid: dcid, padTo: padTo})
 		responses = responses[n:]
-		padTo = 0
 	}
 }
 

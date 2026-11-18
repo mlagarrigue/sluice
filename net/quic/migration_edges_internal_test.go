@@ -291,6 +291,32 @@ func (r *recordPC) WriteTo(b []byte, _ net.Addr) (int, error) {
 	return len(b), nil
 }
 
+// Every datagram that carries a PATH_RESPONSE is expanded to 1200 bytes
+// (RFC 9000 §8.2.2: the MUST is per datagram), the second of a packet of
+// more challenges than one datagram answers too — a peer outside §8.2.1's
+// SHOULD NOT. It left at a few dozen bytes.
+func TestEveryPathResponseDatagramIsExpanded(t *testing.T) {
+	c, _ := appConn(t)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	rec := &recordPC{PacketConn: c.pc}
+	c.pc = rec
+	n := c.maxStreamChunk()/9 + 1 // one more than the first datagram holds
+	responses := make([]byte, 0, 9*n)
+	for range n {
+		responses = append(responses, framePathResponse, 1, 2, 3, 4, 5, 6, 7, 8)
+	}
+	c.answerPathChallengesLocked(responses, time.Now())
+	if len(rec.got) != 2 {
+		t.Fatalf("%d datagrams, want 2", len(rec.got))
+	}
+	for i, d := range rec.got {
+		if len(d) < 1200 {
+			t.Errorf("datagram %d carrying PATH_RESPONSE is %d bytes, want at least 1200", i, len(d))
+		}
+	}
+}
+
 // PATH_RESPONSEs leave whole, as many per packet as the chunk holds: every
 // packet opens to whole frames, and every response arrives.
 func TestPathResponsesPackWholeFrames(t *testing.T) {
