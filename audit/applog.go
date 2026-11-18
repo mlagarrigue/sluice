@@ -87,7 +87,7 @@ func init() {
 	Register(Rule{
 		Name:  "app/access-log",
 		Needs: Selection{Components: {"app"}, Goals: {"performance"}, Sources: {"logs"}},
-		Doc:   "https://www.uvicorn.org/settings/#logging",
+		Doc:   "https://uvicorn.dev/settings/#logging",
 		Check: func(t *Target, _ Answers) []Finding {
 			var n, uvicorn int
 			var first string

@@ -176,7 +176,7 @@ func init() {
 	Register(Rule{
 		Name:  "tls/resumption-off",
 		Needs: Selection{Components: {"app"}, Goals: {"performance"}, Sources: {"config"}, Profile: {"production"}},
-		Doc:   "https://www.rfc-editor.org/rfc/rfc8446#section-2.2",
+		Doc:   "https://www.rfc-editor.org/rfc/rfc9846#section-2.2",
 		Check: func(t *Target, _ Answers) []Finding {
 			// Within one transcript only: s_client -reconnect offers the
 			// session of its first connection to the next ones, two runs

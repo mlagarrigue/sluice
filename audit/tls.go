@@ -123,7 +123,7 @@ func init() {
 			}}
 		})
 
-	register("cert-chain", "https://www.rfc-editor.org/rfc/rfc8446#section-4.4.2",
+	register("cert-chain", "https://www.rfc-editor.org/rfc/rfc9846#section-4.5.1",
 		func(c *TLSChain, _ time.Time) []Finding {
 			for i := 0; i+1 < len(c.Certs); i++ {
 				if err := c.Certs[i].CheckSignatureFrom(c.Certs[i+1]); err != nil {

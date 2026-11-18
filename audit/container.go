@@ -332,7 +332,7 @@ func init() {
 			}}
 		})
 
-	register("user", "security", "https://docs.docker.com/reference/cli/docker/container/run/#user",
+	register("user", "security", "https://docs.docker.com/reference/cli/docker/container/run/",
 		func(c *Container, _ Answers) []Finding {
 			if !isRoot(c.Config.User) {
 				return nil

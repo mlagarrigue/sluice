@@ -459,7 +459,7 @@ func init() {
 	Register(Rule{
 		Name:  "app/uvicorn-defaults",
 		Needs: Selection{Components: {"app"}, Goals: {"performance"}, Sources: {"config"}},
-		Doc:   "https://www.uvicorn.org/settings/",
+		Doc:   "https://uvicorn.dev/settings/",
 		Check: func(t *Target, _ Answers) []Finding {
 			u := stackOf(t).Uvicorn
 			if u == nil {
