@@ -44,7 +44,7 @@ func h3AnswerOf(t *testing.T, handle Handler) (retired, answered int32, left int
 	c := serverConnWith(t, quic.DefaultConfig())
 	ids := []quic.StreamID{400, 404}
 	var calls streamCalls[quic.StreamID]
-	b := h3Batch{reqs: make([]Request, 2), ids: ids, after: make([]<-chan struct{}, 2), fieldSection: h3NoFieldSectionLimit}
+	b := h3Batch{reqs: make([]Request, 2), ids: ids, streams: make([]*quic.Stream, 2), after: make([]<-chan struct{}, 2), fieldSection: h3NoFieldSectionLimit}
 	for i := range b.reqs {
 		b.reqs[i].Method = []byte("GET")
 	}

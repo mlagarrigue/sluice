@@ -187,7 +187,7 @@ func TestH3StreamedResponseIsWhole(t *testing.T) {
 	s := openedStream(t, server, client)
 	cfg := Config{}.mustResolve()
 	r := Response{Status: 200, Stream: streamOf("a")}
-	if !writeH3Response(server, s.ID(), r, []byte("GET"), h3NoFieldSectionLimit, writeBoundOf(cfg), dateFor(time.Now()), func() {}) {
+	if !writeH3Response(server, s.ID(), nil, r, []byte("GET"), h3NoFieldSectionLimit, writeBoundOf(cfg), dateFor(time.Now()), func() {}) {
 		t.Error("a streamed response written whole was not reported whole")
 	}
 }
@@ -348,7 +348,7 @@ func TestH3BatchOfOneReleasesItsCalls(t *testing.T) {
 	c := serverConnWith(t, quic.DefaultConfig())
 	for _, ids := range [][]quic.StreamID{{400}, {404, 408}} {
 		var calls streamCalls[quic.StreamID]
-		b := h3Batch{reqs: make([]Request, len(ids)), ids: ids, after: make([]<-chan struct{}, len(ids)), fieldSection: h3NoFieldSectionLimit}
+		b := h3Batch{reqs: make([]Request, len(ids)), ids: ids, streams: make([]*quic.Stream, len(ids)), after: make([]<-chan struct{}, len(ids)), fieldSection: h3NoFieldSectionLimit}
 		for i := range b.reqs {
 			b.reqs[i].Method = []byte("GET")
 		}

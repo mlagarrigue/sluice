@@ -230,7 +230,7 @@ func TestH3StreamedFinAfterASilenceLongerThanWriteTimeout(t *testing.T) {
 				time.Sleep(tc.pause) // a silence, not a measurement
 			})
 			r := Response{Status: 200, Stream: producer}
-			whole := writeH3Response(server, s.ID(), r, []byte("GET"), h3NoFieldSectionLimit, writeBoundOf(cfg), dateFor(time.Now()), func() {})
+			whole := writeH3Response(server, s.ID(), nil, r, []byte("GET"), h3NoFieldSectionLimit, writeBoundOf(cfg), dateFor(time.Now()), func() {})
 			_ = s.SetReadDeadline(time.Now().Add(5 * time.Second))
 			_, err := io.ReadAll(s)
 			if !whole {

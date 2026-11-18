@@ -715,11 +715,12 @@ func (s *h3Serving) onFrames(frames []quic.Frame) error {
 		}
 	}
 	b := h3Batch{
-		ctx:   ctx,
-		calls: &s.cancels,
-		reqs:  append([]Request(nil), batch.Items...),
-		ids:   held,
-		after: append([]<-chan struct{}(nil), a.after...),
+		ctx:     ctx,
+		calls:   &s.cancels,
+		reqs:    append([]Request(nil), batch.Items...),
+		ids:     held,
+		streams: streamsOf(frames, held),
+		after:   append([]<-chan struct{}(nil), a.after...),
 		// The peer's MAX_FIELD_SECTION_SIZE, snapshotted here because the
 		// assembler belongs to this goroutine and the call must not reach
 		// into it.
@@ -789,7 +790,7 @@ func (s *h3Serving) refuse(st *quic.Stream, se h3StreamError) error {
 			if after != nil {
 				<-after // the interim 100 the head was owed leaves first
 			}
-			writeH3Response(c, id, transportError(status), method, fieldSection, writeBoundOf(s.cfg), dateFor(time.Now()), func() {})
+			writeH3Response(c, id, nil, transportError(status), method, fieldSection, writeBoundOf(s.cfg), dateFor(time.Now()), func() {})
 		})
 		return nil
 	}
@@ -857,6 +858,23 @@ func (s *h3Serving) end() error {
 		}
 	}
 	return h3CloseErr(s.c.Err())
+}
+
+// streamsOf finds, for each identifier of ids, the stream a frame of
+// frames carried for it (quic.Frame.Stream), nil when none did. A request
+// completes on its own stream's bytes, so the frame is in the delivery that
+// completed it; a delivery holds a packet's frames, a handful.
+func streamsOf(frames []quic.Frame, ids []quic.StreamID) []*quic.Stream {
+	out := make([]*quic.Stream, len(ids))
+	for i, id := range ids {
+		for _, f := range frames {
+			if f.StreamID == id && f.Stream() != nil {
+				out[i] = f.Stream()
+				break
+			}
+		}
+	}
+	return out
 }
 
 // allowedEarly reports whether early allows every request of a batch that
@@ -948,6 +966,11 @@ var h3ReleaseHook atomic.Pointer[func(*quic.Conn, quic.StreamID, uint64)]
 type h3Batch struct {
 	reqs []Request
 	ids  []quic.StreamID
+	// streams runs parallel to ids: the stream each request arrived on, as
+	// the frames that completed it carried it (quic.Frame.Stream), nil
+	// where they did not. The writer answers on it without looking it up
+	// under the connection's lock, where it queued behind the writers.
+	streams []*quic.Stream
 	// after runs parallel to ids: the gate behind the interim 100 each
 	// request's head was owed, nil for none. A response is written only
 	// once its gate is closed, so the final HEADERS follows the interim one
@@ -1122,7 +1145,7 @@ func answerH3(ctx context.Context, c *quic.Conn, state *tls.ConnectionState, b h
 			if rb := b.reqs[i].body; rb != nil {
 				unread = rb.q.unread()
 			}
-			r, method, after := res[i], b.reqs[i].Method, b.after[i]
+			r, method, after, st := res[i], b.reqs[i].Method, b.after[i], b.streams[i]
 			warm.Go(func() {
 				if after != nil {
 					<-after // the interim 100 the head was owed leaves first
@@ -1140,7 +1163,7 @@ func answerH3(ctx context.Context, c *quic.Conn, state *tls.ConnectionState, b h
 					}
 					done()
 				}()
-				whole := writeH3Response(c, id, r, method, b.fieldSection, wb, date, func() {
+				whole := writeH3Response(c, id, st, r, method, b.fieldSection, wb, date, func() {
 					detached = true
 					writers.Done()
 				})
@@ -1148,8 +1171,11 @@ func answerH3(ctx context.Context, c *quic.Conn, state *tls.ConnectionState, b h
 					b.answered()
 				}
 				if unread {
-					if s, err := c.Stream(id); err == nil {
-						_ = s.StopSending(h3NoError)
+					if st == nil {
+						st, _ = c.Stream(id)
+					}
+					if st != nil {
+						_ = st.StopSending(h3NoError)
 					}
 				}
 			})
@@ -1218,10 +1244,14 @@ var h3ScratchPool = sync.Pool{New: func() any { return &h3Scratch{} }}
 // answered, in the rapid-reset allowance's terms. A stream the peer reset or
 // starved, a producer that stopped short and a response that could not be
 // framed are not.
-func writeH3Response(c *quic.Conn, id quic.StreamID, r Response, method []byte, fieldSection uint64, wb writeBound, date []byte, detach func()) bool {
-	s, err := c.Stream(id)
-	if err != nil {
-		return false // unreachable: the request arrived on it, within the limit
+func writeH3Response(c *quic.Conn, id quic.StreamID, s *quic.Stream, r Response, method []byte, fieldSection uint64, wb writeBound, date []byte, detach func()) bool {
+	if s == nil {
+		// Not handed over with the request's frames (h3Batch.streams):
+		// looked up, under the connection's lock.
+		var err error
+		if s, err = c.Stream(id); err != nil {
+			return false // unreachable: the request arrived on it, within the limit
+		}
 	}
 	sc := h3ScratchPool.Get().(*h3Scratch)
 	defer h3ScratchPool.Put(sc)
@@ -1308,7 +1338,11 @@ func writeH3Bounded(s *quic.Stream, p []byte, fin bool, wb writeBound) bool {
 	if fin {
 		write = s.WriteFinal
 	}
-	if err := wb.write(s.SetWriteDeadline, write, p); err != nil {
+	// Each write starts its own deadline (quic.Stream.SetWriteTimeout),
+	// which is what wb's deadline before each write amounts to, without
+	// the connection's lock that SetWriteDeadline takes.
+	s.SetWriteTimeout(wb.timeout)
+	if err := wb.write(noDeadline, write, p); err != nil {
 		if errors.Is(err, os.ErrDeadlineExceeded) {
 			_ = s.Reset(h3RequestCancelled)
 		}
@@ -1316,6 +1350,10 @@ func writeH3Bounded(s *quic.Stream, p []byte, fin bool, wb writeBound) bool {
 	}
 	return true
 }
+
+// noDeadline is writeBound.write's setDeadline for a stream that times
+// each write itself (writeH3Bounded).
+func noDeadline(time.Time) error { return nil }
 
 // streamH3Body pulls a streamed response onto its stream, reporting whether it
 // ran to the end. A stream the peer reset stops the pull, which is a cancelled
