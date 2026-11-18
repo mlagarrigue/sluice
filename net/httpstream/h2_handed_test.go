@@ -131,3 +131,34 @@ func TestH2TrailersOverTheBoundOnARunningAnswerCutIt(t *testing.T) {
 		})
 	}
 }
+
+// A client that cancels requests already answered — the RST_STREAM crossing
+// the END_STREAM, which §5.1 lets a closed stream receive for a short while —
+// takes back no credit: the answer was written, the request completed. It
+// took one back while the closed-stream ring still said half-closed, and
+// every such cancellation cost a reset and two of allowance: GOAWAY at the
+// seventeenth with MaxFramesPerBatch 4. The client here reads each answer
+// before it resets, so that the answer is out whatever the scheduling; the
+// server cannot tell that from a reset sent before the END_STREAM arrived.
+func TestCancellingAnsweredRequestsIsNotRapidReset(t *testing.T) {
+	addr, _ := serveH2(t, Config{MaxFramesPerBatch: 4}, echoTarget)
+	c := dialH2(t, addr)
+	var code [4]byte
+	be32put(code[:], errCancel)
+	for i := range 60 {
+		id := uint32(2*i + 1)
+		c.request(id, "GET", "/a")
+		c.flush()
+		c.pump(func() bool { return c.ended[id] || c.sawGoAway })
+		if c.sawGoAway {
+			t.Fatalf("GOAWAY after %d answered requests, each cancelled once answered", i)
+		}
+		c.frame(h2Frame{Type: frameRSTStream, StreamID: id, Payload: code[:]})
+	}
+	c.frame(h2Frame{Type: framePing, Payload: []byte("pingping")})
+	c.flush()
+	c.pump(func() bool { return c.pings > 0 || c.sawGoAway })
+	if c.sawGoAway {
+		t.Fatalf("GOAWAY %x after 60 answered requests, each cancelled once answered", c.goAway)
+	}
+}

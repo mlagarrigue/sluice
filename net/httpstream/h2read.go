@@ -474,7 +474,12 @@ func (s *h2Conn) frame(f h2Frame) (*h2Stream, error) {
 			return nil, fmt.Errorf("%w: RST_STREAM on stream %d, which is idle", ErrH2Protocol, f.StreamID)
 		}
 		st := s.streams[f.StreamID]
-		if s.closed[f.StreamID] == stateHalfClosed || st != nil && st.handed {
+		// A half-closed stream whose answer reached its END_STREAM is
+		// closed, the request completed: a reset crossing that END_STREAM
+		// takes nothing back. The ring says half-closed until asked
+		// (closedNow), and taking the credit on its word charged every
+		// such cancellation three times over.
+		if st != nil && st.handed || s.closed[f.StreamID] == stateHalfClosed && !s.closedNow(f.StreamID) {
 			s.served--
 		}
 		if err := s.countReset(); err != nil {
