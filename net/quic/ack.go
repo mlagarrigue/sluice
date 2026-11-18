@@ -56,11 +56,14 @@ type ackTracker struct {
 	// immediate marks the debt urgent: send with the next packet, not the
 	// next timer.
 	immediate bool
-	// outOfOrder remembers that the newest recorded packet arrived out of
-	// order or opened a gap — §13.2.1's cue to acknowledge at once, so the
-	// peer's loss detection learns about the reordering within one RTT
-	// instead of a delayed-ACK period later.
-	outOfOrder bool
+	// last is the packet number record took last: the packet
+	// onAckEliciting, called next for the same packet, judges.
+	last uint64
+	// topEliciting, when hasEliciting, is the highest ack-eliciting packet
+	// number received: what §13.2.1 measures reordering and gaps against
+	// — ack-eliciting packets, not every packet recorded.
+	topEliciting uint64
+	hasEliciting bool
 	// ecn counts the packets recorded by the ECN codepoint their datagram
 	// arrived with, indexed by codepoint (§13.4.1): each coalesced packet
 	// counts once, a duplicate never. Reported in every ACK (§19.3.2).
@@ -97,18 +100,23 @@ func (a *ackTracker) record(pn uint64, now time.Time) bool {
 	if a.hasFloor && pn < a.floor {
 		return false // below what the tracker can vouch for (§12.3)
 	}
-	// In order means exactly one past the largest seen; anything else that
-	// still records is either reordered (below the largest) or opens a gap
-	// (more than one past it). The flag is set only for packets actually
-	// recorded — a duplicate changes nothing and owes nothing.
-	inOrder := len(a.ranges) == 0 || pn == a.ranges[0].hi+1
+	// A duplicate changes nothing and owes nothing.
 	if !a.insert(pn, now) {
 		return false
 	}
-	if !inOrder {
-		a.outOfOrder = true
-	}
+	a.last = pn
 	return true
+}
+
+// holds reports whether every packet number from lo to hi has been
+// received: the range holding hi reaches down to lo.
+func (a *ackTracker) holds(lo, hi uint64) bool {
+	for _, r := range a.ranges {
+		if hi >= r.lo && hi <= r.hi {
+			return r.lo <= lo
+		}
+	}
+	return false
 }
 
 // insert files one packet number into the ranges, reporting false for a
@@ -159,19 +167,28 @@ func (a *ackTracker) trim() {
 	}
 }
 
-// onAckEliciting notes a packet that must be answered. Initial and handshake
-// spaces answer at once; the application space answers the second packet at
-// once and the first on a short timer (§13.2.1-2), which is what lets one
-// ACK cover a burst — except when the packet arrived out of order or opened
-// a gap, where §13.2.1 says to answer immediately so the peer's loss
-// detection sees the reordering now rather than a delayed-ACK period later,
-// and when the packet was marked CE by the network (ce), where the same
-// section says to answer immediately "to reduce the peer's response time to
-// congestion events": the mark is worth a round trip, not a delayed-ACK
-// period plus one.
+// onAckEliciting notes a packet that must be answered: the one record took
+// last. Initial and handshake spaces answer at once; the application space
+// answers the second packet at once and the first on a short timer
+// (§13.2.1-2), which is what lets one ACK cover a burst — except in the two
+// cases §13.2.1 names, so the peer's loss detection sees the reordering now
+// rather than a delayed-ACK period later: the packet is below an
+// ack-eliciting one already received, or above the highest of them with
+// packets missing in between. Both measure against ack-eliciting packets
+// only: an ACK-only packet out of order, or a gap such packets filled, owes
+// nothing at once. And when the packet was marked CE by the network (ce),
+// the same section says to answer immediately "to reduce the peer's
+// response time to congestion events": the mark is worth a round trip, not
+// a delayed-ACK period plus one.
 func (a *ackTracker) onAckEliciting(space int, now time.Time, ce bool) {
 	a.elicitingSinceAck++
-	if space != spaceApplication || a.elicitingSinceAck >= 2 || a.outOfOrder || ce {
+	pn := a.last
+	reordered := a.hasEliciting && pn < a.topEliciting
+	gap := a.hasEliciting && pn > a.topEliciting+1 && !a.holds(a.topEliciting+1, pn)
+	if !a.hasEliciting || pn > a.topEliciting {
+		a.topEliciting, a.hasEliciting = pn, true
+	}
+	if space != spaceApplication || a.elicitingSinceAck >= 2 || reordered || gap || ce {
 		a.immediate = true
 		a.due = now
 		return
@@ -224,7 +241,6 @@ func (a *ackTracker) encodeAck(dst []byte, now time.Time) []byte {
 func (a *ackTracker) settle() {
 	a.elicitingSinceAck = 0
 	a.immediate = false
-	a.outOfOrder = false
 	a.due = time.Time{}
 }
 

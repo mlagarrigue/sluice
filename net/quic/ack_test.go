@@ -127,6 +127,53 @@ func TestAckUrgencyPolicy(t *testing.T) {
 	}
 }
 
+// RFC 9000 §13.2.1: an ack-eliciting packet is acknowledged at once when it
+// is below an ack-eliciting packet already received, or above the highest
+// of them with packets missing in between — measured against ack-eliciting
+// packets, not every packet recorded. An ACK-only packet out of order, or a
+// gap that such packets filled, used to make the next ack-eliciting
+// packet's ACK immediate too, until the next ACK went out.
+func TestAckImmediateOnlyForTheReorderingThatTheTextNames(t *testing.T) {
+	now := time.Now()
+	// Each step records a packet; eliciting ones are noted, and the debt
+	// is settled after every immediate ACK, as one sent would.
+	type step struct {
+		pn        uint64
+		eliciting bool
+	}
+	for _, tc := range []struct {
+		name      string
+		steps     []step
+		immediate bool // for the last step, an ack-eliciting packet
+	}{
+		{"in order (control)", []step{{0, true}, {1, false}, {2, true}}, false},
+		{"above the highest, a packet missing between", []step{{0, true}, {2, false}, {3, true}}, true},
+		{"the gap filled by ACK-only packets", []step{{0, true}, {2, false}, {1, false}, {3, true}}, false},
+		{"an ACK-only packet reordered", []step{{0, true}, {2, true}, {1, false}, {3, true}}, false},
+		{"below an ack-eliciting packet", []step{{0, true}, {2, true}, {1, true}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var a ackTracker
+			for i, s := range tc.steps {
+				if !a.record(s.pn, now) {
+					t.Fatalf("setup: %d not recorded", s.pn)
+				}
+				if !s.eliciting {
+					continue
+				}
+				a.onAckEliciting(spaceApplication, now, false)
+				if i == len(tc.steps)-1 {
+					break
+				}
+				a.settle() // its ACK went out, delayed or not
+			}
+			if a.immediate != tc.immediate {
+				t.Errorf("immediate = %v, want %v", a.immediate, tc.immediate)
+			}
+		})
+	}
+}
+
 // Forgetting the lowest ranges under the bound costs the peer a
 // retransmission, never this endpoint its memory.
 func TestAckTrackerBoundsRanges(t *testing.T) {

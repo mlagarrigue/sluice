@@ -34,10 +34,11 @@ func TestLongAckBesideFullChunkStaysUnderMaxDatagram(t *testing.T) {
 			if tc.gaps {
 				// Every other packet number, spaced so each gap takes a
 				// four-byte varint: the widest ACK one space can owe.
+				// Each ack-eliciting, as a peer's stream packets are.
 				for i := range uint64(ranges) {
 					sp.ack.record(1+i<<20, now)
+					sp.ack.onAckEliciting(spaceApplication, now, false)
 				}
-				sp.ack.onAckEliciting(spaceApplication, now, false)
 			} else {
 				sp.ack.record(1, now)
 				sp.ack.onAckEliciting(spaceApplication, now, false)
@@ -252,8 +253,8 @@ func TestWindowGateCountsTheAckTheWriterCarries(t *testing.T) {
 	sp := &c.spaces[spaceApplication]
 	for i := range uint64(maxAckRanges) {
 		sp.ack.record(1+i<<20, now)
+		sp.ack.onAckEliciting(spaceApplication, now, false)
 	}
-	sp.ack.onAckEliciting(spaceApplication, now, false)
 	if !sp.ack.owes(now) {
 		t.Fatal("the ACK is not owed")
 	}
