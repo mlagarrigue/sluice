@@ -218,8 +218,10 @@ func (s *scram) begin(mechanisms []byte, password string, cs *tls.ConnectionStat
 				ErrAuthUnsupported, mechSCRAMSHA256Plus)
 		}
 		// The list is the server's, before anything has authenticated it:
-		// named when it is a mechanism list, counted when it is a flood.
-		offered := fmt.Sprint(names)
+		// named when it is a mechanism list, counted when it is a flood,
+		// each name quoted so that none can pass for text of this package's
+		// own or break the line it is logged on.
+		offered := fmt.Sprintf("%q", names)
 		if len(offered) > 256 {
 			offered = fmt.Sprintf("%d mechanisms (%d bytes of names)", len(names), len(offered))
 		}

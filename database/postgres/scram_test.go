@@ -409,7 +409,7 @@ func TestSCRAMRefusesASecondChallenge(t *testing.T) {
 // count replaces it only past that. An attribute of a name and "=" alone
 // carries an empty value.
 func TestSCRAMEdgesOfTheServersText(t *testing.T) {
-	name := strings.Repeat("X", 254) // "[" + name + "]" is 256 bytes
+	name := strings.Repeat("X", 252) // `["` + name + `"]` is 256 bytes
 	var s scram
 	_, _, err := s.begin([]byte(name+"\x00\x00"), rfcPassword, nil, false)
 	if !errors.Is(err, ErrAuthUnsupported) || !strings.Contains(err.Error(), name) {
@@ -448,5 +448,19 @@ func TestSCRAMServerFinalAttributeNamesAreCaseSensitive(t *testing.T) {
 	// M is not m, the mandatory-extension attribute: the v after it is read.
 	if _, err := parseServerFinal("M=x,v=" + rfcServerSignature); err != nil {
 		t.Errorf("parseServerFinal(\"M=x,v=…\") refused an attribute that is not m: %v", err)
+	}
+}
+
+// The mechanism names a server offers reach the caller's error before
+// anything has authenticated the server: each is quoted, so a name carrying
+// a line break or a sentence of its own reads as the server's text.
+func TestAnUnknownMechanismListIsQuoted(t *testing.T) {
+	var s scram
+	_, _, err := s.begin([]byte("X-ONE\x00X-TWO\nlevel=ERROR forged\x00\x00"), "secret", nil, false)
+	if err == nil {
+		t.Fatal("a list with no SCRAM-SHA-256 was accepted")
+	}
+	if msg := err.Error(); strings.Contains(msg, "\n") || !strings.Contains(msg, `["X-ONE" "X-TWO\nlevel=ERROR forged"]`) {
+		t.Errorf("the offered names are not quoted: %q", msg)
 	}
 }
