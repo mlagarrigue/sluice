@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mlagarrigue/sluice/phase"
 )
@@ -394,5 +395,61 @@ func TestAnInvalidationOutlivesTheRunThatMadeIt(t *testing.T) {
 	}
 	if got := outcomes(rep); !slices.Equal(got, []string{"extract=ran", "load=ran"}) {
 		t.Errorf("after an invalidating run that failed: %v, want [extract=ran load=ran] — the phase after the one whose Verify failed is skipped", got)
+	}
+}
+
+// boundStore is a Store that records the contexts its lease is called under.
+type boundStore struct {
+	saves   []context.Context
+	release context.Context
+}
+
+func (s *boundStore) Lock(context.Context, string) (phase.Lease, error) { return s, nil }
+func (s *boundStore) Load(context.Context) (phase.Record, bool, error) {
+	return phase.Record{}, false, nil
+}
+
+func (s *boundStore) Save(ctx context.Context, _ phase.Record) error {
+	s.saves = append(s.saves, ctx)
+	return nil
+}
+func (s *boundStore) Release(ctx context.Context) error { s.release = ctx; return nil }
+
+// canEnd reports whether anything can end a call made under ctx.
+func canEnd(ctx context.Context) bool {
+	_, deadline := ctx.Deadline()
+	return deadline || ctx.Done() != nil
+}
+
+// The failed phase's record and the lock's release are written past the end
+// of the caller's context, but under one that ends (the architecture's S5:
+// the connectors are bounded by their context). They were written under
+// context.WithoutCancel alone, which nothing ends: on postgres.PhaseStore a
+// server that stopped answering held Run for as long as the socket lived.
+func TestTheLastWritesOfARunAreUnderAContextThatEnds(t *testing.T) {
+	s := &boundStore{}
+	job := &phase.Job{
+		Name:  "bounded",
+		Store: s,
+		Phases: []phase.Phase{{
+			Name: "load",
+			Run:  func(context.Context) (phase.Counts, error) { return nil, errors.New("the server stopped answering") },
+		}},
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	if _, err := job.Run(ctx); err == nil {
+		t.Fatal("control: the failing phase returned no error")
+	}
+	// Control: the first write, before the phase ran, is under the caller's
+	// context.
+	if len(s.saves) != 2 || !canEnd(s.saves[0]) {
+		t.Fatalf("control: %d writes, the first under a context that can end: %v", len(s.saves), len(s.saves) > 0 && canEnd(s.saves[0]))
+	}
+	if !canEnd(s.saves[1]) {
+		t.Error("the record of the failed phase is written under a context with no deadline and no cancellation")
+	}
+	if s.release == nil || !canEnd(s.release) {
+		t.Error("the lock is released under a context with no deadline and no cancellation")
 	}
 }

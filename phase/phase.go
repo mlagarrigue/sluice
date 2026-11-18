@@ -215,12 +215,26 @@ func phaseNames(r Record) []string {
 	return names
 }
 
+// afterEndBound bounds what Run writes once ctx may have ended.
+const afterEndBound = 5 * time.Second
+
+// afterEnd is the context of a write Run makes whatever ctx's state: ctx's
+// values, not its end, and a deadline of its own.
+func afterEnd(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), afterEndBound)
+}
+
 // Run runs the job: it takes the job's lock, reads its record, skips the
 // phases done and verified, runs the others in order, records each as it
 // finishes, and releases the lock. A phase's error is recorded and
 // returned; the next run resumes at that phase. A panic in a phase
 // propagates; the lock is released and the phase stays recorded as
 // running, which counts as not done.
+//
+// The failed phase's record and the lock's release are written even once
+// ctx has ended, so that its end neither loses the failure nor keeps the
+// lock: each under ctx's values, bounded by five seconds of its own rather
+// than by ctx, so that a store that stopped answering cannot hold Run.
 func (j *Job) Run(ctx context.Context) (rep Report, err error) {
 	if err := j.validate(); err != nil {
 		return rep, err
@@ -230,7 +244,9 @@ func (j *Job) Run(ctx context.Context) (rep Report, err error) {
 		return rep, err
 	}
 	defer func() {
-		if rerr := lease.Release(context.WithoutCancel(ctx)); rerr != nil && err == nil {
+		actx, cancel := afterEnd(ctx)
+		defer cancel()
+		if rerr := lease.Release(actx); rerr != nil && err == nil {
 			err = rerr
 		}
 	}()
@@ -284,7 +300,10 @@ func (j *Job) Run(ctx context.Context) (rep Report, err error) {
 		if rerr != nil {
 			st.Status, st.Error, st.At = Failed, rerr.Error(), time.Now()
 			rerr = fmt.Errorf("phase: job %q, phase %q: %w", j.Name, p.Name, rerr)
-			if serr := lease.Save(context.WithoutCancel(ctx), rec); serr != nil {
+			actx, cancel := afterEnd(ctx)
+			serr := lease.Save(actx, rec)
+			cancel()
+			if serr != nil {
 				return rep, errors.Join(rerr, serr)
 			}
 			return rep, rerr

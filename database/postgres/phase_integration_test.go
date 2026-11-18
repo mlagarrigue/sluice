@@ -8,7 +8,9 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/mlagarrigue/sluice/database/postgres"
 	"github.com/mlagarrigue/sluice/phase"
@@ -173,5 +175,111 @@ func TestIntegrationJobsLockingAFreshTableAtOnce(t *testing.T) {
 				t.Fatalf("round %d: job-%d, which no other session locks, could not take its lock on a table being created: %v", round, i, err)
 			}
 		}
+	}
+}
+
+// muteConn is a connection to the real server that can stop delivering what
+// the server answers: once muted, a read waits until the connection is
+// closed. Writes still reach the server. It is the state the constat names —
+// a server that no longer answers — installed on the client's side of a real
+// PostgreSQL rather than forged.
+type muteConn struct {
+	io.ReadWriteCloser
+	muted  *atomic.Bool
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (m *muteConn) Read(p []byte) (int, error) {
+	if m.muted.Load() {
+		<-m.closed
+		return 0, io.ErrClosedPipe
+	}
+	return m.ReadWriteCloser.Read(p)
+}
+
+func (m *muteConn) Close() error {
+	m.once.Do(func() { close(m.closed) })
+	return m.ReadWriteCloser.Close()
+}
+
+// TestIntegrationARunAgainstAMuteServerReturns: the phase ends with its
+// caller's deadline while the server has stopped answering. Job.Run then
+// writes the failure and releases the lock, a statement each on a connection
+// with no deadline of its own, under a context that ends: the write is
+// cancelled, the connection closed past CancelTimeout, and Run returns. Under
+// context.WithoutCancel alone it waited for as long as the socket lived.
+func TestIntegrationARunAgainstAMuteServerReturns(t *testing.T) {
+	store, _ := phaseStore(t)
+	var (
+		muted atomic.Bool
+		mu    sync.Mutex
+		conns []*muteConn
+	)
+	realDial := store.Dial
+	store.Dial = func(ctx context.Context) (io.ReadWriteCloser, error) {
+		rw, err := realDial(ctx)
+		if err != nil {
+			return nil, err
+		}
+		m := &muteConn{ReadWriteCloser: rw, muted: &muted, closed: make(chan struct{})}
+		mu.Lock()
+		conns = append(conns, m)
+		mu.Unlock()
+		return m, nil
+	}
+	job := func(name string, mute bool) *phase.Job {
+		return &phase.Job{
+			Name:  name,
+			Store: store,
+			Phases: []phase.Phase{{
+				Name: "load",
+				Run: func(ctx context.Context) (phase.Counts, error) {
+					if mute {
+						muted.Store(true)
+					}
+					<-ctx.Done() // the phase ends by its caller's deadline
+					return nil, ctx.Err()
+				},
+			}},
+		}
+	}
+	run := func(name string, mute bool) (returned bool, err error) {
+		ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+		defer cancel()
+		done := make(chan error, 1)
+		go func() {
+			_, rerr := job(name, mute).Run(ctx)
+			done <- rerr
+		}()
+		select {
+		case err = <-done:
+			return true, err
+		case <-time.After(15 * time.Second): // a guard, not a measure
+			// Release the run: closing the connections ends the reads.
+			mu.Lock()
+			for _, c := range conns {
+				_ = c.Close()
+			}
+			mu.Unlock()
+			<-done
+			return false, nil
+		}
+	}
+
+	// Control: the server answers. The phase fails by its deadline, the
+	// failure is recorded, the lock released, and Run returns.
+	returned, err := run("mute-control", false)
+	if !returned || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("control: returned %v with %v, want the phase's deadline", returned, err)
+	}
+
+	// The server stops answering while the phase runs: the failure's write
+	// ends by its own bound, the connection past CancelTimeout.
+	returned, err = run("mute", true)
+	if !returned {
+		t.Errorf("fifteen seconds past a 300 ms deadline, Run had not returned: the record of the failed phase is being written under a context nothing ends")
+	} else if err == nil {
+		t.Errorf("Run returned no error against a server that stopped answering")
 	}
 }
