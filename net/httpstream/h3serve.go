@@ -1028,73 +1028,90 @@ func answerH3(ctx context.Context, c *quic.Conn, state *tls.ConnectionState, b h
 			delivered = append(delivered, len(b.reqs[i].Body))
 		}
 	}
-	res, err := apply(ctx, handle, sluice.Batch[Request]{Items: b.reqs}, b.early)
-	closeBodies(b.reqs)
-	if err != nil {
-		reportFailure(wb.log, err)
-		// The handler panicked, or answered a number of requests that does
-		// not match what it was given. Every request of the batch is answered
-		// 500 and the connection carries on.
-		res = make([]Response, len(b.reqs))
-		for i := range res {
-			res[i] = transportError(500)
+	// What follows the handler, as a function: called with its answer, or,
+	// when the handler leaves its goroutine by runtime.Goexit (a t.FailNow,
+	// say) — apply's recover sees no panic then — from the deferred call
+	// below with an error, so the batch is still answered 500, its credit
+	// given back and its streams retired. Left unanswered, the batch stayed
+	// counted in flight and the connection never went idle. HTTP/2 has the
+	// same guard (h2Conn.call).
+	finish := func(res []Response, err error) {
+		closeBodies(b.reqs)
+		if err != nil {
+			reportFailure(wb.log, err)
+			// The handler panicked, or answered a number of requests that does
+			// not match what it was given. Every request of the batch is answered
+			// 500 and the connection carries on.
+			res = make([]Response, len(b.reqs))
+			for i := range res {
+				res[i] = transportError(500)
+			}
 		}
-	}
 
-	// The request bodies stop being retained by this layer the moment the
-	// handler returns — the release half of the manual credit ServeH3Conn runs
-	// the transport under. Held across the handler call deliberately: a
-	// slow handler holding a batch of bodies is exactly the memory the
-	// window should not re-open for.
-	if b.credit != nil {
+		// The request bodies stop being retained by this layer the moment the
+		// handler returns — the release half of the manual credit ServeH3Conn runs
+		// the transport under. Held across the handler call deliberately: a
+		// slow handler holding a batch of bodies is exactly the memory the
+		// window should not re-open for.
+		if b.credit != nil {
+			for i, id := range b.ids {
+				if n := uint64(delivered[i]); n > 0 { //nolint:gosec // G115: a length, positive
+					b.credit(id, n)
+				}
+			}
+		}
+
+		date := dateFor(time.Now())
 		for i, id := range b.ids {
-			if n := uint64(delivered[i]); n > 0 { //nolint:gosec // G115: a length, positive
-				b.credit(id, n)
+			writers.Add(1)
+			// A streamed body the client may still be sending: once the response
+			// is out, STOP_SENDING with H3_NO_ERROR tells it to stop (RFC 9114
+			// §4.1).
+			unread := false
+			if rb := b.reqs[i].body; rb != nil {
+				unread = rb.q.unread()
 			}
-		}
-	}
-
-	date := dateFor(time.Now())
-	for i, id := range b.ids {
-		writers.Add(1)
-		// A streamed body the client may still be sending: once the response
-		// is out, STOP_SENDING with H3_NO_ERROR tells it to stop (RFC 9114
-		// §4.1).
-		unread := false
-		if rb := b.reqs[i].body; rb != nil {
-			unread = rb.q.unread()
-		}
-		go func(id quic.StreamID, r Response, method []byte, after <-chan struct{}) {
-			if after != nil {
-				<-after // the interim 100 the head was owed leaves first
-			}
-			detached := false
-			defer func() {
-				if !detached {
+			go func(id quic.StreamID, r Response, method []byte, after <-chan struct{}) {
+				if after != nil {
+					<-after // the interim 100 the head was owed leaves first
+				}
+				detached := false
+				defer func() {
+					if !detached {
+						writers.Done()
+					}
+					// Retired at the goroutine's very end, a streamed producer's
+					// pull included: the drain waits for the body it is writing,
+					// bounded by the grace, where ServeH3Conn's own return does not.
+					if b.retire != nil {
+						b.retire()
+					}
+					done()
+				}()
+				whole := writeH3Response(c, id, r, method, b.fieldSection, wb, date, func() {
+					detached = true
 					writers.Done()
+				})
+				if whole && b.answered != nil {
+					b.answered()
 				}
-				// Retired at the goroutine's very end, a streamed producer's
-				// pull included: the drain waits for the body it is writing,
-				// bounded by the grace, where ServeH3Conn's own return does not.
-				if b.retire != nil {
-					b.retire()
+				if unread {
+					if s, err := c.Stream(id); err == nil {
+						_ = s.StopSending(h3NoError)
+					}
 				}
-				done()
-			}()
-			whole := writeH3Response(c, id, r, method, b.fieldSection, wb, date, func() {
-				detached = true
-				writers.Done()
-			})
-			if whole && b.answered != nil {
-				b.answered()
-			}
-			if unread {
-				if s, err := c.Stream(id); err == nil {
-					_ = s.StopSending(h3NoError)
-				}
-			}
-		}(id, res[i], b.reqs[i].Method, b.after[i])
+			}(id, res[i], b.reqs[i].Method, b.after[i])
+		}
 	}
+	answered := false
+	defer func() {
+		if !answered {
+			finish(nil, errors.New("httpstream: the handler exited its goroutine without answering"))
+		}
+	}()
+	res, err := apply(ctx, handle, sluice.Batch[Request]{Items: b.reqs}, b.early)
+	answered = true
+	finish(res, err)
 }
 
 // h3Interim100 is the HEADERS frame of an interim 100 (Continue): :status
