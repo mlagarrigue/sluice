@@ -188,6 +188,16 @@ func TestCopyRefusesToNestInsideATransaction(t *testing.T) {
 	if err := cp.WriteTuples(tuple(new(int64(1)), nil), 1); !errors.Is(err, ErrTxOpen) {
 		t.Fatalf("WriteTuples inside an open transaction returned %v, want ErrTxOpen", err)
 	}
+	// The refusal leaves the caller's transaction as it was. The block it
+	// found open is the caller's, not one a cancelled COMMIT of this copy
+	// left: a ROLLBACK there threw away what the transaction had written,
+	// and the caller's Commit then returned nil.
+	if bytes.Contains(srv.sent.Bytes(), []byte("ROLLBACK")) {
+		t.Error("the refused copy sent a ROLLBACK on the caller's transaction")
+	}
+	if !conn.inTx {
+		t.Error("the caller's transaction is no longer open after the refused copy")
+	}
 }
 
 // And the converse: a copy's transaction blocks Begin, so the copy's COMMIT

@@ -308,7 +308,10 @@ func (cp *Copier) WriteTuples(tuples []byte, rows int) error {
 		return cp.conn.settleCancel(cp.ctx, w, fmt.Errorf("abandoning the copy: %w", err))
 	}
 	err := cp.conn.settleCancel(cp.ctx, w, cp.write(tuples, rows))
-	if c := cp.conn; err != nil && c.broken == nil && c.inTx && !cp.inTx {
+	// ErrTxOpen is beginTx refusing because a transaction was open before
+	// this copy: that block is the caller's, and a ROLLBACK here would
+	// throw away what it wrote while its Commit still returned nil.
+	if c := cp.conn; err != nil && !errors.Is(err, ErrTxOpen) && c.broken == nil && c.inTx && !cp.inTx {
 		// The COMMIT RowsPerTx sent was cancelled after the backend read it
 		// and before it ran it: the copy had given its transaction up
 		// (commitTx), and the block is still open, aborted — nothing would
