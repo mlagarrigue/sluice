@@ -34,7 +34,9 @@ import (
 // smuggling it is, and "too large" kept
 // distinct from "malformed" because they need different fixes. Here the
 // stage also picks the refusal's status — 415 for a label it does not read
-// (with Accept-Patch on a PATCH), 413 past maxBytes, 400 otherwise — where
+// (with Accept-Patch on a PATCH) or a Content-Encoding other than identity
+// (with Accept-Encoding: identity, RFC 9110 §12.5.3), 413 past maxBytes, 400
+// otherwise — where
 // web leaves that to its net/http caller. So are the three readings
 // web.DecodeJSON names as encoding/json's: a repeated name's last value
 // wins and names match fields without regard to case, invalid UTF-8 and a
@@ -51,6 +53,14 @@ func DecodeJSON(e *Exchange, maxBytes int64, dst any) bool {
 			e.Headers = append(e.Headers, acceptPatch)
 		}
 		e.Refuse(415, reqbody.MediaType(web.CodeUnsupportedMediaType))
+		return false
+	}
+	if coded(e.Request.Headers) {
+		// RFC 9110 §12.5.3: a coding not read is 415 with Accept-Encoding,
+		// which tells it apart from a label not read — that refusal, above,
+		// must not carry the field.
+		e.Headers = append(e.Headers, acceptIdentity)
+		e.Refuse(415, reqbody.ContentEncoding(web.CodeUnsupportedContentEncoding))
 		return false
 	}
 	body := e.Request.Body
@@ -82,6 +92,21 @@ func DecodeJSON(e *Exchange, maxBytes int64, dst any) bool {
 // reads application/json as well, but that type defines no PATCH semantics
 // (RFC 5789 erratum 3169), so it is not advertised as one.
 var acceptPatch = httpstream.Header{Name: []byte("accept-patch"), Value: []byte("application/merge-patch+json")}
+
+// acceptIdentity is the Accept-Encoding of a refused coded body: identity,
+// no coding, is the one this stage reads.
+var acceptIdentity = httpstream.Header{Name: []byte("accept-encoding"), Value: []byte("identity")}
+
+// coded reports whether any Content-Encoding field names a coding other
+// than identity.
+func coded(headers []httpstream.Header) bool {
+	for _, h := range headers {
+		if foldEqual(h.Name, "content-encoding") && reqbody.Coded(h.Value) {
+			return true
+		}
+	}
+	return false
+}
 
 // bound turns the stage's limit into the int [httpstream.Request.ReadAll]
 // takes. A limit past the largest int cannot bound anything on this platform,

@@ -120,6 +120,41 @@ func MediaType(code string) diagnostics.Diagnostic {
 		WithOrigin(diagnostics.OriginProtocol)
 }
 
+// ContentEncoding is the refusal of a body coded for transfer: a
+// Content-Encoding this package does not decode. The client is told the one
+// coding accepted, identity — none — as the Accept-Encoding field of the
+// answer tells it (RFC 9110 §12.5.3).
+func ContentEncoding(code string) diagnostics.Diagnostic {
+	return diagnostics.NewDiagnostic(diagnostics.Error, code, diagnostics.Path{}).
+		WithMessage("RequestBodyContentEncoding", map[string]any{"accepted": "identity"}).
+		WithOrigin(diagnostics.OriginProtocol)
+}
+
+// Coded reports whether a Content-Encoding field value names a coding other
+// than identity: a comma-separated list of tokens (RFC 9110 §8.4), compared
+// without regard to case (§8.4.1); an empty element is no coding. It
+// allocates nothing: it runs on every request that carries a body.
+func Coded[T string | []byte](v T) bool {
+	for at := 0; at <= len(v); {
+		end := at
+		for end < len(v) && v[end] != ',' {
+			end++
+		}
+		start, stop := at, end
+		for start < stop && (v[start] == ' ' || v[start] == '\t') {
+			start++
+		}
+		for stop > start && (v[stop-1] == ' ' || v[stop-1] == '\t') {
+			stop--
+		}
+		if stop > start && !foldEqual(v, start, stop, "identity") {
+			return true
+		}
+		at = end + 1
+	}
+	return false
+}
+
 // MalformedArgs builds the client-visible arguments of a
 // RequestBodyMalformed message from a JSON decoding error.
 //

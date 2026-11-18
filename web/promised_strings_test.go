@@ -36,6 +36,7 @@ var promisedMessageIDs = []string{
 	"CredentialsNotBearer", "CredentialsRejected",
 	"MethodNotAllowed", "MethodNotImplemented", "NoRoute",
 	"ParameterInvalid", "ParameterMissing",
+	"RequestBodyContentEncoding",
 	"RequestBodyMalformed", "RequestBodyMediaType", "RequestBodyNull",
 	"RequestBodyTimeout", "RequestBodyTooLarge", "RequestBodyTrailingContent",
 	"RequestBodyTruncated",

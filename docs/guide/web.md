@@ -111,6 +111,14 @@ reason for the refusal: a browser sends a form or `text/plain` to another
 site without asking permission, and a JSON document hidden in one would
 otherwise be decoded as if the client had meant to send it.
 
+A body compressed for the trip (a `Content-Encoding` header other than
+`identity`, `gzip` for instance) is refused before reading too, under the
+code `CodeUnsupportedContentEncoding`: neither `web` nor `web/stream`
+decompresses it. `TransportStatus` turns it into a 415, and the response
+carries `Accept-Encoding: identity` ("send it uncompressed"); `web/stream`
+sets that field itself, with `web` it is yours to add. The field tells this
+refusal apart from the one for the type, which never carries it.
+
 > **In plain words: which type for a PATCH?** `application/json` says
 > "here is a JSON document", not "here are the changes to apply": the PATCH
 > specification (RFC 5789, erratum 3169) asks servers not to read it that

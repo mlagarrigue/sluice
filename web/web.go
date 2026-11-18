@@ -77,13 +77,18 @@ import (
 // hierarchical style as an application's own, so a client matches on them the
 // same way. [CodeUnsupportedMediaType] is a body refused for its label before
 // a byte was read — a 415 (RFC 9110 §15.5.16), where [CodeMalformedBody] is a
-// document that would not parse, a 400.
+// document that would not parse, a 400. [CodeUnsupportedContentEncoding] is
+// a body coded for transfer (a Content-Encoding other than identity), which
+// this package does not decode: a 415 too, whose answer carries
+// Accept-Encoding: identity (RFC 9110 §12.5.3) so the client can tell the
+// coding from the label.
 const (
-	CodeMalformedBody        = "Transport.Request.Malformed"
-	CodeUnsupportedMediaType = "Transport.Request.UnsupportedMediaType"
-	CodeBodyTooLarge         = "Transport.Request.TooLarge"
-	CodeMissingParam         = "Transport.Request.MissingParameter"
-	CodeInvalidParam         = "Transport.Request.InvalidParameter"
+	CodeMalformedBody              = "Transport.Request.Malformed"
+	CodeUnsupportedMediaType       = "Transport.Request.UnsupportedMediaType"
+	CodeUnsupportedContentEncoding = "Transport.Request.UnsupportedContentEncoding"
+	CodeBodyTooLarge               = "Transport.Request.TooLarge"
+	CodeMissingParam               = "Transport.Request.MissingParameter"
+	CodeInvalidParam               = "Transport.Request.InvalidParameter"
 )
 
 // DecodeJSON reads a request body into dst, bounded to maxBytes bytes.
@@ -116,6 +121,13 @@ const (
 // handler that applies the document as the members to set reads JSON Merge
 // Patch, application/merge-patch+json (RFC 7396), and says so.
 //
+// A body coded for transfer — a Content-Encoding other than identity, gzip
+// say — is refused under [CodeUnsupportedContentEncoding] before a byte is
+// read: nothing here decodes it. Its answer is 415 too, with
+// Accept-Encoding: identity, which RFC 9110 §12.5.3 has tell the client the
+// coding is the fault and not the label; the caller adds that field, which a
+// refusal for the label never carries.
+//
 // Three readings are encoding/json's, kept as they are, and a hop in front
 // that reads the document differently must know them: a name repeated in an
 // object is accepted and the last one wins, and names match struct fields
@@ -131,6 +143,14 @@ func DecodeJSON(r *http.Request, maxBytes int64, dst any) (diagnostics.Diagnosti
 	}
 	if ct := r.Header["Content-Type"]; len(ct) != 1 || !reqbody.JSONMediaType(ct[0]) {
 		return reqbody.MediaType(CodeUnsupportedMediaType), false
+	}
+	for _, v := range r.Header["Content-Encoding"] {
+		if reqbody.Coded(v) {
+			// Not decoded here: read as the raw document, a gzip body would
+			// be refused as malformed JSON, and the client told to fix a
+			// document that was fine.
+			return reqbody.ContentEncoding(CodeUnsupportedContentEncoding), false
+		}
 	}
 
 	// MaxBytesReader rather than io.LimitReader: it reports the overrun as a
@@ -242,12 +262,13 @@ func Status(diags []diagnostics.Diagnostic) int {
 // TransportStatus is the status a refusal by this package is answered with,
 // the one web/stream's DecodeJSON writes for the same refusal: 415 for
 // [CodeUnsupportedMediaType] (RFC 9110 §15.5.16 — change the label, not the
-// document), 413 for [CodeBodyTooLarge], 400 for the other transport codes.
+// document) and for [CodeUnsupportedContentEncoding] (§12.5.3 — send it
+// uncoded), 413 for [CodeBodyTooLarge], 400 for the other transport codes.
 // A diagnostic [IsTransport] does not report gets what [Status] gives it
 // alone.
 func TransportStatus(d diagnostics.Diagnostic) int {
 	switch d.Code {
-	case CodeUnsupportedMediaType:
+	case CodeUnsupportedMediaType, CodeUnsupportedContentEncoding:
 		return http.StatusUnsupportedMediaType
 	case CodeBodyTooLarge:
 		return http.StatusRequestEntityTooLarge
@@ -263,7 +284,7 @@ func TransportStatus(d diagnostics.Diagnostic) int {
 // the handler's.
 func IsTransport(d diagnostics.Diagnostic) bool {
 	switch d.Code {
-	case CodeMalformedBody, CodeUnsupportedMediaType, CodeBodyTooLarge, CodeMissingParam, CodeInvalidParam:
+	case CodeMalformedBody, CodeUnsupportedMediaType, CodeUnsupportedContentEncoding, CodeBodyTooLarge, CodeMissingParam, CodeInvalidParam:
 		return true
 	}
 	return false

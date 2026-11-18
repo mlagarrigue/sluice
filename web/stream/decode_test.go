@@ -26,6 +26,68 @@ func acceptPatchOf(e Exchange) string {
 	return ""
 }
 
+// A body coded for transfer (Content-Encoding other than identity) is not
+// read as JSON: 415 under its own code, with the Accept-Encoding field RFC
+// 9110 §12.5.3 has a server send to tell the coding apart from the label.
+// It was parsed as the raw document and refused 400 as malformed. identity,
+// in any case, is no coding; a refusal for the label carries no
+// Accept-Encoding, which §12.5.3 reserves to the coding.
+func TestDecodeJSONRefusesACodedBody(t *testing.T) {
+	type patch struct {
+		SaleQty int64 `json:"saleQty"`
+	}
+	acceptEncodingOf := func(e Exchange) (string, bool) {
+		for _, h := range e.Headers {
+			if strings.EqualFold(string(h.Name), "accept-encoding") {
+				return string(h.Value), true
+			}
+		}
+		return "", false
+	}
+	for _, tc := range []struct {
+		name   string
+		coding []string
+		ok     bool
+	}{
+		{"gzip", []string{"gzip"}, false},
+		{"a list ending in gzip", []string{"identity, GZIP"}, false},
+		{"a second field", []string{"identity", "br"}, false},
+		{"identity", []string{"Identity"}, true},
+		{"an empty field", []string{""}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := withBody(`{"saleQty": 4}`)
+			for _, v := range tc.coding {
+				e.Request.Headers = append(e.Request.Headers, httpstream.Header{Name: []byte("content-encoding"), Value: []byte(v)})
+			}
+			var p patch
+			if DecodeJSON(&e, 1<<10, &p) != tc.ok {
+				t.Fatalf("decoded = %v, want %v (%v)", !tc.ok, tc.ok, e.Diagnostics)
+			}
+			if tc.ok {
+				return
+			}
+			if e.Status != 415 || len(e.Diagnostics) != 1 || e.Diagnostics[0].MessageID != "RequestBodyContentEncoding" ||
+				e.Diagnostics[0].Code != web.CodeUnsupportedContentEncoding {
+				t.Errorf("status %d, diagnostics %v, want 415 and one RequestBodyContentEncoding under %s", e.Status, e.Diagnostics, web.CodeUnsupportedContentEncoding)
+			}
+			if got, _ := acceptEncodingOf(e); got != "identity" {
+				t.Errorf("Accept-Encoding %q, want identity", got)
+			}
+		})
+	}
+
+	e := withBody(`{"saleQty": 4}`)
+	e.Request.Headers = []httpstream.Header{{Name: []byte("content-type"), Value: []byte("text/plain")}}
+	var p patch
+	if DecodeJSON(&e, 1<<10, &p) || e.Status != 415 {
+		t.Fatalf("a refused label: status %d", e.Status)
+	}
+	if v, ok := acceptEncodingOf(e); ok {
+		t.Errorf("a refusal for the label carries Accept-Encoding %q; RFC 9110 §12.5.3 forbids it", v)
+	}
+}
+
 // The limit is inclusive: a body of exactly limit bytes is read.
 func TestDecodeJSONAcceptsABodyOfExactlyTheLimit(t *testing.T) {
 	body := `{"saleQty": 4}`

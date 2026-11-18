@@ -76,6 +76,36 @@ func TestDecodeJSONRefusesABodyNotLabelledJSON(t *testing.T) {
 	}
 }
 
+// A body coded for transfer is refused under a code of its own, which
+// TransportStatus answers 415 (RFC 9110 §12.5.3): it was parsed as the raw
+// document and refused as malformed. identity is no coding.
+func TestDecodeJSONRefusesACodedBody(t *testing.T) {
+	for _, tc := range []struct {
+		coding []string
+		ok     bool
+	}{
+		{[]string{"gzip"}, false},
+		{[]string{"identity, gzip"}, false},
+		{[]string{"identity", "BR"}, false},
+		{[]string{"IDENTITY"}, true},
+		{[]string{""}, true},
+	} {
+		r := post(`{"orderId":42,"saleQty":9}`)
+		r.Header["Content-Encoding"] = tc.coding
+		var a amendment
+		d, ok := web.DecodeJSON(r, 1<<16, &a)
+		if ok != tc.ok {
+			t.Errorf("Content-Encoding %q: decoded = %v, want %v (%+v)", tc.coding, ok, tc.ok, d)
+			continue
+		}
+		if !ok && (d.Code != web.CodeUnsupportedContentEncoding || d.MessageID != "RequestBodyContentEncoding" ||
+			!web.IsTransport(d) || web.TransportStatus(d) != http.StatusUnsupportedMediaType) {
+			t.Errorf("Content-Encoding %q: refused with %s/%s, status %d; want a transport %s/RequestBodyContentEncoding, 415",
+				tc.coding, d.Code, d.MessageID, web.TransportStatus(d), web.CodeUnsupportedContentEncoding)
+		}
+	}
+}
+
 // Too large and malformed need different fixes. A caller that conflates them
 // tells the client to check its JSON when the JSON was fine.
 func TestDecodeJSONDistinguishesTooLargeFromMalformed(t *testing.T) {
@@ -328,6 +358,7 @@ func TestTransportStatus(t *testing.T) {
 		want int
 	}{
 		{web.CodeUnsupportedMediaType, http.StatusUnsupportedMediaType},
+		{web.CodeUnsupportedContentEncoding, http.StatusUnsupportedMediaType},
 		{web.CodeBodyTooLarge, http.StatusRequestEntityTooLarge},
 		{web.CodeMalformedBody, http.StatusBadRequest},
 		{web.CodeMissingParam, http.StatusBadRequest},
