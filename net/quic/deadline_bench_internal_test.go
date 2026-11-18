@@ -2,6 +2,7 @@ package quic
 
 import (
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 )
@@ -56,6 +57,39 @@ func BenchmarkStreamDeadlinesMature(b *testing.B) {
 				c.mu.Unlock()
 			}
 			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*n), "ns/stream")
+		})
+	}
+}
+
+// BenchmarkStreamDeadlineBesideParkedWriters is one write deadline that
+// matures on a stream nobody writes, beside n writers parked on the
+// connection's credit, which no MAX_DATA raises: the cost of the
+// maturity's wake-up, which reaches all of them.
+func BenchmarkStreamDeadlineBesideParkedWriters(b *testing.B) {
+	for _, n := range []int{1, 64, 1024} {
+		b.Run(strconv.Itoa(n), func(b *testing.B) {
+			c, ss := deadlineConn(b, n+1)
+			c.mu.Lock()
+			for _, s := range ss[1:] {
+				s.sendQ.grant(1 << 20) // room on the stream, none on the connection
+			}
+			c.mu.Unlock()
+			var left sync.WaitGroup
+			for _, s := range ss[1:] {
+				left.Go(func() { _, _ = s.Write([]byte("x")) })
+			}
+			time.Sleep(50 * time.Millisecond) // they park on connCredit: no MAX_DATA comes
+			base := time.Now().Add(time.Hour)
+			for i := 0; b.Loop(); i++ {
+				at := base.Add(time.Duration(i+1) * time.Microsecond)
+				_ = ss[0].SetWriteDeadline(at)
+				c.mu.Lock()
+				c.streamDeadline = c.expireStreamDeadlinesLocked(at)
+				c.mu.Unlock()
+			}
+			b.StopTimer()
+			_ = c.Close()
+			left.Wait()
 		})
 	}
 }

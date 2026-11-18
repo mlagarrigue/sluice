@@ -2035,11 +2035,67 @@ func (c *Conn) waitForCreditLocked(deadline time.Time) error {
 	return c.waitOnLocked(&c.cond, deadline)
 }
 
-// waitForConnCreditLocked is waitForCreditLocked for a writer whose stream
-// has room and whose connection's credit is spent: it parks on connCredit,
-// which a MAX_DATA wakes one writer at a time.
-func (c *Conn) waitForConnCreditLocked(deadline time.Time) error {
-	return c.waitOnLocked(&c.connCredit, deadline)
+// waitForConnCreditLocked is waitForCreditLocked for a writer on s whose
+// stream has room and whose connection's credit is spent: it queues s at
+// the end of the connection's credit waiters and parks on s's own cond,
+// which a MAX_DATA reaches when s is first (wakeCreditWaiterLocked), and
+// s's reset, STOP_SENDING or write deadline reach directly
+// (wakeCreditLocked). A writer that leaves on an error once its turn came
+// passes the credit on, as one that took it does.
+func (c *Conn) waitForConnCreditLocked(s *Stream, deadline time.Time) error {
+	if s.credit == nil {
+		s.credit = sync.NewCond(&c.mu)
+	}
+	c.queueCreditLocked(s)
+	err := c.waitOnLocked(s.credit, deadline)
+	c.unqueueCreditLocked(s)
+	if err != nil {
+		c.passCreditLocked()
+	}
+	return err
+}
+
+// queueCreditLocked puts s at the end of the connection's credit waiters,
+// unless it is in the list already. Callers hold mu.
+func (c *Conn) queueCreditLocked(s *Stream) {
+	if s.creditQueued {
+		return
+	}
+	s.creditQueued, s.creditPrev, s.creditNext = true, c.creditTail, nil
+	if c.creditTail != nil {
+		c.creditTail.creditNext = s
+	} else {
+		c.creditHead = s
+	}
+	c.creditTail = s
+}
+
+// unqueueCreditLocked takes s out of the connection's credit waiters, if it
+// is there. Callers hold mu.
+func (c *Conn) unqueueCreditLocked(s *Stream) {
+	if !s.creditQueued {
+		return
+	}
+	if s.creditPrev != nil {
+		s.creditPrev.creditNext = s.creditNext
+	} else {
+		c.creditHead = s.creditNext
+	}
+	if s.creditNext != nil {
+		s.creditNext.creditPrev = s.creditPrev
+	} else {
+		c.creditTail = s.creditPrev
+	}
+	s.creditQueued, s.creditPrev, s.creditNext = false, nil, nil
+}
+
+// wakeCreditWaiterLocked wakes the first writer parked on the connection's
+// credit, out of the list. Callers hold mu.
+func (c *Conn) wakeCreditWaiterLocked() {
+	if s := c.creditHead; s != nil {
+		c.unqueueCreditLocked(s)
+		s.credit.Broadcast()
+	}
 }
 
 // passCreditLocked wakes the next writer parked on the connection's credit
@@ -2047,18 +2103,22 @@ func (c *Conn) waitForConnCreditLocked(deadline time.Time) error {
 // is the next one's. Callers hold mu.
 func (c *Conn) passCreditLocked() {
 	if c.connSend.avail() > 0 {
-		c.connCredit.Signal()
+		c.wakeCreditWaiterLocked()
 	}
 }
 
 // wakeAllLocked wakes every parked writer, whichever cond it waits on —
-// the connection's, its credit's, and each stream's credit — for what ends
-// or changes them all: a close, a refused 0-RTT, new keys. It walks the
-// stream table. Callers hold mu.
+// the connection's, and each stream's, for its credit or the
+// connection's — for what ends or changes them all: a close, a refused
+// 0-RTT, new keys. It walks the stream table, and the credit waiters in
+// case one's stream has left the table. Callers hold mu.
 func (c *Conn) wakeAllLocked() {
 	c.wakeWritersLocked()
 	c.openers.Broadcast()
 	for _, s := range c.streams {
+		s.wakeCreditLocked()
+	}
+	for s := c.creditHead; s != nil; s = s.creditNext {
 		s.wakeCreditLocked()
 	}
 }
@@ -2067,7 +2127,7 @@ func (c *Conn) wakeAllLocked() {
 // window, the pacer, the stream limit, the keys — and no one waiting for
 // credit: an acknowledgement, a pacing tick or a MAX_STREAMS gives none.
 // Neither the writers parked on their stream's credit nor those parked on
-// the connection's (connCredit), which a MAX_DATA wakes one at a time: a
+// the connection's (creditHead), which a MAX_DATA wakes one at a time: a
 // peer that starves n writers of credit while it acknowledges, or raises
 // MAX_STREAMS by one per two-byte frame, would otherwise buy n wake-ups per
 // frame (BenchmarkStreamLimitTrickle). Callers hold mu.
@@ -2075,13 +2135,12 @@ func (c *Conn) wakeWindowLocked() {
 	c.cond.Broadcast()
 }
 
-// wakeWritersLocked wakes the writers on cond and on connCredit, for what
-// ends a write whatever it waits for — its stream reset, its write deadline
-// passed — and the writers parked on their stream's credit are woken by
-// the stream (wakeCreditLocked). Callers hold mu.
+// wakeWritersLocked wakes the writers on cond, for what ends a write
+// whatever it waits for — its stream reset, its write deadline passed; the
+// writers parked on their stream's credit or on the connection's are woken
+// by the stream (wakeCreditLocked). Callers hold mu.
 func (c *Conn) wakeWritersLocked() {
 	c.cond.Broadcast()
-	c.connCredit.Broadcast()
 }
 
 // waitForStreamCreditLocked parks a writer whose stream's credit is spent on

@@ -30,7 +30,8 @@ func BenchmarkCreditTrickle(b *testing.B) {
 			var parked, done sync.WaitGroup
 			parked.Add(n)
 			done.Add(n)
-			for range n {
+			for i := range n {
+				s := newStream(c, StreamID(4*i))
 				go func() {
 					defer done.Done()
 					c.mu.Lock()
@@ -47,7 +48,7 @@ func BenchmarkCreditTrickle(b *testing.B) {
 							parked.Done()
 							first = false
 						}
-						if err := c.waitForConnCreditLocked(time.Time{}); err != nil {
+						if err := c.waitForConnCreditLocked(s, time.Time{}); err != nil {
 							return
 						}
 					}
@@ -90,14 +91,15 @@ func BenchmarkStreamLimitTrickle(b *testing.B) {
 			var parked, done sync.WaitGroup
 			parked.Add(n)
 			done.Add(n)
-			for range n {
+			for i := range n {
+				s := newStream(c, StreamID(4*i))
 				go func() {
 					defer done.Done()
 					c.mu.Lock()
 					defer c.mu.Unlock()
 					parked.Done()
 					for !stop {
-						if err := c.waitForConnCreditLocked(time.Time{}); err != nil {
+						if err := c.waitForConnCreditLocked(s, time.Time{}); err != nil {
 							return
 						}
 					}

@@ -90,7 +90,12 @@ type Stream struct {
 	dlIdx [2]int
 	// credit is where a Write waits for this stream's credit
 	// (waitForStreamCreditLocked), on conn.mu; nil until the first wait.
-	credit *sync.Cond
+	// It is also where it waits for the connection's credit
+	// (waitForConnCreditLocked), queued in the connection's list of such
+	// writers by creditPrev and creditNext while creditQueued.
+	credit                 *sync.Cond
+	creditPrev, creditNext *Stream
+	creditQueued           bool
 
 	// rejected says the stream was opened in 0-RTT and the server refused
 	// it (rejectEarlyLocked): every Read and Write returns
@@ -483,7 +488,8 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 			c.sendBlockedFramesLocked(s)
 			wait := func(dl time.Time) error { return c.waitForStreamCreditLocked(s, dl) }
 			if s.sendQ.avail() > 0 {
-				wait = c.waitForConnCreditLocked // the connection's credit alone is spent
+				// The connection's credit alone is spent.
+				wait = func(dl time.Time) error { return c.waitForConnCreditLocked(s, dl) }
 			}
 			if err := wait(s.writeDeadline); err != nil {
 				return written, err
@@ -577,8 +583,8 @@ func (s *Stream) Reset(code uint64) error {
 	frame := appendStreamFrame(nil, FrameResetStream, s.id, code, s.writeOff)
 	err := c.sendPacketLocked(spaceApplication, frame, sendOpts{}) // ungated: see sendOpts.waitCwnd
 	c.maybeRemoveLocked(s)
-	c.wakeWritersLocked() // a writer of this stream on the window or connCredit gives up
-	s.wakeCreditLocked()  // and one on its credit
+	c.wakeWritersLocked() // a writer of this stream on the window gives up
+	s.wakeCreditLocked()  // and one on its credit or the connection's
 	return sentOrRecorded(err)
 }
 
@@ -740,8 +746,8 @@ func (s *Stream) onStopSendingLocked(code uint64) (stopped bool) {
 	// Ungated (see sendOpts.waitCwnd), and at the read loop's best effort:
 	// see handleStopSending.
 	_ = s.conn.sendPacketLocked(spaceApplication, frame, sendOpts{})
-	// The writer may be parked on its stream's credit or, its stream having
-	// room, on the connection's (connCredit), as Stream.Reset wakes it.
+	// The writer may be parked on the window, or on its stream's credit or
+	// the connection's — both on the stream's cond — as Stream.Reset wakes it.
 	s.conn.wakeWritersLocked()
 	s.wakeCreditLocked()
 	return true

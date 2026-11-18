@@ -1583,7 +1583,7 @@ func (c *Conn) handleLimitGrant(f Frame) {
 			if spent {
 				// One writer parked on the connection's credit; it wakes
 				// the next if it leaves credit behind (passCreditLocked).
-				c.connCredit.Signal()
+				c.wakeCreditWaiterLocked()
 			}
 		}
 	// A MAX_STREAMS wakes the writers waiting for a stream only when it

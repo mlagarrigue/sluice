@@ -102,16 +102,21 @@ type Conn struct {
 	// registration takes the listener's lock under this one.
 	mu   sync.Mutex
 	cond sync.Cond // credit arriving, or the connection ending
-	// connCredit is where a writer parks when the connection's credit
-	// alone is spent (its stream has room): a MAX_DATA wakes one of them,
-	// and a writer that leaves credit behind wakes the next (passCredit).
-	// On cond, every parked writer woke for every MAX_DATA that raised a
-	// spent window and all but one parked again: a peer granting a byte at
-	// a time bought a wake-up per writer with each three-byte frame
-	// (BenchmarkCreditTrickle). A deadline, a reset, a STOP_SENDING or the
-	// end reach it too (wakeWritersLocked); an ACK, a pacing tick or a
-	// MAX_STREAMS, which give no credit, do not (wakeWindowLocked).
-	connCredit sync.Cond
+	// creditHead and creditTail are the writers parked on the connection's
+	// credit alone (their stream has room), first come first served, each
+	// waiting on its own stream's cond (waitForConnCreditLocked): a
+	// MAX_DATA wakes the first, and a writer that leaves credit behind
+	// wakes the next (passCreditLocked). On cond, every parked writer woke
+	// for every MAX_DATA that raised a spent window and all but one parked
+	// again: a peer granting a byte at a time bought a wake-up per writer
+	// with each three-byte frame (BenchmarkCreditTrickle). On one shared
+	// cond of their own, a deadline, a reset or a STOP_SENDING on any
+	// stream woke them all for the one writer it ended, a cost that grew
+	// with their number (BenchmarkStreamDeadlineBesideParkedWriters). Each
+	// on its stream's cond, the stream's own events reach its writer alone;
+	// an ACK, a pacing tick or a MAX_STREAMS, which give no credit, reach
+	// none.
+	creditHead, creditTail *Stream
 	// openers is where an OpenStream parks while the peer's stream limit is
 	// reached: a MAX_STREAMS that raises it wakes them, and only them — on
 	// cond it woke every writer parked on the window as well, a wake-up per

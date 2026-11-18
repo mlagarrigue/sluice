@@ -1523,6 +1523,16 @@ same machine, mean per frame and rounds won by the change:
 The cost no longer grows with N: a peer no longer buys N wake-ups with
 three bytes.
 
+The condition of the connection's credit has since given way to a queue:
+each writer waits on its own stream's condition, and a MAX_DATA wakes the
+first in the queue. On the shared condition, a write deadline, a reset or
+a STOP_SENDING on any stream woke them all for the one writer it ended
+(`BenchmarkStreamDeadlineBesideParkedWriters`, several cores: 140 ns,
+555 ns and 20 µs per deadline with 1, 64 and 1024 writers parked; 137, 141
+and 143 ns after). The queue costs a few nanoseconds per frame here: paired
+A/B, twelve rounds, 288 → 297, 306 → 317 and 303 → 325 ns at 1, 64 and
+1024, rounds won 5, 4 and 4 of 12.
+
 ## Redis, a batch against one command at a time
 
 A thousand GETs of keys that exist, against Valkey 8.1 in a container on
