@@ -420,10 +420,12 @@ func (s *connSet) busy() int {
 // acknowledged and every stream answered — one round trip for an idle one,
 // where closing it here raced the GOAWAY its own goroutine was queuing.
 //
-// The connections are closed after mu is released, as closeAll closes its
-// own: a Close that blocks — a tls.Conn's sends its close_notify, up to the
-// connection's write deadline — would otherwise hold add, remove and the
-// stop behind it.
+// The connections are closed after mu is released, each on a goroutine of
+// its own: a Close that blocks — a tls.Conn's sends its close_notify, up to
+// the connection's write deadline, to a peer that stopped reading — would
+// otherwise hold add, remove and the stop behind it, and Server.stop holds
+// Server.mu across this call, which Close, Serve and Shutdown's own wait on
+// ctx are behind. Nothing is in flight on these, so no order is owed.
 func (s *connSet) drain() {
 	s.mu.Lock()
 	s.closed = true
@@ -436,13 +438,16 @@ func (s *connSet) drain() {
 	}
 	s.mu.Unlock()
 	for _, c := range idle {
-		_ = c.Close()
+		go func() { _ = c.Close() }()
 	}
 }
 
-// closeAll closes what the grace did not drain, outside mu as drain does.
-// The map is kept: remove still runs for each connection when its
-// goroutine ends.
+// closeAll closes what the grace did not drain, outside mu as drain does,
+// all at once, and returns once every Close has: the sockets are closed
+// before Server.Close cancels the handlers, and a tls.Conn's close_notify to
+// a peer that stopped reading costs the slowest of them, not their sum. The
+// map is kept: remove still runs for each connection when its goroutine
+// ends.
 func (s *connSet) closeAll() {
 	s.mu.Lock()
 	all := make([]net.Conn, 0, len(s.conns))
@@ -451,13 +456,17 @@ func (s *connSet) closeAll() {
 		all, cut = append(all, c), append(cut, st.cutBody())
 	}
 	s.mu.Unlock()
+	var closing sync.WaitGroup
 	for i, c := range all {
-		if cut[i] {
-			closeCut(c)
-			continue
-		}
-		_ = c.Close()
+		closing.Go(func() {
+			if cut[i] {
+				closeCut(c)
+				return
+			}
+			_ = c.Close()
+		})
 	}
+	closing.Wait()
 }
 
 // closeCut closes a connection whose close-delimited body is incomplete. On

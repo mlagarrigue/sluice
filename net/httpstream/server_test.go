@@ -3,10 +3,12 @@ package httpstream
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
 	"log/slog"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -797,6 +799,82 @@ func TestServeH2ConnReturnsAtTheGraceWhateverItsCodeWaitsOn(t *testing.T) {
 				}
 			case <-time.After(10 * grace):
 				t.Fatal("ServeH2Conn still held ten graces after the cancellation")
+			}
+		})
+	}
+}
+
+// pipeListener hands over the server ends of net.Pipe connections, TLS when
+// cfg is set.
+type pipeListener struct {
+	ch  chan net.Conn
+	cfg *tls.Config
+}
+
+func (l *pipeListener) Accept() (net.Conn, error) {
+	c, ok := <-l.ch
+	if !ok {
+		return nil, net.ErrClosed
+	}
+	if l.cfg != nil {
+		return tls.Server(c, l.cfg), nil
+	}
+	return c, nil
+}
+func (l *pipeListener) Close() error   { defer func() { _ = recover() }(); close(l.ch); return nil }
+func (l *pipeListener) Addr() net.Addr { return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1} }
+
+// closeDuringShutdown serves n idle connections (net.Pipe, never read by the
+// peer after the handshake), starts a Shutdown, then a Close, and returns
+// how long Close took.
+func closeDuringShutdown(t *testing.T, n int, useTLS bool) time.Duration {
+	t.Helper()
+	ln := &pipeListener{ch: make(chan net.Conn, n)}
+	if useTLS {
+		ln.cfg = &tls.Config{Certificates: []tls.Certificate{selfSigned(t)}, SessionTicketsDisabled: true, MinVersion: tls.VersionTLS13}
+	}
+	srv := &Server{Handler: echoTarget}
+	go func() { _ = srv.Serve(ln) }()
+	for range n {
+		a, b := net.Pipe()
+		t.Cleanup(func() { _ = a.Close() })
+		ln.ch <- b
+		if useTLS {
+			cl := tls.Client(a, &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13}) //nolint:gosec // a test certificate
+			if err := cl.Handshake(); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	time.Sleep(300 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 40*time.Second)
+	defer cancel()
+	shut := make(chan struct{})
+	go func() { _ = srv.Shutdown(ctx); close(shut) }()
+	time.Sleep(500 * time.Millisecond)
+	start := time.Now()
+	closed := make(chan struct{})
+	go func() { _ = srv.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(30 * time.Second):
+		t.Fatal("Close did not return")
+	}
+	d := time.Since(start)
+	<-shut
+	return d
+}
+
+// A Close during a Shutdown returns without waiting for the drain: the
+// drain closed idle connections one by one under Server.mu, and a tls.Conn's
+// Close sends a close_notify that waits, up to its write deadline, on a peer
+// that stopped reading — the Close waited behind it. The plain connections
+// are the witness.
+func TestCloseDuringShutdownDoesNotWaitForTheDrain(t *testing.T) {
+	for _, useTLS := range []bool{false, true} {
+		t.Run("tls "+strconv.FormatBool(useTLS), func(t *testing.T) {
+			if d := closeDuringShutdown(t, 2, useTLS); d > 2*time.Second {
+				t.Errorf("Close waited %v behind the drain, want under 2s", d)
 			}
 		})
 	}
