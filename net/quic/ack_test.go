@@ -191,6 +191,38 @@ func TestAckTrackerBoundsRanges(t *testing.T) {
 	}
 }
 
+// The one packet §13.2.1's SHOULD ("every packet acknowledged at least once")
+// leaves out, on purpose: with maxAckRanges ranges held, a late packet below
+// them all opens a range that trim drops in the same call. It was processed
+// (record says true) and no ACK will ever name it; the floor then refuses it
+// as a replay (§12.3), and the peer resends its frames under a new number —
+// the cost §13.2.3 accepts in letting a receiver "discard unacknowledged ACK
+// Ranges". Pinned, so a change to the bound or to trim is seen here.
+func TestAckTrackerProcessesAPacketItWillNeverAcknowledge(t *testing.T) {
+	var a ackTracker
+	now := time.Now()
+	for i := range uint64(maxAckRanges) {
+		a.record(10+2*i, now) // one range each, from 10 up
+	}
+	if len(a.ranges) != maxAckRanges || a.hasFloor {
+		t.Fatalf("setup: %d ranges, floor %v", len(a.ranges), a.hasFloor)
+	}
+	if !a.record(1, now) {
+		t.Fatal("packet 1, below every range and above no floor, was not processed")
+	}
+	for _, r := range a.ranges {
+		if r.lo <= 1 && 1 <= r.hi {
+			t.Fatalf("packet 1 kept in %+v: the bound held one range more", r)
+		}
+	}
+	if !a.hasFloor || a.floor != 2 {
+		t.Errorf("floor %d (set %v), want 2: just above the range dropped", a.floor, a.hasFloor)
+	}
+	if a.record(1, now) {
+		t.Error("packet 1, under the floor, was recorded a second time")
+	}
+}
+
 // RFC 9000 §12.3: a packet is discarded unless the receiver is certain it
 // has not processed one of the same number. Past maxAckRanges the lowest
 // ranges are dropped, and below the highest number dropped nothing can be
