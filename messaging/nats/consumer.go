@@ -44,7 +44,10 @@ type ConsumerConfig struct {
 	// BatchMessages is how many messages one pull asks for, and so the most
 	// a batch holds. Zero means [DefaultBatchMessages]; a negative value is
 	// refused, and a server whose consumer caps the batch lower answers
-	// with a 409 that ends the stream.
+	// with a 409 that ends the stream. It is the batch's only bound: its
+	// memory goes up to BatchMessages times the connection's
+	// MaxPayloadBytes, 2 GiB with both defaults, so a stream of large
+	// messages asks for fewer.
 	BatchMessages int
 	// Expires is how long the server holds a pull open waiting for
 	// messages, which is also how long the stream takes to notice that its

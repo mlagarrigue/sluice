@@ -201,7 +201,10 @@ The figures are a laptop's ([measurements](#measurements-what-is-missing)).
 - **A batch is bounded** by `BatchEntries` (Redis, a consumer group) and
   `BatchMessages` (NATS); `Block` and `Expires` (one second by default) say
   how long a read waits, and so how long the stream takes to see its
-  context end.
+  context end. On NATS the batch is bounded **in messages**, not bytes: its
+  memory goes up to `BatchMessages` times `MaxPayloadBytes`, 2 GiB with the
+  defaults (256 messages of 8 MiB). A stream of large messages is tuned
+  with `BatchMessages`.
 - **The rest of the wait** is bounded by the caller's context, as with
   PostgreSQL.
 

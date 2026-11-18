@@ -143,3 +143,12 @@ func TestACallToASilentServerEndsWithItsContext(t *testing.T) {
 		}
 	}
 }
+
+// A pull batch is bounded in messages only, and the documentation gives its
+// memory with the defaults: BatchMessages times MaxPayloadBytes, 2 GiB. A
+// default that moves moves the figure, and this says so.
+func TestTheDefaultBatchHoldsAtMostTwoGiB(t *testing.T) {
+	if got := DefaultBatchMessages * DefaultMaxPayloadBytes; got != 2<<30 {
+		t.Errorf("DefaultBatchMessages × DefaultMaxPayloadBytes = %d, the documentation says 2 GiB", got)
+	}
+}
