@@ -269,6 +269,70 @@ func TestStreamFramesBeforeTheCallbackAreHeld(t *testing.T) {
 	}
 }
 
+// A frame handed to the callback carries its stream, the one Conn.Stream
+// returns for its identifier: a server answering on it needs no lookup
+// under the connection's lock.
+func TestDeliveredFramesCarryTheirStream(t *testing.T) {
+	serverPC, clientPC := dgram.Pair()
+	defer func() { _ = serverPC.Close() }()
+	defer func() { _ = clientPC.Close() }()
+	up := make(chan *quic.Conn, 1)
+	go func() {
+		buf := make([]byte, 2048)
+		_ = serverPC.SetReadDeadline(time.Now().Add(10 * time.Second))
+		n, peer, err := serverPC.ReadFrom(buf)
+		if err != nil {
+			up <- nil
+			return
+		}
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverTLS(t), quic.DefaultConfig())
+		if err != nil {
+			conn = nil
+		}
+		up <- conn
+	}()
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultConfig())
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	server := <-up
+	if server == nil {
+		t.Fatal("the server did not come up")
+	}
+	defer func() { _ = server.Close() }()
+
+	seen := make(chan error, 1)
+	server.OnStreamFrames(quic.CreditOnDelivery, func(frames []quic.Frame) error {
+		for _, f := range frames {
+			want, err := server.Stream(f.StreamID)
+			if err == nil && f.Stream() != want {
+				err = fmt.Errorf("stream %d: the frame carries %p, Conn.Stream returns %p", f.StreamID, f.Stream(), want)
+			}
+			select {
+			case seen <- err: // the first frame; the read loop never waits here
+			default:
+			}
+		}
+		return nil
+	})
+	stream, err := conn.OpenStream(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stream.Write([]byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-seen:
+		if err != nil {
+			t.Error(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no frame delivered")
+	}
+}
+
 // ALPN is mandatory in QUIC (RFC 9001 §8.1). A tls.Config with no NextProtos
 // would fail against a conformant peer mid-handshake with a bare
 // no_application_protocol alert; every constructor refuses it up front with

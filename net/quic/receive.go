@@ -1289,7 +1289,7 @@ frames:
 			if len(delta) > 0 || finished {
 				batch = append(batch, Frame{
 					Type: FrameStream, StreamID: f.StreamID,
-					offset: deltaStart, Data: delta, Fin: finished,
+					offset: deltaStart, Data: delta, Fin: finished, stream: s,
 				})
 			}
 			if finished {
@@ -1304,7 +1304,7 @@ frames:
 			connReleased += released
 			if s != nil {
 				connGrowth = addGrowth(connGrowth, growth)
-				batch = append(batch, Frame{Type: FrameResetStream, StreamID: f.StreamID, value: f.value})
+				batch = append(batch, Frame{Type: FrameResetStream, StreamID: f.StreamID, value: f.value, stream: s})
 				ended = append(ended, s)
 			}
 
@@ -1319,7 +1319,7 @@ frames:
 			// error — learns of it now, not at the next datagram that
 			// carries stream data.
 			if s != nil {
-				batch = append(batch, Frame{Type: FrameStopSending, StreamID: f.StreamID, value: f.value})
+				batch = append(batch, Frame{Type: FrameStopSending, StreamID: f.StreamID, value: f.value, stream: s})
 				// Retired, if this ended its last direction, after the
 				// batch: see onStopSendingLocked.
 				ended = append(ended, s)
@@ -1720,9 +1720,10 @@ func (c *Conn) streamIfOpen(id StreamID) *Stream {
 
 // pendingFrameCost is what each held frame is charged beyond its bytes, so
 // frames carrying none (FIN-only, RESET_STREAM) still count: the Frame the
-// held copy keeps, 80 bytes on a 64-bit platform (a test holds it to that),
-// its bytes sharing one allocation per batch (cloneFrames).
-const pendingFrameCost = 80
+// held copy keeps, 88 bytes on a 64-bit platform (a test holds it to that;
+// 80 before it carried its stream, Frame.Stream), its bytes sharing one
+// allocation per batch (cloneFrames).
+const pendingFrameCost = 88
 
 // holdPending keeps a copy of batch for a callback that has not registered
 // yet. Every byte held is also uncredited, so the connection receive window

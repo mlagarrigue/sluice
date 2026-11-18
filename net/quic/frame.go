@@ -83,7 +83,18 @@ type Frame struct {
 	// slice per ACK would pay for it on each one.
 	largest uint64
 	delay   uint64
+
+	// stream is the stream a frame handed to an OnStreamFrames callback
+	// belongs to; see Frame.Stream.
+	stream *Stream
 }
+
+// Stream is the stream of a STREAM, RESET_STREAM or STOP_SENDING frame
+// handed to an [Conn.OnStreamFrames] callback — the one [Conn.Stream]
+// returns for StreamID — and nil for any other frame. Holding it saves the
+// lookup, which takes the connection's lock: an HTTP/3 server answering
+// each request on its stream queued behind the connection's writers for it.
+func (f Frame) Stream() *Stream { return f.stream }
 
 // IsStream reports whether the frame carries stream data: whether Type is
 // one of the eight STREAM types (RFC 9000 §19.8), 0x08 to 0x0f.

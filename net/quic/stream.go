@@ -85,6 +85,9 @@ type Stream struct {
 	// writeDeadline is when a Write parked on credit or the congestion
 	// window gives up (SetWriteDeadline); zero means never.
 	writeDeadline time.Time
+	// writeTimeout, when positive, gives each write its own writeDeadline,
+	// that long from when it takes mu (SetWriteTimeout). Read without mu.
+	writeTimeout atomic.Int64
 	// dlIdx is where the read (0) and the write (1) deadline stand in
 	// Conn.deadlines, plus one; zero while that deadline is not armed.
 	dlIdx [2]int
@@ -389,6 +392,21 @@ func (s *Stream) SetWriteDeadline(t time.Time) error {
 	return nil
 }
 
+// SetWriteTimeout gives each later [Stream.Write], [Stream.WriteFinal] and
+// [Stream.CloseWrite] a write deadline of its own, d from when it starts,
+// in place of the one [Stream.SetWriteDeadline] sets; zero turns it off,
+// leaving the last deadline set. A write that times out after putting
+// bytes on the stream reports them, as with a deadline, and the next one
+// starts a timeout of its own.
+//
+// It takes no lock, where SetWriteDeadline takes the connection's: a server
+// answering each request on its own stream, with a deadline before every
+// write, queued for that lock behind the connection's writers (HTTP/3,
+// 2026-11-17 profiles).
+func (s *Stream) SetWriteTimeout(d time.Duration) {
+	s.writeTimeout.Store(int64(d))
+}
+
 // SetDeadline sets both the read and the write deadline.
 func (s *Stream) SetDeadline(t time.Time) error {
 	_ = s.SetReadDeadline(t)
@@ -423,6 +441,11 @@ func (s *Stream) write(p []byte, fin bool) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.writeBeginLocked()
+	if d := time.Duration(s.writeTimeout.Load()); d > 0 {
+		t := time.Now().Add(d)
+		s.writeDeadline = t
+		c.setStreamDeadlineLocked(s, true, t)
+	}
 	// The packets one call builds leave together (batchLocked): a 4 KiB
 	// write is four datagrams, and one system call carries the four.
 	c.batching, c.batchErr = true, nil
