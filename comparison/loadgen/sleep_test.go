@@ -191,32 +191,69 @@ func TestWrongKeyFailsTheStage(t *testing.T) {
 // replies slow enough to keep every slot busy at once (measured on
 // 2026-10-28, load 20 on 15 cores). That stage, when it queues, is held to
 // hostQueues, which says from a measurement whether the host was the
-// cause; only then is it skipped.
+// cause; only then is it skipped. It is held to it on a second run only:
+// an episode can queue one run and be gone when hostQueues measures.
 func TestRampStopsWhereTheBudgetEnds(t *testing.T) {
 	protos(t, testRampStopsWhereTheBudgetEnds)
 }
 
 func testRampStopsWhereTheBudgetEnds(t *testing.T, proto string) { //nolint:thelper // a sub-test body
+	rampAgainst(t, proto, sleepServer(t, proto, 5*time.Millisecond, nil))
+}
+
+// TestRampReadsAQueuedStageAgain: an episode of the host that queues the
+// 300 req/s stage of one run — replies 20 ms slow for a while, as a loaded
+// runner gives them — is over when the ramp is run again, and the second
+// run is judged: the test passes, where it once failed when the
+// calibration measured afterwards a host back to normal.
+func TestRampReadsAQueuedStageAgain(t *testing.T) {
+	srv := sleepServer(t, protoH1, 5*time.Millisecond, nil)
+	// The 100 req/s stage, warm-up included, answers about 150 requests;
+	// the episode runs from there through the first run's 300 req/s stage.
+	srv.episodeFrom, srv.episodeTo, srv.episodeBy = 120, 400, 20*time.Millisecond
+	rampAgainst(t, protoH1, srv)
+	if srv.requests.Load() < srv.episodeTo {
+		t.Fatal("the episode outlasted the requests: the test read nothing again")
+	}
+}
+
+// rampAgainst is TestRampStopsWhereTheBudgetEnds's body against srv.
+func rampAgainst(t *testing.T, proto string, srv *testServer) {
+	t.Helper()
 	ceiling, slots, last := 4, 4, 1200
 	if proto != protoH1 {
 		ceiling, slots, last = 1, streamsPerConn, 3200
 	}
-	srv := sleepServer(t, proto, 5*time.Millisecond, nil)
 	c := testCampaign(t, proto, srv.URL, "-scenario", "unit", "-rates", "100,300,"+strconv.Itoa(last), "-duration", "1s",
 		"-slo", "5s", "-max-conns", strconv.Itoa(ceiling), "-warmup", "500ms", "-drain", "100ms")
 	if c.budget(100) != ceiling || c.budget(300) != ceiling {
 		t.Fatalf("budgets %d %d, want the ceiling", c.budget(100), c.budget(300))
 	}
-	var out strings.Builder
-	ok, err := c.run(context.Background(), &out)
-	if err != nil {
-		t.Fatal(err)
+	// ramp runs the campaign and reports whether its 300 req/s stage
+	// queued, which ends the ramp a stage early.
+	ramp := func() (ok bool, lines []string, queued300 bool) {
+		var out strings.Builder
+		ok, err := c.run(context.Background(), &out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines = strings.Split(strings.TrimSpace(out.String()), "\n")
+		t.Log(out.String())
+		if len(lines) == 2 {
+			var rep report
+			queued300 = json.Unmarshal([]byte(lines[1]), &rep) == nil && rep.Rate == 300 && rep.Cause == causeQueue
+		}
+		return ok, lines, queued300
 	}
-	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	t.Log(out.String())
-	if len(lines) == 2 {
-		var rep report
-		if json.Unmarshal([]byte(lines[1]), &rep) == nil && rep.Rate == 300 && rep.Cause == causeQueue {
+	ok, lines, queued := ramp()
+	if queued {
+		// Read again before judging: an episode of the host can queue one
+		// stage — three replies in four slots on a CI runner, 2026-11-11 —
+		// and be over by the time hostQueues measures, which then lays it
+		// on the budget. A stage the budget queues queues twice.
+		t.Log("the 300 req/s stage queued: the ramp is run again")
+		srv.conns.Store(0)
+		if ok, lines, queued = ramp(); queued {
 			if why, host := hostQueues(t, proto, srv.URL, 300, slots); host {
 				t.Skip(why)
 			}

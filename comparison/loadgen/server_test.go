@@ -43,6 +43,13 @@ type testServer struct {
 	// stream sends every answer in two writes with a flush between, so
 	// that it goes out with no Content-Length (chunked under HTTP/1.1).
 	stream atomic.Bool
+
+	// requests counts the requests answered; those numbered from
+	// episodeFrom up to episodeTo, past zero, take episodeBy longer: an
+	// episode of the host, over by the time the requests after it come.
+	requests               atomic.Int64
+	episodeFrom, episodeTo int64
+	episodeBy              time.Duration
 }
 
 // A fault is what the test server does to one key instead of answering it.
@@ -95,7 +102,11 @@ func sleepServer(tb testing.TB, proto string, d time.Duration, faults map[int64]
 				}
 			}
 		}
-		sleepExactly(d)
+		extra := time.Duration(0)
+		if n := ts.requests.Add(1); ts.episodeTo > 0 && n >= ts.episodeFrom && n < ts.episodeTo {
+			extra = ts.episodeBy
+		}
+		sleepExactly(d + extra)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Path == "/static":
