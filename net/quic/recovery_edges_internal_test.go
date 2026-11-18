@@ -90,15 +90,20 @@ func TestOptimisticAckAtARangeEdge(t *testing.T) {
 	}
 }
 
-// An ACK that marks nothing names no largest acknowledged.
-func TestAnAckThatMarksNothingSetsNoLargest(t *testing.T) {
+// An ACK that marks no tracked packet still names the largest acknowledged:
+// RFC 9002 A.7 sets largest_acked_packet from the frame before it looks for
+// newly acknowledged packets, and the packets it names may be ACK-only ones,
+// which are not tracked. It used to name none, and the packet threshold
+// then counted from the tracked packets alone
+// (TestThePacketThresholdCountsFromTheLargestAcknowledgedField).
+func TestAnAckThatMarksNothingStillNamesTheLargest(t *testing.T) {
 	var s sentTracker
 	f, _, err := parseFrame(ackFrame(3, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.markAcked(f.largest, f.Data); err != nil || s.hasLargestAcked {
-		t.Errorf("markAcked on nothing tracked: %v, hasLargestAcked %v", err, s.hasLargestAcked)
+	if _, err := s.markAcked(f.largest, f.Data); err != nil || !s.hasLargestAcked || s.largestAcked != 3 {
+		t.Errorf("markAcked on nothing tracked: %v, largest acknowledged %d (set %v), want 3", err, s.largestAcked, s.hasLargestAcked)
 	}
 }
 

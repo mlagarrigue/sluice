@@ -1552,3 +1552,36 @@ func TestLoopbackHandshakeSamplesTheRTT(t *testing.T) {
 		})
 	}
 }
+
+// The packet threshold counts from the frame's Largest Acknowledged field
+// (RFC 9002 A.7, A.10; §6.1, "sent kPacketThreshold packets before an
+// acknowledged packet"), not from the largest tracked packet the frame
+// newly acknowledged. Packets 10 and 11 are ack-eliciting and tracked; 12,
+// 13 and 14 were ACK-only, sent and never tracked. The peer acknowledges 11
+// to 14 and not 10: three packets sent after 10 arrived, so 10 is lost. The
+// round trip (20 ms) keeps the time threshold (22.5 ms) out of the way. It
+// waited for the time threshold. The control tracks 14 too.
+func TestThePacketThresholdCountsFromTheLargestAcknowledgedField(t *testing.T) {
+	now := time.Now()
+	sent := now.Add(-20 * time.Millisecond)
+	lost := func(tracked ...uint64) (uint64, uint64) {
+		var s sentTracker
+		var rtt rttEstimator
+		rtt.sampleAt(sent, 20*time.Millisecond, 0)
+		for i, pn := range tracked {
+			s.record(sentPacket{pn: pn, sentAt: sent.Add(time.Duration(i) * time.Millisecond), size: 1200, ackEliciting: true, payload: []byte{framePing}})
+		}
+		out, err := s.markAcked(14, []byte{0, 3}) // Largest Acknowledged 14, first range 3: 11 to 14
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.detectLost(now, &rtt, nil, &out)
+		return out.lostCount, s.largestAcked
+	}
+	if n, _ := lost(10, 11, 14); n != 1 {
+		t.Fatalf("control: %d packets lost with a tracked 14 acknowledged, want packet 10", n)
+	}
+	if n, largest := lost(10, 11); n != 1 {
+		t.Errorf("%d packets lost (largest acknowledged kept at %d) with 11 to 14 acknowledged above 10, 12 to 14 ACK-only: want packet 10", n, largest)
+	}
+}

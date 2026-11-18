@@ -468,10 +468,16 @@ func (s *sentTracker) markAcked(largest uint64, rangeData []byte) (ackOutcome, e
 	}
 
 	// The largest ever acknowledged persists (A.10); the one before this
-	// frame is remembered for detectLost's persistent-congestion span.
+	// frame is remembered for detectLost's persistent-congestion span. It is
+	// the frame's Largest Acknowledged field, as A.7 keeps it, not the
+	// largest tracked packet the frame newly acknowledged: ACK-only packets
+	// are not tracked (sealLocked), and three of them acknowledged above a
+	// gap are the three packets §6.1's threshold counts — read off the
+	// tracked ones, the packet in the gap waited for the time threshold.
+	// The receive path refused a field naming a packet never sent first.
 	out.prevLargest, out.hadPrev = s.largestAcked, s.hasLargestAcked
-	if out.newlyAckedCount > 0 && (!s.hasLargestAcked || out.largestMarked > s.largestAcked) {
-		s.largestAcked = out.largestMarked
+	if !s.hasLargestAcked || largest > s.largestAcked {
+		s.largestAcked = largest
 		s.hasLargestAcked = true
 	}
 	return out, nil
