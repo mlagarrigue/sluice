@@ -512,7 +512,21 @@ func ServeH2Conn(ctx context.Context, c net.Conn, cfg Config, handle Handler) er
 			t.Stop()
 		}
 	}()
-	err = serveH2Conn(forced, c, &connState{drain: ctx}, cfg, handle)
+	// Returned at the forced stop, not at the end of every goroutine: a
+	// handler that ignores its context, or a streamed producer blocked on
+	// something other than its yield, would otherwise hold this call past
+	// the grace for as long as it stays blocked. The connection's goroutine
+	// ends when that code returns, as under Serve and ServeH3Conn.
+	served := make(chan error, 1)
+	go func() { served <- serveH2Conn(forced, c, &connState{drain: ctx}, cfg, handle) }()
+	select {
+	case err = <-served:
+	case <-forced.Done():
+		select {
+		case err = <-served:
+		default:
+		}
+	}
 	if cut.Load() {
 		cfg.logger().Warn("httpstream: the shutdown grace passed with requests in flight",
 			"connections", 1, "grace", cfg.ShutdownGrace)

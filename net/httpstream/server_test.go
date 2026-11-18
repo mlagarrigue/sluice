@@ -743,3 +743,61 @@ func TestServeH2SendsSettingsBeforeAnyGoAway(t *testing.T) {
 		}
 	}
 }
+
+// ServeH2Conn returns ErrShutdownForced at the grace whatever its handler or
+// a streamed producer is blocked on: it waited for every call and every
+// producer, and one that ignored its context, or blocked on something other
+// than its yield, held it past the grace for as long as it stayed blocked.
+// ServeH3Conn and Serve already returned at the grace.
+func TestServeH2ConnReturnsAtTheGraceWhateverItsCodeWaitsOn(t *testing.T) {
+	const grace = 200 * time.Millisecond
+	for _, kind := range []string{"producer", "handler"} {
+		t.Run(kind, func(t *testing.T) {
+			stuck := make(chan struct{})
+			entered := make(chan struct{}, 1)
+			t.Cleanup(func() { close(stuck) })
+			handler := func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+				if kind == "handler" {
+					select {
+					case entered <- struct{}{}:
+					default:
+					}
+					<-stuck // ignores its context
+					return sluice.Batch[Response]{}
+				}
+				out := make([]Response, b.Len())
+				for i := range out {
+					out[i] = Response{Status: 200, Stream: func(yield func(sluice.Batch[[]byte]) bool) {
+						if !yield(sluice.Batch[[]byte]{Items: [][]byte{[]byte("first")}}) {
+							return
+						}
+						select {
+						case entered <- struct{}{}:
+						default:
+						}
+						<-stuck // blocked on something other than its yield
+					}}
+				}
+				return sluice.Batch[Response]{Items: out}
+			}
+			addr, cancel, served := serveH2Direct(t, Config{ShutdownGrace: grace}, handler)
+			c := dialH2(t, addr)
+			c.request(1, "GET", "/stuck")
+			c.flush()
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the handler or its producer never ran")
+			}
+			cancel()
+			select {
+			case err := <-served:
+				if !errors.Is(err, ErrShutdownForced) {
+					t.Fatalf("ServeH2Conn = %v, want ErrShutdownForced", err)
+				}
+			case <-time.After(10 * grace):
+				t.Fatal("ServeH2Conn still held ten graces after the cancellation")
+			}
+		})
+	}
+}
