@@ -422,3 +422,42 @@ func TestH2NoResetOnAStreamForgottenLongAgo(t *testing.T) {
 		t.Error("no RST_STREAM on stream 201, still answering")
 	}
 }
+
+// A streamed answer that fails late — a producer that panics, misses its
+// length, or has its trailers refused — is reset with nothing of its stream
+// left to write: reset forgets it under the same hold of the lock. Reset and
+// forget took the lock apart, and a write round run between them wrote the
+// control queue, the RST_STREAM, then filled the stream's DATA still queued,
+// behind its own reset. The round is played by hand right after the reset,
+// the order the two holds allowed; the control forgets as well first.
+func TestH2NoDataBehindTheResetOfALateFailure(t *testing.T) {
+	round := func(forgetToo bool) int {
+		w := testWriter(1)
+		w.jobs = []*h2Job{{id: 1, headSent: true, data: make([]byte, 12)}}
+		if err := w.reset(1, errInternalError); err != nil {
+			t.Fatal(err)
+		}
+		if forgetToo {
+			w.forget(1)
+		}
+		// The write goroutine's round (run): control first, then fill.
+		w.mu.Lock()
+		w.out = append(w.out[:0], w.ctrl...)
+		w.ctrl = w.ctrl[:0]
+		rst := len(w.out)
+		w.fill()
+		out := append([]byte(nil), w.out...)
+		w.mu.Unlock()
+		if rst == 0 {
+			t.Fatal("setup: no RST_STREAM was queued")
+		}
+		streams, _ := dataFrames(out[rst:])
+		return len(streams)
+	}
+	if n := round(true); n != 0 {
+		t.Fatalf("control: %d DATA frames after reset and forget", n)
+	}
+	if n := round(false); n != 0 {
+		t.Fatalf("%d DATA frame(s) on stream 1 behind its own RST_STREAM when the write round runs right after the reset; want 0", n)
+	}
+}

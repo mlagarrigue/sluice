@@ -161,8 +161,7 @@ func (s *h2Conn) answer(got *h2Applied) {
 				out, err = s.appendHead(sent.out, a.id, method, r, maxFrame)
 			}
 			if err != nil {
-				_ = s.w.reset(a.id, errInternalError)
-				s.w.forget(a.id)
+				_ = s.w.reset(a.id, errInternalError) // and forgets it
 				a.skip = true
 				s.answers = append(s.answers, a)
 				continue
@@ -692,8 +691,7 @@ func (st *h2Streamer) body() {
 		// yield the length it declared. Only its own stream pays: it is
 		// reset, as the response that cannot be framed is, and the
 		// connection carries on serving the others.
-		_ = s.w.reset(id, errInternalError)
-		s.w.forget(id)
+		_ = s.w.reset(id, errInternalError) // and forgets it
 		return
 	}
 	var tail []byte
@@ -703,8 +701,7 @@ func (st *h2Streamer) body() {
 			// The body is out: a refused trailer resets the stream, as a
 			// producer that panicked does, so the client never reads the
 			// answer as whole.
-			_ = s.w.reset(id, errInternalError)
-			s.w.forget(id)
+			_ = s.w.reset(id, errInternalError) // and forgets it
 			return
 		}
 		st.tail = tail

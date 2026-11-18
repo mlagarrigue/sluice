@@ -1043,10 +1043,19 @@ func (w *h2Writer) waitCtrlLocked() error {
 // exact for every stream, where a ring of the last 64 forgotten let a reset
 // through to a stream forgotten longer ago, which a producer pulled on its
 // own goroutine (h2Streamer) can outlive.
+//
+// It forgets the stream too, under the same hold of mu and before the frame
+// is queued: reset then forget, in two holds, let a write turn run between
+// them, which wrote the control queue — the RST_STREAM — then filled the
+// stream's DATA still in jobs, after its reset. Queued first, the frame may
+// wait for room (waitCtrlLocked releases mu), and the stream's jobs would
+// be there to fill meanwhile.
 func (w *h2Writer) reset(id, code uint32) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if _, alive := w.windows[id]; !alive {
+	_, alive := w.windows[id]
+	w.forgetLocked(id)
+	if !alive {
 		return nil
 	}
 	var p [4]byte
@@ -1174,6 +1183,11 @@ func (w *h2Writer) evict(id uint32) {
 func (w *h2Writer) forget(id uint32) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.forgetLocked(id)
+}
+
+// forgetLocked is forget under mu, which reset holds as well.
+func (w *h2Writer) forgetLocked(id uint32) {
 	// Out of the windows, a late failure on this stream sends no RST_STREAM
 	// to a stream the peer already closed (reset, RFC 9113 §5.1).
 	delete(w.windows, id)
