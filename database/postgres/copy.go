@@ -440,7 +440,17 @@ func (cp *Copier) Abort(reason string) error {
 		return c.settleCancel(ctx, w, err)
 	}
 	defer c.endBusy()
-	if err := c.settleCancel(ctx, w, cp.abortTx(reason)); err != nil {
+	err := c.settleCancel(ctx, w, cp.abortTx(reason))
+	if c.broken == nil && c.inTx {
+		// The cancellation reached the backend after it read the ROLLBACK
+		// and before it ran it: the block is still open, aborted, and the
+		// copier no longer owns it. Ended here, as Close ends the one a
+		// cancelled COMMIT leaves.
+		if rbErr := c.rollbackLeftBlock(); rbErr != nil {
+			err = errors.Join(err, rbErr)
+		}
+	}
+	if err != nil {
 		return cp.fail(err)
 	}
 	return nil

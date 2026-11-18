@@ -1728,3 +1728,54 @@ func TestAnEarlyStopCancelsPastTheByteBudget(t *testing.T) {
 		checkNextQuery(t, conn)
 	})
 }
+
+// Abort's ROLLBACK, cancelled by Abort's bound after the server read it and
+// before it ran it, leaves the block open and aborted (57014, then
+// ReadyForQuery 'E'): Abort ends it with a second ROLLBACK, as Close and
+// Tx.Rollback do, rather than leave a block nothing owns.
+func TestCopyAbortEndsTheBlockItsCancelledRollbackLeft(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, conn := newPipeServer(t)
+		conn.cancelKey = CancelKey{PID: 1, Secret: testSecret}
+		packets := make(chan []byte, 1)
+		dials := 0
+		conn.cancelDial = cancelPipe(&dials, packets)
+
+		go func() {
+			<-srv.read // BEGIN
+			srv.write(t, beCommandComplete("BEGIN"), frame(pgwire.BackendReadyForQuery, "T"))
+			<-srv.read // COPY
+			srv.write(t, beCopyInResponse())
+		}()
+		cp, err := conn.CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)", CopyConfig{RowsPerTx: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cp.WriteTuples(tuple(new(int64(1)), nil), 1); err != nil {
+			t.Fatal(err)
+		}
+		rollbacks := make(chan int, 1)
+		go func() {
+			<-srv.read // CopyFail, acknowledged at once
+			srv.write(t, beErrorResponse("57014", "COPY from stdin failed: x"), frame(pgwire.BackendReadyForQuery, "E"))
+			<-srv.read // ROLLBACK read, not yet run
+			<-packets  // the bound ended; the cancellation lands before it runs
+			srv.write(t, beErrorResponse("57014", "canceling statement due to user request"),
+				frame(pgwire.BackendReadyForQuery, "E"))
+			select {
+			case <-srv.read:
+				srv.write(t, beCommandComplete("ROLLBACK"), beReadyForQuery())
+				rollbacks <- 2
+			case <-time.After(time.Minute):
+				rollbacks <- 1
+			}
+		}()
+		abortErr := cp.Abort("x")
+		if n := <-rollbacks; n != 2 {
+			t.Fatalf("Abort = %v after %d ROLLBACK; want a second one to end the block", abortErr, n)
+		}
+		if conn.Err() != nil || conn.inTx {
+			t.Fatalf("after Abort: connection error %v, in a block %v; want a healthy connection out of the block", conn.Err(), conn.inTx)
+		}
+	})
+}
