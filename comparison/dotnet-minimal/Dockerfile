@@ -20,14 +20,14 @@ RUN apk add --no-cache openssl && mkdir /cert && \
       -subj /CN=study-contender -addext subjectAltName=DNS:localhost,IP:127.0.0.1 \
       -keyout /cert/key.pem -out /cert/cert.pem && chmod 644 /cert/key.pem /cert/cert.pem
 
-FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:fe0fd4e93bd2fbb47c883b7a6369e5c8d3db8bf01cdc5981f6ee35fbdf3ff4fb AS msquic
+FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:bef136a371963aaa46ec97882845ef6f54dec15728bb4b128b1c2a400ffbc9b4 AS msquic
 RUN . /etc/os-release && \
     wget -q "https://packages.microsoft.com/config/$ID/$VERSION_ID/packages-microsoft-prod.deb" -O /tmp/p.deb && \
     dpkg -i /tmp/p.deb && apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends libmsquic=2.6.4 libnuma1 && \
     mkdir /msquic && cp -a /usr/lib/x86_64-linux-gnu/libmsquic.so.2* /usr/lib/x86_64-linux-gnu/libnuma.so.1* /msquic/
 
-FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:fe0fd4e93bd2fbb47c883b7a6369e5c8d3db8bf01cdc5981f6ee35fbdf3ff4fb AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:bef136a371963aaa46ec97882845ef6f54dec15728bb4b128b1c2a400ffbc9b4 AS build
 WORKDIR /source
 COPY comparison/dotnet-minimal/Study.csproj comparison/dotnet-minimal/packages.lock.json ./
 RUN dotnet restore --locked-mode
