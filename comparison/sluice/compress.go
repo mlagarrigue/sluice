@@ -200,7 +200,7 @@ func (c *codec) encode(body []byte) ([]byte, error) {
 // accepts says whether an Accept-Encoding header lets the server answer with
 // this codec (RFC 9110 §12.5.3). It is the only hostile input of this file:
 // a list of tokens with optional q-values, where "identity" and "*" count,
-// and a weight of 0 refuses. An absent header answers identity: §12.5.3
+// and a weight of 0 refuses. An absent header answers identity: RFC 9110 §12.5.3
 // lets a server pick any coding then, but a client that said nothing is the
 // one that may not decode, and the study's generator always says.
 //
@@ -242,7 +242,7 @@ func (c *codec) accepts(header string) bool {
 
 // weight reads the q parameter of one member; absent is 1. Only "q" is
 // looked at, and a value outside 0..1 or with more than three decimals is
-// clamped rather than refused, as the grammar of §12.4.2 bounds it.
+// clamped rather than refused, as the grammar of RFC 9110 §12.4.2 bounds it.
 func weight(params string) (float64, bool) {
 	q := 1.0
 	for p := range strings.SplitSeq(params, ";") {

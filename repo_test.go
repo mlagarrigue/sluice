@@ -1594,6 +1594,70 @@ func TestSectionReferencesNameTheirSource(t *testing.T) {
 	}
 }
 
+// The comparison study's code cites its protocol by section — a section
+// sign before the number of a heading of comparison/PROTOCOL.md, or before
+// 5.3 for the third item of that document's section 5 — and a citation the
+// document does not number
+// sends the reader nowhere. An RFC's sections are named with the RFC, just
+// before the section sign.
+func TestComparisonCitesProtocolSections(t *testing.T) {
+	doc, err := os.ReadFile("comparison/PROTOCOL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	numbered := map[string]bool{}
+	heading := regexp.MustCompile(`^#{2,4} (\d+(?:\.\d+)*(?: bis)?)\.? `)
+	item := regexp.MustCompile(`^(\d+)\. `)
+	inFive := false
+	for _, line := range strings.Split(string(doc), "\n") {
+		if m := heading.FindStringSubmatch(line); m != nil {
+			numbered[m[1]] = true
+			inFive = m[1] == "5"
+			continue
+		}
+		if strings.HasPrefix(line, "#") {
+			inFive = false
+		}
+		if m := item.FindStringSubmatch(line); m != nil && inFive {
+			numbered["5."+m[1]] = true
+		}
+	}
+	if !numbered["0"] || !numbered["3.5"] || !numbered["5.3"] {
+		t.Fatalf("comparison/PROTOCOL.md numbers %d sections, without §0, §3.5 or §5.3: the headings changed form", len(numbered))
+	}
+	out, err := exec.Command("git", "ls-files", "comparison").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cite := regexp.MustCompile(`§\s?(\d+(?:\.\d+)*)( bis\b)?`)
+	rfc := regexp.MustCompile(`RFC\s*\d{3,5}[\s/#*]*(?:\(|,)?\s*$`)
+	checked := 0
+	for _, f := range strings.Fields(string(out)) {
+		b, err := os.ReadFile(f) //nolint:gosec // G304: a tracked path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(b)
+		for _, m := range cite.FindAllStringSubmatchIndex(text, -1) {
+			before := text[max(0, m[0]-24):m[0]]
+			if rfc.MatchString(before) {
+				continue // RFC 9110 §12.5.3, the section named with its RFC
+			}
+			n := text[m[2]:m[3]]
+			if m[4] >= 0 {
+				n += " bis"
+			}
+			checked++
+			if !numbered[n] {
+				t.Errorf("%s:%d: §%s is not a section of comparison/PROTOCOL.md", f, 1+strings.Count(text[:m[0]], "\n"), n)
+			}
+		}
+	}
+	if checked == 0 {
+		t.Error("no section of the protocol is cited under comparison/: the pattern changed")
+	}
+}
+
 // S1 to S14 are the architecture's security guarantees, a name a reader who
 // opens one file cannot look up unless something says where they live. The
 // first comment of each file that cites one names the architecture, or the

@@ -120,7 +120,7 @@ func (s *server) writeJSON(w http.ResponseWriter, r *http.Request, status int, v
 // acceptsGzip reads Accept-Encoding as RFC 9110 §12.5.3 does: gzip, or *,
 // with a weight above zero; a coding named outweighs *. A member whose
 // weight does not read — not a number, or longer than the grammar's
-// "0.123" (§12.4.2) — is skipped, and a weight outside 0..1 is clamped:
+// "0.123" (RFC 9110 §12.4.2) — is skipped, and a weight outside 0..1 is clamped:
 // the rule of comparison/sluice/compress.go, whose table
 // (compress_test.go) the three readings of the study share, so that a
 // malformed header gets the same answer from each.

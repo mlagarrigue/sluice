@@ -3,8 +3,10 @@
 This directory holds what the comparison study runs, starting with the
 Sluice.go server it measures. It is **not** a result: nothing measured on a
 developer's machine is published here, not even a ratio. The figures of the
-study come from the campaign the study's protocol describes, on the machines
-it names, and go to `docs/COMPARISON.md` when they exist.
+study come from the campaign the study's protocol
+([PROTOCOL.md](PROTOCOL.md)) describes, on the machines it names, and go to
+`docs/COMPARISON.md` when they exist. A "§3.5" in this directory, in prose
+or in code, is a section of that protocol.
 
 ## `sluice/` — the server of the internal study
 
