@@ -142,13 +142,19 @@ func schema(in *inputs, family string) string {
 }
 
 // curves builds the two charts' series: per contender, the median of the
-// repetitions at each rate.
+// valid repetitions at each rate.
 func curves(in *inputs, family string) (latency, memory []series) {
 	for _, c := range in.contenders(family) {
 		p50, p99, rss := map[int][]float64{}, map[int][]float64{}, map[int][]float64{}
 		for i := range in.stages {
 			s := &in.stages[i]
 			if s.family != family || s.contender != c {
+				continue
+			}
+			if !s.line.Valid {
+				// The apparatus invalidated the attempt and the campaign
+				// replayed it (campaign.repeat): the replay is the stage, and
+				// the rejected attempt left in raw.jsonl is not one more value.
 				continue
 			}
 			p50[s.line.Rate] = append(p50[s.line.Rate], s.line.TTLB.P50)

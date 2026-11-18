@@ -387,3 +387,24 @@ func TestAMissingCounterIsRefusedNotPublishedAsZero(t *testing.T) {
 		t.Fatalf("a raw.jsonl without listen_overflows was read: %v", err)
 	}
 }
+
+// An attempt the apparatus invalidated stays in raw.jsonl, written before
+// the campaign replays it (campaign.repeat): the §5.2 curves take the
+// replay alone. They took both, so a rejected attempt at 100 ms pulled a
+// curve whose stage read 2 ms.
+func TestCurvesLeaveOutAnInvalidatedAttempt(t *testing.T) {
+	mk := func(valid bool, p50 float64) stage {
+		var l stageLine
+		l.Rate, l.Valid = 1000, valid
+		l.TTLB.P50, l.TTLB.P99 = p50, p50*2
+		return stage{family: "unit/h2", contender: "c", measure: "capacity", kind: "ramp", round: 1, line: l}
+	}
+	in := &inputs{stages: []stage{mk(true, 2)}}
+	if lat, _ := curves(in, "unit/h2"); lat[0].points[0].y != 2 {
+		t.Fatalf("witness: p50 = %v, want 2", lat[0].points[0].y)
+	}
+	in = &inputs{stages: []stage{mk(false, 100), mk(true, 2)}}
+	if lat, _ := curves(in, "unit/h2"); lat[0].points[0].y != 2 {
+		t.Errorf("an invalidated attempt moves the curve: p50 = %v, want the replay's 2", lat[0].points[0].y)
+	}
+}
