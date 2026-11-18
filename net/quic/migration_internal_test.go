@@ -3699,6 +3699,7 @@ func TestAChallengeOnThePreferredSocketUnderTheIdentifierInUseIsAnswered(t *test
 	c.mu.Lock()
 	c.rxVia = net.PacketConn(pref)
 	c.rxLocalCIDSeq = c.pathLocalSeq // the identifier the path in use names
+	inUse := append([]byte(nil), c.dcid...)
 	c.mu.Unlock()
 
 	data := []byte{9, 8, 7, 6, 5, 4, 3, 1}
@@ -3706,8 +3707,23 @@ func TestAChallengeOnThePreferredSocketUnderTheIdentifierInUseIsAnswered(t *test
 	if err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if len(main.recorded())+len(pref.recorded()) == 0 {
-		t.Error("no datagram left either socket after a PATH_CHALLENGE on the preferred-address socket under the identifier in use, with unused peer identifiers in the pool (§8.2.2 MUST respond)")
+	out := append(main.recorded(), pref.recorded()...)
+	if len(out) == 0 {
+		t.Fatal("no datagram left either socket after a PATH_CHALLENGE on the preferred-address socket under the identifier in use, with unused peer identifiers in the pool (§8.2.2 MUST respond)")
+	}
+	// And the answer costs that fresh identifier: the lowest pooled one
+	// never used on any path, not the one the path in use sends under,
+	// which §9.5 forbids from another local address. Counting datagrams
+	// alone, an answer under the identifier in use passed.
+	d := out[0].data
+	if len(d) < 1+len(inUse) {
+		t.Fatalf("a datagram of %d bytes", len(d))
+	}
+	if got := d[1 : 1+len(inUse)]; bytes.Equal(got, inUse) {
+		t.Errorf("the answer left under the identifier in use %q (§9.5)", got)
+	}
+	if got := d[1 : 1+len("cli-cid1")]; !bytes.Equal(got, []byte("cli-cid1")) {
+		t.Errorf("the answer left under %q, want cli-cid1, the lowest pooled identifier never used", got)
 	}
 }
 
