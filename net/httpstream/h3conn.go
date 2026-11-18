@@ -1313,6 +1313,20 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 			case e == nil && (typ == h3Settings || typ == h3GoAway || typ == h3MaxPushID || typ == h3CancelPush || typ == h3PushPromise):
 				return fmt.Errorf("%w: frame type %#x does not belong on a request stream", errH3FrameUnexpected, typ)
 			case e != nil || typ != h3Data:
+				// The frames parsed ahead of it are judged first, as they
+				// are under the bound and ahead of a DATA frame over it: a
+				// sequence RFC 9114 §4.1 makes a connection error (DATA
+				// before HEADERS, a control frame on a request stream) was
+				// otherwise answered on the stream alone, because a frame
+				// declared too large came behind it.
+				a.frames = keepFrames(frames, prev)
+				for _, f := range frames {
+					if ferr := a.requestFrame(st, f); ferr != nil {
+						clear(frames)
+						return ferr
+					}
+				}
+				clear(frames)
 				if length, payload, e2 := varint.Read(after); e == nil && e2 == nil && a.fin && uint64(len(payload)) < length {
 					return a.truncated(st, length, payload)
 				}
