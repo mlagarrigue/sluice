@@ -196,13 +196,19 @@ func runParallelUnordered[A, B any](s sluice.Stream[A], workers int, f func(slui
 // runUnorderedJob applies f, frees the input slot, and ships the result — or
 // the panic, moved to the goroutine that can re-raise it.
 func runUnorderedJob[A, B any](j *sluice.Batch[A], f func(sluice.Batch[A]) sluice.Batch[B], free chan<- *sluice.Batch[A], results chan<- unorderedResult[B]) {
+	returned := false
 	defer func() {
-		if r := recover(); r != nil {
+		r := recover()
+		if r == nil && !returned {
+			r = errGoexit // runtime.Goexit in f: see runJob
+		}
+		if r != nil {
 			free <- j
 			results <- unorderedResult[B]{panicked: handoff.Recovered(r)}
 		}
 	}()
 	out := f(*j)
+	returned = true
 	// Freed after f returns: the batch was valid for that call only, and the
 	// producer may refill it the moment it leaves here.
 	free <- j

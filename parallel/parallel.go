@@ -1,6 +1,7 @@
 package parallel
 
 import (
+	"errors"
 	"strconv"
 	"sync"
 
@@ -287,6 +288,22 @@ func runJob[A, B any](j *job[A, B], f func(sluice.Batch[A]) sluice.Batch[B]) {
 	// stops early, whose tokens the shutdown never collects: it waits on the
 	// workers instead.
 	defer func() { j.done <- struct{}{} }()
-	defer func() { j.panicked = handoff.Recovered(recover()) }()
+	returned := false
+	defer func() {
+		r := recover()
+		if r == nil && !returned {
+			// runtime.Goexit in f: no panic to recover, and no result. Left
+			// as it was, the emitter took the empty batch for f's answer
+			// and the call returned normally, a batch short; moved to the
+			// emitter as a panic, it ends the call as it would inline,
+			// where Goexit ends the caller's goroutine.
+			r = errGoexit
+		}
+		j.panicked = handoff.Recovered(r)
+	}()
 	j.out = f(j.in)
+	returned = true
 }
+
+// errGoexit is what a call raises when f left its worker by runtime.Goexit.
+var errGoexit = errors.New("parallel: f exited its goroutine (runtime.Goexit) without returning a batch")
