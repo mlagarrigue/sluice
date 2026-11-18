@@ -98,6 +98,20 @@ jobs:
       - name: Performance budget
         run: go test -run 'TestStageBudget|TestRenderAllocationCeiling' ./internal/bench/
 
+      # The HTTP/2 memory bounds compare live heaps, which the race detector
+      # and coverage counters both move: the tests skip under either, and
+      # every other pass of the suite runs under one of them. They hold here,
+      # and each must say so by name: a skip would leave the step green.
+      - name: Memory bounds
+        run: |
+          go test -count=1 -v -run '^(TestH2ConnectionHeapNearH1|TestH2IdleConnectionKeepsOneStreamer)$' ./net/httpstream/ | tee h2memory.log
+          for name in TestH2ConnectionHeapNearH1 TestH2IdleConnectionKeepsOneStreamer; do
+            if ! grep -- "--- PASS: $name " h2memory.log; then
+              echo "::error::$name did not pass" >&2
+              exit 1
+            fi
+          done
+
       - name: Build
         run: go build ./...
 
@@ -129,7 +143,9 @@ jobs:
       # under -race, which the test, test-udp and nightly jobs run: this is
       # the one pass of the suite without it, where the tests that measure
       # heap and allocations, and skip under the race detector because it
-      # inflates both, hold their bounds.
+      # inflates both, hold their bounds. Not those that skip under coverage
+      # too: the test job's "Performance budget" and "Memory bounds" steps
+      # run them.
       - name: Measure
         run: |
           go test -shuffle=on -coverprofile=cover.out ./...
