@@ -778,6 +778,16 @@ func loopbackMigration(from, to net.Addr) bool {
 // preferred_address, is one a client reached at from may move to: a UDP
 // address, a port, not the unspecified address nor a multicast group, and
 // not loopback unless from already is (RFC 9000 §21.5.6).
+//
+// A private-use (RFC 1918), unique-local or link-local address offered by a
+// server reached at a public one is taken, deliberately: §21.5.6 names such
+// a change a possible request forgery, then "Endpoints SHOULD NOT refuse to
+// use an address unless they have specific knowledge about the network",
+// which this package has none of. What leaves for the address before it is
+// validated is the probe alone (§21.5.3, probePreferredAddressLocked): a
+// PATH_CHALLENGE of this end's random bytes, padded to 1200, of which the
+// server chooses only the connection ID in clear — the residue §21.5.3
+// names and offers no countermeasure for.
 func usablePreferredAddr(from, to net.Addr) bool {
 	ua, ok := to.(*net.UDPAddr)
 	if !ok || ua == nil || ua.Port == 0 {

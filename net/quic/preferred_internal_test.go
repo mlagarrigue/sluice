@@ -955,6 +955,10 @@ func TestRebindDuringThePreferredProbeValidatesBothAddresses(t *testing.T) {
 // from elsewhere, of the unspecified address, of a multicast group or of
 // port 0 — nothing a server can be reached at — is not taken: the client
 // stays where it is. The offered identifier stays in the pool (§5.1.1).
+// A private-use or link-local address offered by a server reached at a
+// public one is taken: the section's next paragraph says "Endpoints SHOULD
+// NOT refuse to use an address unless they have specific knowledge about
+// the network", and the client sends it nothing but the probe (§21.5.3).
 func TestAnUnusablePreferredAddressIsNotTaken(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -966,6 +970,9 @@ func TestAnUnusablePreferredAddressIsNotTaken(t *testing.T) {
 		{"a multicast group", &net.UDPAddr{IP: net.IPv4(224, 0, 0, 1), Port: 4433}, false},
 		{"port 0", &net.UDPAddr{IP: net.IPv4(198, 51, 100, 7), Port: 0}, false},
 		{"an ordinary address", &net.UDPAddr{IP: net.IPv4(198, 51, 100, 7), Port: 4433}, true},
+		{"a private-use address", &net.UDPAddr{IP: net.IPv4(10, 0, 0, 5), Port: 4433}, true},
+		{"another private-use range", &net.UDPAddr{IP: net.IPv4(192, 168, 1, 1), Port: 4433}, true},
+		{"a link-local address", &net.UDPAddr{IP: net.IPv4(169, 254, 169, 254), Port: 4433}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dcid, scid := []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}
