@@ -240,6 +240,7 @@ type h2Writer struct {
 	tableUpdate bool
 	tableMin    uint32
 	tableFinal  uint32
+	tableBlock  []byte // appendTableUpdated's scratch
 
 	stopping bool
 	err      error
@@ -480,18 +481,20 @@ func (w *h2Writer) fill() []*h2Job {
 // from the round's budget.
 func (w *h2Writer) emit(j *h2Job) (int, error) {
 	if !j.headSent {
+		from := len(w.out)
 		if w.tableUpdate {
-			head, err := w.prefixTableUpdate(j.id, j.head)
+			out, err := w.appendTableUpdated(w.out, j.id, j.head)
 			if err != nil {
 				return 0, err
 			}
-			j.head = head
+			w.out = out
 			w.tableUpdate = false
+		} else {
+			w.out = append(w.out, j.head...)
 		}
-		w.out = append(w.out, j.head...)
 		j.headSent = true
 		j.deadline = time.Now().Add(w.cfg.WriteTimeout)
-		return len(j.head), nil
+		return len(w.out) - from, nil
 	}
 	left := len(j.data) - j.off
 	if left == 0 {
@@ -500,12 +503,14 @@ func (w *h2Writer) emit(j *h2Job) (int, error) {
 				// A trailer section is a header block like any other, and
 				// the first to leave after the setting changed owes the
 				// update just as a head would.
-				tail, err := w.prefixTableUpdate(j.id, j.tail)
+				from := len(w.out)
+				out, err := w.appendTableUpdated(w.out, j.id, j.tail)
 				if err != nil {
 					return 0, err
 				}
-				j.tail = tail
+				w.out, j.endSent = out, true
 				w.tableUpdate = false
+				return len(w.out) - from, nil
 			}
 			w.out, j.endSent = append(w.out, j.tail...), true
 			return len(j.tail), nil
@@ -898,12 +903,16 @@ func (w *h2Writer) ackSettings(table tableSizes) error {
 	return nil
 }
 
-// prefixTableUpdate reframes head, a framed header block on stream id —
-// a job's head or its tail — with the dynamic table size updates the peer
-// is owed at the front of its block. It runs once per change of the
-// setting, so it allocates rather than disturb the borrowed block in place.
-func (w *h2Writer) prefixTableUpdate(id uint32, head []byte) ([]byte, error) {
-	block := w.appendTableUpdate(make([]byte, 0, len(head)+10))
+// appendTableUpdated appends to dst head, a framed header block on stream
+// id — a job's head or its tail — reframed with the dynamic table size
+// updates the peer is owed at the front of its block. The borrowed block is
+// left as it is; the unframed block is gathered in tableBlock, kept from
+// one change of the setting to the next, so that a peer flipping
+// HEADER_TABLE_SIZE costs this end no allocation (the godoc of
+// Config.MaxPendingControlBytes). tableBlock grows to the largest head this
+// end sent behind a change, a size the handler sets, not the peer.
+func (w *h2Writer) appendTableUpdated(dst []byte, id uint32, head []byte) ([]byte, error) {
+	block := w.appendTableUpdate(w.tableBlock[:0])
 	var flags byte
 	for rest := head; len(rest) >= frameHeaderSize; {
 		n := int(rest[0])<<16 | int(rest[1])<<8 | int(rest[2])
@@ -915,7 +924,8 @@ func (w *h2Writer) prefixTableUpdate(id uint32, head []byte) ([]byte, error) {
 		block = append(block, rest[frameHeaderSize:frameHeaderSize+n]...)
 		rest = rest[frameHeaderSize+n:]
 	}
-	return appendHeaderFrames(nil, id, flags, block, w.maxFrame)
+	w.tableBlock = block
+	return appendHeaderFrames(dst, id, flags, block, w.maxFrame)
 }
 
 // appendTableUpdate writes the dynamic table size updates the peer is owed:
