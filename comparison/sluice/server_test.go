@@ -15,8 +15,10 @@ import (
 	"os"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -108,6 +110,38 @@ type server struct {
 	url    string
 	client *http.Client
 	o      options
+	// clients are the connections' clients when SLUICE_STUDY_CONNS asks
+	// for several HTTP/2 or HTTP/3 connections: one transport each, which
+	// do takes in turn. Nil otherwise, and client serves.
+	clients []*http.Client
+	turn    atomic.Uint64
+}
+
+// studyConns is SLUICE_STUDY_CONNS: how many connections the client opens,
+// whatever the protocol, so that HTTP/1.1, HTTP/2 and HTTP/3 are compared
+// on as many connections each. Unset or zero: HTTP/1.1 opens one per
+// request in flight (up to concurrency) and HTTP/2 and HTTP/3 multiplex on
+// one, which measures three clients as much as the server: on one
+// connection the net/http HTTP/2 client's own lock took most of the wait.
+func studyConns(tb testing.TB) int {
+	tb.Helper()
+	v := os.Getenv("SLUICE_STUDY_CONNS")
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 || n > concurrency {
+		tb.Fatalf("SLUICE_STUDY_CONNS=%q: want 0 to %d", v, concurrency)
+	}
+	return n
+}
+
+// pick is the client of the next request.
+func (s *server) pick() *http.Client {
+	if len(s.clients) == 0 {
+		return s.client
+	}
+	return s.clients[s.turn.Add(1)%uint64(len(s.clients))]
 }
 
 // start runs the app in-process on a free port and returns a client that
@@ -115,6 +149,7 @@ type server struct {
 func start(tb testing.TB, args ...string) *server {
 	tb.Helper()
 	requirePG(tb)
+	conns := studyConns(tb) // before any cleanup that waits for the server
 	o, err := parseOptions(append([]string{"-listen", "127.0.0.1:0"}, args...))
 	if err != nil {
 		tb.Fatal(err)
@@ -158,20 +193,21 @@ func start(tb testing.TB, args ...string) *server {
 			tb.Fatal(err)
 		}
 		go func() { done <- serveH3(ctx, o, a, pc, cfg) }()
-		tr := &http3.Transport{
-			TLSClientConfig: clientTLS,
-			QUICConfig:      &quicgo.Config{MaxIdleTimeout: 30 * time.Second},
-			Dial: func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quicgo.Config) (*quicgo.Conn, error) {
-				return quicgo.DialAddr(ctx, addr, tlsCfg, cfg)
-			},
-			DisableCompression: true,
+		s := &server{url: "https://" + pc.LocalAddr().String(), o: o}
+		for range max(conns, 1) {
+			tr := &http3.Transport{
+				TLSClientConfig: clientTLS,
+				QUICConfig:      &quicgo.Config{MaxIdleTimeout: 30 * time.Second},
+				Dial: func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quicgo.Config) (*quicgo.Conn, error) {
+					return quicgo.DialAddr(ctx, addr, tlsCfg, cfg)
+				},
+				DisableCompression: true,
+			}
+			tb.Cleanup(func() { _ = tr.Close() })
+			s.clients = append(s.clients, &http.Client{Transport: tr, Timeout: 30 * time.Second})
 		}
-		tb.Cleanup(func() { _ = tr.Close() })
-		return &server{
-			url:    "https://" + pc.LocalAddr().String(),
-			client: &http.Client{Transport: tr, Timeout: 30 * time.Second},
-			o:      o,
-		}
+		s.client = s.clients[0]
+		return s
 	}
 
 	ln, err := net.Listen("tcp", o.listen)
@@ -181,23 +217,36 @@ func start(tb testing.TB, args ...string) *server {
 	go func() { done <- serve(ctx, o, a, ln, cfg) }()
 
 	h2 := strings.HasSuffix(o.transport, "-h2")
-	tr := &http.Transport{
-		TLSClientConfig:     &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS13},
-		MaxIdleConnsPerHost: concurrency,
-		ForceAttemptHTTP2:   h2,
-		// The test sets Accept-Encoding itself and decodes itself: net/http
-		// only decodes gzip, and only when it asked for it.
-		DisableCompression: true,
+	transport := func() *http.Transport {
+		tr := &http.Transport{
+			TLSClientConfig:     &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS13},
+			MaxIdleConnsPerHost: concurrency,
+			ForceAttemptHTTP2:   h2,
+			// The test sets Accept-Encoding itself and decodes itself:
+			// net/http only decodes gzip, and only when it asked for it.
+			DisableCompression: true,
+		}
+		if !h2 {
+			tr.TLSClientConfig.NextProtos = []string{"http/1.1"}
+		}
+		tb.Cleanup(tr.CloseIdleConnections)
+		return tr
 	}
-	if !h2 {
-		tr.TLSClientConfig.NextProtos = []string{"http/1.1"}
+	s := &server{url: "https://" + ln.Addr().String(), o: o}
+	switch {
+	case h2 && conns > 0:
+		for range conns {
+			s.clients = append(s.clients, &http.Client{Transport: transport(), Timeout: 30 * time.Second})
+		}
+		s.client = s.clients[0]
+	case conns > 0:
+		tr := transport()
+		tr.MaxConnsPerHost = conns // one request in flight on each
+		s.client = &http.Client{Transport: tr, Timeout: 30 * time.Second}
+	default:
+		s.client = &http.Client{Transport: transport(), Timeout: 30 * time.Second}
 	}
-	tb.Cleanup(tr.CloseIdleConnections)
-	return &server{
-		url:    "https://" + ln.Addr().String(),
-		client: &http.Client{Transport: tr, Timeout: 30 * time.Second},
-		o:      o,
-	}
+	return s
 }
 
 type reply struct {
@@ -219,7 +268,7 @@ func (s *server) do(method, path string, body []byte) (reply, error) {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
-	resp, err := s.client.Do(req)
+	resp, err := s.pick().Do(req)
 	if err != nil {
 		return reply{}, err
 	}
