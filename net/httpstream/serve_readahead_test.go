@@ -4,10 +4,12 @@ import (
 	"context"
 	"io"
 	"net"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
+	"weak"
 
 	"github.com/mlagarrigue/sluice"
 )
@@ -128,4 +130,61 @@ func (c *readCounter) Read(p []byte) (int, error) {
 	n, err := c.Conn.Read(p)
 	c.read.Add(int64(n))
 	return n, err
+}
+
+// A read-ahead consumed to its end is let go before the next watch reads one
+// of its own. prefixConn.Read left c.head an empty slice of the old array,
+// and watchPeerThen counts only len(c.head) against its limit: two
+// read-aheads per connection, where the comment of watchPeerThen and the
+// godoc of MaxConns count one. What is counted: the bytes the second watch
+// read, and whether the old array survives two collections (weak.Pointer).
+// The control lets c.head go by hand.
+func TestAConsumedReadAheadIsLetGo(t *testing.T) {
+	const limit = 64 << 10
+	run := func(t *testing.T, release bool) (read int, pinned bool) {
+		t.Helper()
+		synctest.Test(t, func(t *testing.T) {
+			client, server := net.Pipe()
+			defer client.Close()
+			defer server.Close()
+			c := &prefixConn{Conn: server, head: make([]byte, limit)} // held by c.head alone
+			old := weak.Make(&c.head[0])
+			buf := make([]byte, 4096)
+			for c.buffered() {
+				if _, err := c.Read(buf); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if release {
+				c.head = nil
+			}
+			go func() { _, _ = client.Write(make([]byte, limit)) }()
+			w := watchPeerThen(c, limit, nil)
+			<-w.done
+			runtime.GC()
+			runtime.GC()
+			read = len(w.got)
+			pinned = old.Value() != nil
+			w.stop()
+			runtime.KeepAlive(c)
+		})
+		return read, pinned
+	}
+
+	t.Run("control", func(t *testing.T) {
+		read, pinned := run(t, true)
+		if read != limit || pinned {
+			t.Fatalf("control: the watch read %d of %d bytes, old read-ahead reachable=%v; want it collected", read, limit, pinned)
+		}
+	})
+	t.Run("consumed head", func(t *testing.T) {
+		read, pinned := run(t, false)
+		if read != limit {
+			t.Fatalf("setup: the watch read %d bytes, want %d", read, limit)
+		}
+		if pinned {
+			t.Fatalf("a consumed read-ahead of %d bytes is still reachable through c.head while the next watch holds %d more: twice the read-ahead bound",
+				limit, read)
+		}
+	})
 }

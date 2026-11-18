@@ -1266,6 +1266,12 @@ func (c *prefixConn) Read(p []byte) (int, error) {
 	if len(c.head) > 0 {
 		n := copy(p, c.head)
 		c.head = c.head[n:]
+		if len(c.head) == 0 {
+			// Let go once consumed: the empty slice held the read-ahead's
+			// array, and the next watch reads a limit of its own beside it,
+			// two read-aheads where the connection's bound counts one.
+			c.head = nil
+		}
 		return n, nil
 	}
 	return c.Conn.Read(p)
