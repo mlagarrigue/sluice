@@ -39,8 +39,9 @@ const (
 
 // What Configure claims to do on Linux, read back from the kernel: an
 // AF_INET socket carries IP_MTU_DISCOVER=PROBE; an AF_INET6 one carries
-// IPV6_MTU_DISCOVER=PROBE, IP_MTU_DISCOVER=PROBE for mapped peers, and
-// IPV6_AUTOFLOWLABEL=1.
+// IPV6_MTU_DISCOVER=PROBE and IP_MTU_DISCOVER=PROBE for mapped peers. Its
+// IPV6_AUTOFLOWLABEL is TestConfigureAsksForTheFlowLabel's: read back here,
+// it is the 1 the kernel's default already gives every socket.
 func TestConfigureSetsLinuxOptions(t *testing.T) {
 	v4, err := udp.Listen("udp4", "127.0.0.1:0")
 	if err != nil {
@@ -61,9 +62,6 @@ func TestConfigureSetsLinuxOptions(t *testing.T) {
 	}
 	if got := getsockopt(t, v6, syscall.IPPROTO_IP, syscall.IP_MTU_DISCOVER); got != syscall.IP_PMTUDISC_PROBE {
 		t.Errorf("udp6 IP_MTU_DISCOVER = %d, want %d (PROBE)", got, syscall.IP_PMTUDISC_PROBE)
-	}
-	if got := getsockopt(t, v6, syscall.IPPROTO_IPV6, ipv6AutoFlowLabel); got != 1 {
-		t.Errorf("udp6 IPV6_AUTOFLOWLABEL = %d, want 1", got)
 	}
 
 	// The dual-stack default: network "udp" on an unspecified address is an
@@ -88,6 +86,37 @@ func TestKernelDefaultIsNotProbe(t *testing.T) {
 	defer c.Close()
 	if got := getsockopt(t, c, syscall.IPPROTO_IP, syscall.IP_MTU_DISCOVER); got == syscall.IP_PMTUDISC_PROBE {
 		t.Fatalf("fresh socket already has IP_MTU_DISCOVER=PROBE; this test cannot distinguish Configure from the default")
+	}
+}
+
+// Configure asks for the IPv6 flow label (RFC 9000 §9.7). Under
+// net.ipv6.auto_flowlabels = 1, the default, the kernel labels every socket
+// already, so reading 1 after Configure proves nothing: the socket is taken
+// off the label first, and only Configure puts it back.
+func TestConfigureAsksForTheFlowLabel(t *testing.T) {
+	c, err := net.ListenUDP("udp6", &net.UDPAddr{IP: net.IPv6loopback})
+	if err != nil {
+		t.Skipf("no IPv6 loopback here: %v", err)
+	}
+	defer c.Close()
+	rc, err := c.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var set error
+	if err := rc.Control(func(fd uintptr) {
+		set = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IPV6, ipv6AutoFlowLabel, 0)
+	}); err != nil || set != nil {
+		t.Skipf("cannot turn IPV6_AUTOFLOWLABEL off here: %v %v", err, set)
+	}
+	if got := getsockopt(t, c, syscall.IPPROTO_IPV6, ipv6AutoFlowLabel); got != 0 {
+		t.Fatalf("setup: IPV6_AUTOFLOWLABEL = %d after turning it off, want 0", got)
+	}
+	if err := udp.Configure(c); err != nil {
+		t.Fatal(err)
+	}
+	if got := getsockopt(t, c, syscall.IPPROTO_IPV6, ipv6AutoFlowLabel); got != 1 {
+		t.Errorf("IPV6_AUTOFLOWLABEL = %d after Configure, want 1", got)
 	}
 }
 
