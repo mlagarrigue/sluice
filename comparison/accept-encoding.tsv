@@ -1,0 +1,31 @@
+# How the study's servers read Accept-Encoding (RFC 9110 §12.5.3), one
+# header a line: the header as a Go string literal, then whether gzip and
+# deflate are accepted. The sluice program (comparison/sluice/compress.go),
+# R (comparison/sluice/reference) and go-nethttp's optimised variant each
+# play this table in their tests, so that a malformed header gets the same
+# answer from every reading; R and the optimised variant serve gzip alone
+# and read the gzip column.
+""	false	false
+"gzip"	true	false
+"gzip, deflate"	true	true
+"GZIP"	true	false
+"deflate;q=0.5, gzip;q=1.0"	true	true
+"gzip;q=0"	false	false
+"gzip;q=0.000"	false	false
+"gzip; q=0.001"	true	false
+"*"	true	true
+"*;q=0"	false	false
+"*, gzip;q=0"	false	true
+"identity"	false	false
+"identity;q=0"	false	false
+"br"	false	false
+"gzip;q=abc"	false	false
+"gzip;q=1.00000"	false	false
+"gzip;level=9"	true	false
+"gzip;Q=0"	false	false
+",,, gzip ,,"	true	false
+"gzip;q=0, *"	false	true
+"gzip;q=0, gzip"	true	false
+";q=1"	false	false
+"gzip;a=b;q=0"	false	false
+"gzip;q=2"	true	false

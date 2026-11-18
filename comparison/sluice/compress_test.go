@@ -6,7 +6,10 @@ import (
 	"compress/zlib"
 	"fmt"
 	"io"
+	"os"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -17,37 +20,40 @@ import (
 	"github.com/mlagarrigue/sluice"
 )
 
+// acceptRow is one line of comparison/accept-encoding.tsv.
+type acceptRow struct {
+	header     string
+	gzip, defl bool
+}
+
+// acceptTable reads comparison/accept-encoding.tsv, the table every reading
+// of Accept-Encoding in the study plays.
+func acceptTable(t *testing.T) []acceptRow {
+	t.Helper()
+	b, err := os.ReadFile("../accept-encoding.tsv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []acceptRow
+	for line := range strings.Lines(string(b)) {
+		line = strings.TrimRight(line, "\n")
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		f := strings.Split(line, "\t")
+		h, err := strconv.Unquote(f[0])
+		if len(f) != 3 || err != nil {
+			t.Fatalf("accept-encoding.tsv: %q", line)
+		}
+		rows = append(rows, acceptRow{header: h, gzip: f[1] == "true", defl: f[2] == "true"})
+	}
+	return rows
+}
+
 func TestAcceptEncoding(t *testing.T) {
 	g := lookupCodec(codecGzip6)
 	d := lookupCodec(codecDeflate6)
-	cases := []struct {
-		header string
-		gzip   bool
-		defl   bool
-	}{
-		{"", false, false},
-		{"gzip", true, false},
-		{"gzip, deflate", true, true},
-		{"GZIP", true, false},
-		{"deflate;q=0.5, gzip;q=1.0", true, true},
-		{"gzip;q=0", false, false},
-		{"gzip;q=0.000", false, false},
-		{"gzip; q=0.001", true, false},
-		{"*", true, true},
-		{"*;q=0", false, false},
-		{"*, gzip;q=0", false, true},
-		{"identity", false, false},
-		{"identity;q=0", false, false},
-		{"br", false, false},
-		{"gzip;q=abc", false, false},
-		{"gzip;q=1.00000", false, false},
-		{"gzip;level=9", true, false},
-		{"gzip;Q=0", false, false},
-		{",,, gzip ,,", true, false},
-		{"gzip;q=0, *", false, true},
-		{"gzip;q=0, gzip", true, false},
-		{";q=1", false, false},
-	}
+	cases := acceptTable(t)
 	for _, c := range cases {
 		if got := g.accepts(c.header); got != c.gzip {
 			t.Errorf("gzip accepts(%q) = %v, want %v", c.header, got, c.gzip)

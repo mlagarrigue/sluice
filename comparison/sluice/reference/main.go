@@ -247,32 +247,59 @@ func gzipped(b []byte) []byte {
 }
 
 // acceptsGzip reads Accept-Encoding as RFC 9110 §12.5.3 does: gzip, or *,
-// with a weight above zero; a coding named outweighs *.
+// with a weight above zero; a coding named outweighs *. A member whose
+// weight does not read — not a number, or longer than the grammar's
+// "0.123" (§12.4.2) — is skipped, and a weight outside 0..1 is clamped:
+// the rule of comparison/sluice/compress.go, whose table
+// (compress_test.go) the three readings of the study share, so that a
+// malformed header gets the same answer from each.
 func acceptsGzip(header string) bool {
-	named, star := -1.0, -1.0
+	named, star := false, false
+	var namedQ, starQ float64
 	for member := range strings.SplitSeq(header, ",") {
 		token, params, _ := strings.Cut(member, ";")
-		q := 1.0
-		for p := range strings.SplitSeq(params, ";") {
-			if name, v, ok := strings.Cut(p, "="); ok && strings.EqualFold(strings.TrimSpace(name), "q") {
-				f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
-				if err != nil {
-					f = -1 // a weight that does not parse: the member says nothing
-				}
-				q = f
-			}
+		token = strings.TrimSpace(token)
+		if token == "" {
+			continue
 		}
-		switch token = strings.TrimSpace(token); {
+		q, ok := weight(params)
+		if !ok {
+			continue
+		}
+		switch {
 		case strings.EqualFold(token, "gzip"):
-			named = q
+			named, namedQ = true, q
 		case token == "*":
-			star = q
+			star, starQ = true, q
 		}
 	}
-	if named >= 0 {
-		return named > 0
+	if named {
+		return namedQ > 0
 	}
-	return star > 0
+	return star && starQ > 0
+}
+
+// weight reads the q parameter of one member; absent is 1. Only "q" is
+// looked at; a value longer than five bytes or not a number makes the
+// member unreadable, one outside 0..1 is clamped.
+func weight(params string) (float64, bool) {
+	q := 1.0
+	for p := range strings.SplitSeq(params, ";") {
+		name, value, found := strings.Cut(strings.TrimSpace(p), "=")
+		if !found || !strings.EqualFold(strings.TrimSpace(name), "q") {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if len(value) > 5 { // "0.123" is the longest the grammar allows
+			return 0, false
+		}
+		f, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return 0, false
+		}
+		q = min(max(f, 0), 1)
+	}
+	return q, true
 }
 
 // --- startup ---------------------------------------------------------------
