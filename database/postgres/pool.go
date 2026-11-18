@@ -24,6 +24,11 @@ var ErrPoolClosed = errors.New("postgres: the pool is closed")
 // ([Conn.Err] not nil, [ErrConnBroken] among others) is closed when it comes
 // back, and the next call opens a new one; a connection the server closed
 // while it sat idle fails the call that finds it, and is replaced after.
+// A pool carries no transaction: a call that leaves one open — a BEGIN sent
+// as a statement — or aborted has its connection closed when it comes back,
+// which rolls the block back on the server, rather than lent to a caller
+// whose writes would land in it. A transaction is [Conn.Begin]'s, on a
+// connection of its own.
 // When all are lent, a call waits for one, as long as its context allows.
 //
 // There is no idle timeout, lifetime or health check: they are a
@@ -136,11 +141,14 @@ func (p *Pool) lend(ctx context.Context) (*Conn, error) {
 	return c, nil
 }
 
-// give takes a connection back: kept if it is sound and the pool open,
-// closed otherwise.
+// give takes a connection back: kept if it is sound, out of any
+// transaction block, and the pool open; closed otherwise. A block the call
+// left open, or aborted, is the server's word in the last ReadyForQuery
+// (inTx); lent again, the next caller's statements would run inside it and
+// be lost with it, so the close rolls it back instead.
 func (p *Pool) give(c *Conn) {
 	p.mu.Lock()
-	keep := !p.closed && c.Err() == nil
+	keep := !p.closed && c.Err() == nil && !c.inTx
 	if keep {
 		p.idle = append(p.idle, c)
 	}

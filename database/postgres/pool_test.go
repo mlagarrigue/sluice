@@ -79,6 +79,33 @@ func TestPoolReusesASoundConnection(t *testing.T) {
 	}
 }
 
+// A connection a call left inside a transaction block — a BEGIN passed as a
+// statement, the server's ReadyForQuery 'T', or an aborted block, 'E' — is
+// closed when it comes back, which rolls the block back on the server, and
+// the next call gets a new one: lent again, the next caller's write landed in
+// that block, answered nil, and was never committed.
+func TestPoolDoesNotLendAConnectionLeftInABlock(t *testing.T) {
+	for _, status := range []string{"T", "E"} {
+		t.Run(status, func(t *testing.T) {
+			s := &scriptedConnects{scripts: [][][]byte{
+				{extendedCycle("BEGIN", status)},
+				{extendedCycle("INSERT 0 1", "I")},
+			}}
+			p := NewPool(1, s.connect)
+			defer func() { _ = p.Close() }()
+			if _, err := p.ExecParams(t.Context(), "BEGIN", nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := insertOne(t, t.Context(), p); err != nil {
+				t.Fatal(err)
+			}
+			if len(s.conns) != 2 || !s.servers[0].closed {
+				t.Errorf("%d connections made, the one left in a block closed: %v; want 2 and true", len(s.conns), s.servers[0].closed)
+			}
+		})
+	}
+}
+
 // With every connection lent, a call waits for one as long as its context
 // allows; a connect that fails gives its place back.
 func TestPoolWaitsWithinTheContext(t *testing.T) {
