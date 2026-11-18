@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"net"
 	"net/http"
@@ -99,9 +100,14 @@ func TestFromHTTPBodyEdges(t *testing.T) {
 // the default logger; an abort after a Flush resets the stream it opened.
 func TestFromHTTPLatePanics(t *testing.T) {
 	logs := make(chanWriter, 1)
-	prev := slog.Default()
+	prev, prevOut, prevFlags := slog.Default(), log.Writer(), log.Flags()
 	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
-	defer slog.SetDefault(prev)
+	// SetDefault also points the log package at logs, and setting the
+	// previous default back does not undo that when it is the built-in one
+	// (slog.SetDefault's source says why): left there, the next test to log
+	// through the log package fills logs and blocks on it for good — a
+	// shuffled CI run timed out that way, after 10 minutes.
+	defer func() { slog.SetDefault(prev); log.SetOutput(prevOut); log.SetFlags(prevFlags) }()
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.(http.Flusher).Flush()
 		if r.URL.Path == "/abort" {
