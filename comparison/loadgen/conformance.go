@@ -138,6 +138,9 @@ var edgeRequests = []request{
 	{method: http.MethodGet, path: "/orders?from=1&limit=abc"},
 	{method: http.MethodGet, path: "/orders?from=1&limit=9223372036854775808"},
 	{method: http.MethodPost, path: "/orders", body: []byte(`{"key":9223372036854775808,"total":1}`)},
+	// A body that goes on after its value: R decodes the whole body and
+	// refuses it, a reader that decodes one value from a stream does not.
+	{method: http.MethodPost, path: "/orders", body: []byte(`{"key":5,"total":1}x`)},
 }
 
 // fetch sends one request and reads its answer, decoded.

@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -109,7 +110,13 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) write(w http.ResponseWriter, r *http.Request) {
 	var req writeReq
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil || req.Key == 0 {
+	// The whole body, then one value: a Decoder reads one value and leaves
+	// what follows it, so `{"key":5}x` went in where R refuses it.
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<16))
+	if err == nil {
+		err = json.Unmarshal(body, &req)
+	}
+	if err != nil || req.Key == 0 {
 		writeJSON(w, http.StatusBadRequest, errDoc{Error: "bad body"})
 		return
 	}

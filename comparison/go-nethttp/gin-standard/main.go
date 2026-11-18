@@ -14,8 +14,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -102,7 +104,14 @@ func (s *server) list(c *gin.Context) {
 
 func (s *server) write(c *gin.Context) {
 	var req writeReq
-	if err := c.ShouldBindJSON(&req); err != nil || req.Key == 0 {
+	// The whole body, bounded as R bounds it, then one value: ShouldBindJSON
+	// reads one value through a Decoder, leaves what follows it, and reads
+	// a body of any size.
+	body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, 1<<16))
+	if err == nil {
+		err = json.Unmarshal(body, &req)
+	}
+	if err != nil || req.Key == 0 {
 		c.JSON(http.StatusBadRequest, errDoc{Error: "bad body"})
 		return
 	}

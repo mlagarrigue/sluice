@@ -155,7 +155,13 @@ func (s *server) listRows(ctx context.Context, from int64, limit int) ([]order, 
 
 func (s *server) write(c *gin.Context) {
 	var req writeReq
-	err := c.ShouldBindJSON(&req)
+	// The whole body, bounded as R bounds it, then one value: ShouldBindJSON
+	// reads one value through a Decoder, leaves what follows it, and reads
+	// a body of any size.
+	body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, 1<<16))
+	if err == nil {
+		err = gojson.Unmarshal(body, &req)
+	}
 	key, total, ok := req.int64s()
 	if err != nil || !ok || key == 0 {
 		c.JSON(http.StatusBadRequest, errDoc{Error: "bad body"})
