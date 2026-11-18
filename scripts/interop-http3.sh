@@ -120,9 +120,12 @@ expect "HTTP/3 version and status" "3 200" \
   client curl -sS -k --http3-only --max-time 10 -o /dev/null -w '%{http_version} %{http_code}' "$url/hello"
 expect "HTTP/3 streamed body" "$stream" \
   client curl -sS -k --http3-only --max-time 10 "$url/stream"
+# Each transfer to a file of its own, printed in order after: under
+# --parallel, curl writes both bodies to stdout as their bytes arrive, and two
+# bodies streamed at once interleave there in whatever order they arrived.
 expect "HTTP/3 two streamed bodies on one connection" "$two_streams" \
-  client curl -sS -k --http3-only --max-time 10 --parallel --parallel-max 2 --no-progress-meter \
-  "$url/stream" "$url/stream"
+  client sh -c 'curl -sS -k --http3-only --max-time 10 --parallel --parallel-max 2 --no-progress-meter \
+    -o /tmp/a "$1" -o /tmp/b "$1" && cat /tmp/a /tmp/b' sh "$url/stream"
 expect "HTTP/3 POST with a body" "you asked for /posted" \
   client curl -sS -k --http3-only --max-time 10 --data-binary 'a request body' "$url/posted"
 
