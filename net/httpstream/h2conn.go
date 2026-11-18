@@ -184,7 +184,7 @@ type h2Stream struct {
 	// integer or a Huffman string, so decoding per frame refuses a client
 	// that is doing nothing wrong. The byte bound is already enforced a layer
 	// down by MaxHeaderBytes, so holding the fragments adds nothing
-	// unbounded.
+	// unbounded, and the decoded block is let go at once.
 	block []byte
 	// endStream remembers END_STREAM from the HEADERS frame, because the
 	// CONTINUATION that closes the block carries no such flag.

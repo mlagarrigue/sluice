@@ -2,6 +2,7 @@ package httpstream
 
 import (
 	"runtime"
+	"strings"
 	"testing"
 	"weak"
 
@@ -262,5 +263,27 @@ func TestTheBatchScratchLetsGoOfRequestsHandedOver(t *testing.T) {
 	}
 	if held > 0 {
 		t.Fatalf("%d requests of an earlier batch are still held past the batch's length, %d body bytes in all; want 0", held, bytes)
+	}
+}
+
+// The control and QPACK streams last the connection: a delivery read whole
+// leaves no buffer of its size behind. A client's decoder stream carrying
+// 60000 Stream Cancellations (0x40, stream 0) in one delivery is read and
+// dropped; the stream then keeps nothing.
+func TestH3UniStreamLetsGoOfAConsumedDelivery(t *testing.T) {
+	a := testAssembler(Config{})
+	data := append([]byte{h3StreamQPACKDecode}, strings.Repeat("\x40", 60000)...)
+	if _, _, _, err := a.Frames([]quic.Frame{streamFrame(10, data, false)}); err != nil {
+		t.Fatalf("decoder stream: %v", err)
+	}
+	u := a.unis[10]
+	if u == nil {
+		t.Fatal("decoder stream not tracked")
+	}
+	if len(u.buf) != 0 {
+		t.Fatalf("witness: %d bytes left unconsumed", len(u.buf))
+	}
+	if cap(u.buf) != 0 {
+		t.Errorf("the consumed decoder stream keeps a %d-byte buffer for the connection's life", cap(u.buf))
 	}
 }

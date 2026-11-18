@@ -12,9 +12,9 @@ import (
 // emptied it in place, keeping the delivery's capacity — which the
 // reassembly may make as large as the stream window — outside assembling
 // for the stream's life. A buffer past h3DeliveryKept now goes, as
-// keepStreamRest lets a parsed frame's go. The witness delivers the same
+// keepRest lets a parsed frame's go. The witness delivers the same
 // bytes as a new, whole DATA frame followed by the start of a trailers
-// frame: drain parses it out of the buffer and keepStreamRest, given a
+// frame: drain parses it out of the buffer and keepRest, given a
 // short rest, lets the capacity go.
 func TestH3StreamedDeliveryReleasesBufferCapacity(t *testing.T) {
 	const delta = 200 << 10

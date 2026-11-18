@@ -1287,11 +1287,11 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 		st.dataLeft -= k
 		// A delivery may be as large as the stream window, and a buffer
 		// compacted in place keeps that capacity, outside assembling, for
-		// the stream's life: past h3DeliveryKept it goes as keepStreamRest
+		// the stream's life: past h3DeliveryKept it goes as keepRest
 		// lets a parsed frame's go. Under it the buffer stays, so that an
 		// upload arriving a datagram or a frame at a time reuses one.
 		if cap(st.buf) > h3DeliveryKept {
-			st.buf = keepStreamRest(st.buf, st.buf[k:])
+			st.buf = keepRest(st.buf, st.buf[k:])
 		} else {
 			st.buf = st.buf[:copy(st.buf, st.buf[k:])]
 		}
@@ -1379,7 +1379,7 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 					return err
 				}
 				st.dataLeft = length - k
-				st.buf = keepStreamRest(st.buf, payload[k:])
+				st.buf = keepRest(st.buf, payload[k:])
 				if st.dataLeft == 0 && len(st.buf) > 0 {
 					return a.drain(st) // the frame ended here: frames follow it
 				}
@@ -1410,7 +1410,7 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 	if err != nil {
 		return err // unreachable: a DATA frame over the bound is refused above
 	}
-	st.buf = keepStreamRest(st.buf, rest)
+	st.buf = keepRest(st.buf, rest)
 	return nil
 }
 
@@ -1569,16 +1569,28 @@ func requestTypeFault(typ uint64) error {
 	return nil
 }
 
-// keepStreamRest is keepRest for a request stream, which may sit unfinished
-// for as long as ReadTimeout allows. Once a frame has left the buffer — its
-// payload copied into the body, which assembling counts — a capacity grown
-// to hold that frame is not kept behind the short remainder: assembling
-// counts lengths, and the emptied buffer would otherwise hold the frame's
-// size a second time, uncounted, on every stream that sent one. A buffer
-// still growing toward a frame that has not all arrived keeps its capacity;
-// it is shed only when bytes left, so a stream pays at most one allocation
-// per completed frame larger than the slack, and none for small ones.
-func keepStreamRest(buf, rest []byte) []byte {
+// keepRest moves what parseH3Frames, or an instruction reader, left
+// unconsumed to the front of its buffer, for the next delivery to append
+// to. rest is a suffix of buf; when it is the whole of buf nothing was
+// consumed and the buffer is returned as it is. Copying it onto itself is
+// not free: runtime.memmove has no shortcut for dst == src, and a DATA
+// frame declared at MaxBodyBytes parks a buffer that grows to
+// rawStreamBound while its payload trickles in — fed one byte per
+// datagram, each byte would cost a copy of the whole buffer (RFC 9114
+// §10.5: the work a peer can cause must stay bounded by what it sends).
+//
+// Every stream it serves outlives its frames: a request stream may sit
+// unfinished for as long as ReadTimeout allows, and the control and QPACK
+// streams last the connection. Once a frame has left the buffer — its
+// payload copied into the body, which assembling counts, or its
+// instructions read — a capacity grown to hold that frame or that delivery
+// is not kept behind the short remainder: assembling counts lengths, and
+// the emptied buffer would otherwise hold the frame's size a second time,
+// uncounted, on every stream that sent one. A buffer still growing toward
+// a frame that has not all arrived keeps its capacity; it is shed only
+// when bytes left, so a stream pays at most one allocation per completed
+// frame larger than the slack, and none for small ones.
+func keepRest(buf, rest []byte) []byte {
 	if len(rest) == len(buf) {
 		return buf
 	}

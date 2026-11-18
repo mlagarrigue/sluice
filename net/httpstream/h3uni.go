@@ -37,7 +37,7 @@ func (a *h3Assembler) uni(f quic.Frame) error {
 			}
 			return nil
 		}
-		u.buf = append(u.buf[:0], rest...)
+		u.buf = keepRest(u.buf, rest)
 		switch typ {
 		case h3StreamControl:
 			if a.hasControl {

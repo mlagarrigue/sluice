@@ -195,21 +195,6 @@ func h3Identifier(payload []byte) (uint64, error) {
 	return v, nil
 }
 
-// keepRest moves what parseH3Frames left unconsumed to the front of its
-// buffer, for the next delivery to append to. rest is a suffix of buf; when
-// it is the whole of buf nothing was consumed and the buffer is returned as
-// it is. Copying it onto itself is not free: runtime.memmove has no shortcut
-// for dst == src, and a DATA frame declared at MaxBodyBytes parks a buffer
-// that grows to rawStreamBound while its payload trickles in — fed one byte
-// per datagram, each byte would cost a copy of the whole buffer (RFC 9114
-// §10.5: the work a peer can cause must stay bounded by what it sends).
-func keepRest(buf, rest []byte) []byte {
-	if len(rest) == len(buf) {
-		return buf
-	}
-	return append(buf[:0], rest...)
-}
-
 func h3Known(typ uint64) bool {
 	switch typ {
 	case h3Data, h3Headers, h3CancelPush, h3Settings, h3GoAway, h3MaxPushID:

@@ -363,11 +363,11 @@ func TestH3AssemblerReleasesAControlFrameCarriedOver(t *testing.T) {
 // What is kept of a stream's buffer behind a frame: the rest, whatever the
 // capacity was.
 func TestKeepStreamRestKeepsTheRest(t *testing.T) {
-	if got := keepStreamRest(make([]byte, 10, 10000), []byte("ab")); string(got) != "ab" {
-		t.Errorf("keepStreamRest = %q, want ab", got)
+	if got := keepRest(make([]byte, 10, 10000), []byte("ab")); string(got) != "ab" {
+		t.Errorf("keepRest = %q, want ab", got)
 	}
-	if got := keepStreamRest(make([]byte, 10, 10000), nil); len(got) != 0 {
-		t.Errorf("keepStreamRest of nothing = %q", got)
+	if got := keepRest(make([]byte, 10, 10000), nil); len(got) != 0 {
+		t.Errorf("keepRest of nothing = %q", got)
 	}
 	_ = errors.New
 }

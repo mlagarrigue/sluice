@@ -609,10 +609,10 @@ func (s *h2Conn) headers(f h2Frame) (*h2Stream, error) {
 		dst = st.headers[len(st.headers):]
 	}
 	fields, err := s.dec.Decode(dst, st.block)
-	st.block = st.block[:0]
-	if st.state != stateOpen {
-		st.block = nil // a retired stream keeps no scratch warm
-	}
+	// The block is spent: a stream kept for its body would otherwise hold
+	// its capacity, up to MaxHeaderBytes, uncounted until the stream ends.
+	// Trailers, the only later block on the stream, allocate their own.
+	st.block = nil
 	if err != nil {
 		return nil, s.blockRefused(st, err)
 	}
