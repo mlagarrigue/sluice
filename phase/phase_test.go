@@ -316,3 +316,83 @@ func TestAWriteThatFailsStopsTheJob(t *testing.T) {
 		t.Errorf("Release: %v", err)
 	}
 }
+
+// A failed Verify invalidates that phase and every phase after it (ADR 0027,
+// "A skip is re-validated"), and the record says so: when the phase whose
+// Verify failed then fails in its Run — or the process dies in it — the next
+// run still runs the later phases. The invalidation lived in a local of
+// Job.Run and died with it, and the next run skipped them on their own
+// Verify, though they were built from what the invalidated phase wrote.
+func TestAnInvalidationOutlivesTheRunThatMadeIt(t *testing.T) {
+	dir := t.TempDir()
+	rows := map[string]int64{}
+	var extractErr error
+
+	step := func(name string, n int64, fail *error) phase.Phase {
+		return phase.Phase{
+			Name: name,
+			Run: func(context.Context) (phase.Counts, error) {
+				if fail != nil && *fail != nil {
+					return nil, *fail
+				}
+				rows[name] = n
+				return phase.Counts{"rows": n}, nil
+			},
+			Verify: func(_ context.Context, recorded phase.Counts) error {
+				if rows[name] != recorded["rows"] {
+					return errors.New(name + " does not hold what was recorded")
+				}
+				return nil
+			},
+		}
+	}
+	job := func() *phase.Job {
+		return &phase.Job{
+			Name:   "invalidation",
+			Input:  phase.Input{"day": "2026-11-17"},
+			Store:  phase.Dir(dir),
+			Phases: []phase.Phase{step("extract", 10, &extractErr), step("load", 10, nil)},
+		}
+	}
+	outcomes := func(r phase.Report) []string {
+		var out []string
+		for _, p := range r.Phases {
+			out = append(out, p.Name+"="+string(p.Outcome))
+		}
+		return out
+	}
+
+	// Run 1: both phases done.
+	if _, err := job().Run(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Control: extract's Verify fails and its Run succeeds — load runs again,
+	// as the ADR says.
+	rows["extract"] = 0
+	rep, err := job().Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := outcomes(rep); !slices.Equal(got, []string{"extract=ran", "load=ran"}) {
+		t.Fatalf("control: %v, want extract and load both ran", got)
+	}
+
+	// Run 3: extract's Verify fails again, and this time its Run fails too.
+	rows["extract"] = 0
+	extractErr = errors.New("the source is down")
+	if _, err := job().Run(t.Context()); err == nil {
+		t.Fatal("run 3: the failing phase returned no error")
+	}
+
+	// Run 4: the source is back. extract runs again from its start; load read
+	// what the earlier extract wrote, and was invalidated by run 3.
+	extractErr = nil
+	rep, err = job().Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := outcomes(rep); !slices.Equal(got, []string{"extract=ran", "load=ran"}) {
+		t.Errorf("after an invalidating run that failed: %v, want [extract=ran load=ran] — the phase after the one whose Verify failed is skipped", got)
+	}
+}

@@ -254,14 +254,11 @@ func (j *Job) Run(ctx context.Context) (rep Report, err error) {
 	again := "" // why every phase from here on runs again, once one has
 	for i, p := range j.Phases {
 		st := &rec.Phases[i]
-		why := ""
-		if st.Status == Done {
-			switch {
-			case again != "":
-				why = again
-			case p.Verify == nil:
+		why := again
+		if st.Status == Done && again == "" {
+			if p.Verify == nil {
 				why = "it has no Verify"
-			default:
+			} else {
 				verr := p.Verify(ctx, st.Counts)
 				if verr == nil {
 					rep.Phases = append(rep.Phases, PhaseReport{Name: p.Name, Outcome: Skipped, Counts: st.Counts})
@@ -269,6 +266,14 @@ func (j *Job) Run(ctx context.Context) (rep Report, err error) {
 				}
 				why = "its Verify failed: " + verr.Error()
 				again = "an earlier phase, " + p.Name + ", ran again"
+				// Written with this phase's Running below, not kept in
+				// again alone: a Run that fails, or a process that dies in
+				// it, would leave the later phases Done in the record, and
+				// the next run would skip them on their own Verify — built
+				// from what this phase wrote before it was invalidated.
+				for k := i + 1; k < len(rec.Phases); k++ {
+					rec.Phases[k] = PhaseRecord{Name: rec.Phases[k].Name}
+				}
 			}
 		}
 		*st = PhaseRecord{Name: p.Name, Status: Running, At: time.Now()}
