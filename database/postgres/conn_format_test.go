@@ -47,3 +47,25 @@ func TestAPrintedConnHidesItsCancelSecret(t *testing.T) {
 		}
 	}
 }
+
+// A CancelKey given to slog hides its secret under both handlers: the JSON
+// handler calls neither String nor GoString, and marshalled the exported
+// fields, Secret among them — the gap Config closed with a LogValue. The
+// text handler is the control.
+func TestACancelKeyGivenToSlogHidesItsSecret(t *testing.T) {
+	const secret = "s3cr3t-cancel-key-0123456789abcd"
+	key := CancelKey{PID: 4242, Secret: secret}
+	for name, handler := range map[string]func(*bytes.Buffer) slog.Handler{
+		"text": func(b *bytes.Buffer) slog.Handler { return slog.NewTextHandler(b, nil) },
+		"JSON": func(b *bytes.Buffer) slog.Handler { return slog.NewJSONHandler(b, nil) },
+	} {
+		var buf bytes.Buffer
+		slog.New(handler(&buf)).Info("cancel sent", "key", key)
+		if strings.Contains(buf.String(), secret) {
+			t.Errorf("a CancelKey given to slog's %s handler logs its secret: %s", name, buf.String())
+		}
+		if !strings.Contains(buf.String(), "4242") {
+			t.Errorf("slog's %s handler lost the PID too: %s", name, buf.String())
+		}
+	}
+}

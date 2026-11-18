@@ -62,6 +62,11 @@ func (k CancelKey) String() string {
 // fields one by one and the secret among them.
 func (k CancelKey) GoString() string { return k.String() }
 
+// LogValue hides the secret from slog as String hides it from fmt: the JSON
+// handler calls neither String nor GoString, and marshalled the exported
+// fields, Secret among them.
+func (k CancelKey) LogValue() slog.Value { return slog.StringValue(k.String()) }
+
 // String names the connection by its backend's PID and by nothing else. A
 // Conn holds its cancellation key's secret ([CancelKey]) in an unexported
 // field, on which fmt calls no method: without String, a *Conn handed to a
