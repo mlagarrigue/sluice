@@ -108,6 +108,9 @@ type h1Conn struct {
 	base   []byte
 	served int
 	err    error
+	// readErr is an error a Read returned with bytes, kept for the next
+	// fill (see there).
+	readErr error
 
 	// state is where this connection stands for Serve's shutdown — idle
 	// between requests, busy once one has begun — and whether the shutdown
@@ -485,7 +488,21 @@ func (r *h1Conn) fill() error {
 		return err
 	}
 
-	n, err := r.conn.Read(r.buf[r.n:])
+	var n int
+	var err error
+	if r.readErr != nil {
+		err, r.readErr = r.readErr, nil
+	} else {
+		n, err = r.conn.Read(r.buf[r.n:])
+		if n > 0 && err != nil {
+			// io.Reader may return bytes and its error together: crypto/tls
+			// does under TLS 1.2 when the client's close_notify sits behind
+			// its last record. The bytes are parsed first, and the error is
+			// the next read's — judged here it would find a whole request
+			// still in the buffer and call it a close mid-request.
+			r.readErr, err = err, nil
+		}
+	}
 	r.n += n
 	if r.state != nil && n > 0 {
 		r.state.set(connBusy)
