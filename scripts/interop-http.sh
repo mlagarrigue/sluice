@@ -154,9 +154,19 @@ expect "HTTP/2 by ALPN" "2 200" \
   -k --http2 -o /dev/null -w '%{http_version} %{http_code}' "https://$addr/hello"
 expect "HTTP/2 echo" "you asked for /hello" -k --http2 "https://$addr/hello"
 expect "HTTP/2 streamed body" "$stream" -k --http2 "https://$addr/stream"
-expect "HTTP/2 two streamed bodies in parallel" "$two_streams" \
-  --no-progress-meter -k --http2 --parallel --parallel-max 2 \
-  "https://$addr/stream" "https://$addr/stream"
+# Each body to a file of its own, as over h2c above: on stdout the two
+# bodies interleave in whatever order their frames arrived.
+label="HTTP/2 two streamed bodies in parallel over TLS"
+rm -f "$work/stream1" "$work/stream2"
+curl -sS --max-time 10 --no-progress-meter -k --http2 --parallel --parallel-max 2 \
+  -o "$work/stream1" "https://$addr/stream" -o "$work/stream2" "https://$addr/stream" ||
+  fail "$label: curl failed"
+got=$(cat "$work/stream1" "$work/stream2")
+if [ "$got" != "$two_streams" ]; then
+  printf 'interop-http: %s: got\n%s\nwant\n%s\n' "$label" "$got" "$two_streams" >&2
+  exit 1
+fi
+echo "ok  $label"
 
 # --- h2load -----------------------------------------------------------------
 
