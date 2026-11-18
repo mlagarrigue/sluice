@@ -271,3 +271,21 @@ func BenchmarkPark(b *testing.B) {
 		}
 	})
 }
+
+// BenchmarkH2SettingsThatRepeatTheWindow is a peer's SETTINGS that repeats
+// SETTINGS_INITIAL_WINDOW_SIZE, over 1000 streams answering: it moves no
+// window, and costs nothing that follows the streams. Each such frame walked
+// every window under the writer's lock and woke every parked producer.
+func BenchmarkH2SettingsThatRepeatTheWindow(b *testing.B) {
+	ids := make([]uint32, 1000)
+	for i := range ids {
+		ids[i] = uint32(2*i + 1) //nolint:gosec // G115: under a thousand
+	}
+	w := testWriter(ids...)
+	v := w.initial
+	for b.Loop() {
+		if err := w.setInitialWindow(v); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

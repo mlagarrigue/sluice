@@ -1255,6 +1255,13 @@ func (w *h2Writer) setInitialWindow(v int32) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	delta := v - w.initial
+	if delta == 0 {
+		// A SETTINGS that repeats the value moves no window and wakes no
+		// one: walked anyway, each such frame cost a pass over every stream
+		// answering, under the writer's lock, and a wake-up per parked
+		// producer.
+		return nil
+	}
 	w.initial = v
 	for id, cur := range w.windows {
 		next, err := addWindow(cur, delta)
