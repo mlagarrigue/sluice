@@ -84,6 +84,31 @@ func TestReadTruncated(t *testing.T) {
 	}
 }
 
+// endless answers its prefix, then fill without end, counting what it was
+// asked for; past a megabyte it fails, so that a reader that never stops
+// ends the test rather than the machine.
+type endless struct {
+	prefix []byte
+	fill   byte
+	read   int
+}
+
+func (e *endless) Read(p []byte) (int, error) {
+	if e.read > 1<<20 {
+		return 0, io.ErrUnexpectedEOF
+	}
+	n := copy(p, e.prefix)
+	e.prefix = e.prefix[n:]
+	if n == 0 {
+		for i := range p {
+			p[i] = e.fill
+		}
+		n = len(p)
+	}
+	e.read += n
+	return n, nil
+}
+
 // The bound holds before anything is allocated or read for what a peer
 // announces: a bulk string, an array's count, a line with no end.
 func TestReadBound(t *testing.T) {
@@ -93,11 +118,21 @@ func TestReadBound(t *testing.T) {
 		"bulk just over":  "$61\r\n" + strings.Repeat("x", 61) + "\r\n", // a header of five, 61 of data, two of CRLF: sixty-eight
 		"array count":     "*1000000000\r\n",
 		"elements summed": "*3\r\n$20\r\n" + strings.Repeat("x", 20) + "\r\n$20\r\n" + strings.Repeat("y", 20) + "\r\n$20\r\n" + strings.Repeat("z", 20) + "\r\n",
-		"endless line":    "+" + strings.Repeat("a", 10_000),
 	} {
 		if _, err := parse(in, bound); !errors.Is(err, ErrReplyTooLarge) {
 			t.Errorf("%s: err %v, want ErrReplyTooLarge", name, err)
 		}
+	}
+	// A line with no end is refused once it passes the budget, having read
+	// about the budget: a finite one would be refused by the check after
+	// the gathering loop whether or not the loop stopped.
+	src := &endless{prefix: []byte("+"), fill: 'a'}
+	r := reader{br: bufio.NewReaderSize(src, 16)}
+	if _, err := r.read(bound); !errors.Is(err, ErrReplyTooLarge) {
+		t.Errorf("endless line: err %v, want ErrReplyTooLarge", err)
+	}
+	if src.read > 4*bound {
+		t.Errorf("endless line: %d bytes read under a bound of %d, the gathering did not stop at the budget", src.read, bound)
 	}
 	at := "$56\r\n" + strings.Repeat("x", 56) + "\r\n" // a header of five, 56 of data, two of CRLF: sixty-three
 	if r, err := parse(at, bound); err != nil || len(r.Str) != 56 {
