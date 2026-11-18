@@ -41,6 +41,10 @@ type Config struct {
 const (
 	defaultListen = "127.0.0.1:8443"
 	defaultPool   = 8
+	// maxPool is the internal study's bound on -db-conns, as in the sluice
+	// copy of the contract: PostgreSQL's own default ceiling is 100. The two
+	// copies refuse and accept the same values.
+	maxPool = 4096
 )
 
 // FromEnv reads the contract's variables through getenv (os.Getenv, or a
@@ -64,8 +68,8 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	}
 	if s := getenv("STUDY_DB_POOL"); s != "" {
 		n, err := strconv.ParseInt(s, 10, 32)
-		if err != nil || n <= 0 {
-			return c, fmt.Errorf("STUDY_DB_POOL=%q: a positive count", s)
+		if err != nil || n <= 0 || n > maxPool {
+			return c, fmt.Errorf("STUDY_DB_POOL=%q: a count from 1 to %d", s, maxPool)
 		}
 		c.Pool = int32(n)
 	}
