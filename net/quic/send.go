@@ -1758,6 +1758,7 @@ func (c *Conn) sendProbeLocked(space int) {
 			n++
 		}
 	}
+	taken := payloads[:n] // what left the queue or the record, each once
 	switch n {
 	case 0:
 		_ = c.sendPacketLocked(space, []byte{framePing}, sendOpts{})
@@ -1766,9 +1767,26 @@ func (c *Conn) sendProbeLocked(space int) {
 		payloads[1] = payloads[0]
 		n = probesPerSpace
 	}
-	for _, payload := range payloads[:n] {
-		_ = c.sendPacketLocked(space, payload, sendOpts{own: true})
+	for i, payload := range payloads[:n] {
+		if err := c.sendPacketLocked(space, payload, sendOpts{own: true}); errors.Is(err, errRecordFull) {
+			// Refused before it was recorded (the record at its bound):
+			// what this packet and the ones behind it carry goes back to
+			// the queue's head rather than nowhere. A lone payload's second
+			// copy refused leaves nothing to put back: the first is in the
+			// record.
+			if i < len(taken) {
+				c.requeueLocked(space, taken[i:])
+			}
+			return
+		}
 	}
+}
+
+// requeueLocked puts payloads a probe took and could not send back at the
+// head of space's queue, in their order. Callers hold mu.
+func (c *Conn) requeueLocked(space int, payloads [][]byte) {
+	sp := &c.spaces[space]
+	sp.retrans = append(append(make([][]byte, 0, len(payloads)+len(sp.retrans)), payloads...), sp.retrans...)
 }
 
 // probesPerSpace is how many payloads a probe takes from one space, and
@@ -1926,12 +1944,31 @@ func (c *Conn) sendProbesLocked(spaces []int) {
 	if used == 1 {
 		rounds = probeDatagrams
 	}
+	// refused marks the payloads the record at its bound turned away in the
+	// first round: they were taken off a queue or the record, and go back
+	// to the queue (requeueLocked) instead of nowhere; the second round
+	// skips them.
+	var refused []bool
 	for round := range rounds {
 		if round > 0 {
 			c.flushDatagramLocked()
 		}
-		for _, p := range plan {
-			_ = c.sendPacketLocked(p.space, p.payload, sendOpts{own: !p.ping})
+		for i, p := range plan {
+			if len(refused) > i && refused[i] {
+				continue
+			}
+			err := c.sendPacketLocked(p.space, p.payload, sendOpts{own: !p.ping})
+			if round == 0 && !p.ping && errors.Is(err, errRecordFull) {
+				if refused == nil {
+					refused = make([]bool, len(plan))
+				}
+				refused[i] = true
+			}
+		}
+	}
+	for i := len(plan) - 1; i >= 0; i-- {
+		if len(refused) > i && refused[i] {
+			c.requeueLocked(plan[i].space, [][]byte{plan[i].payload})
 		}
 	}
 	c.gather = gather
