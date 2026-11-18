@@ -91,6 +91,12 @@ func (cf conformance) run(ctx context.Context) (conformanceReport, error) {
 			}
 			got[k] = a
 		}
+		if got[1].status >= 500 {
+			// The reference failing — its database table missing, say —
+			// makes every comparison meaningless: two servers answering
+			// 503 to everything agreed, and were reported conformant.
+			return nil, fmt.Errorf("%s %s on %s: the reference answered %d, so there is nothing to compare against", rq.method, rq.path, cf.reference, got[1].status)
+		}
 		rep.Checked++
 		d := compareAnswers(got[0], got[1])
 		if d != nil {

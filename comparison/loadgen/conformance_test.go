@@ -199,3 +199,28 @@ func TestWaitReady(t *testing.T) {
 		t.Fatalf("%v after %s: want an error once the 300ms are spent", err, time.Since(start))
 	}
 }
+
+// A reference that fails gives nothing to compare against: two servers
+// answering 503 to everything — the table missing from the database both
+// share — agreed on every request and were reported conformant. The check
+// stops on the reference's first 5xx, naming it.
+func TestConformanceRefusesAFailingReference(t *testing.T) {
+	broken := func() string {
+		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"unavailable"}`))
+		}))
+		t.Cleanup(srv.Close)
+		return srv.URL
+	}
+	reference := broken()
+	c := testCampaign(t, protoH1, broken())
+	rep, err := conformance{stage: c.stage, reference: reference, n: 100}.run(context.Background())
+	if err == nil || rep.Conformant {
+		t.Fatalf("two servers answering 503 to everything: conformant %v after %d requests, error %v", rep.Conformant, rep.Checked, err)
+	}
+	if !strings.Contains(err.Error(), "the reference answered 503") {
+		t.Errorf("the error does not say the reference failed: %v", err)
+	}
+}
