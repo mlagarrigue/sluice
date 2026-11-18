@@ -27,6 +27,11 @@ type cursor[T, K any] struct {
 	lastKey K
 	hasLast bool
 	run     []T // scratch for joinEqual's many-to-many run, reused between calls
+	// own holds the batch being read: a copy, since the cursor keeps it
+	// while the other side is pulled, and two branches of one Split share a
+	// source that pull advances (the architecture's S14). Reused from one
+	// batch to the next.
+	own []T
 }
 
 func newCursor[T any, K any](s sluice.Stream[T], key func(T) K, cmp func(K, K) int) *cursor[T, K] {
@@ -56,7 +61,8 @@ func (c *cursor[T, K]) peek() (elem T, key K, ok bool) {
 			c.done = true
 			continue
 		}
-		c.batch, c.pos = b.Items, 0
+		c.own = append(c.own[:0], b.Items...)
+		c.batch, c.pos = c.own, 0
 	}
 
 	v := c.batch[c.pos]

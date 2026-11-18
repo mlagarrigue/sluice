@@ -94,6 +94,11 @@ type walker[T any] struct {
 	batch []T
 	pos   int
 	done  bool
+	// own holds the batch being walked: a copy, since the walker keeps it
+	// while the other side is pulled, and two branches of one Split share a
+	// source that pull advances (the architecture's S14). Reused from one
+	// batch to the next.
+	own []T
 }
 
 func newWalker[T any](s sluice.Stream[T]) *walker[T] {
@@ -117,7 +122,8 @@ func (w *walker[T]) ready() bool {
 			w.done = true
 			continue
 		}
-		w.batch, w.pos = b.Items, 0
+		w.own = append(w.own[:0], b.Items...)
+		w.batch, w.pos = w.own, 0
 	}
 	return true
 }
