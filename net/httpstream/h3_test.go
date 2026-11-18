@@ -583,6 +583,26 @@ func TestQPACKDefaultsToTheShippedTable(t *testing.T) {
 	}
 }
 
+// A field section takes a 62-bit integer where one may legally stand: the
+// Delta Base, ignored under a Required Insert Count of zero (RFC 9204
+// §4.5.1.2), at 2^62-1 — the largest RFC 9204 §4.1.1 has a decoder accept —
+// and the field line behind it is read. The decoder stream proved the
+// width on another prefix; a Decode that bounded its own integers short
+// went unseen.
+func TestQPACKFieldSectionAcceptsA62BitDeltaBase(t *testing.T) {
+	// 0x00: RIC 0. 0x7f and nine continuation octets: Delta Base on a 7-bit
+	// prefix, 127 + (2^62-1-127). Then a literal with a name reference to
+	// static 0 (:authority) and a one-byte value.
+	section := []byte{0x00, 0x7f, 0x80, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x3f, 0x50, 0x01, 'h'}
+	got, err := newQPACKDecoder(nil, 0).Decode(nil, section)
+	if err != nil {
+		t.Fatalf("a Delta Base of 2^62-1 was refused: %v", err)
+	}
+	if len(got) != 1 || string(got[0].Name) != ":authority" || string(got[0].Value) != "h" {
+		t.Fatalf("fields = %v, want :authority h", got)
+	}
+}
+
 // The field-section prefix is RFC 7541 prefixed integers, not QUIC varints
 // (RFC 9204 §4.5.1). The two encodings agree on single bytes up to 0x3F, so
 // only a Delta Base of 0x40 or more tells them apart: a QUIC-varint reader
