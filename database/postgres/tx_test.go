@@ -1194,3 +1194,34 @@ func TestTxEdges(t *testing.T) {
 		}
 	}
 }
+
+// RollbackTo and Release refuse the names Savepoint refuses, before a byte
+// is sent: each concatenates the name into its statement (the architecture's
+// S13: no value travels through SQL text). TestSavepointRejectsHostileNames
+// goes through Savepoint alone, and the check in the other two could go
+// without the suite noticing.
+func TestRollbackToAndReleaseRefuseWhatSavepointRefuses(t *testing.T) {
+	for _, name := range []string{
+		"", "sp; DROP TABLE orders", "sp name", "SP", "1sp", `sp"`, "sp'--",
+		strings.Repeat("s", 64),
+	} {
+		for op, call := range map[string]func(*Tx, context.Context, string) error{
+			"RollbackTo": (*Tx).RollbackTo,
+			"Release":    (*Tx).Release,
+		} {
+			srv := &fakeServer{responses: [][]byte{cmdCycle("BEGIN")}}
+			conn := NewConn(srv, Config{})
+			tx, err := conn.Begin(t.Context(), TxConfig{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := srv.sent.Len()
+			if err := call(tx, t.Context(), name); err == nil {
+				t.Errorf("%s accepted %q", op, name)
+			}
+			if srv.sent.Len() != before {
+				t.Errorf("%s: bytes went to the server for the name %q", op, name)
+			}
+		}
+	}
+}
