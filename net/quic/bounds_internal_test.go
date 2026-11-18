@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/mlagarrigue/sluice/internal/varint"
@@ -695,4 +696,99 @@ func TestCryptoAcceptsFourKilobytesOutOfOrderHoweverCut(t *testing.T) {
 	if held := c.spaces[spaceHandshake].crypto.held; held != total {
 		t.Fatalf("%d bytes parked, want %d", held, total)
 	}
+}
+
+// The sent record at its bound and a peer that says nothing: every PTO probe
+// is refused (errRecordFull), and the probe timer's clock did not move. Once
+// the backoff is capped at 2^10, the deadline actOnDeadlines returned stayed
+// in the past, and timerLoop ran again at once, under mu, until the idle
+// timeout. The loop is played by hand on a synctest bubble's clock, which
+// the send path reads, and the passes that return no future deadline are
+// counted; no duration is measured. The control is the same connection with
+// its record far from the bound: every probe leaves, and the connection ends
+// at its idle timeout without a pass that returns no future deadline.
+func TestAFullRecordAndASilentPeerDoNotSpinTheTimerLoop(t *testing.T) {
+	const filled, maxPasses = 8, 400
+	run := func(t *testing.T, full bool) (stuck, passes int, fired uint64, closed bool) {
+		t.Helper()
+		synctest.Test(t, func(t *testing.T) {
+			c := assembleConn(&fuzzSink{addr: "spin:self"}, fakeFuzzAddr("spin:peer"),
+				[]byte("dcid0000"), []byte("scid0000"), false, DefaultConfig())
+			defer func() { _ = c.Close() }()
+			installAppSealer(t, c)
+			c.mu.Lock()
+			c.handshakeConfirmed = true
+			// A near peer that announced max_ack_delay 0: PTO of a few
+			// milliseconds, so 1024 PTOs fit under the idle timeout.
+			c.rtt.sampled = true
+			c.rtt.latest, c.rtt.min, c.rtt.smoothed = time.Millisecond, time.Millisecond, time.Millisecond
+			c.rtt.variance = time.Millisecond / 2
+			c.hasPeerParams = true
+			c.peerParams.sawMaxAckDelay = true
+			c.peerParams.maxAckDelay = 0
+			c.idleTimeout = 30 * time.Second
+			c.idleDeadline = time.Now().Add(c.idleTimeout)
+			if full {
+				c.spaces[spaceApplication].sent.limit = filled
+			}
+			for range filled {
+				if err := c.sendPacketLocked(spaceApplication, []byte{framePing}, sendOpts{}); err != nil {
+					c.mu.Unlock()
+					t.Fatalf("setup: %v", err)
+				}
+			}
+			tracked := c.trackedLocked()
+			c.mu.Unlock()
+			if tracked != filled {
+				t.Fatalf("setup: %d packets tracked, want %d", tracked, filled)
+			}
+
+			for passes < maxPasses {
+				select {
+				case <-c.closed:
+					closed = true
+				default:
+				}
+				if closed {
+					break
+				}
+				now := time.Now()
+				next := c.actOnDeadlines(now) // timerLoop's pass
+				passes++
+				if next.IsZero() {
+					break
+				}
+				if next.After(now) {
+					time.Sleep(next.Sub(now)) // timerLoop's wait, on the bubble's clock
+					continue
+				}
+				stuck++ // wait = 0: the loop runs again at once
+			}
+			synctest.Wait() // an idle close runs on its own goroutine
+			select {
+			case <-c.closed:
+				closed = true
+			default:
+			}
+			c.mu.Lock()
+			fired = c.ptoFired
+			c.mu.Unlock()
+		})
+		return stuck, passes, fired, closed
+	}
+
+	t.Run("control", func(t *testing.T) {
+		stuck, passes, fired, closed := run(t, false)
+		if stuck != 0 || !closed {
+			t.Fatalf("control: %d of %d passes returned no future deadline (%d PTOs fired), closed=%v; want 0 and an idle close",
+				stuck, passes, fired, closed)
+		}
+	})
+	t.Run("record at its bound", func(t *testing.T) {
+		stuck, passes, fired, closed := run(t, true)
+		if stuck != 0 {
+			t.Fatalf("%d of %d timer passes returned a deadline not after now (%d PTOs counted, closed=%v): timerLoop waits 0 and spins under c.mu until the idle timeout",
+				stuck, passes, fired, closed)
+		}
+	})
 }

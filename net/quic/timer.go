@@ -257,7 +257,19 @@ func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 		// (§6.2.4, sendProbesLocked).
 		c.sendProbesLocked(probed)
 		for _, space := range probed {
-			earlier(c.ptoDeadlineLocked(&c.spaces[space], space))
+			sp := &c.spaces[space]
+			d := c.ptoDeadlineLocked(sp, space)
+			if !d.IsZero() && !d.After(now) {
+				// No probe left: the record at its bound refused it
+				// (errRecordFull), or the send failed. Its clock restarts
+				// as a sent probe's would; left where it was, a backoff
+				// capped at 2^10 returns a deadline already past, and the
+				// timer loop runs again at once, under mu, until the idle
+				// timeout.
+				sp.lastElicit = now
+				d = c.ptoDeadlineLocked(sp, space)
+			}
+			earlier(d)
 		}
 	}
 	earlier(c.paceDeadline)
