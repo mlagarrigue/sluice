@@ -679,6 +679,26 @@ func (c *Conn) retirePeerCIDLocked(seq uint64) {
 	c.noteRetiredSelfLocked(seq)
 }
 
+// retireProbeCIDLocked retires the peer identifier a probe given up went
+// under — RFC 9000 §5.1.2: an identifier "no longer used" is retired, and
+// a peer that sees nothing retired has no reason to issue the replacement
+// a later move needs (§5.1.1). Marked used, the identifier was out of every
+// pick (pickPeerCIDLocked) for the life of the connection, and a server
+// that issued only it and the one in use left Rebind with
+// ErrNoFreshConnectionID for good. Nothing for an identifier gone from the
+// pool or the one in use. Callers hold mu.
+func (c *Conn) retireProbeCIDLocked(cid []byte) {
+	if len(cid) == 0 {
+		return
+	}
+	for _, e := range c.peerCIDs {
+		if bytes.Equal(e.cid, cid) {
+			c.retirePeerCIDLocked(e.seq)
+			return
+		}
+	}
+}
+
 // retireLeftCIDLocked retires the peer identifier previous once a move away
 // from it leaves it serving no address (§5.1.2) — what makes a peer that
 // keeps its pool full issue the replacement the next move needs (§9.5).
@@ -1293,10 +1313,23 @@ func (c *Conn) Rebind(pc net.PacketConn) error {
 	// socket, or a candidate of an earlier Rebind's. Either way it is
 	// probed again from this socket, or not at all.
 	preferred := (c.pathProbe.pending && c.pathProbe.target != nil) || c.preferredCandidate.pending
+	// The identifiers those probes went under are given up with them: the
+	// preferred address is probed again, if at all, under a fresh one
+	// (§9.5), and they are retired (§5.1.2) once the new probe has its own.
+	var givenUp [][]byte
+	if c.pathProbe.pending && c.pathProbe.target != nil {
+		givenUp = append(givenUp, c.pathProbe.targetCID)
+	}
+	if c.preferredCandidate.pending {
+		givenUp = append(givenUp, c.preferredCandidate.cid)
+	}
 	c.preferredCandidate = preferredCandidate{}
 	c.startPathChallengeLocked(now)
 	c.pathProbe.fatal = c.pathProbe.pending
 	c.retireLeftCIDLocked(previous, false)
+	for _, cid := range givenUp {
+		c.retireProbeCIDLocked(cid)
+	}
 	if preferred {
 		// The move interrupted the probe of the server's preferred
 		// address: RFC 9000 §9.6.3, "a client that migrates before it has
@@ -2041,6 +2074,7 @@ func (c *Conn) handlePathResponse(f Frame, now time.Time) {
 // limit with no probe left to lift it. Callers hold mu.
 func (c *Conn) abandonViaProbeLocked(now time.Time) {
 	c.pathProbe.pending = false
+	c.retireProbeCIDLocked(c.pathProbe.targetCID)
 	c.pathProbe.via, c.pathProbe.targetCID = nil, nil
 	c.pathProbe.viaValidated, c.pathProbe.viaNonProbing = false, false
 	if c.amplActive {
@@ -2087,6 +2121,8 @@ func (c *Conn) pathProbeDeadlineLocked(now time.Time) time.Time {
 		// A preferred address the server never answered at: the
 		// connection stays where it is, on a path that works (§9.6.2
 		// allows the client to ignore the offer), and nothing is wrong.
+		// The identifier the probe went under serves nothing any more.
+		c.retireProbeCIDLocked(c.pathProbe.targetCID)
 		c.pathProbe.target, c.pathProbe.targetCID = nil, nil
 		if c.pathProbe.fatal {
 			// A client's Rebind whose new path the server never answered
