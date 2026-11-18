@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mlagarrigue/sluice"
@@ -290,6 +291,11 @@ func (c *httpCall) fail(p any, stack []byte) {
 func (c *httpCall) decide() {
 	if !c.isDecided {
 		c.isDecided = true
+		// Closed to the handler before the batch is released, from the
+		// handler's own goroutine: a read it starts after a Flush would
+		// otherwise take the body's lock first, wait there for the client,
+		// and hold end — and with it every answer of the batch.
+		c.body.flushed.Store(true)
 		c.decided.Done()
 	}
 }
@@ -594,13 +600,16 @@ type requestBody struct {
 	items  [][]byte
 	ended  bool
 	eof    bool
+	// flushed is set when the answer is decided, before end can run: a
+	// read from then on fails without waiting for the client.
+	flushed atomic.Bool
 }
 
 func (b *requestBody) Read(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	switch {
-	case b.ended:
+	case b.ended, b.flushed.Load() && !b.eof:
 		return 0, errBodyAfterFlush
 	case b.eof:
 		return 0, io.EOF

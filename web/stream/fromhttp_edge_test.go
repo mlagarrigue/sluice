@@ -1,6 +1,7 @@
 package stream_test
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -263,7 +265,10 @@ func TestFromHTTPLongWriteAfterAForcedStop(t *testing.T) {
 		failed <- err
 	})
 	ctx, cancel := context.WithCancel(context.Background())
-	stream.FromHTTP(h)(ctx, sluice.Batch[httpstream.Request]{Items: []httpstream.Request{get("/")}})
+	// Kept reachable to the end: a response dropped unpulled releases its
+	// handler with errClientGone once collected, which could come first.
+	out := stream.FromHTTP(h)(ctx, sluice.Batch[httpstream.Request]{Items: []httpstream.Request{get("/")}})
+	defer runtime.KeepAlive(out)
 	cancel()
 	select {
 	case err := <-failed:
@@ -339,5 +344,47 @@ func TestServeH3CertificateFiles(t *testing.T) {
 	srv := &http.Server{Addr: "127.0.0.1:0", Handler: http.NotFoundHandler(), ReadHeaderTimeout: time.Second}
 	if err := stream.ServeH3(ctx, srv, 0, certFile, keyFile); err != nil {
 		t.Errorf("ServeH3 with certificate files = %v", err)
+	}
+}
+
+// A read after a Flush fails at once, with the head already on its way: it
+// does not wait for the client's next chunk while the batch, and every answer
+// in it, waits for the read.
+func TestFromHTTPReadAfterFlushFailsAtOnce(t *testing.T) {
+	readErr := make(chan error, 1)
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.(http.Flusher).Flush()
+		_, err := io.ReadAll(r.Body)
+		readErr <- err
+	})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &httpstream.Server{Handler: stream.FromHTTP(h)}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	// One chunk of a chunked body, and nothing after it.
+	if _, err := io.WriteString(c, "POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.SetReadDeadline(time.Now().Add(time.Second))
+	line, err := bufio.NewReader(c).ReadString('\n')
+	if err != nil || !strings.HasPrefix(line, "HTTP/1.1 200") {
+		t.Fatalf("head of a flushed answer: %q, %v; want it within a second", line, err)
+	}
+	select {
+	case err := <-readErr:
+		if err == nil || !strings.Contains(err.Error(), "after the response began") {
+			t.Errorf("read after a Flush = %v, want the read-after-flush error", err)
+		}
+	case <-time.After(time.Second):
+		t.Error("the read after a Flush is still waiting for the client")
 	}
 }
