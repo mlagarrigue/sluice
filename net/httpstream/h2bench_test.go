@@ -2,7 +2,9 @@ package httpstream
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -317,6 +319,73 @@ func BenchmarkH2BatchBesideOpenUploads(b *testing.B) {
 					b.Fatal(err)
 				}
 			}
+		})
+	}
+}
+
+// parkProducers starts n producers on streams 1, 3, …, each with a write
+// budget's worth of data queued on a stream granted no credit, so that its
+// next extend waits for room the writer cannot make; it returns once all
+// of them are waiting, and a function that fails the writer and waits for
+// them to leave.
+func parkProducers(tb testing.TB, w *h2Writer, n int) (release func()) {
+	tb.Helper()
+	data := make([]byte, w.cfg.MaxWriteBufferBytes)
+	var left sync.WaitGroup
+	parked := make(chan struct{}, n)
+	w.mu.Lock()
+	for i := range n {
+		w.windows[uint32(2*i+1)] = 0 //nolint:gosec // G115: a thousand at most
+	}
+	w.mu.Unlock()
+	for i := range n {
+		id := uint32(2*i + 1) //nolint:gosec // G115: a thousand at most
+		left.Go(func() {
+			var jobs [2]h2Job
+			jobs[0].done, jobs[1].done = true, true
+			cur, err := w.extend(id, nil, &jobs[0], data)
+			if err != nil {
+				parked <- struct{}{}
+				return
+			}
+			parked <- struct{}{}
+			_, _ = w.extend(id, cur, &jobs[1], data) // waits: the job is full and gets no credit
+		})
+	}
+	for range n {
+		<-parked
+	}
+	// Each sent its signal before its second extend took the lock: once
+	// the lock has been taken and released past all of them, and the
+	// scheduler has had a moment, they wait on the condition.
+	time.Sleep(20 * time.Millisecond)
+	return func() {
+		w.mu.Lock()
+		w.setErr(errors.New("benchmark over"))
+		w.wakeAll()
+		w.mu.Unlock()
+		left.Wait()
+	}
+}
+
+// BenchmarkH2PingBesideParkedProducers is one PING answered by a writer
+// with n producers parked, each waiting for room in a job the peer grants
+// no credit to: a frame for the connection, not for any of them.
+func BenchmarkH2PingBesideParkedProducers(b *testing.B) {
+	for _, n := range []int{1, 64, 1024} {
+		b.Run(fmt.Sprintf("producers=%d", n), func(b *testing.B) {
+			w := newH2Writer(&countingConn{}, Config{MaxConcurrentStreams: n}.mustResolve())
+			w.connWind = 0
+			go w.run()
+			release := parkProducers(b, w, n)
+			ping := h2Frame{Type: framePing, Flags: flagAck, Payload: make([]byte, 8)}
+			for b.Loop() {
+				if err := w.control(ping); err != nil {
+					b.Fatal(err)
+				}
+			}
+			b.StopTimer()
+			release()
 		})
 	}
 }

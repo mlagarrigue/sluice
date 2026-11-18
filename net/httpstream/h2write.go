@@ -165,8 +165,16 @@ type h2Writer struct {
 	conn net.Conn
 	cfg  Config
 
+	// cond is what the producers, the head and pair waits and the reader
+	// at the control bound wait on: the writer's progress (a round written,
+	// a job settled) and its end. work is the writer's own wait, for
+	// something to write: a control frame, credit, a job or more of one.
+	// Apart, a PING, SETTINGS or WINDOW_UPDATE wakes the writer alone, where
+	// one condition woke every producer parked on a full job as well — a
+	// thousand of them for a frame that concerns none.
 	mu   sync.Mutex
 	cond *sync.Cond
+	work *sync.Cond
 	done chan struct{}
 
 	// ctrl holds framed control frames — SETTINGS, PING ACK, WINDOW_UPDATE,
@@ -266,7 +274,16 @@ func newH2Writer(c net.Conn, cfg Config) *h2Writer {
 		goAwayLast: maxStreamID,
 	}
 	w.cond = sync.NewCond(&w.mu)
+	w.work = sync.NewCond(&w.mu)
 	return w
+}
+
+// wakeAll wakes the writer and everyone waiting on its progress: what
+// settles jobs, fails or stops the writer, or may make work for it. Called
+// with mu held.
+func (w *h2Writer) wakeAll() {
+	w.cond.Broadcast()
+	w.work.Signal()
 }
 
 // run is the write goroutine. It ends when the connection fails, or when stop
@@ -299,28 +316,39 @@ func (w *h2Writer) run() {
 			w.park()
 		}
 
+		ctrlFull := len(w.ctrl) >= w.cfg.MaxPendingControlBytes
 		w.out = w.out[:0]
 		w.out = append(w.out, w.ctrl...)
 		w.ctrl = w.ctrl[:0]
+		framed := len(w.out)
 		w.inflight = w.fill()
 		buf := w.out
 		// The control queue has room again, so a read goroutine blocked on
-		// its bound can carry on reading.
-		w.cond.Broadcast()
+		// its bound can carry on reading; a job framed from has room, so its
+		// producer can add to it. A round of control frames alone — a PING's
+		// answer — leaves the producers parked: each wake-up would cost every
+		// one of them a turn for nothing.
+		if ctrlFull || len(buf) > framed {
+			w.cond.Broadcast()
+		}
 		w.mu.Unlock()
 
 		err := w.writeAll(buf)
 
 		w.mu.Lock()
+		settled := len(w.inflight) > 0
 		if err != nil {
 			w.setErr(err)
+			settled = true
 		} else {
 			for _, j := range w.inflight {
 				w.settle(j, nil)
 			}
 			w.inflight = nil
 		}
-		w.cond.Broadcast()
+		if settled {
+			w.cond.Broadcast()
+		}
 		w.mu.Unlock()
 	}
 }
@@ -346,7 +374,7 @@ func (w *h2Writer) park() {
 			w.expiry = time.AfterFunc(time.Until(d), func() {
 				w.mu.Lock()
 				w.expire()
-				w.cond.Broadcast()
+				w.wakeAll()
 				w.mu.Unlock()
 			})
 		} else {
@@ -354,7 +382,7 @@ func (w *h2Writer) park() {
 		}
 		defer w.expiry.Stop()
 	}
-	w.cond.Wait()
+	w.work.Wait()
 }
 
 func (w *h2Writer) earliest() (time.Time, bool) {
@@ -596,7 +624,7 @@ func (w *h2Writer) deliver(b *h2Sent) error {
 		j.queued = true
 		w.jobs = append(w.jobs, j)
 	}
-	w.cond.Broadcast()
+	w.wakeAll()
 	return nil
 }
 
@@ -754,7 +782,7 @@ func (w *h2Writer) extend(id uint32, cur, spare *h2Job, data []byte) (*h2Job, er
 				cur.off = 0
 			}
 			cur.data = append(cur.data, data...)
-			w.cond.Broadcast()
+			w.work.Signal()
 			return cur, nil
 		}
 		w.cond.Wait()
@@ -768,7 +796,7 @@ func (w *h2Writer) extend(id uint32, cur, spare *h2Job, data []byte) (*h2Job, er
 	}
 	j.data = append(j.data[:0], data...)
 	w.jobs = append(w.jobs, j)
-	w.cond.Broadcast()
+	w.work.Signal()
 	return j, nil
 }
 
@@ -810,7 +838,7 @@ func (w *h2Writer) finish(id uint32, cur, spare *h2Job, tail []byte, resetAfter 
 	j := cur
 	if j != nil && j.queued {
 		j.end, j.closes, j.tail, j.resetAfter = true, true, tail, resetAfter
-		w.cond.Broadcast()
+		w.work.Signal()
 	} else {
 		var err error
 		if j, err = w.claim(id, cur, spare); err != nil || j.err != nil {
@@ -818,7 +846,7 @@ func (w *h2Writer) finish(id uint32, cur, spare *h2Job, tail []byte, resetAfter 
 		}
 		j.end, j.closes, j.tail, j.resetAfter = true, true, tail, resetAfter
 		w.jobs = append(w.jobs, j)
-		w.cond.Broadcast()
+		w.work.Signal()
 	}
 	for !j.done {
 		if w.err != nil {
@@ -865,7 +893,7 @@ func (w *h2Writer) goAway(last, code uint32) error {
 	if err := w.appendCtrl(h2Frame{Type: frameGoAway, Payload: p[:]}); err != nil {
 		return err
 	}
-	w.cond.Broadcast()
+	w.work.Signal()
 	return nil
 }
 
@@ -876,7 +904,7 @@ func (w *h2Writer) controlLocked(f h2Frame) error {
 	if err := w.appendCtrl(f); err != nil {
 		return err
 	}
-	w.cond.Broadcast()
+	w.work.Signal()
 	return nil
 }
 
@@ -991,7 +1019,7 @@ func (w *h2Writer) refuse(id uint32, status int, head bool, code uint32) error {
 	if err := w.appendCtrl32(frameRSTStream, id, code); err != nil {
 		return err
 	}
-	w.cond.Broadcast()
+	w.wakeAll()
 	return nil
 }
 
@@ -1020,7 +1048,7 @@ func (w *h2Writer) interim(id uint32, status int) error {
 	if err := w.appendCtrl(h2Frame{Type: frameHeaders, Flags: flagEndHeaders, StreamID: id, Payload: block}); err != nil {
 		return err
 	}
-	w.cond.Broadcast()
+	w.wakeAll()
 	return nil
 }
 
@@ -1212,7 +1240,7 @@ func (w *h2Writer) forgetLocked(id uint32) {
 	}
 	w.jobs = kept
 	w.turn = 0
-	w.cond.Broadcast()
+	w.wakeAll()
 }
 
 // alive reports whether a response for id may still be written: the stream
@@ -1241,7 +1269,7 @@ func (w *h2Writer) credit(id uint32, inc int32) error {
 		return streamError{id: id, code: errFlowControlError, err: err}
 	}
 	w.windows[id] = next
-	w.cond.Broadcast()
+	w.work.Signal()
 	return nil
 }
 
@@ -1253,7 +1281,7 @@ func (w *h2Writer) creditConn(inc int32) error {
 		return err // connection-level: a connection error, as §6.9.1 says
 	}
 	w.connWind = next
-	w.cond.Broadcast()
+	w.work.Signal()
 	return nil
 }
 
@@ -1280,7 +1308,7 @@ func (w *h2Writer) setInitialWindow(v int32) error {
 		}
 		w.windows[id] = next
 	}
-	w.cond.Broadcast()
+	w.work.Signal()
 	return nil
 }
 
@@ -1302,7 +1330,7 @@ func (w *h2Writer) setMaxFrame(n int) {
 func (w *h2Writer) stop() {
 	w.mu.Lock()
 	w.stopping = true
-	w.cond.Broadcast()
+	w.wakeAll()
 	w.mu.Unlock()
 }
 

@@ -125,7 +125,7 @@ func blocks(t *testing.T, w *h2Writer, f func() error, release func()) bool {
 	}
 	w.mu.Lock()
 	release()
-	w.cond.Broadcast()
+	w.wakeAll()
 	w.mu.Unlock()
 	if err := <-done; err != nil {
 		t.Errorf("after the release: %v", err)
@@ -203,7 +203,7 @@ func wakes(t *testing.T, w *h2Writer, f func() error) bool {
 		w.mu.Lock()
 		close(waiting) // f needs the lock, which only Wait gives up
 		for len(w.ctrl) == 0 {
-			w.cond.Wait()
+			w.work.Wait()
 		}
 		w.mu.Unlock()
 		close(woke)
@@ -216,7 +216,9 @@ func wakes(t *testing.T, w *h2Writer, f func() error) bool {
 	case <-woke:
 		return true
 	case <-time.After(time.Second):
-		w.cond.Broadcast()
+		w.mu.Lock()
+		w.wakeAll()
+		w.mu.Unlock()
 		<-woke
 		return false
 	}
@@ -301,4 +303,58 @@ func TestH2GoAwayIdentifiersQueuedFromTwoGoroutinesNeverRise(t *testing.T) {
 			t.Fatalf("GOAWAYs queued with last stream %v; the identifier rose", ids)
 		}
 	}
+}
+
+// A PING, a WINDOW_UPDATE or a SETTINGS concerns the writer, not the
+// producers parked on full jobs: they wait for room only the writer's
+// rounds make. One condition for both woke every producer at each such
+// frame — a thousand of them answering a PING cost 8 µs per frame
+// (BenchmarkH2PingBesideParkedProducers). A goroutine waiting on cond, as
+// a producer does, is not woken by any of them; the writer's own wait is.
+func TestH2ControlFramesWakeTheWriterAlone(t *testing.T) {
+	w := testWriter(1)
+	waiting, woke, done := make(chan struct{}), make(chan struct{}, 1), make(chan struct{})
+	stop := false
+	go func() {
+		w.mu.Lock()
+		close(waiting) // the frames below need the lock, which only Wait gives up
+		for {
+			w.cond.Wait()
+			if stop {
+				break
+			}
+			select {
+			case woke <- struct{}{}:
+			default:
+			}
+		}
+		w.mu.Unlock()
+		close(done)
+	}()
+	<-waiting
+	ping := h2Frame{Type: framePing, Flags: flagAck, Payload: make([]byte, 8)}
+	for range 4 {
+		if err := w.control(ping); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.credit(1, 1); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.creditConn(1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.setInitialWindow(w.initial + 1); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-woke:
+		t.Error("a goroutine parked as a producer was woken by frames that concern the writer alone")
+	case <-time.After(50 * time.Millisecond):
+	}
+	w.mu.Lock()
+	stop = true
+	w.cond.Broadcast()
+	w.mu.Unlock()
+	<-done
 }
