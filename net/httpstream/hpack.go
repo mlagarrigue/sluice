@@ -365,7 +365,8 @@ func (d *hpackDecoder) skipLiteral(block []byte) (rest []byte, err error) {
 
 // literalBytes decodes a literal representation whose index prefix is n bits:
 // the name is either an index or a string, and the value is always a string.
-// An indexed name is a view of the table entry that holds it.
+// An indexed name is a view of the static table, or, with an arena, of the
+// dynamic entry that holds it.
 //
 // With a non-nil arena the strings are appended to it (see
 // appendFieldString), budget being what the list may still spend. With a nil
@@ -400,11 +401,17 @@ func (d *hpackDecoder) literalBytes(block []byte, n uint8, arena *[]byte, budget
 		return name, value, rest, nil
 	}
 
+	// A name from the dynamic table is copied in beside the value: a view of
+	// the source entry would keep its whole allocation, value included,
+	// alive after the table evicts it and counts its bytes free.
+	ownName := idx == 0 || idx > uint64(len(staticTable))
 	buf := d.scratch[:0]
 	if idx == 0 {
 		if buf, rest, err = d.appendStr(buf, rest); err != nil {
 			return nil, nil, nil, err
 		}
+	} else if ownName {
+		buf = append(buf, name...)
 	}
 	mid := len(buf)
 	if buf, rest, err = d.appendStr(buf, rest); err != nil {
@@ -417,7 +424,7 @@ func (d *hpackDecoder) literalBytes(block []byte, n uint8, arena *[]byte, budget
 		// is not absent, as the h2 :authority check reads it.
 		owned = []byte{}
 	}
-	if idx == 0 {
+	if ownName {
 		name = owned[:mid:mid]
 	}
 	return name, owned[mid:], rest, nil
