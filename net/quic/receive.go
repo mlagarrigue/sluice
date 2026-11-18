@@ -1282,7 +1282,7 @@ frames:
 			}
 			delta := grown[len(scratch):]
 			scratch = grown
-			connGrowth += growth
+			connGrowth = addGrowth(connGrowth, growth)
 			if growth > 0 || len(delta) > 0 || finished {
 				c.rxProgress = true
 			}
@@ -1303,7 +1303,7 @@ frames:
 			}
 			connReleased += released
 			if s != nil {
-				connGrowth += growth
+				connGrowth = addGrowth(connGrowth, growth)
 				batch = append(batch, Frame{Type: FrameResetStream, StreamID: f.StreamID, value: f.value})
 				ended = append(ended, s)
 			}
@@ -2525,4 +2525,14 @@ func (c *Conn) storeScratch(s []byte) {
 	c.mu.Lock()
 	c.deltaScratch = s
 	c.mu.Unlock()
+}
+
+// addGrowth adds one frame's stream growth to a packet's sum, held just past
+// varint.Max: a stream's growth is at most that, so neither the sum nor the
+// connection's highest offset plus it can wrap, and a sum past every limit
+// the connection can grant is refused as such. Summed bare, five streams
+// taken to 2^62-1 in one packet wrapped it to almost nothing, and the
+// connection's limit counted none of their bytes.
+func addGrowth(sum, growth uint64) uint64 {
+	return min(sum+growth, varint.Max+1)
 }

@@ -3,6 +3,9 @@ package quic
 import (
 	"errors"
 	"testing"
+	"time"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 func TestSendQuota(t *testing.T) {
@@ -78,4 +81,47 @@ func TestInitialStreamLimitMapping(t *testing.T) {
 	if got := initialStreamRecvLimit(peer, 0, false); got != 200 {
 		t.Errorf("recv limit for a peer-opened stream = %d, want the remote announcement 200", got)
 	}
+}
+
+// A packet's stream growth is summed before the connection's limit judges
+// it. With stream windows near 2^62, which Config admits up to varint.Max,
+// five STREAM frames wrapped the sum: the packet passed, the connection's
+// credit moved a few bytes, and every stream had its highest offset at
+// 2^62-1 — whatever the peer sent below it after that cost the connection
+// nothing. The control, two frames whose sum does not wrap, is refused with
+// FLOW_CONTROL_ERROR as the five now are.
+func TestStreamGrowthDoesNotWrapTheConnectionCredit(t *testing.T) {
+	build := func() *Conn {
+		cfg := DefaultConfig()
+		cfg.InitialMaxStreamDataBidiRemote = varint.Max
+		cfg.InitialMaxData = 1 << 20
+		return assembleConn(&fuzzSink{addr: "wrap:self"}, fakeFuzzAddr("wrap:peer"),
+			[]byte("dcid0000"), []byte("scid0000"), false, cfg)
+	}
+	far := func(ids ...StreamID) []byte {
+		var p []byte
+		for _, id := range ids {
+			p = append(p, streamFrameBytes(id, varint.Max-1, []byte{1})...)
+		}
+		return p
+	}
+
+	t.Run("control", func(t *testing.T) {
+		c := build()
+		err := c.frames(spaceApplication, far(0, 4), time.Now())
+		wantCode(t, err, transportFlowControl, "two streams grown to 2^62-1 under InitialMaxData 1 MiB")
+	})
+	t.Run("wrapped", func(t *testing.T) {
+		c := build()
+		payload := append(far(0, 4, 8, 12), streamFrameBytes(16, 7, []byte{1})...)
+		err := c.frames(spaceApplication, payload, time.Now())
+		c.mu.Lock()
+		highest, limit := c.connRecv.highest, c.connRecv.max
+		c.mu.Unlock()
+		if err == nil {
+			t.Fatalf("a packet growing four streams to 2^62-1 and a fifth by 8 bytes was accepted: connection credit used %d of %d",
+				highest, limit)
+		}
+		wantCode(t, err, transportFlowControl, "five streams grown past InitialMaxData")
+	})
 }
