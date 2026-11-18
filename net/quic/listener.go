@@ -356,6 +356,12 @@ type Listener struct {
 	// (udp.EnablePacketInfo); nil otherwise. Its read loop then hands every
 	// datagram a via that answers from the address it arrived on.
 	sourced *net.UDPConn
+	// preferredSourced is the same for the preferred-address socket: bound
+	// to the unspecified address — which PreferredIPv4 and PreferredIPv6
+	// allow — it answers a client's probe of the address it announced from
+	// that address, not from whichever the route picks, which the client
+	// does not take as the answer (RFC 9000 §8.2.2). nil otherwise.
+	preferredSourced *net.UDPConn
 	// preferred is ListenerConfig.PreferredAddress, read by its own
 	// loop and dispatched into the same demux table; preferredV4 and
 	// preferredV6 are what each handshake announces for it, one per
@@ -653,6 +659,9 @@ func NewListener(pc net.PacketConn, cfg *tls.Config, qcfg Config, lcfg ListenerC
 	if lcfg.EarlyData {
 		l.early = newEarlyGate(lcfg.EarlyDataWindow, lcfg.MaxEarlyDataTickets)
 	}
+	if l.preferred != nil {
+		l.preferredSourced = packetInfoSocket(l.preferred)
+	}
 	var loops sync.WaitGroup
 	loops.Go(func() { l.readLoop(l.pc) })
 	if l.preferred != nil {
@@ -828,8 +837,10 @@ func (l *Listener) readLoop(pc net.PacketConn) {
 	dfSocket(pc)           // Don't Fragment on what this socket sends (§14)
 	ecnOK := ecnSocket(pc) // the kernel reports each datagram's ECN field (§13.4.1)
 	var sv *sourcedVias
-	if l.sourced != nil && pc == net.PacketConn(l.sourced) {
-		sv = &sourcedVias{uc: l.sourced, oob: oob, byLocal: make(map[localKey]*sourcedConn)}
+	for _, uc := range [...]*net.UDPConn{l.sourced, l.preferredSourced} {
+		if uc != nil && pc == net.PacketConn(uc) {
+			sv = &sourcedVias{uc: uc, oob: oob, byLocal: make(map[localKey]*sourcedConn)}
+		}
 	}
 	readFails := 0 // consecutive read errors, for the backoff
 	for {
