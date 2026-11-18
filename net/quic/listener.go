@@ -1393,6 +1393,15 @@ func (l *Listener) bootstrapConn(datagram []byte, from net.Addr, h longHeader, r
 		l.forget(c) // the preferred-address identifier may already route here
 		c.abort(&transportError{code: transportConnectionRefused, err: fmt.Errorf(
 			"%w: the address has MaxConnsPerIP proven connections", ErrQUIC)})
+		if rt == nil {
+			// A direct attempt's connection pays the amplification limit
+			// with nothing received yet — runHandshake reads the first
+			// datagram — so the close abort queued is held, and the client
+			// would hear nothing until its handshake timeout. It is told as
+			// an Initial refused at admission is: a stateless
+			// CONNECTION_REFUSED (RFC 9000 §5.2.2).
+			l.sendStatelessClose(from, h, keys, transportConnectionRefused, via)
+		}
 		return
 	}
 	l.routeLocked(string(c.scid), c)
