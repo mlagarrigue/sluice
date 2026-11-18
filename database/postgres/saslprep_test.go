@@ -5,6 +5,12 @@ import "testing"
 // The examples of RFC 4013 §3, plus the cases where pg_saslprep's callers
 // fall back to the raw bytes. Where the RFC answers "Error", the password
 // comes back unchanged: that is what libpq sends and what the server stored.
+//
+// Every case a check of §2.3-§2.5 decides carries a character NFKC changes
+// (U+00AA, a fullwidth digit), so that only that check keeps the password as
+// it came: without one, the case fails. Examples 6 and 7 of §3 gain one for
+// that reason — on their own, ASCII returns before any table, and NFKC
+// leaves "ا1" alone.
 func TestSASLprep(t *testing.T) {
 	for _, tt := range []struct {
 		name, in, want string
@@ -14,14 +20,14 @@ func TestSASLprep(t *testing.T) {
 		{"RFC 4013 #3, case preserved", "USER", "USER"},
 		{"RFC 4013 #4, output is NFKC", "ª", "a"},
 		{"RFC 4013 #5, output is NFKC", "Ⅸ", "IX"},
-		{"RFC 4013 #6, prohibited character", "\u0007", "\u0007"},
-		{"RFC 4013 #7, bidirectional check", "ا1", "ا1"},
+		{"RFC 4013 #6, prohibited character", "ª\u0007", "ª\u0007"},
+		{"RFC 4013 #7, bidirectional check", "ا１", "ا１"},
 		{"fullwidth letters fold", "ｐａｓｓ", "pass"},
 		{"non-ASCII space becomes U+0020", "a b", "a b"},
-		{"right-to-left throughout", "אב", "אב"},
-		{"right-to-left mixed with left-to-right", "אaב", "אaב"},
-		{"prohibited after a mapping", "é", "é"},
-		{"unassigned in Unicode 3.2", "éȡ", "éȡ"},
+		{"right-to-left throughout", "א１ב", "א1ב"},
+		{"right-to-left mixed with left-to-right", "אa１ב", "אa１ב"},
+		{"prohibited after a mapping", "\u00adª\ue000", "\u00adª\ue000"},
+		{"unassigned in Unicode 3.2", "ªȡ", "ªȡ"},
 		{"maps to nothing at all", "\u00ad\u200c", "\u00ad\u200c"},
 		{"U+200B is a space before it is nothing, as in pg_saslprep", "a\u200bb", "a b"},
 		{"not UTF-8", "caf\xe9", "caf\xe9"},
