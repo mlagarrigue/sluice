@@ -111,6 +111,7 @@ func (r *ownerRegistrar) peerTokenRetired(*Conn, [16]byte) {}
 // Callers hold mu.
 func (c *Conn) setPeerLocked(to net.Addr) {
 	c.peer = to
+	c.peerSeen.Store(&to)
 }
 
 // notePeerTokenLocked tells the registrar a peer identifier's stateless

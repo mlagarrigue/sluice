@@ -359,6 +359,7 @@ func assembleConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient 
 		localMaxStreamsUni:  params.InitialMaxStreamsUni,
 		idleTimeout:         params.MaxIdleTimeout,
 	}
+	c.peerSeen.Store(&peer)
 	c.closing.hold = params.HoldClosing
 	// §14: the datagrams this end sends must not be fragmented, so the
 	// socket is asked to say no (DF) before the first one leaves.

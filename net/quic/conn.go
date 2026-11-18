@@ -97,6 +97,11 @@ type Conn struct {
 	// It is guarded by mu like everything else the send and receive paths
 	// share.
 	peer net.Addr
+	// peerSeen is peer as RemoteAddr reads it, without mu: an HTTP/3
+	// server asks for it with every batch, and queued for mu behind the
+	// writers that hold it through sendmsg (2026-11-17 profiles, a sixth of
+	// static-h3's mutex wait). Stored with peer, by its one setter.
+	peerSeen atomic.Pointer[net.Addr]
 
 	// mu comes before a Listener's mu in the lock order: identifier
 	// registration takes the listener's lock under this one.
@@ -888,9 +893,10 @@ func (c *Conn) LocalAddr() net.Addr {
 // preferred address its server offered (§9.6). A log line taken after a
 // migration names the new address.
 func (c *Conn) RemoteAddr() net.Addr {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.peer
+	if p := c.peerSeen.Load(); p != nil {
+		return *p
+	}
+	return nil // a Conn not made by Dial or a Listener
 }
 
 // Done is closed when the connection ends.

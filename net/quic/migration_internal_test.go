@@ -2034,7 +2034,7 @@ func TestRebindRefusedWhenMigrationIsDisabled(t *testing.T) {
 	// Once adopted — the connection sends to the preferred address, as
 	// adoptPreferredPathLocked leaves it — §18.2's last sentence applies.
 	c.mu.Lock()
-	c.peer = c.preferred
+	c.setPeerLocked(c.preferred)
 	c.peerCIDs = append(c.peerCIDs, peerCID{seq: 1, cid: []byte("peercid1")}) // what Rebind sends under (§9.5)
 	c.mu.Unlock()
 	if err := c.Rebind(fresh); err != nil {
