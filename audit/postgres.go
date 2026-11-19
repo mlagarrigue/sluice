@@ -287,8 +287,12 @@ func init() {
 			if !ok || b > 128<<20 {
 				return nil
 			}
+			label := "the default"
+			if b < 128<<20 {
+				label = "below the 128 MB default"
+			}
 			return []Finding{{
-				Current:  fmt.Sprintf("shared_buffers = %d MB, the default", b>>20),
+				Current:  fmt.Sprintf("shared_buffers = %d MB, %s", b>>20, label),
 				Proposed: "about a quarter of the machine's memory, as the documentation starts from",
 				Why: "128 MB is a default chosen to start on any machine, not to serve: a working " +
 					"set larger than it is read through the operating system's cache, a copy per " +

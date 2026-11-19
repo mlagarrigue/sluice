@@ -3,7 +3,9 @@
 // a value proposed, the goal it serves, the reason in plain words and a
 // link to the documentation it comes from.
 //
-// This first form reads a Go binary's build record:
+// It reads what it is pointed at — a Go binary's build record, a process
+// and the machine under it, a container, a kernel log, a database — through
+// the entries -axes lists:
 //
 //	go run -C audit ./cmd/audit -binary ./sluice-interop
 //	go run -C audit ./cmd/audit -root / -pid 1234 -goals performance
@@ -11,11 +13,12 @@
 //	go run -C audit ./cmd/audit -container web -kernel-log dmesg.txt -root / -profile comparative
 //
 // Every parameter is an axis, and every combination of them is valid. An
-// axis left out means all of its values, so the line above with no -goals
-// reports performance, security and reliability together. The axes and
+// axis left out means all of its values, so a line with no -goals reports
+// the four goals — performance, security, reliability and compliance —
+// together. The axes and
 // their values are printed by -axes.
 //
-// Nothing is asked in this form: the questions a reading cannot settle —
+// Nothing is asked: the questions a reading cannot settle —
 // the role of the machine, how exposed it is — take their default, which
 // is what a run in CI wants. -answer sets one.
 package main

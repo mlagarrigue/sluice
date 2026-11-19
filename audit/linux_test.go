@@ -219,3 +219,31 @@ func TestGomaxprocsIsSilentWithoutAQuotaOrWithARecentLanguage(t *testing.T) {
 		t.Fatalf("%+v: want the quota in cores and the language version", findings)
 	}
 }
+
+// A quota set on the process's own cgroup, or on a slice above it, bounds
+// the process though the root's cpu.max says max: a systemd service with
+// CPUQuota= is the common case, and the root alone never saw it.
+func TestTheCPUQuotaIsReadFromTheProcessCgroup(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		slice string
+		want  float64
+	}{
+		{"on the service", "max 100000\n", 1.5},
+		{"tighter on the slice", "50000 100000\n", 0.5},
+	} {
+		root := seedRoot(t, map[string]string{
+			"proc/42/cgroup":                                 "0::/system.slice/web.service\n",
+			"sys/fs/cgroup/cpu.max":                          "max 100000\n",
+			"sys/fs/cgroup/system.slice/cpu.max":             tc.slice,
+			"sys/fs/cgroup/system.slice/web.service/cpu.max": "150000 100000\n",
+		})
+		target, err := Open(Spec{Root: root, PID: 42})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := cgroupCPUQuota(target); !ok || got != tc.want {
+			t.Errorf("%s: cgroupCPUQuota = %v, %v; want %v, true", tc.name, got, ok, tc.want)
+		}
+	}
+}

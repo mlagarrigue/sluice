@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -283,10 +284,42 @@ func init() {
 }
 
 // cgroupCPUQuota reads the CPU bandwidth the process's cgroup allows, in
-// cores. Only cgroup v2 is read: v1 is being retired, and a host on it
-// reports nothing rather than something half right.
+// cores: the tightest cpu.max from the process's own cgroup (its line
+// "0::<path>" in /proc/<pid>/cgroup) up to the root, since a quota on any
+// ancestor bounds the ones below it — a systemd service with CPUQuota= has
+// it on its own slice, not on the root. Without a process, or when its
+// cgroup cannot be read, the root's cpu.max alone is read. Only cgroup v2
+// is read: v1 is being retired, and a host on it reports nothing rather
+// than something half right.
 func cgroupCPUQuota(t *Target) (float64, bool) {
-	text, ok := t.hostFile("sys/fs/cgroup/cpu.max")
+	dir := ""
+	if t.PID != 0 {
+		if text, ok := t.hostFile(fmt.Sprintf("proc/%d/cgroup", t.PID)); ok {
+			for line := range strings.SplitSeq(text, "\n") {
+				if p, found := strings.CutPrefix(line, "0::"); found {
+					dir = strings.Trim(path.Clean("/"+p), "/")
+				}
+			}
+		}
+	}
+	best, found := 0.0, false
+	for {
+		if q, ok := cpuMax(t, path.Join("sys/fs/cgroup", dir, "cpu.max")); ok && (!found || q < best) {
+			best, found = q, true
+		}
+		if dir == "" {
+			return best, found
+		}
+		dir = path.Dir(dir)
+		if dir == "." {
+			dir = ""
+		}
+	}
+}
+
+// cpuMax reads one cpu.max file as cores; "max" or a file absent is no quota.
+func cpuMax(t *Target, rel string) (float64, bool) {
+	text, ok := t.hostFile(rel)
 	if !ok {
 		return 0, false
 	}
