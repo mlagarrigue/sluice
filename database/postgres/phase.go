@@ -28,6 +28,14 @@ import (
 // it — fails the next write with [phase.ErrLeaseLost]: no process writes a
 // record without holding the lock. The table is created on first use.
 //
+// The job's connection must be a server session of its own from start to
+// end. Behind a pooler that lends a server session for one transaction at a
+// time (PgBouncer in transaction mode, for one), the lock is taken on a
+// session the next statement does not find again: another process served by
+// that session is granted it in turn, and it stays held after the process
+// dies for as long as the pooler keeps the session. Dial the server
+// directly, or a pooler in session mode.
+//
 // The lock's key is a 64-bit hash of the table and the job's name: jobs of
 // two tables never exclude each other, and a collision between two names
 // would make them exclude each other, never share a lock silently.

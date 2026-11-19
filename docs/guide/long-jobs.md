@@ -90,6 +90,12 @@ its connection, without waiting for a lease to run out. The library keeps
 nothing of its own either way; the decision is
 [ADR 0027](../design/adr/0027-phase-runner.md).
 
+> **In plain words** — the lock belongs to a server session, not to your
+> process. A connection pooler in between (PgBouncer in transaction mode)
+> hands that session to other clients between two transactions, and the
+> lock with it. For `PhaseStore`, `Dial` goes to the server, or to a pooler
+> in session mode.
+
 ## You can now
 
 - cut a job into phases that can run again, and give each a check;
