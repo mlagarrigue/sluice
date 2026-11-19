@@ -60,7 +60,7 @@ import (
 // connection ended. Nothing is gained by retrying the same call.
 // [ErrEarlyDataRejected] stands apart: a refused 0-RTT is no misuse, and
 // sending again on a new stream is its remedy.
-var ErrQUIC = errors.New("quic: malformed")
+var ErrQUIC = errors.New("quic: invalid use or encoding")
 
 // ErrTruncated reports a buffer that ends inside what it was describing. It
 // is separated from [ErrQUIC] because a datagram is atomic: a packet that

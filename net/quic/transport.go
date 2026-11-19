@@ -39,9 +39,11 @@ const (
 
 // TransportParameters are the limits each endpoint imposes on the other.
 //
-// Every one of them is a bound, so a zero field is a real announcement — an
-// endpoint that announces no data credit has announced none, and a peer that
-// honours it can send nothing at all. The zero value is therefore not usable
+// Every one of them is a bound, and a zero credit or stream count is a real
+// announcement — an endpoint that announces no data credit has announced
+// none, and a peer that honours it can send nothing at all. Two fields read
+// zero as "the default" instead, each saying so: MaxUDPPayloadSize (1452)
+// and ActiveConnIDLimit (4). The zero value is therefore not usable
 // and [Dial], accept and [NewListener] refuse it with [ErrZeroParameters]:
 // start from [DefaultConfig] and change what you need. They refuse too,
 // with an error naming the field, a count past 2^62-1 — the most a
@@ -74,6 +76,11 @@ type TransportParameters struct {
 	// table entries, so InitialMaxStreamsBidi and InitialMaxStreamsUni are
 	// what one connection may make this end hold, and a Listener holds that
 	// MaxConns times. Each is refused past 65,536.
+	//
+	// The credits are in bytes, the counts in streams. [DefaultConfig] says
+	// 1 MiB for InitialMaxData, 64 KiB for InitialMaxStreamDataUni, 256 KiB
+	// for each InitialMaxStreamDataBidi*, 100 bidirectional streams and 8
+	// unidirectional ones.
 	InitialMaxData                 uint64
 	InitialMaxStreamDataUni        uint64
 	InitialMaxStreamDataBidiLocal  uint64
@@ -496,6 +503,14 @@ type Config struct {
 // connection that serves requests — enough for a batch of them, not enough
 // to be worth attacking — and every local setting at its zero value: NewReno,
 // datagrams up to 1452 bytes, the socket given back at Close.
+//
+// The transport parameters are a 30 s MaxIdleTimeout, a MaxUDPPayloadSize of
+// 1452 bytes, 1 MiB of InitialMaxData, 256 KiB per bidirectional stream
+// (InitialMaxStreamDataBidiLocal and InitialMaxStreamDataBidiRemote), 64 KiB
+// per unidirectional one (InitialMaxStreamDataUni), 100 bidirectional
+// streams (InitialMaxStreamsBidi, what RFC 9114 §6.1 asks an HTTP/3 server
+// to permit) and 8 unidirectional ones (InitialMaxStreamsUni), and an
+// ActiveConnIDLimit of 4.
 func DefaultConfig() Config {
 	return Config{TransportParameters: defaultParameters()}
 }
