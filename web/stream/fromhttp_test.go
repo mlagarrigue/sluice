@@ -372,6 +372,28 @@ func TestFromHTTPTrailers(t *testing.T) {
 	}
 }
 
+// A name announced in Trailer that is not a token is left out of the
+// Trailer field, as it is left out of the trailers that follow the body: the
+// transport refuses a field value with a control byte or a CR or LF, so the
+// name failed the whole response. The token names beside it stay announced.
+func TestATrailerNameThatIsNotATokenIsDropped(t *testing.T) {
+	for _, bad := range []string{"X-A\x01B", "X-A\r\nSet-Cookie: x", "Bad Name"} {
+		h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Trailer", "X-Sum, "+bad)
+			_, _ = io.WriteString(w, "body")
+			w.Header().Set("X-Sum", "42")
+		})
+		reqs := []httpstream.Request{get("/")}
+		out := answer(t, h, reqs...)
+		if got := values(out[0].Headers, "trailer"); len(got) != 1 || got[0] != "X-Sum" {
+			t.Errorf("Trailer %q: the field says %q, want only X-Sum", bad, got)
+		}
+		if _, err := httpstream.WriteBatch(nil, httpstream.Config{}, reqs, out); err != nil {
+			t.Errorf("Trailer %q fails the whole response: %v", bad, err)
+		}
+	}
+}
+
 // A panic fails its own response, through the transport that logs it; the
 // others of the batch are answered.
 func TestFromHTTPPanics(t *testing.T) {

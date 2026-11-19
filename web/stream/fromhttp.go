@@ -68,8 +68,8 @@ import (
 // connection-specific fields (Connection, Keep-Alive, Proxy-Connection,
 // Transfer-Encoding, Upgrade), the fields only a request carries (Host, TE,
 // Expect), a field whose name is not a token or whose value still holds a
-// control byte once CR and LF have become spaces, and a Date that is not an
-// IMF-fixdate. A 1xx other than 100 and 101 leaves at once through
+// control byte once CR and LF have become spaces, a name announced in
+// Trailer that is not a token, and a Date that is not an IMF-fixdate. A 1xx other than 100 and 101 leaves at once through
 // [httpstream.Request.Interim], with the header as it stands, except where
 // the transport cannot send one: a pipelined HTTP/1.1 request behind
 // another, an HTTP/1.0 client. A deadline set through
@@ -607,9 +607,12 @@ func responseFields(h http.Header) (fields []httpstream.Header, declared []strin
 			}
 			continue
 		case "trailer":
+			// A name that is not a token is left out, as trailers leaves
+			// out its value: announced, it would fail the whole response,
+			// the transport refusing a control byte, CR or LF in a value.
 			for _, v := range h[k] {
 				for name := range strings.SplitSeq(v, ",") {
-					if name = textproto.TrimString(name); name != "" {
+					if name = textproto.TrimString(name); isToken(name) {
 						declared = append(declared, textproto.CanonicalMIMEHeaderKey(name))
 					}
 				}
@@ -640,7 +643,7 @@ func responseFields(h http.Header) (fields []httpstream.Header, declared []strin
 // token, a value whose CR and LF become spaces as net/http writes them, and
 // no other control byte but the tab.
 func appendField(dst []httpstream.Header, name, value string) []httpstream.Header {
-	if name == "" || strings.IndexFunc(name, func(r rune) bool { return !isTokenRune(r) }) >= 0 {
+	if !isToken(name) {
 		return dst
 	}
 	value = strings.NewReplacer("\r", " ", "\n", " ").Replace(value)
@@ -650,6 +653,11 @@ func appendField(dst []httpstream.Header, name, value string) []httpstream.Heade
 		}
 	}
 	return append(dst, httpstream.Header{Name: []byte(name), Value: []byte(value)})
+}
+
+// isToken reports whether s is a token (RFC 9110 §5.6.2): one tchar or more.
+func isToken(s string) bool {
+	return s != "" && strings.IndexFunc(s, func(r rune) bool { return !isTokenRune(r) }) < 0
 }
 
 // isTokenRune reports whether r is a tchar (RFC 9110 §5.6.2).
