@@ -11,7 +11,8 @@ import (
 
 // PGStore is [Store] backed by the connector, and it is the point where the
 // library's two halves meet: the gateway gathers concurrent requests into a
-// batch, and the batch becomes one `= ANY($1)` rather than sixty-four queries.
+// batch, and the batch becomes one query over two key arrays, joined with
+// `unnest`, rather than sixty-four queries.
 //
 // That seam is compiled here, which is the difference between a claim and a
 // check — running it needs a server, but a signature that stopped matching, a
@@ -65,8 +66,8 @@ func (s *PGStore) LoadLines(ctx context.Context, keys []LineKey) (map[LineKey]Li
 
 	src := s.conn.Query(ctx, loadSQL,
 		[]postgres.Param{
-			{OID: pgtype.OIDInt8Array, Value: pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: s.orderIDs}, pgtype.Int8Codec())},
-			{OID: pgtype.OIDInt4Array, Value: pgtype.AppendArray(nil, pgtype.Array[int32]{Elems: s.indexes}, pgtype.Int4Codec())},
+			postgres.ArrayParamOf(pgtype.Int8Codec(), s.orderIDs),
+			postgres.ArrayParamOf(pgtype.Int4Codec(), s.indexes),
 		},
 		postgres.QueryConfig{
 			BatchRows: len(keys),
@@ -169,9 +170,9 @@ func (s *PGStore) SaveLines(ctx context.Context, lines []Line) error {
 
 	src := s.conn.Query(ctx, saveSQL,
 		[]postgres.Param{
-			{OID: pgtype.OIDInt8Array, Value: pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: s.orderIDs}, pgtype.Int8Codec())},
-			{OID: pgtype.OIDInt4Array, Value: pgtype.AppendArray(nil, pgtype.Array[int32]{Elems: s.indexes}, pgtype.Int4Codec())},
-			{OID: pgtype.OIDInt8Array, Value: pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: qty}, pgtype.Int8Codec())},
+			postgres.ArrayParamOf(pgtype.Int8Codec(), s.orderIDs),
+			postgres.ArrayParamOf(pgtype.Int4Codec(), s.indexes),
+			postgres.ArrayParamOf(pgtype.Int8Codec(), qty),
 		},
 		postgres.QueryConfig{
 			BatchRows: 1,

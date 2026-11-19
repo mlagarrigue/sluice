@@ -28,7 +28,7 @@ func seenInTheNextTransaction(t *testing.T, isLocal string) string {
 	}}
 	conn := b.Conn(t)
 	param := func(s string) postgres.Param {
-		return postgres.Param{OID: pgtype.OIDText, Value: pgtype.AppendText(nil, s)}
+		return postgres.ParamOf(pgtype.TextCodec(), s)
 	}
 	if _, err := conn.ExecParams(t.Context(), "SELECT set_config($1, $2, "+isLocal+")",
 		[]postgres.Param{param("app.tenant_id"), param("acme")}); err != nil {
