@@ -1,20 +1,57 @@
 package audit
 
 import (
+	_ "embed"
 	"strings"
 	"testing"
 )
 
 // sClient is what openssl s_client prints around a handshake, its session
-// lines given.
+// lines given as "New, <version>, Cipher is <cipher>": the session block
+// after each says that version on its Protocol line. OpenSSL's own line
+// names the version that defined the cipher instead (see
+// TestTheProtocolLineIsTheVersion, on a real transcript).
 func sClient(sessions ...string) string {
 	var b strings.Builder
 	b.WriteString("CONNECTED(00000003)\n---\nCertificate chain\n 0 s:CN = studychain-web\n---\n")
 	for _, s := range sessions {
-		b.WriteString(s + "\nServer public key is 256 bit\nThis TLS version forbids renegotiation.\n---\n")
+		b.WriteString(s + "\nServer public key is 256 bit\nThis TLS version forbids renegotiation.\n")
+		if f := strings.Split(s, ", "); len(f) == 3 && f[1] != "(NONE)" {
+			b.WriteString("SSL-Session:\n    Protocol  : " + f[1] + "\n    Cipher    : " + strings.TrimPrefix(f[2], "Cipher is ") + "\n")
+		}
+		b.WriteString("---\n")
 	}
 	b.WriteString("DONE\n")
 	return b.String()
+}
+
+// tls12CBC is a real s_client transcript, its session keys and ticket cut.
+//
+//go:embed testdata/s_client_tls12_cbc.txt
+var tls12CBC string
+
+// The version is the session block's Protocol line. OpenSSL 3.0's s_client
+// against s_server -tls1_2 -cipher AES128-SHA printed "New, SSLv3, Cipher
+// is AES128-SHA" and "Protocol  : TLSv1.2" (testdata/s_client_tls12_cbc.txt,
+// the session's keys and ticket cut): read off the cipher line, that
+// session was reported as SSLv3 accepted. A cipher line with no Protocol
+// line after it is refused, unless it is TLS 1.3's.
+func TestTheProtocolLineIsTheVersion(t *testing.T) {
+	got := handshakeFindings(t, "production", tls12CBC)
+	if len(got["tls/legacy-version"]) != 0 {
+		t.Errorf("a TLS 1.2 session reported as a legacy version: %+v", got["tls/legacy-version"])
+	}
+	if len(got["tls/weak-cipher"]) != 1 || !strings.Contains(got["tls/weak-cipher"][0].Current, "TLSv1.2") {
+		t.Errorf("AES128-SHA under TLS 1.2: %+v, want one weak-cipher finding naming TLSv1.2", got["tls/weak-cipher"])
+	}
+	bare := "CONNECTED(00000003)\n---\nNew, SSLv3, Cipher is AES128-SHA\n---\n"
+	if _, err := Open(Spec{TLSHandshake: seedFile(t, "bare.txt", bare)}); err == nil {
+		t.Error("a cipher line with no Protocol line was read")
+	}
+	v13 := "CONNECTED(00000003)\n---\nNew, TLSv1.3, Cipher is TLS_AES_128_GCM_SHA256\n---\n"
+	if _, err := Open(Spec{TLSHandshake: seedFile(t, "v13.txt", v13)}); err != nil {
+		t.Errorf("a TLS 1.3 cipher line alone: %v", err)
+	}
 }
 
 func handshakeFindings(t *testing.T, profile string, transcripts ...string) map[string][]Finding {

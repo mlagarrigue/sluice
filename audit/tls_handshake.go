@@ -13,7 +13,9 @@ import (
 // saved: one handshake per connection, "New, TLSv1.3, Cipher is
 // TLS_AES_128_GCM_SHA256", "Reused, …" for a connection that resumed its
 // session (-reconnect), "New, (NONE), Cipher is (NONE)" for a handshake
-// the server refused. A transcript asked for one version (-tls1_2) that
+// the server refused. The version negotiated is the "Protocol  :" line of
+// the session block that follows, not the one on that line, which names
+// the version that defined the cipher. A transcript asked for one version (-tls1_2) that
 // the server accepts is that version accepted. As everywhere else, the
 // audit dials nothing: the files can be seeded.
 
@@ -30,7 +32,10 @@ type tlsConn struct {
 	cipher  string // OpenSSL's name
 }
 
-var sessionLine = regexp.MustCompile(`(?m)^(New|Reused), (\S+), Cipher is (\S+)`)
+var (
+	sessionLine  = regexp.MustCompile(`(?m)^(New|Reused), (\S+), Cipher is (\S+)`)
+	protocolLine = regexp.MustCompile(`(?m)^\s+Protocol\s*: (\S+)`)
+)
 
 // openHandshakes reads every transcript named, comma-separated. A file
 // with no session line is an error, not an empty reading: a transcript cut
@@ -43,16 +48,32 @@ func openHandshakes(paths string) (*TLSHandshake, error) {
 		if err != nil {
 			return nil, err
 		}
-		found := sessionLine.FindAllStringSubmatch(string(b), -1)
+		text := string(b)
+		found := sessionLine.FindAllStringSubmatchIndex(text, -1)
 		if len(found) == 0 {
 			return nil, errors.New(path + `: no "New, …, Cipher is …" line: want what openssl s_client printed`)
 		}
 		h.Paths = append(h.Paths, path)
-		for _, m := range found {
-			if m[2] == "(NONE)" || m[3] == "(NONE)" {
+		for i, m := range found {
+			kind, cipherVersion, cipher := text[m[2]:m[3]], text[m[4]:m[5]], text[m[6]:m[7]]
+			if cipherVersion == "(NONE)" || cipher == "(NONE)" {
 				continue // refused: nothing negotiated
 			}
-			h.Conns = append(h.Conns, tlsConn{path: path, reused: m[1] == "Reused", version: m[2], cipher: m[3]})
+			// The version on the "New," line is the one that defined the
+			// cipher (SSL_CIPHER_get_version): AES128-SHA under TLS 1.2
+			// prints SSLv3. The negotiated one is the session block's
+			// Protocol line, before the next handshake's line.
+			end := len(text)
+			if i+1 < len(found) {
+				end = found[i+1][0]
+			}
+			version := cipherVersion
+			if p := protocolLine.FindStringSubmatch(text[m[1]:end]); p != nil {
+				version = p[1]
+			} else if cipherVersion != "TLSv1.3" { // a TLS 1.3 suite is negotiated under TLS 1.3 alone
+				return nil, errors.New(path + `: a "` + kind + `, …" line with no "Protocol  :" line after it: the cipher line names the version that defined the cipher, not the one negotiated`)
+			}
+			h.Conns = append(h.Conns, tlsConn{path: path, reused: kind == "Reused", version: version, cipher: cipher})
 		}
 	}
 	return h, nil
