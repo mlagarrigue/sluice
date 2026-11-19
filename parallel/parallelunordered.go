@@ -40,8 +40,10 @@ import (
 // The input batch is copied at the hand-off (the architecture's S14), so
 // composing downstream of a buffer-reusing operator is safe. f runs
 // concurrently and must be safe to; the batch handed to f is valid for that
-// call only; the batch f returns is retained until emitted, so f must not
-// return a buffer it reuses across calls. Memory is bounded by O(workers)
+// call only, except as f's result: f may return it, or a part of it, and
+// its copy is kept until that result is emitted. The batch f returns is
+// retained until emitted, so f must not return a buffer it reuses across
+// calls. Memory is bounded by O(workers)
 // batches (S11). An early stop or a panic anywhere releases every worker before
 // the call returns (S6); a panic in f is re-raised on the consuming goroutine
 // after the workers have been shut down. A panic is never swallowed: under an
@@ -75,9 +77,13 @@ func Unordered[A, B any](s sluice.Stream[A], workers int, f func(sluice.Batch[A]
 }
 
 // unorderedResult carries one completed batch, or the panic that stopped it.
-type unorderedResult[B any] struct {
+type unorderedResult[A, B any] struct {
 	out      sluice.Batch[B]
 	panicked handoff.Panic
+	// slot is the input slot out was made from, freed once out is emitted
+	// or discarded: an f that returns its input, or a view of it, hands
+	// back the slot itself. Nil for a panic, whose slot is freed at once.
+	slot *sluice.Batch[A]
 }
 
 // runParallelUnordered is the concurrent path.
@@ -91,19 +97,19 @@ type unorderedResult[B any] struct {
 // is done.
 func runParallelUnordered[A, B any](s sluice.Stream[A], workers int, f func(sluice.Batch[A]) sluice.Batch[B], yield func(sluice.Batch[B]) bool) {
 	// At most workers jobs queued and workers in hand: 2×workers inputs
-	// outstanding, and 2×workers+1 slots mean the producer always gets one
-	// back eventually. results holds one more than that, 2×workers+1: a
-	// worker frees its slot before sending its result, so while the
-	// consumer is blocked feeding jobs, a job taken from the queue to make
-	// room can finish too — the one past 2×workers that would otherwise
-	// block a worker.
+	// outstanding, and 2×workers+1 slots. A result keeps its slot until the
+	// consuming goroutine has emitted it, so the producer — that same
+	// goroutine — waits for a free slot and for results together, and
+	// emitting one frees one. results holds 2×workers+1, one per slot: a
+	// result holds a slot, and a panic, which frees its slot first, stops
+	// the feeding as soon as it is read.
 	slots := make([]sluice.Batch[A], 2*workers+1)
 	free := make(chan *sluice.Batch[A], 2*workers+1)
 	for i := range slots {
 		free <- &slots[i]
 	}
 	jobs := make(chan *sluice.Batch[A], workers)
-	results := make(chan unorderedResult[B], 2*workers+1)
+	results := make(chan unorderedResult[A, B], 2*workers+1)
 
 	var wg sync.WaitGroup
 	for range workers {
@@ -114,7 +120,15 @@ func runParallelUnordered[A, B any](s sluice.Stream[A], workers int, f func(slui
 		})
 	}
 
-	var ferried unorderedResult[B]
+	var ferried unorderedResult[A, B]
+
+	// release frees a result's slot: free holds one place per slot, so it
+	// never blocks.
+	release := func(r unorderedResult[A, B]) {
+		if r.slot != nil {
+			free <- r.slot
+		}
+	}
 	stopped := false
 
 	// finish closes jobs exactly once, then drains results until the workers
@@ -148,6 +162,7 @@ func runParallelUnordered[A, B any](s sluice.Stream[A], workers int, f func(slui
 			case !yield(r.out):
 				stopped = true
 			}
+			release(r)
 		}
 	}
 	completed := false
@@ -161,6 +176,21 @@ func runParallelUnordered[A, B any](s sluice.Stream[A], workers int, f func(slui
 		}
 	}()
 
+	// emit hands one result on, ferries a panic, and frees the result's
+	// slot once yield is done with it.
+	emit := func(r unorderedResult[A, B]) bool {
+		defer release(r)
+		if r.panicked.Occurred() {
+			ferried, stopped = r, true
+			return false
+		}
+		if !yield(r.out) {
+			stopped = true
+			return false
+		}
+		return true
+	}
+
 	s(func(b sluice.Batch[A]) bool {
 		// Emit what is ready before feeding: results leave on the consuming
 		// goroutine — the iterator contract — at the upstream's rhythm, with
@@ -168,12 +198,7 @@ func runParallelUnordered[A, B any](s sluice.Stream[A], workers int, f func(slui
 		for {
 			select {
 			case r := <-results:
-				if r.panicked.Occurred() {
-					ferried, stopped = r, true
-					return false
-				}
-				if !yield(r.out) {
-					stopped = true
+				if !emit(r) {
 					return false
 				}
 				continue
@@ -181,7 +206,18 @@ func runParallelUnordered[A, B any](s sluice.Stream[A], workers int, f func(slui
 			}
 			break
 		}
-		j := <-free // a worker frees one after f; never starves while work flows
+		// Every slot may sit in a result not emitted yet: waiting for a free
+		// one alone would wait for this goroutine. Emitting frees one.
+		var j *sluice.Batch[A]
+		for j == nil {
+			select {
+			case j = <-free:
+			case r := <-results:
+				if !emit(r) {
+					return false
+				}
+			}
+		}
 		j.Items = batch.Grow(j.Items, len(b.Items))
 		copy(j.Items, b.Items)
 		jobs <- j
@@ -193,9 +229,10 @@ func runParallelUnordered[A, B any](s sluice.Stream[A], workers int, f func(slui
 	ferried.panicked.Raise()
 }
 
-// runUnorderedJob applies f, frees the input slot, and ships the result — or
-// the panic, moved to the goroutine that can re-raise it.
-func runUnorderedJob[A, B any](j *sluice.Batch[A], f func(sluice.Batch[A]) sluice.Batch[B], free chan<- *sluice.Batch[A], results chan<- unorderedResult[B]) {
+// runUnorderedJob applies f and ships the result with its input slot — or
+// frees the slot and ships the panic, moved to the goroutine that can
+// re-raise it.
+func runUnorderedJob[A, B any](j *sluice.Batch[A], f func(sluice.Batch[A]) sluice.Batch[B], free chan<- *sluice.Batch[A], results chan<- unorderedResult[A, B]) {
 	returned := false
 	defer func() {
 		r := recover()
@@ -204,13 +241,13 @@ func runUnorderedJob[A, B any](j *sluice.Batch[A], f func(sluice.Batch[A]) sluic
 		}
 		if r != nil {
 			free <- j
-			results <- unorderedResult[B]{panicked: handoff.Recovered(r)}
+			results <- unorderedResult[A, B]{panicked: handoff.Recovered(r)}
 		}
 	}()
 	out := f(*j)
 	returned = true
-	// Freed after f returns: the batch was valid for that call only, and the
-	// producer may refill it the moment it leaves here.
-	free <- j
-	results <- unorderedResult[B]{out: out}
+	// The slot goes with the result and is freed once it is emitted: an f
+	// that returned its input, or a view of it, returned the slot itself,
+	// which the producer would otherwise refill before the consumer read it.
+	results <- unorderedResult[A, B]{out: out, slot: j}
 }

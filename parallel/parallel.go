@@ -61,8 +61,9 @@ import (
 // also writes. Everything else in this package runs on one goroutine, so this
 // is the operator where that assumption stops holding.
 //
-// The batch handed to f is valid for that call only, exactly as elsewhere. The
-// batch f returns is retained until its turn to be emitted, so f must not
+// The batch handed to f is valid for that call only, exactly as elsewhere,
+// except as f's result: f may return it, or a part of it, and its copy is
+// kept until that result is emitted. The batch f returns is retained until its turn to be emitted, so f must not
 // return a buffer it reuses across calls — a reused buffer would be overwritten
 // by the next batch while the reordering buffer still holds it. This is the one
 // place in the package where returning a fresh slice is required rather than
