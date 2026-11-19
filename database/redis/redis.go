@@ -43,6 +43,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -235,6 +236,9 @@ func (c *Conn) Pipeline(ctx context.Context, cmds [][]string) ([]Reply, error) {
 		if len(cmd) == 0 {
 			return nil, fmt.Errorf("redis: command %d of the batch is empty", i)
 		}
+		if why := leavesRequestResponse(cmd); why != "" {
+			return nil, fmt.Errorf("redis: command %d of the batch, %s, %s: a connection of this package pairs each command with one reply", i, cmd[0], why)
+		}
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -277,6 +281,31 @@ func (c *Conn) Pipeline(ctx context.Context, cmds [][]string) ([]Reply, error) {
 		replies[i] = r
 	}
 	return replies, nil
+}
+
+// leavesRequestResponse says why cmd would end the pairing of one command
+// with one reply, "" when it keeps it. RESP has the connection leave
+// request-response in three ways: SUBSCRIBE and its pattern and shard forms
+// turn it into a push stream, where the server sends a message whenever
+// one is published; MONITOR does the same with every command the server
+// runs; HELLO 3 switches it to RESP3, whose types this reader refuses. And
+// CLIENT REPLY OFF or SKIP has the server send no reply at all. After any
+// of them the next reply read is not the next command's, so they are
+// refused before anything is sent. HELLO 2 and CLIENT REPLY ON keep the
+// pairing and pass. Pub/Sub, with a connection of its own, is not provided.
+func leavesRequestResponse(cmd []string) string {
+	switch {
+	case strings.EqualFold(cmd[0], "SUBSCRIBE"), strings.EqualFold(cmd[0], "PSUBSCRIBE"), strings.EqualFold(cmd[0], "SSUBSCRIBE"):
+		return "which turns the connection into a stream of published messages"
+	case strings.EqualFold(cmd[0], "MONITOR"):
+		return "which turns the connection into a stream of the server's commands"
+	case strings.EqualFold(cmd[0], "HELLO") && (len(cmd) < 2 || cmd[1] != "2"):
+		return "which may switch the connection to RESP3; only HELLO 2 is sent"
+	case strings.EqualFold(cmd[0], "CLIENT") && len(cmd) > 1 && strings.EqualFold(cmd[1], "REPLY") &&
+		(len(cmd) < 3 || !strings.EqualFold(cmd[2], "ON")):
+		return "which silences the server's replies"
+	}
+	return ""
 }
 
 // fail breaks the connection with err, reported as ctx's end when that is

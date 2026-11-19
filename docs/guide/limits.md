@@ -193,6 +193,11 @@ The figures are a laptop's ([measurements](#measurements-what-is-missing)).
 
 - **One connection, no pool**, unlike PostgreSQL's `Pool`; Redis is spoken in
   RESP2. The guides have the rest: [Redis](redis.md), [NATS](nats.md).
+- **No Redis Pub/Sub**: a connection pairs each command with one reply, so
+  the commands that end that pairing — `SUBSCRIBE` and its pattern and
+  shard forms, `MONITOR`, `HELLO 3`, `CLIENT REPLY OFF` — are refused
+  before anything is sent. Streams read by a consumer group
+  (`Conn.ReadGroup`) are the way this package receives what others write.
 - **Every reply is bounded**: `MaxReplyBytes` (Redis, 64 MiB by default)
   and `MaxPayloadBytes` (NATS, 8 MiB by default); past it the connection is
   broken, the stream being in the middle of a reply. The Redis bound counts

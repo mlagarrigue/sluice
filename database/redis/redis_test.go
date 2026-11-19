@@ -251,3 +251,49 @@ func TestReadGroupConfig(t *testing.T) {
 		t.Fatalf("defaults: %+v, %v", g.cfg, err)
 	}
 }
+
+// A command that turns the connection into a push stream or silences its
+// replies — SUBSCRIBE, MONITOR, HELLO 3, CLIENT REPLY OFF — would leave every
+// later reply paired with the wrong command: after SUBSCRIBE the server
+// sends messages whenever they are published, and the next Do would return
+// one as its reply. They are refused before anything is sent, and the
+// connection goes on.
+func TestPipelineRefusesACommandThatLeavesRequestResponse(t *testing.T) {
+	pubsub := func(args []string) string {
+		switch strings.ToUpper(args[0]) {
+		case "SUBSCRIBE", "PSUBSCRIBE", "SSUBSCRIBE":
+			return "*3\r\n$9\r\nsubscribe\r\n$2\r\nch\r\n:1\r\n" +
+				"*3\r\n$7\r\nmessage\r\n$2\r\nch\r\n$5\r\nhello\r\n"
+		case "MONITOR", "HELLO", "CLIENT":
+			return "+OK\r\n"
+		}
+		return kv(args)
+	}
+	c, err := Connect(t.Context(), fakeServer(t, pubsub), Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range [][]string{
+		{"SUBSCRIBE", "ch"},
+		{"psubscribe", "c*"},
+		{"SSUBSCRIBE", "ch"},
+		{"MONITOR"},
+		{"HELLO", "3"},
+		{"CLIENT", "REPLY", "OFF"},
+		{"client", "reply", "skip"},
+	} {
+		if _, err := c.Do(t.Context(), cmd...); err == nil || errors.Is(err, ErrConnBroken) {
+			t.Errorf("%q: err %v, want it refused before anything is sent", cmd, err)
+		}
+		r, err := c.Do(t.Context(), "PING")
+		if err != nil || r.Kind != KindString || string(r.Str) != "PONG" {
+			t.Fatalf("PING after %q: %v %q, %v", cmd, r.Kind, r.Str, err)
+		}
+	}
+	// HELLO 2 keeps RESP2 and CLIENT REPLY ON keeps the replies: both pass.
+	for _, cmd := range [][]string{{"HELLO", "2"}, {"CLIENT", "REPLY", "ON"}} {
+		if r, err := c.Do(t.Context(), cmd...); err != nil || string(r.Str) != "OK" {
+			t.Errorf("%q: %q, %v", cmd, r.Str, err)
+		}
+	}
+}
