@@ -427,12 +427,18 @@ func (e *StatusError) Error() string {
 
 // Close closes the connection. Calls after it return [ErrConnBroken].
 func (c *Conn) Close() error {
+	// Closed before the lock is taken: a call holding it, whose context has
+	// neither deadline nor cancellation, waits on a read that only the
+	// server or this close ends. Its read fails, it breaks the connection,
+	// and the lock comes free. nc is set once Connect returns; a net.Conn's
+	// Close is safe beside its Read and Write.
+	err := c.nc.Close()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.broken == nil {
 		c.broken = net.ErrClosed
 	}
-	return c.nc.Close()
+	return err
 }
 
 func appendPub(dst []byte, subject, reply string, data []byte) []byte {
