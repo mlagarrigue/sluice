@@ -88,3 +88,18 @@ func TestCountersAreReadTwiceAndWhole(t *testing.T) {
 		}
 	}
 }
+
+// Counters only grow: an after file whose counter is lower than the before
+// one is refused, rather than read as a negative delta that the rule takes
+// for no overflow at all. Swapped files were accepted, and the overflows of
+// the load went unseen.
+func TestSwappedCounterFilesAreRefused(t *testing.T) {
+	before, after := netstat(5, 3, 0, 0), netstat(9, 3, 0, 0)
+	if _, err := Open(Spec{NetstatBefore: seedFile(t, "b", before), NetstatAfter: seedFile(t, "a", after)}); err != nil {
+		t.Fatalf("files in order: %v", err)
+	}
+	_, err := Open(Spec{NetstatBefore: seedFile(t, "b", after), NetstatAfter: seedFile(t, "a", before)})
+	if err == nil || !strings.Contains(err.Error(), "ListenOverflows went down from 9 to 5") {
+		t.Errorf("swapped files: %v, want ListenOverflows named going down", err)
+	}
+}

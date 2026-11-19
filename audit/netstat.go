@@ -92,6 +92,13 @@ func openCounters(before, after string) (*Counters, error) {
 	c := &Counters{BeforePath: before, AfterPath: after, Delta: map[string]int64{}}
 	for k, v := range a {
 		if w, ok := b[k]; ok {
+			// The counters only grow while the system runs: one that went
+			// down says the two files are swapped, or that the counters
+			// were reset between them, and either way a negative delta
+			// would read as nothing having overflowed.
+			if v < w {
+				return nil, fmt.Errorf("%s was not read after %s: %s went down from %d to %d — the files are swapped, or the counters were reset between them", after, before, k, w, v)
+			}
 			c.Delta[k] = v - w
 		}
 	}
