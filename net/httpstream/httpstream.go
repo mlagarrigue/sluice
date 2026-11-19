@@ -385,7 +385,11 @@ type Config struct {
 	// window into a new buffer, the old one, which the batch's requests
 	// still borrow their method, target and headers from — at the defaults
 	// a request line and headers, far under a buffer's ceiling. So MaxConns
-	// times three request buffers is the most the request buffers occupy. A
+	// times three request buffers is the most the request buffers occupy.
+	// Between two batches an HTTP/1.1 connection also keeps the buffer its
+	// responses were written through, 64 KiB at most; a batch whose buffered
+	// responses are larger uses a larger one while it is written and gives
+	// it back after, so that cost lasts a write, not a connection. A
 	// public socket sets it; a server without it is bounded by the peers'
 	// goodwill.
 	MaxConns int

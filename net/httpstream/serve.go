@@ -495,6 +495,32 @@ func closeCut(c net.Conn) {
 	_ = c.Close()
 }
 
+// outRetainMax is the largest output buffer an HTTP/1.1 connection keeps
+// between two batches. A batch writes its buffered responses through one
+// buffer, so up to Advanced.MaxRequestsPerBatch pipelined answers of a large resource
+// grow it to their sum; kept, that sum would stay with the connection until
+// it closed. Under the bound, the buffer stays and the next batch reuses it;
+// over it, the next batch that needs as much grows a buffer again: answers
+// that large pay their allocation per batch rather than once per connection,
+// and the common batch, whose answers fit, is untouched.
+const outRetainMax = 64 << 10
+
+// retainOut is what serveConn keeps of out once a batch is written: out
+// itself, or a fresh 4 KiB buffer when out grew past outRetainMax.
+func retainOut(out []byte) []byte {
+	if cap(out) > outRetainMax {
+		out = make([]byte, 0, 4<<10)
+	}
+	if f := outRetainHook.Load(); f != nil {
+		(*f)(cap(out))
+	}
+	return out
+}
+
+// outRetainHook sees the capacity retainOut keeps, in a test; nil outside
+// one.
+var outRetainHook atomic.Pointer[func(int)]
+
 // serveConn runs one connection to its end, answering whatever it can and
 // closing when it cannot.
 //
@@ -504,9 +530,10 @@ func closeCut(c net.Conn) {
 func serveConn(ctx context.Context, c *prefixConn, st *connState, cfg Config, handle Handler) {
 	src := newRequestReader(c, st, cfg)
 	// Reused for every batch on this connection, growing toward whatever the
-	// largest one needed and never shrinking back — the ordinary trade of a
-	// reused buffer against a per-batch allocation, paid once per connection
-	// rather than once per batch.
+	// largest one needed — the ordinary trade of a reused buffer against a
+	// per-batch allocation, paid once per connection rather than once per
+	// batch — up to outRetainMax: retainOut gives back a larger one once its
+	// batch is written.
 	out := make([]byte, 0, 4<<10)
 
 	// Read once the first batch is in, by which time a TLS handshake is done.
@@ -572,6 +599,7 @@ func serveConn(ctx context.Context, c *prefixConn, st *connState, cfg Config, ha
 				stopped = true
 				return false
 			}
+			out = retainOut(out)
 			return true
 		}
 		var werr error
@@ -591,6 +619,7 @@ func serveConn(ctx context.Context, c *prefixConn, st *connState, cfg Config, ha
 			stopped = true
 			return false
 		}
+		out = retainOut(out)
 		return true
 	})
 
