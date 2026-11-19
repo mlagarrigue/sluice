@@ -15,7 +15,7 @@ sort or buffer stage ([the core](#the-core)). PostgreSQL with a fixed pool,
 Redis and NATS JetStream on one connection each; PostgreSQL read in binary
 ([PostgreSQL](#postgresql), [Redis and NATS](#redis-and-nats)). No router, no
 compression, no CONNECT tunnel ([web and gateway](#web-and-gateway)). QUIC
-is experimental, under [written conditions](#experimental-the-exit-conditions).
+is experimental, under [written conditions](#experimental-packages).
 The figures are a laptop's ([measurements](#measurements-what-is-missing)).
 
 ## The project as a whole
@@ -340,7 +340,7 @@ The figures are a laptop's ([measurements](#measurements-what-is-missing)).
   provide, not the library's. In plain words: have your network drop
   spoofed source addresses before they reach the server.
 
-## Experimental: the exit conditions
+## Experimental packages
 
 The packages marked experimental leave the label only by meeting written
 conditions, checkable one by one; they stay in the module

@@ -189,7 +189,7 @@ package's own 114 at most.
 
 ## The QUIC transport, in detail
 
-Twelve requirements of RFC 9000 and RFC 9001 are met otherwise than the text
+Seven requirements of RFC 9000 and RFC 9001 are met otherwise than the text
 writes them. Each was chosen, and a conformant peer loses nothing by it:
 the departure only touches a peer that already breaks the protocol or,
 for the last, an answer its path's validation does not need. For
@@ -278,7 +278,7 @@ particular challenge rather than to any of them. Code:
 `Conn.holdResponseLocked` and `Conn.sendHeldResponseLocked`
 (`migration.go`), `Conn.heldResponse` (`conn.go`).
 
-In plain words: these twelve departures are choices, not oversights. Each
+In plain words: these seven departures are choices, not oversights. Each
 avoids a cost — a send toward a doubtful address, one more datagram, a
 double count — and changes nothing for a peer that follows the protocol. A
 peer found to fail on one of them is the reason to revisit it.

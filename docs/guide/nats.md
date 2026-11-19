@@ -154,3 +154,18 @@ and the batch and the wait:
 |---|---|---|---|
 | `BatchMessages` | 256 | ≥ 0 | messages one pull asks for: the most a batch holds |
 | `Expires` | one second | ≥ 0 | how long the server holds a pull open, and so how long a stop takes to be noticed |
+
+## You can now
+
+- connect through a recipe, in clear or with the TLS upgrade;
+- read a JetStream consumer in batches, each message acknowledged by the
+  code that handled it;
+- publish, with or without the stream's acknowledgement.
+
+The package's examples compile and run as tests; the integration test runs
+against the server `SLUICE_NATS` names (`host:port`), and skips without it:
+
+```sh
+go test -run Example -v ./messaging/nats/
+SLUICE_NATS=127.0.0.1:4222 go test ./messaging/nats/
+```

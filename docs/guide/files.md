@@ -144,3 +144,15 @@ the standard library's own loop, and against that loop when it also fills
 a batch. Holding a batch has a cost of its own — the records stay alive
 until the batch is handed on — which is the price of the batch everywhere
 in the library, not of these packages.
+
+## You can now
+
+- read a CSV or JSON Lines file in batches, each record bounded;
+- write batches back out in either format;
+- load a file into PostgreSQL with COPY, batch by batch.
+
+The packages' examples compile and run as tests:
+
+```sh
+go test -run Example -v ./encoding/csvstream/ ./encoding/jsonl/
+```

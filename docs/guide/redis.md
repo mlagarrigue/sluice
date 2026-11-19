@@ -153,3 +153,17 @@ about half a microsecond per key in one pipeline, about 148 microseconds per
 key one by one — each of those a round trip through the container's
 network. The figures are in
 [Benchmarks](../benchmarks.md#redis-a-batch-against-one-command-at-a-time).
+
+## You can now
+
+- connect through a recipe, in clear or over TLS;
+- send a batch of commands in one round trip and read the replies in order;
+- read a stream as a consumer group and acknowledge what you handled.
+
+The package's examples compile and run as tests; the integration test runs
+against the server `SLUICE_REDIS` names (`host:port`), and skips without it:
+
+```sh
+go test -run Example -v ./database/redis/
+SLUICE_REDIS=127.0.0.1:6379 go test ./database/redis/
+```

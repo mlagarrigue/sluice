@@ -89,3 +89,16 @@ connection of the job's own; a process that dies releases it at once, with
 its connection, without waiting for a lease to run out. The library keeps
 nothing of its own either way; the decision is
 [ADR 0027](../design/adr/0027-phase-runner.md).
+
+## You can now
+
+- cut a job into phases that can run again, and give each a check;
+- run it again after its process died and see it skip the phases done;
+- keep its state in a directory or in a table of your PostgreSQL schema;
+- rely on one process at a time holding it, by a lease or a lock.
+
+The package's examples compile and run as tests:
+
+```sh
+go test -run Example -v ./phase/
+```

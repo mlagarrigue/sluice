@@ -28,7 +28,7 @@ handle := func(ctx context.Context, b sluice.Batch[httpstream.Request]) sluice.B
     return sluice.Batch[httpstream.Response]{Items: out} // one response per request, in order
 }
 
-httpstream.Serve(ctx, ln, httpstream.Config{IdleTimeout: time.Second}, handle) // HTTP/1.1 on a net.Listener
+httpstream.Serve(ctx, ln, httpstream.Config{IdleTimeout: time.Second}, handle) // HTTP/1.1 or HTTP/2 on a net.Listener
 httpstream.ServeH2Conn(ctx, conn, httpstream.Config{}, handle)                      // HTTP/2 on a connection
 httpstream.ServeH3Conn(ctx, quicConn, httpstream.Config{}, handle)                  // HTTP/3 on a *quic.Conn
 ```

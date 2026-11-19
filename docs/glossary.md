@@ -88,6 +88,9 @@ places is.
   it records to resume from.
 - **Idempotence** — the property of an operation that has the same effect
   done twice as done once; what makes a delivery that may repeat safe.
+- **yield** — the function an iterator calls to hand over a value; it
+  returns false when the reader has stopped, and the iterator then stops
+  too.
 
 ## Databases
 
@@ -114,6 +117,8 @@ places is.
   it elsewhere; the same chain of operators as a web request.
 - **TVP** — table-valued parameter: SQL Server's way of passing a whole
   table as one query parameter.
+- **Advisory lock** — a lock the application names itself (a number),
+  held by the PostgreSQL server for a session; it locks no row or table.
 
 ## Web and network
 
@@ -155,6 +160,10 @@ places is.
   first request with its first packet, before the handshake ends; a third
   party can replay it, so only a request a duplicate does not hurt should
   be accepted.
+- **QPACK** — HTTP/3's header compression (RFC 9204): HPACK redone for
+  streams that may arrive out of order.
+- **PATH_CHALLENGE, PATH_RESPONSE** — the QUIC frame that checks a path
+  reaches the peer, and the peer's answer echoing its data.
 - **GREASE** — values a protocol reserves to be sent at random, so that a
   peer that chokes on unknown values is found before a real extension
   needs them.
@@ -176,6 +185,11 @@ places is.
 - **Slow start** — the beginning of a connection's sending, where the
   congestion controller doubles its window every round trip until a loss or
   a sign of queueing ends it.
+- **ECN** — Explicit Congestion Notification: a router marks a packet
+  instead of dropping it when its queue grows, and the receiver reports
+  the marks back.
+- **HyStart++** — a way to leave slow start early (RFC 9406), when the
+  round trip starts to grow, before losses would have ended it.
 - **Reno, NewReno** — the classic congestion controller: the window grows by
   one datagram per round trip and halves on each loss episode; NewReno
   (RFC 9002 §7) is the form QUIC describes, and `net/quic`'s default.
@@ -222,5 +236,7 @@ places is.
 - **CVE** — the public identifier of a known vulnerability
   (CVE-2023-44487, HTTP/2's "rapid reset"); a bound cited with its CVE says
   which attack it stops.
+- **SemVer** — semantic versioning: major.minor.patch, where a major
+  version may break what the previous offered; in v0, a minor one may.
 - **h2spec** — a public test suite that sends an HTTP/2 server the cases of
   RFC 9113 and checks each answer.
