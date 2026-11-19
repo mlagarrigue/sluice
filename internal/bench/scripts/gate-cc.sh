@@ -35,13 +35,17 @@
 # One binary, built from the working tree; one transfer per benchmark and
 # round (BENCHTIME 1x), unpinned for the reasons gate-path.sh gives.
 #
-# A median criterion that fails is read again, a whole second series, and
-# judged on that one; both series are printed. A shared runner has episodes:
-# on 2026-11-11 (run 43901112486) half the rounds of one job shifted, the
-# RTT80Shallow median read 1.135 where seven neighbouring jobs read 1.205 to
-# 1.235, on a commit that changed only the changelog. One series judged
-# alone turned that episode into a red build; a controller that really
-# misses its bound misses it twice. The per-round bound of bbr is not read
+# A median criterion that fails is read again, a whole series at a time, up
+# to three, and met as soon as one series is within bound; every series is
+# printed. A shared runner has episodes: on 2026-11-11 (run 43901112486)
+# half the rounds of one job shifted, the RTT80Shallow median read 1.135
+# where seven neighbouring jobs read 1.205 to 1.235, on a commit that changed
+# only the changelog. On 2026-11-19 two jobs of fourteen read both their
+# series under the bound — 1.135 then 1.145 (run 44453655589), 1.11 then
+# 1.095 (run 44455682257, a commit to web alone, read 1.20 when run again) —
+# where the twelve others read 1.21 to 1.23 from their first. A controller
+# that really misses its bound misses it on every series: CUBIC's beta at
+# 0.5 reads 1.06 to 1.09 on every round, so no series of it reaches 1.15. The per-round bound of bbr is not read
 # again: a round over it is the failure, not noise around a median.
 #
 # GATE_CC_METRIC, when set, names a command run instead of the benchmark
@@ -89,12 +93,12 @@ median() {
 }
 
 # judge <name> <series-function> <comparison> <bound>: runs the series, and
-# a second one when the first's median is out of bound (comparison "over":
-# above it; "under": below it), and prints each. Sets fail when the last
-# series read is out of bound.
+# another while the last one's median is out of bound (comparison "over":
+# above it; "under": below it), three at most, and prints each. Sets fail
+# when the third is out of bound too.
 judge() {
   local name="$1" series="$2" cmp="$3" bound="$4" try values m verdict
-  for try in 1 2; do
+  for try in 1 2 3; do
     values="$("$series")"
     m="$(median "$values")"
     verdict=ok
@@ -102,7 +106,7 @@ judge() {
     if [ "$cmp" = under ] && awk -v m="$m" -v b="$bound" 'BEGIN { exit !(m < b) }'; then verdict=UNDER; fi
     echo "$name, series $try:$values, median $m, bound $bound — $verdict"
     [ "$verdict" = ok ] && return
-    [ "$try" = 1 ] && echo "$name: read again — one series out of bound may be the runner's episode"
+    [ "$try" -lt 3 ] && echo "$name: read again — a series out of bound may be the runner's episode"
   done
   fail=1
 }
