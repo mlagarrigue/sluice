@@ -265,6 +265,28 @@ grant, d, err := web.Authorize(principal, policy) // policy: your Authorizer, or
 > other. Everything in `HMACConfig` is a ground for refusal: audience,
 > issuer, clock, maximum token size.
 
+When the token comes from an identity provider — an OpenID Connect
+service, anything that is not your own — it is signed with a **private
+key** only the issuer holds, and you have the **public key**, which
+verifies a signature and cannot make one. `web.NewPublicKeyVerifier` takes
+those keys by their ID, the `kid` a token's header names, and the
+algorithms you accept; the claim checks are the HMAC verifier's:
+
+```go
+verifier, err := web.NewPublicKeyVerifier(web.PublicKeyConfig{
+    Keys:       map[string]crypto.PublicKey{"2026-11": providerKey}, // *rsa.PublicKey, *ecdsa.PublicKey or ed25519.PublicKey
+    Algorithms: []string{"RS256"},                                    // what the provider signs with, nothing more
+    Audience:   "orders", Issuer: "https://idp.example", Leeway: 30 * time.Second,
+})
+```
+
+> **In plain words: a public key verifies, it does not sign.** That is
+> why a provider publishes its keys, often as a JSON document called a
+> JWKS, and why copying one into your configuration gives away nothing.
+> A rotation is a new key added under its own `kid` before the provider
+> signs with it, and the old one removed once the tokens it signed have
+> expired.
+
 The challenge header tells the client how to authenticate: the `Bearer`
 scheme, and the *realm*, the name of what it is authenticating for. Pass
 the audience your verifier checks — `"orders"` here — so a client holding
@@ -298,6 +320,9 @@ scopes.
 negative leeway. Its eight settings — the key and the keys being retired,
 the audience, issuer and tenant required, the leeway, the largest token and
 the clock: [reference](../reference/web.md#verifier-settings).
+`NewPublicKeyVerifier` refuses an RSA key under 2048 bits, an ECDSA key on
+a curve RFC 7518 does not name, and an empty list of keys or algorithms:
+[reference](../reference/web.md#public-key-verifier-settings).
 
 ## Starting and stopping cleanly
 

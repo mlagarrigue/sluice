@@ -240,9 +240,12 @@ The figures are a laptop's ([measurements](#measurements-what-is-missing)).
   `MaxConcurrentStreams` times `InitialWindowSize` on HTTP/2, times
   `InitialMaxStreamDataBidiRemote` on HTTP/3 — the figure to multiply by
   the connections a server accepts.
-- **One token verifier provided**: HMAC (a symmetric signature with a
-  shared secret). Public-key tokens (RSA, ECDSA, EdDSA) are not provided —
-  not yet; the `Verifier` interface is the extension point.
+- **Two token verifiers provided**: HMAC (a symmetric signature with a
+  shared secret) and public key (RSA, ECDSA, Ed25519) against keys the
+  configuration holds. A provider's key document (JWKS) is not fetched:
+  the keys are copied into `PublicKeyConfig.Keys`, and a rotation is a
+  configuration change. The `Verifier` interface stays the extension point
+  for anything else.
 - **`ClaimAuthorizer` trusts the token.** It builds the permission from
   what the token says about itself; that is correct only if the issuer is
   your service. For an external identity provider, implement `Authorizer`

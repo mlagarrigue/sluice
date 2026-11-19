@@ -34,22 +34,20 @@ import (
 // written out where it can be read is safer than policy delegated to a
 // dependency nobody opens.
 //
-// The cryptography itself is [crypto/hmac] and [crypto/sha256] from the
-// standard library. Nothing here reimplements a primitive, which is the
+// The cryptography itself is the standard library's — [crypto/hmac],
+// [crypto/rsa], [crypto/ecdsa], [crypto/ed25519] and the SHA-2 hashes. Nothing here reimplements a primitive, which is the
 // project's standing rule and the one place it is not negotiable.
 //
-// # Only HS256, and that is a real limit
+// # Two verifiers, and what neither does
 //
-// [HMACVerifier] verifies HS256 and refuses everything else. It does not do
-// RS256 or ES256, which is what most identity providers actually issue: those
-// need public-key handling, a key set fetched over the network, and rotation —
-// a component with a lifecycle, not a function.
-//
-// So a system using an external provider implements [Verifier] itself, in its
-// own module, with whatever library it trusts. This package stays at zero
-// dependencies and stops claiming to be the thing that verifies your
-// provider's tokens. HS256 is here because a shared secret between two
-// services this small is a real case, not because it is the general answer.
+// [HMACVerifier] verifies HS256, for two services that share a secret.
+// [PublicKeyVerifier] verifies RS, PS, ES and EdDSA tokens — what identity
+// providers issue — against public keys the configuration holds. Neither
+// fetches a provider's key set over the network: that is a component with
+// a lifecycle — a cache, a refresh, a failure mode — and the keys are copied
+// into [PublicKeyConfig.Keys] instead, a rotation being a configuration
+// change. A system that needs the fetch implements [Verifier] around one of
+// these, or on its own.
 
 // Token errors. They are distinct because they need distinct responses: an
 // expired token means refresh and retry, a bad signature means something is
@@ -295,8 +293,51 @@ func headerString(hdr map[string]json.RawMessage, name string) (string, bool) {
 // attacker-controlled JSON and made a decision on it before establishing that
 // the attacker could not have written it.
 func (v *HMACVerifier) Verify(token string) (Principal, error) {
-	if len(token) > v.cfg.MaxTokenBytes {
-		return Principal{}, fmt.Errorf("%w: %d bytes, over the %d-byte limit", ErrTokenMalformed, len(token), v.cfg.MaxTokenBytes)
+	t, err := parseJWT(token, v.cfg.MaxTokenBytes, func(alg string) error {
+		// The algorithm is checked against a constant, never used to
+		// *choose* anything. `alg: none` is refused by the same comparison
+		// that refuses RS256, which is what makes both impossible rather
+		// than one of them remembered.
+		if alg != "HS256" {
+			return fmt.Errorf("%w: %q, and this verifier accepts only HS256", ErrTokenAlgorithm, alg)
+		}
+		return nil
+	})
+	if err != nil {
+		return Principal{}, err
+	}
+	if !v.signedByAnyKey(t.signed, t.sig) {
+		return Principal{}, ErrTokenSignature
+	}
+	// Only now is the payload worth reading.
+	claims, err := readClaims(t.payload)
+	if err != nil {
+		return Principal{}, err
+	}
+	return v.rules().principalFrom(claims)
+}
+
+// rules are the claim checks of the configuration.
+func (v *HMACVerifier) rules() claimRules {
+	return claimRules{audience: v.cfg.Audience, issuer: v.cfg.Issuer, tenantClaim: v.cfg.TenantClaim, leeway: v.cfg.Leeway, now: v.cfg.Now}
+}
+
+// jwt is a token split, its header read and its signature decoded, before
+// anything is verified.
+type jwt struct {
+	signed  string // the header and payload segments, what the signature covers
+	payload string // the payload segment, still encoded
+	sig     []byte
+	alg     string
+	kid     string // "" when the header names none
+}
+
+// parseJWT splits a compact JWS and reads its header. accept is asked about
+// the header's alg as soon as it is read, before the rest of the header is
+// judged, so a verifier refuses an algorithm it does not expect first.
+func parseJWT(token string, maxBytes int, accept func(alg string) error) (jwt, error) {
+	if len(token) > maxBytes {
+		return jwt{}, fmt.Errorf("%w: %d bytes, over the %d-byte limit", ErrTokenMalformed, len(token), maxBytes)
 	}
 	// One spelling per token. The decoder skips CR and LF and, unless
 	// strict, ignores non-zero padding bits, so without this a single valid
@@ -306,7 +347,7 @@ func (v *HMACVerifier) Verify(token string) (Principal, error) {
 	// decodes below are Strict.
 	for i := range len(token) {
 		if !isTokenByte(token[i]) {
-			return Principal{}, fmt.Errorf("%w: byte %d is outside the base64url alphabet", ErrTokenMalformed, i)
+			return jwt{}, fmt.Errorf("%w: byte %d is outside the base64url alphabet", ErrTokenMalformed, i)
 		}
 	}
 
@@ -315,49 +356,47 @@ func (v *HMACVerifier) Verify(token string) (Principal, error) {
 	first := strings.IndexByte(token, '.')
 	last := strings.LastIndexByte(token, '.')
 	if first <= 0 || last <= first || last == len(token)-1 {
-		return Principal{}, fmt.Errorf("%w: expected three segments", ErrTokenMalformed)
+		return jwt{}, fmt.Errorf("%w: expected three segments", ErrTokenMalformed)
 	}
 	if strings.IndexByte(token[first+1:last], '.') >= 0 {
-		return Principal{}, fmt.Errorf("%w: expected three segments", ErrTokenMalformed)
+		return jwt{}, fmt.Errorf("%w: expected three segments", ErrTokenMalformed)
 	}
-	signed, sigPart := token[:last], token[last+1:]
+	t := jwt{signed: token[:last], payload: token[first+1 : last]}
 
 	headerJSON, err := jwtEncoding.DecodeString(token[:first])
 	if err != nil {
-		return Principal{}, fmt.Errorf("%w: the header is not base64url", ErrTokenMalformed)
+		return jwt{}, fmt.Errorf("%w: the header is not base64url", ErrTokenMalformed)
 	}
 	// RFC 8725 §3.7: the JSON of a token is UTF-8 and nothing else, where
 	// encoding/json would quietly turn an invalid sequence into U+FFFD.
 	if !utf8.Valid(headerJSON) {
-		return Principal{}, fmt.Errorf("%w: the header is not UTF-8", ErrTokenMalformed)
+		return jwt{}, fmt.Errorf("%w: the header is not UTF-8", ErrTokenMalformed)
 	}
-	// The parameters this verifier reads are alg, typ and crit. `kid` is
-	// deliberately not among them: selecting a key by a value the token
-	// supplies is how a verifier is talked into using the attacker's key.
+	// The parameters read are alg, typ, crit and kid. kid only ever picks
+	// among the keys the caller configured (see [PublicKeyConfig.Keys]):
+	// a verifier that let it name a file, a URL or a query would be talked
+	// into using the attacker's key (RFC 8725 §3.10).
 	var hdr map[string]json.RawMessage
 	if err := json.Unmarshal(headerJSON, &hdr); err != nil {
-		return Principal{}, fmt.Errorf("%w: the header is not a JSON object", ErrTokenMalformed)
+		return jwt{}, fmt.Errorf("%w: the header is not a JSON object", ErrTokenMalformed)
 	}
 	alg, okAlg := headerString(hdr, "alg")
 	typ, okTyp := headerString(hdr, "typ")
-	if !okAlg || !okTyp {
-		return Principal{}, fmt.Errorf("%w: alg or typ is not a string", ErrTokenMalformed)
+	kid, okKid := headerString(hdr, "kid")
+	if !okAlg || !okTyp || !okKid {
+		return jwt{}, fmt.Errorf("%w: alg, typ or kid is not a string", ErrTokenMalformed)
 	}
-
-	// The algorithm is checked against a constant, never used to *choose*
-	// anything. `alg: none` is refused by the same comparison that refuses
-	// RS256, which is what makes both impossible rather than one of them
-	// remembered.
-	if alg != "HS256" {
-		return Principal{}, fmt.Errorf("%w: %q, and this verifier accepts only HS256", ErrTokenAlgorithm, alg)
+	if err := accept(alg); err != nil {
+		return jwt{}, err
 	}
+	t.alg, t.kid = alg, kid
 	// Case-insensitive on purpose: typ is a media type, and RFC 7515 §4.1.9
 	// makes its comparison case-insensitive and reads a value without a '/'
 	// as if "application/" preceded it, so "JWT", "jwt" and
 	// "application/jwt" are one type; RFC 7519 §5.1 only RECOMMENDS the
 	// uppercase short spelling.
 	if typ != "" && !strings.EqualFold(typ, "JWT") && !strings.EqualFold(typ, "application/jwt") {
-		return Principal{}, fmt.Errorf("%w: type %q", ErrTokenMalformed, typ)
+		return jwt{}, fmt.Errorf("%w: type %q", ErrTokenMalformed, typ)
 	}
 	// crit is read only to be refused. RFC 7515 §4.1.11: a verifier MUST
 	// reject a token whose crit lists an extension it does not implement —
@@ -365,30 +404,30 @@ func (v *HMACVerifier) Verify(token string) (Principal, error) {
 	// empty list included, means the token demands semantics that will not
 	// be enforced here.
 	if _, present := hdr["crit"]; present {
-		return Principal{}, fmt.Errorf("%w: the header carries crit, and this verifier implements no extension it could name (RFC 7515 §4.1.11)", ErrTokenMalformed)
+		return jwt{}, fmt.Errorf("%w: the header carries crit, and this verifier implements no extension it could name (RFC 7515 §4.1.11)", ErrTokenMalformed)
 	}
 
-	sig, err := jwtEncoding.DecodeString(sigPart)
+	t.sig, err = jwtEncoding.DecodeString(token[last+1:])
 	if err != nil {
-		return Principal{}, fmt.Errorf("%w: the signature is not base64url", ErrTokenMalformed)
+		return jwt{}, fmt.Errorf("%w: the signature is not base64url", ErrTokenMalformed)
 	}
-	if !v.signedByAnyKey(signed, sig) {
-		return Principal{}, ErrTokenSignature
-	}
+	return t, nil
+}
 
-	// Only now is the payload worth reading.
-	payloadJSON, err := jwtEncoding.DecodeString(token[first+1 : last])
+// readClaims decodes a payload segment whose signature has verified.
+func readClaims(payload string) (map[string]any, error) {
+	payloadJSON, err := jwtEncoding.DecodeString(payload)
 	if err != nil {
-		return Principal{}, fmt.Errorf("%w: the payload is not base64url", ErrTokenMalformed)
+		return nil, fmt.Errorf("%w: the payload is not base64url", ErrTokenMalformed)
 	}
 	if !utf8.Valid(payloadJSON) {
-		return Principal{}, fmt.Errorf("%w: the payload is not UTF-8", ErrTokenMalformed)
+		return nil, fmt.Errorf("%w: the payload is not UTF-8", ErrTokenMalformed)
 	}
 	var claims map[string]any
 	if err := json.Unmarshal(payloadJSON, &claims); err != nil {
-		return Principal{}, fmt.Errorf("%w: the payload is not JSON", ErrTokenMalformed)
+		return nil, fmt.Errorf("%w: the payload is not JSON", ErrTokenMalformed)
 	}
-	return v.principalFrom(claims)
+	return claims, nil
 }
 
 // jwtEncoding is base64url without padding, strict about the trailing bits:
@@ -421,8 +460,17 @@ func (v *HMACVerifier) signedByAnyKey(signed string, sig []byte) bool {
 	return false
 }
 
-func (v *HMACVerifier) principalFrom(claims map[string]any) (Principal, error) {
-	now := v.cfg.Now()
+// claimRules are the claim checks every verifier of this package applies
+// once a signature has verified: the fields of the same names in
+// [HMACConfig] and [PublicKeyConfig].
+type claimRules struct {
+	audience, issuer, tenantClaim string
+	leeway                        time.Duration
+	now                           func() time.Time
+}
+
+func (r claimRules) principalFrom(claims map[string]any) (Principal, error) {
+	now := r.now()
 
 	// An expiry is required. A signed token with no `exp` is a credential that
 	// never stops working, and accepting one because the standard calls the
@@ -433,7 +481,7 @@ func (v *HMACVerifier) principalFrom(claims map[string]any) (Principal, error) {
 	}
 	// RFC 7519 §4.1.4: exp is the time "on or after which" the token is
 	// refused — the instant itself is already too late.
-	if !now.Before(exp.Add(v.cfg.Leeway)) {
+	if !now.Before(exp.Add(r.leeway)) {
 		return Principal{}, fmt.Errorf("%w: expired at %s", ErrTokenExpired, exp.UTC().Format(time.RFC3339))
 	}
 	// nbf and iat are optional, but one that is present and unreadable is
@@ -443,7 +491,7 @@ func (v *HMACVerifier) principalFrom(claims map[string]any) (Principal, error) {
 	if _, present := claims["nbf"]; present && !ok {
 		return Principal{}, fmt.Errorf("%w: unusable nbf claim", ErrTokenClaims)
 	}
-	if ok && now.Add(v.cfg.Leeway).Before(nbf) {
+	if ok && now.Add(r.leeway).Before(nbf) {
 		return Principal{}, fmt.Errorf("%w: not valid before %s", ErrTokenExpired, nbf.UTC().Format(time.RFC3339))
 	}
 	// An `iat` in the future is a clock problem or a forgery; either way it is
@@ -452,12 +500,12 @@ func (v *HMACVerifier) principalFrom(claims map[string]any) (Principal, error) {
 	if _, present := claims["iat"]; present && !ok {
 		return Principal{}, fmt.Errorf("%w: unusable iat claim", ErrTokenClaims)
 	}
-	if ok && now.Add(v.cfg.Leeway).Before(iat) {
+	if ok && now.Add(r.leeway).Before(iat) {
 		return Principal{}, fmt.Errorf("%w: issued in the future, at %s", ErrTokenClaims, iat.UTC().Format(time.RFC3339))
 	}
 
-	if v.cfg.Issuer != "" {
-		if iss, _ := claims["iss"].(string); iss != v.cfg.Issuer {
+	if r.issuer != "" {
+		if iss, _ := claims["iss"].(string); iss != r.issuer {
 			return Principal{}, fmt.Errorf("%w: issuer %q", ErrTokenClaims, iss)
 		}
 	}
@@ -465,12 +513,12 @@ func (v *HMACVerifier) principalFrom(claims map[string]any) (Principal, error) {
 	// recipient that is not in it — and a verifier with no Audience is in
 	// no audience at all. Accepting it was accepting a token minted for
 	// some other service that shares the secret.
-	if v.cfg.Audience == "" {
+	if r.audience == "" {
 		if _, present := claims["aud"]; present {
 			return Principal{}, fmt.Errorf("%w: the token names an audience, and this verifier was given none to be part of", ErrTokenClaims)
 		}
-	} else if !audienceContains(claims["aud"], v.cfg.Audience) {
-		return Principal{}, fmt.Errorf("%w: audience does not include %q", ErrTokenClaims, v.cfg.Audience)
+	} else if !audienceContains(claims["aud"], r.audience) {
+		return Principal{}, fmt.Errorf("%w: audience does not include %q", ErrTokenClaims, r.audience)
 	}
 
 	p := Principal{ExpiresAt: exp, Claims: claims}
@@ -478,10 +526,10 @@ func (v *HMACVerifier) principalFrom(claims map[string]any) (Principal, error) {
 	if s, ok := claims["scope"].(string); ok && s != "" {
 		p.Scopes = strings.Fields(s)
 	}
-	if v.cfg.TenantClaim != "" {
-		p.Tenant, _ = claims[v.cfg.TenantClaim].(string)
+	if r.tenantClaim != "" {
+		p.Tenant, _ = claims[r.tenantClaim].(string)
 		if p.Tenant == "" {
-			return Principal{}, fmt.Errorf("%w: no %q claim, and this verifier was told that claim carries the security principal", ErrTokenClaims, v.cfg.TenantClaim)
+			return Principal{}, fmt.Errorf("%w: no %q claim, and this verifier was told that claim carries the security principal", ErrTokenClaims, r.tenantClaim)
 		}
 	}
 	return p, nil

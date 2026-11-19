@@ -200,7 +200,7 @@ places is.
 - **Grant** — what a principal is allowed to do, as authorisation
   established it.
 - **JWT** — JSON Web Token: a signed token carrying claims, sent as a
-  bearer credential; `web` verifies the kind signed with HMAC.
+  bearer credential; `web` verifies those signed with HMAC or a public key.
 - **Claims** — the statements a token makes about its holder: who (`sub`),
   for which service (`aud`), until when (`exp`), and any the issuer adds.
 - **Dimension** — an axis on which a grant permits values (`region`,
