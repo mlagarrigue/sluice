@@ -9,7 +9,8 @@ to expect from it. The packages that left the label have [their own guide](https
 Symbols of stable packages carry the same label, in an "Experimental:"
 paragraph of their documentation: HTTP/3's entry points, which run over
 `net/quic` — `httpstream.ServeH3Conn`, `Server.ServeQUIC`,
-`Config.QUICConfig`, `stream.ServeH3`, `stream.ServeTLSAndH3` — and
+`Config.QUICConfig`, `stream.ServeH3`, `stream.ServeTLSAndH3`, and the
+`stream.H3` type that tunes the last two — and
 `gateway.Partitions`. The word means the same for
 them: outside the compatibility promise
 ([ADR 0020](../design/adr/0020-compatibility.md)) until their condition is
