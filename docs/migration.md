@@ -18,6 +18,16 @@ behavior that keep the signatures — a value now refused — come last.
 
 ## Since v0.5.1
 
+### Joins: `join`
+
+- **`StreamTable` becomes `HashJoin`, `Interval` becomes `IntervalJoin`, `IntervalSpec.Merge` becomes
+  `Combine`** (feat(join)!: one vocabulary for the three joins, ADR 0016): the three joins now
+  carry the word in their names, and "merge" is left to `sluice.Merge`, which interleaves streams, and to
+  `MergeJoin`, which walks two sorted ones. Replace `join.StreamTable(` with `join.HashJoin(` and
+  `join.Interval(` with `join.IntervalJoin(`, and the field `Merge:` of an `IntervalSpec` with
+  `Combine:`; the arguments, their order and the limits are unchanged, and the panics fire in the
+  same cases.
+
 ### Database: `postgres`
 
 - **The codecs of created types take a `pgtype.TypeOIDs`** (feat(postgres)!: created types take their OIDs as one TypeOIDs): `Conn.LookupType` returns

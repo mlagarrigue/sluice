@@ -32,7 +32,7 @@ func okLimit(n int) BuildLimit {
 	return BuildLimit{MaxEntries: n, OnOverflow: sluice.Fail}
 }
 
-func TestJoinStreamTable(t *testing.T) {
+func TestHashJoin(t *testing.T) {
 	customers := []customer{{1, "ana"}, {2, "bo"}}
 
 	tests := []struct {
@@ -59,7 +59,7 @@ func TestJoinStreamTable(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := sluice.Collect(StreamTable(
+			got := sluice.Collect(HashJoin(
 				sluice.Of(tc.orders, 2), sluice.Of(customers, 2),
 				orderCustomer, customerID, joinLabel, okLimit(100)))
 			if !slices.Equal(got, tc.want) {
@@ -72,7 +72,7 @@ func TestJoinStreamTable(t *testing.T) {
 // An empty build side makes every probe element unmatched, which for an inner
 // join means no output at all — not the probe side passed through.
 func TestJoinEmptyBuildSide(t *testing.T) {
-	got := sluice.Collect(StreamTable(
+	got := sluice.Collect(HashJoin(
 		sluice.Of([]order{{10, 1}}, 2), sluice.Empty[customer](),
 		orderCustomer, customerID, joinLabel, okLimit(100)))
 	if got != nil {
@@ -85,7 +85,7 @@ func TestJoinEmptyBuildSide(t *testing.T) {
 func TestJoinDuplicateBuildKeys(t *testing.T) {
 	customers := []customer{{1, "ana"}, {1, "alt"}, {2, "bo"}}
 
-	got := sluice.Collect(StreamTable(
+	got := sluice.Collect(HashJoin(
 		sluice.Of([]order{{10, 1}, {11, 2}}, 2), sluice.Of(customers, 2),
 		orderCustomer, customerID, joinLabel, okLimit(100)))
 
@@ -117,7 +117,7 @@ func TestJoinRebatchesSkewedOutput(t *testing.T) {
 	}
 
 	var got []string
-	StreamTable(
+	HashJoin(
 		sluice.Of(orders, probeN), sluice.Of(customers, matches),
 		orderCustomer, customerID, joinLabel, okLimit(matches),
 	)(func(b sluice.Batch[string]) bool {
@@ -156,7 +156,7 @@ func TestJoinLimitCountsValuesNotKeys(t *testing.T) {
 		}
 	}()
 
-	sluice.Collect(StreamTable(
+	sluice.Collect(HashJoin(
 		sluice.Of([]order{{10, 1}}, 1), sluice.Of(customers, 1),
 		orderCustomer, customerID, joinLabel,
 		BuildLimit{MaxEntries: 2, OnOverflow: sluice.Fail}))
@@ -175,7 +175,7 @@ func TestJoinOverflowFail(t *testing.T) {
 		}
 	}()
 
-	sluice.Collect(StreamTable(
+	sluice.Collect(HashJoin(
 		sluice.Of([]order{{10, 1}}, 1), sluice.Of(customers, 1),
 		orderCustomer, customerID, joinLabel,
 		BuildLimit{MaxEntries: 2, OnOverflow: sluice.Fail}))
@@ -188,7 +188,7 @@ func TestJoinOverflowDropNewest(t *testing.T) {
 	orders := []order{{10, 1}, {11, 2}, {12, 3}}
 
 	diags := diagnostics.NewCollector(10)
-	got := sluice.Collect(StreamTable(
+	got := sluice.Collect(HashJoin(
 		sluice.Of(orders, 3), sluice.Of(customers, 1),
 		orderCustomer, customerID, joinLabel,
 		BuildLimit{MaxEntries: 2, OnOverflow: sluice.DropNewest, Report: reportTo(diags)}))
@@ -223,7 +223,7 @@ func TestJoinOverflowReportedOnce(t *testing.T) {
 	}
 
 	diags := diagnostics.NewCollector(100)
-	sluice.Collect(StreamTable(
+	sluice.Collect(HashJoin(
 		sluice.Of([]order{{10, 0}}, 1), sluice.Of(customers, 16),
 		orderCustomer, customerID, joinLabel,
 		BuildLimit{MaxEntries: 4, OnOverflow: sluice.DropNewest, Report: reportTo(diags)}))
@@ -241,7 +241,7 @@ func TestJoinOverflowReportedOnce(t *testing.T) {
 func TestJoinOverflowWithoutCollector(t *testing.T) {
 	customers := []customer{{1, "a"}, {2, "b"}, {3, "c"}}
 
-	got := sluice.Collect(StreamTable(
+	got := sluice.Collect(HashJoin(
 		sluice.Of([]order{{10, 1}}, 1), sluice.Of(customers, 1),
 		orderCustomer, customerID, joinLabel,
 		BuildLimit{MaxEntries: 2, OnOverflow: sluice.DropNewest}))
@@ -264,7 +264,7 @@ func TestJoinStopsReadingBuildOnceFull(t *testing.T) {
 		}
 	})
 
-	sluice.Collect(StreamTable(
+	sluice.Collect(HashJoin(
 		sluice.Of([]order{{10, 0}}, 1), build,
 		orderCustomer, customerID, joinLabel,
 		BuildLimit{MaxEntries: 4, OnOverflow: sluice.DropNewest}))
@@ -283,7 +283,7 @@ func TestJoinIsLazy(t *testing.T) {
 		yield(sluice.Batch[customer]{Items: []customer{{1, "a"}}})
 	})
 
-	_ = StreamTable(sluice.Of([]order{{10, 1}}, 1), build,
+	_ = HashJoin(sluice.Of([]order{{10, 1}}, 1), build,
 		orderCustomer, customerID, joinLabel, okLimit(10))
 
 	if touched {
@@ -315,7 +315,7 @@ func TestJoinPropagatesEarlyStop(t *testing.T) {
 	})
 
 	n := 0
-	StreamTable(probe, sluice.Of(build, sluice.DefaultBatchSize),
+	HashJoin(probe, sluice.Of(build, sluice.DefaultBatchSize),
 		orderCustomer, customerID, joinLabel, okLimit(len(build)))(
 		func(sluice.Batch[string]) bool {
 			n++
@@ -341,24 +341,24 @@ func TestJoinRejectsBadArguments(t *testing.T) {
 		name string
 		call func()
 	}{
-		{"nil keyA", func() {
-			StreamTable[order, customer, int, string](probe, build, nil, customerID, joinLabel, okLimit(10))
+		{"nil keyProbe", func() {
+			HashJoin[order, customer, int, string](probe, build, nil, customerID, joinLabel, okLimit(10))
 		}},
-		{"nil keyB", func() {
-			StreamTable[order, customer, int, string](probe, build, orderCustomer, nil, joinLabel, okLimit(10))
+		{"nil keyBuild", func() {
+			HashJoin[order, customer, int, string](probe, build, orderCustomer, nil, joinLabel, okLimit(10))
 		}},
-		{"nil merge", func() {
-			StreamTable[order, customer, int, string](probe, build, orderCustomer, customerID, nil, okLimit(10))
+		{"nil combine", func() {
+			HashJoin[order, customer, int, string](probe, build, orderCustomer, customerID, nil, okLimit(10))
 		}},
 		{"zero limit", func() {
-			StreamTable(probe, build, orderCustomer, customerID, joinLabel, BuildLimit{})
+			HashJoin(probe, build, orderCustomer, customerID, joinLabel, BuildLimit{})
 		}},
 		{"zero MaxEntries under a policy", func() {
-			StreamTable(probe, build, orderCustomer, customerID, joinLabel,
+			HashJoin(probe, build, orderCustomer, customerID, joinLabel,
 				BuildLimit{MaxEntries: 0, OnOverflow: sluice.Fail})
 		}},
 		{"negative MaxEntries", func() {
-			StreamTable(probe, build, orderCustomer, customerID, joinLabel,
+			HashJoin(probe, build, orderCustomer, customerID, joinLabel,
 				BuildLimit{MaxEntries: -1, OnOverflow: sluice.Fail})
 		}},
 		{
@@ -366,16 +366,16 @@ func TestJoinRejectsBadArguments(t *testing.T) {
 			// behaving as sluice.DropNewest would offer a choice that does nothing.
 			"DropOldest is refused rather than silently reinterpreted",
 			func() {
-				StreamTable(probe, build, orderCustomer, customerID, joinLabel,
+				HashJoin(probe, build, orderCustomer, customerID, joinLabel,
 					BuildLimit{MaxEntries: 10, OnOverflow: sluice.DropOldest})
 			},
 		},
 		{"undeclared policy", func() {
-			StreamTable(probe, build, orderCustomer, customerID, joinLabel,
+			HashJoin(probe, build, orderCustomer, customerID, joinLabel,
 				BuildLimit{MaxEntries: 10, OnOverflow: sluice.Overflow(99)})
 		}},
 		{"unset policy", func() {
-			StreamTable(probe, build, orderCustomer, customerID, joinLabel,
+			HashJoin(probe, build, orderCustomer, customerID, joinLabel,
 				BuildLimit{MaxEntries: 10})
 		}},
 	}
@@ -422,7 +422,7 @@ func TestJoinRejectsLimitPastTheChainRange(t *testing.T) {
 		}
 	}()
 
-	StreamTable(sluice.Of([]order{{10, 1}}, 1), sluice.Of([]customer{{1, "a"}}, 1),
+	HashJoin(sluice.Of([]order{{10, 1}}, 1), sluice.Of([]customer{{1, "a"}}, 1),
 		orderCustomer, customerID, joinLabel,
 		BuildLimit{MaxEntries: maxBuildEntries + 1, OnOverflow: sluice.Fail})
 }
@@ -430,7 +430,7 @@ func TestJoinRejectsLimitPastTheChainRange(t *testing.T) {
 // The ceiling itself is accepted: the int32 range holds 2^31-1 entries, and
 // construction allocates nothing for them.
 func TestJoinAcceptsLimitAtTheChainRange(t *testing.T) {
-	StreamTable(sluice.Of([]order{{10, 1}}, 1), sluice.Of([]customer{{1, "a"}}, 1),
+	HashJoin(sluice.Of([]order{{10, 1}}, 1), sluice.Of([]customer{{1, "a"}}, 1),
 		orderCustomer, customerID, joinLabel,
 		BuildLimit{MaxEntries: maxBuildEntries, OnOverflow: sluice.Fail})
 }
@@ -442,10 +442,10 @@ func TestJoinLimitCeilingIsNamed(t *testing.T) {
 	defer func() {
 		msg, _ := recover().(string)
 		if !strings.Contains(msg, "2^31-1") {
-			t.Errorf("StreamTable panicked with %q, want a message naming the 2^31-1 ceiling", msg)
+			t.Errorf("HashJoin panicked with %q, want a message naming the 2^31-1 ceiling", msg)
 		}
 	}()
-	StreamTable(sluice.Of([]order{{10, 1}}, 1), sluice.Of([]customer{{1, "a"}}, 1),
+	HashJoin(sluice.Of([]order{{10, 1}}, 1), sluice.Of([]customer{{1, "a"}}, 1),
 		orderCustomer, customerID, joinLabel, big)
 }
 

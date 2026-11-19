@@ -130,7 +130,7 @@ func (l Late) String() string {
 // [LateFail] panics with [sluice.ErrUnsorted], [LateDrop] steps over the
 // element — because both answers are right for some pipeline and neither is
 // right for all. Requiring a non-decreasing input instead, the way
-// [github.com/mlagarrigue/sluice/join.Interval] does for its cursor, would
+// [github.com/mlagarrigue/sluice/join.IntervalJoin] does for its cursor, would
 // mean one element from one misconfigured clock can stop an ingest for good:
 // measured on the first consumer built on this library, where the panic
 // travelled up through a [github.com/mlagarrigue/sluice/gateway] and left

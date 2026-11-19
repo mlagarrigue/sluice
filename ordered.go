@@ -4,7 +4,7 @@ import "github.com/mlagarrigue/sluice/internal/batch"
 
 // ErrUnsorted reports that an ordered-input operator saw its key go backwards
 // — the join key of [github.com/mlagarrigue/sluice/join.MergeJoin], or the event
-// time of [github.com/mlagarrigue/sluice/join.Interval].
+// time of [github.com/mlagarrigue/sluice/join.IntervalJoin].
 //
 // These operators walk their inputs once and never look back, so an
 // out-of-order key silently produces a wrong result — rows that should have

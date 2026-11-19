@@ -66,7 +66,7 @@ func FuzzJoinMatchesNestedLoop(f *testing.F) {
 		for _, limit := range []int{1, 2, 3, 8} {
 			// sluice.Batch size 2 so a key's rows straddle a batch boundary: the chain
 			// has to survive that, which a per-batch implementation would not.
-			got := sluice.Collect(StreamTable(
+			got := sluice.Collect(HashJoin(
 				sluice.Of(slices.Clone(probe), 2), sluice.Of(slices.Clone(build), 2),
 				func(v int) int { return v },
 				func(r buildRow) int { return r.key },

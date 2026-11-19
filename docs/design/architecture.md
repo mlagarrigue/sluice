@@ -680,8 +680,8 @@ inputs in lockstep and retain only the current equal-key run; `join.MergeJoin`
 is O(1) while keys repeat on at most one side — a key repeated on both buffers
 its right run to emit the cross product, O(m) over that run, so a stream that
 is one long many-to-many run materializes its right input
-([the merge join](#joinmergejoin--the-merge-the-sorted-set-operations-derive-from)). `join.Interval`
-retains a bounded window of both sides; `join.StreamTable` materializes its
+([the merge join](#joinmergejoin--the-merge-the-sorted-set-operations-derive-from)). `join.IntervalJoin`
+retains a bounded window of both sides; `join.HashJoin` materializes its
 build side entirely, under a required bound.
 
 **Retains time — `window`.** `window.Tumbling` holds one open window, and
@@ -749,7 +749,7 @@ operators *are* that point.
 > open window's end first answers for every element but the first of each
 > window.
 
-**Blocking — O(n).** `Collect` · `Count` · `ForEach` · `Reduce` · `join.StreamTable` (build side).
+**Blocking — O(n).** `Collect` · `Count` · `ForEach` · `Reduce` · `join.HashJoin` (build side).
 **Incompatible with an infinite stream.**
 
 > **No `Sort`, `GroupBy` or `Materialize`.** A caller who needs one collects
@@ -1467,13 +1467,13 @@ processing library of Apache Kafka, a distributed log). Naming both sides in the
 removes the ambiguity about which one is materialized.
 
 ```go
-func StreamTable[A, B any, K comparable, R any](   // package join
-    probe Stream[A],        // streamed — may be infinite
-    build Stream[B],        // materialized — MUST be finite
-    keyA  func(A) K,
-    keyB  func(B) K,
-    merge func(A, B) R,
-    limit BuildLimit,            // MANDATORY — required positional parameter
+func HashJoin[A, B any, K comparable, R any](   // package join
+    probe    Stream[A],        // streamed — may be infinite
+    build    Stream[B],        // materialized — MUST be finite
+    keyProbe func(A) K,
+    keyBuild func(B) K,
+    combine  func(A, B) R,     // builds one output from a matched pair
+    limit    BuildLimit,       // MANDATORY — required positional parameter
 ) Stream[R]
 ```
 
@@ -1506,7 +1506,7 @@ radix partitioning with recursive bit increase (DuckDB), with its known
 guardrail: on very skewed data, recursive sub-partitioning causes *I/O
 thrashing*.
 
-> `join.StreamTable` takes `join.BuildLimit` positionally, and its zero value
+> `join.HashJoin` takes `join.BuildLimit` positionally, and its zero value
 > is refused: a limit of zero under the zero policy would drop every row,
 > which is what the type exists to prevent. Under `DropNewest` it joins
 > against the truncated table, and `join` itself knows nothing of
@@ -1561,9 +1561,9 @@ duplicates each element into N windows.
 
 ```go
 // l joins r iff: TimeL(l) + Lower <= TimeR(r) <= TimeL(l) + Upper
-func Interval[L, R any, K comparable, Out any](    // package join
+func IntervalJoin[L, R any, K comparable, Out any](    // package join
     left Stream[L], right Stream[R],
-    spec IntervalSpec[L, R, K, Out], // KeyL, KeyR, TimeL, TimeR, Lower, Upper, Merge
+    spec IntervalSpec[L, R, K, Out], // KeyL, KeyR, TimeL, TimeR, Lower, Upper, Combine
     limit BuildLimit,
 ) Stream[Out]
 ```
@@ -1578,7 +1578,7 @@ lying to the user.
 > timeout**. An inactive source freezes the watermark, windows never close, state
 > grows without end.
 
-> **What replaces the watermark is ordering.** `join.Interval`
+> **What replaces the watermark is ordering.** `join.IntervalJoin`
 > requires both inputs non-decreasing on their extracted `time.Time`, checked
 > as elements are first seen — the same discipline, machinery (the merge
 > join's cursor, with the timestamp as its key) and sentinel (`ErrUnsorted`)
@@ -1620,7 +1620,7 @@ rows in indexes of the others. A
 `.Join().Join()` chain must not **lie about the real cost**. `join` has
 binary joins only, and the one that materializes — the hash join — holds
 its build side under a bound the caller must state (`BuildLimit.MaxEntries`,
-refused at zero by `StreamTable`):
+refused at zero by `HashJoin`):
 an intermediate result chained in as a build side is held under that
 bound, never silently.
 
@@ -1765,7 +1765,7 @@ nested calls, so a chain would break exactly where a pipeline does its work.
 | S6 | No goroutine leak. | A `synctest` bubble that fails while a goroutine is still blocked: `TestParallelLeavesNoGoroutines`, `TestConnectionsLeaveNoGoroutines` (QUIC); for `httpstream`, whose connections run on real sockets, no goroutine of the package left once they close, checked by name: `TestH2ConnectionsLeaveNoGoroutines` |
 | S7 | Internal errors do not leak to the client. | **Guaranteed by structure**: `cause` unexported ([The model adopted](#the-model-adopted)); exercised by `TestDiagnosticCauseIsWrappedNotExported`, `TestAuthenticateDoesNotLeakWhyItFailed` |
 | S8 | Every network input is bounded before allocation. | Fuzzing: `FuzzParseRequest`, `FuzzParseFrame`, `FuzzHPACKDecode`, `FuzzQPACKDecode`, `FuzzParseLongHeader`, `FuzzReaderNext` |
-| S9 | Every internal `iter.Pull` calls `stop()` on all paths. | Test with injected panic: `TestMergeReleasesOnPanic`, `TestSplitReleasesSourceOnPanic`, `TestPullingOperatorsReleaseBothInputsOnPanic` (`join.MergeJoin`, `ZipLongest`, `join.Interval`), `TestAsyncConsumerPanicReleasesProducer` |
+| S9 | Every internal `iter.Pull` calls `stop()` on all paths. | Test with injected panic: `TestMergeReleasesOnPanic`, `TestSplitReleasesSourceOnPanic`, `TestPullingOperatorsReleaseBothInputsOnPanic` (`join.MergeJoin`, `ZipLongest`, `join.IntervalJoin`), `TestAsyncConsumerPanicReleasesProducer` |
 | S10 | Every operator propagates `false` and lets the generator unwind. | One table drives the operators, `probe.Probe` included: `TestOperatorsPropagateEarlyStop`; `join.MergeJoin`, which fills a batch before it yields, has its own: `TestMergeJoinByEarlyStopEveryBranch` |
 | S11 | No unbounded buffer between two operators. | Pressure test: `TestParallelBoundsReadAhead`, `TestSplitBounds`; a `Split` branch that would overwrite an undrained slot stalls instead: `TestSplitStalls` |
 | **S12** | **Diagnostics ceiling per element and per batch.** `web/stream`'s `Exchange.Diagnostics` has no ceiling of its own: it holds what the pipeline's stages report for the element, a number set by the stages the program built, not by the input. | Pathological batch → counted truncation: `TestDiagnosticsCeiling` |

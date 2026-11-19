@@ -6,7 +6,7 @@ import (
 	"github.com/mlagarrigue/sluice"
 )
 
-// IntervalSpec says how [Interval] pairs a left row with a right row: by
+// IntervalSpec says how [IntervalJoin] pairs a left row with a right row: by
 // equal keys, and by the right row's timestamp falling within [Lower, Upper]
 // of the left row's. Every function is required; the zero Lower and Upper
 // pair rows of the same instant only.
@@ -17,21 +17,21 @@ type IntervalSpec[L, R any, K comparable, Out any] struct {
 	TimeR func(R) time.Time
 	// Lower and Upper bound TimeR(r) - TimeL(l), inclusive at both ends.
 	Lower, Upper time.Duration
-	Merge        func(L, R) Out
+	Combine      func(L, R) Out
 }
 
-// Interval joins two time-ordered streams on a key and a temporal
+// IntervalJoin joins two time-ordered streams on a key and a temporal
 // predicate, in memory bounded by the caller — the stream-stream join for
 // infinite inputs.
 //
-//	attributed := Interval(clicks, impressions,
+//	attributed := IntervalJoin(clicks, impressions,
 //	    IntervalSpec[Click, Impression, string, Attribution]{
 //	        KeyL:  func(c Click) string { return c.UserID },
 //	        KeyR:  func(i Impression) string { return i.UserID },
 //	        TimeL: func(c Click) time.Time { return c.At },
 //	        TimeR: func(i Impression) time.Time { return i.At },
 //	        Lower: -15 * time.Minute, // impression at most 15 minutes before the click
-//	        Merge: func(c Click, i Impression) Attribution { ... },
+//	        Combine: func(c Click, i Impression) Attribution { ... },
 //	    },
 //	    BuildLimit{MaxEntries: 100_000, OnOverflow: sluice.Fail})
 //
@@ -81,7 +81,7 @@ type IntervalSpec[L, R any, K comparable, Out any] struct {
 //
 // This is a hash-family operator, not a merge-family one: every element pays a
 // map probe and most pay a map insert, exactly the term that dominates
-// [StreamTable]. The temporal machinery itself (timestamps, eviction, the
+// [HashJoin]. The temporal machinery itself (timestamps, eviction, the
 // frontier) costs a fraction on top of the hashing, a wider window adds the
 // cost of the extra pairs it emits, and a window that excludes zero costs no
 // more per probe than one that does: rows still waiting for their window to
@@ -100,30 +100,30 @@ type IntervalSpec[L, R any, K comparable, Out any] struct {
 // it requires a copy. Rows accumulate until a batch fills, so an early stop
 // takes effect at the next batch boundary.
 //
-// Interval panics if a key, timestamp or merge function of spec is nil, if
+// IntervalJoin panics if a key, timestamp or combine function of spec is nil, if
 // spec.Lower > spec.Upper, or if limit is not usable.
-func Interval[L, R any, K comparable, Out any](
+func IntervalJoin[L, R any, K comparable, Out any](
 	left sluice.Stream[L],
 	right sluice.Stream[R],
 	spec IntervalSpec[L, R, K, Out],
 	limit BuildLimit,
 ) sluice.Stream[Out] {
 	keyL, keyR, tsL, tsR := spec.KeyL, spec.KeyR, spec.TimeL, spec.TimeR
-	lower, upper, merge := spec.Lower, spec.Upper, spec.Merge
+	lower, upper, combine := spec.Lower, spec.Upper, spec.Combine
 	if keyL == nil || keyR == nil {
-		panic("sluice: Interval requires non-nil key functions")
+		panic("sluice: IntervalJoin requires non-nil key functions")
 	}
 	if tsL == nil || tsR == nil {
-		panic("sluice: Interval requires non-nil timestamp functions")
+		panic("sluice: IntervalJoin requires non-nil timestamp functions")
 	}
-	if merge == nil {
-		panic("sluice: Interval requires a non-nil merge function")
+	if combine == nil {
+		panic("sluice: IntervalJoin requires a non-nil combine function")
 	}
 	if lower > upper {
-		panic("sluice: Interval requires lower <= upper")
+		panic("sluice: IntervalJoin requires lower <= upper")
 	}
 	if !limit.valid() {
-		panic("sluice: Interval requires a BuildLimit with a positive MaxEntries " +
+		panic("sluice: IntervalJoin requires a BuildLimit with a positive MaxEntries " +
 			"and an OnOverflow of Fail or DropNewest")
 	}
 	if limit.MaxEntries > maxIntervalEntries {
@@ -132,7 +132,7 @@ func Interval[L, R any, K comparable, Out any](
 		// compact lets the dead prefix grow as large as the live suffix before
 		// rebuilding. len(vals) can therefore reach ~2×MaxEntries, and the
 		// int32 chain indices must still address it — see intervalBuffer.put.
-		panic("sluice: Interval requires MaxEntries <= 2^30-1; " +
+		panic("sluice: IntervalJoin requires MaxEntries <= 2^30-1; " +
 			"the buffer holds up to twice the live bound before compaction")
 	}
 
@@ -185,7 +185,7 @@ func Interval[L, R any, K comparable, Out any](
 				// left — left time is non-decreasing — so they go first.
 				rbuf.evictBefore(lts.Add(lower))
 				for _, i := range rbuf.probe(k, lts.Add(lower), lts.Add(upper)) {
-					if !out.push(merge(lv, rbuf.vals[i])) {
+					if !out.push(combine(lv, rbuf.vals[i])) {
 						return
 					}
 				}
@@ -202,7 +202,7 @@ func Interval[L, R any, K comparable, Out any](
 				k := keyR(rv)
 				lbuf.evictBefore(rts.Add(-upper))
 				for _, i := range lbuf.probe(k, rts.Add(-upper), rts.Add(-lower)) {
-					if !out.push(merge(lbuf.vals[i], rv)) {
+					if !out.push(combine(lbuf.vals[i], rv)) {
 						return
 					}
 				}
@@ -216,7 +216,7 @@ func Interval[L, R any, K comparable, Out any](
 	}
 }
 
-// maxIntervalEntries caps an Interval's MaxEntries at half of
+// maxIntervalEntries caps an IntervalJoin's MaxEntries at half of
 // maxBuildEntries. The hash join's table never holds more than MaxEntries
 // rows, so its int32 indices are safe up to maxBuildEntries; here the arrays
 // also carry a dead prefix that compact tolerates up to the size of the live

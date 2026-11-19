@@ -36,7 +36,7 @@ import (
 // clock to answer to.
 //
 // The clock is the wall clock — processing time, not the event time of
-// [Tumbling] or [github.com/mlagarrigue/sluice/join.Interval]. The question it answers is "how long has this
+// [Tumbling] or [github.com/mlagarrigue/sluice/join.IntervalJoin]. The question it answers is "how long has this
 // element been waiting in memory", which has nothing to do with when the
 // event it describes happened.
 //

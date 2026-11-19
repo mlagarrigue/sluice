@@ -53,15 +53,15 @@ func TestPullingOperatorsReleaseBothInputsOnPanic(t *testing.T) {
 		{"ZipLongest", func(l, r sluice.Stream[int]) func() bool {
 			return func() bool { return panicsAtFirst(ZipLongest(l, r)) }
 		}},
-		{"Interval", func(l, r sluice.Stream[int]) func() bool {
+		{"IntervalJoin", func(l, r sluice.Stream[int]) func() bool {
 			spec := IntervalSpec[int, int, int, int]{
 				KeyL: func(int) int { return 0 }, KeyR: func(int) int { return 0 },
 				TimeL: at, TimeR: at,
 				Lower: -time.Second, Upper: time.Second,
-				Merge: func(l, r int) int { return l + r },
+				Combine: func(l, r int) int { return l + r },
 			}
 			return func() bool {
-				return panicsAtFirst(Interval(l, r, spec, BuildLimit{MaxEntries: 1000, OnOverflow: sluice.Fail}))
+				return panicsAtFirst(IntervalJoin(l, r, spec, BuildLimit{MaxEntries: 1000, OnOverflow: sluice.Fail}))
 			}
 		}},
 	} {

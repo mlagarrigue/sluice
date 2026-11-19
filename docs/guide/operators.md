@@ -121,8 +121,8 @@ streams.
 |---|---|---|
 | `join.MergeJoin(left, right, keyL, keyR, cmp)` | only the current run of equal keys | both streams are **sorted** on the key |
 | `join.ZipLongest(left, right)` | nothing beyond the two current batches | pairing by position: the first with the first, and so on |
-| `join.Interval(left, right, spec, limit)` | a bounded time window of both sides | two streams **ordered by time**, possibly infinite |
-| `join.StreamTable(probe, build, …, limit)` | **all** of the `build` side in memory | `build` is finite (a reference table), `probe` may not be |
+| `join.IntervalJoin(left, right, spec, limit)` | a bounded time window of both sides | two streams **ordered by time**, possibly infinite |
+| `join.HashJoin(probe, build, …, limit)` | **all** of the `build` side in memory | `build` is finite (a reference table), `probe` may not be |
 
 ### Two sorted streams: the merge join
 
@@ -159,13 +159,13 @@ the right. Six SQL semantics, one operator and one filter.
 
 When one side is a finite list (the customers) and the other an arbitrary
 stream (the orders, arriving in any order), you load the list into memory
-and look each order up in it. That is `join.StreamTable`:
+and look each order up in it. That is `join.HashJoin`:
 
 ```go
-enriched := join.StreamTable(orders, customers,
+enriched := join.HashJoin(orders, customers,
     func(o Order) int { return o.CustomerID },
     func(c Customer) int { return c.ID },
-    func(o Order, c Customer) Line { return Line{o, c.Name} }, // how to merge a pair
+    func(o Order, c Customer) Line { return Line{o, c.Name} }, // how to combine a pair
     join.BuildLimit{MaxEntries: 100_000, OnOverflow: sluice.Fail})
 ```
 
@@ -186,14 +186,14 @@ impressions), you can neither load everything nor wait for the end. You
 pair what happened "within 15 seconds":
 
 ```go
-attributed := join.Interval(clicks, impressions,
+attributed := join.IntervalJoin(clicks, impressions,
     join.IntervalSpec[Click, Impression, string, Attribution]{
         KeyL:  func(c Click) string { return c.UserID },      // the key
         KeyR:  func(i Impression) string { return i.UserID },
         TimeL: func(c Click) time.Time { return c.At },       // the time on each side
         TimeR: func(i Impression) time.Time { return i.At },
         Lower: -15 * time.Second,                             // the impression between 15 s before and the click
-        Merge: func(c Click, i Impression) Attribution { return Attribution{c, i} },
+        Combine: func(c Click, i Impression) Attribution { return Attribution{c, i} },
     },
     join.BuildLimit{MaxEntries: 10_000, OnOverflow: sluice.DropNewest,
         Report: func(limit, held int) { log.Printf("interval join truncated at %d", held) }})

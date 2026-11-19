@@ -1,7 +1,7 @@
 # ADR 0016 — A hash join's build side is bounded, and the bound is required
 
 - **Created:** 2026-10-07
-- **Revised:** 2026-10-22 (the storage seam removed), 2026-10-28 (written in the present tense; the table shapes re-measured)
+- **Revised:** 2026-10-22 (the storage seam removed), 2026-10-28 (written in the present tense; the table shapes re-measured), 2026-11-19 (the joins named `HashJoin` and `IntervalJoin`)
 - **Theme:** join
 
 ## Problem
@@ -15,7 +15,7 @@ legitimate.
 
 ## Decision
 
-`join.StreamTable` and `join.Interval` take a `join.BuildLimit` as a
+`join.HashJoin` and `join.IntervalJoin` take a `join.BuildLimit` as a
 **required positional parameter**: `MaxEntries` (counting values, not
 distinct keys, since one skewed key is exactly what a key-based bound would
 not see), `OnOverflow` (`Fail` panics with `sluice.ErrOverflow`;

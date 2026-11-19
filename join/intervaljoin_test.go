@@ -24,7 +24,7 @@ func at(sec int64) time.Time { return time.Unix(sec, 0) }
 
 func intervalRows(left, right []tRow, lower, upper time.Duration, limit BuildLimit, batch int) []string {
 	var got []string
-	Interval(
+	IntervalJoin(
 		sluice.Of(left, batch), sluice.Of(right, batch),
 		IntervalSpec[tRow, tRow, string, string]{
 			KeyL:  func(r tRow) string { return r.key },
@@ -32,7 +32,7 @@ func intervalRows(left, right []tRow, lower, upper time.Duration, limit BuildLim
 			TimeL: func(r tRow) time.Time { return at(r.sec) },
 			TimeR: func(r tRow) time.Time { return at(r.sec) },
 			Lower: lower, Upper: upper,
-			Merge: func(l, r tRow) string { return l.name + "+" + r.name },
+			Combine: func(l, r tRow) string { return l.name + "+" + r.name },
 		},
 		limit,
 	)(func(b sluice.Batch[string]) bool {
@@ -339,13 +339,13 @@ func TestIntervalJoinEarlyStopReleasesBoth(t *testing.T) {
 	}
 	var lDone, rDone bool
 	n := 0
-	Interval(
+	IntervalJoin(
 		mkSrc(&lDone), mkSrc(&rDone),
 		IntervalSpec[tRow, tRow, string, string]{
 			KeyL: func(r tRow) string { return r.key }, KeyR: func(r tRow) string { return r.key },
 			TimeL: func(r tRow) time.Time { return at(r.sec) }, TimeR: func(r tRow) time.Time { return at(r.sec) },
 			Lower: -time.Second, Upper: time.Second,
-			Merge: func(l, r tRow) string { return "p" },
+			Combine: func(l, r tRow) string { return "p" },
 		},
 		failLimit(100),
 	)(func(b sluice.Batch[string]) bool {
@@ -366,7 +366,7 @@ func TestIntervalJoinArgumentValidation(t *testing.T) {
 	type tSpec = IntervalSpec[tRow, tRow, string, string]
 	// spec is a usable specification with one field changed by edit.
 	spec := func(edit func(*tSpec)) tSpec {
-		s := tSpec{KeyL: key, KeyR: key, TimeL: ts, TimeR: ts, Merge: mrg}
+		s := tSpec{KeyL: key, KeyR: key, TimeL: ts, TimeR: ts, Combine: mrg}
 		if edit != nil {
 			edit(&s)
 		}
@@ -377,17 +377,17 @@ func TestIntervalJoinArgumentValidation(t *testing.T) {
 		name string
 		f    func()
 	}{
-		{"nil keyL", func() { Interval(empty, empty, spec(func(s *tSpec) { s.KeyL = nil }), ok) }},
-		{"nil tsR", func() { Interval(empty, empty, spec(func(s *tSpec) { s.TimeR = nil }), ok) }},
-		{"nil merge", func() { Interval(empty, empty, spec(func(s *tSpec) { s.Merge = nil }), ok) }},
-		{"lower above upper", func() { Interval(empty, empty, spec(func(s *tSpec) { s.Lower = time.Second }), ok) }},
-		{"unusable limit", func() { Interval(empty, empty, spec(nil), BuildLimit{}) }},
+		{"nil keyL", func() { IntervalJoin(empty, empty, spec(func(s *tSpec) { s.KeyL = nil }), ok) }},
+		{"nil tsR", func() { IntervalJoin(empty, empty, spec(func(s *tSpec) { s.TimeR = nil }), ok) }},
+		{"nil combine", func() { IntervalJoin(empty, empty, spec(func(s *tSpec) { s.Combine = nil }), ok) }},
+		{"lower above upper", func() { IntervalJoin(empty, empty, spec(func(s *tSpec) { s.Lower = time.Second }), ok) }},
+		{"unusable limit", func() { IntervalJoin(empty, empty, spec(nil), BuildLimit{}) }},
 		// The buffers count dead rows as well as live ones — up to twice the
 		// live bound before compaction — so a MaxEntries the hash join would
 		// accept can overflow the int32 chain indices here. Refused at
 		// construction rather than left to corrupt a chain two billion rows in.
 		{"limit past what the chain indices can address with a dead prefix", func() {
-			Interval(empty, empty, spec(nil),
+			IntervalJoin(empty, empty, spec(nil),
 				BuildLimit{MaxEntries: maxIntervalEntries + 1, OnOverflow: sluice.Fail})
 		}},
 	}
@@ -403,7 +403,7 @@ func TestIntervalJoinArgumentValidation(t *testing.T) {
 	}
 
 	// And the cap is exact: the largest admissible limit constructs.
-	Interval(empty, empty, spec(nil),
+	IntervalJoin(empty, empty, spec(nil),
 		BuildLimit{MaxEntries: maxIntervalEntries, OnOverflow: sluice.Fail})
 }
 
@@ -426,12 +426,12 @@ func benchIntervalJoinOffset(b *testing.B, distance time.Duration) {
 	b.ResetTimer()
 	for range b.N {
 		var acc int64
-		Interval(
+		IntervalJoin(
 			sluice.Of(rows, 1024), sluice.Of(rows, 1024),
 			IntervalSpec[int64, int64, int, int64]{
 				KeyL: key, KeyR: key, TimeL: ts, TimeR: ts,
 				Lower: -distance - time.Millisecond, Upper: -distance,
-				Merge: func(l, r int64) int64 { return l ^ r },
+				Combine: func(l, r int64) int64 { return l ^ r },
 			},
 			limit,
 		)(func(bt sluice.Batch[int64]) bool {

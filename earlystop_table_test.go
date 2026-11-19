@@ -18,7 +18,7 @@ import (
 // make.
 var earlyStopElsewhere = map[string]string{
 	"join.MergeJoin":            "TestMergeJoinByEarlyStopEveryBranch",
-	"join.Interval":             "TestIntervalJoinEarlyStopReleasesBoth",
+	"join.IntervalJoin":         "TestIntervalJoinEarlyStopReleasesBoth",
 	"join.ZipLongest":           "TestZipLongestEarlyStopReleasesBoth",
 	"parallel.Async":            "TestAsyncEarlyStopReleasesProducer",
 	"parallel.Unordered":        "TestParallelUnorderedStopDuringTailDrain",

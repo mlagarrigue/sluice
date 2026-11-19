@@ -61,7 +61,7 @@ func TestMergeJoinOfTwoBranchesOfOneSplit(t *testing.T) {
 	}
 }
 
-// Interval over the same branches, a window of zero: the instants are
+// IntervalJoin over the same branches, a window of zero: the instants are
 // disjoint, so no pair. It invented [3 3] and [7 7].
 func TestIntervalOfTwoBranchesOfOneSplit(t *testing.T) {
 	base := time.Unix(0, 0).UTC()
@@ -69,10 +69,10 @@ func TestIntervalOfTwoBranchesOfOneSplit(t *testing.T) {
 	for _, reuse := range []bool{false, true} {
 		br := splitBranches(reuse)
 		var got [][2]int
-		s := join.Interval(br[0], br[1], join.IntervalSpec[int, int, int, [2]int]{
+		s := join.IntervalJoin(br[0], br[1], join.IntervalSpec[int, int, int, [2]int]{
 			KeyL: func(int) int { return 0 }, KeyR: func(int) int { return 0 },
 			TimeL: ts, TimeR: ts,
-			Merge: func(l, r int) [2]int { return [2]int{l, r} },
+			Combine: func(l, r int) [2]int { return [2]int{l, r} },
 		}, join.BuildLimit{MaxEntries: 100, OnOverflow: sluice.Fail})
 		for b := range s {
 			got = append(got, b.Items...)

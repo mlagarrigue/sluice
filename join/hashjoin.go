@@ -9,7 +9,7 @@ import (
 
 // BuildLimit bounds the table a hash join materialises.
 //
-// It is a required positional argument of [StreamTable] rather than an
+// It is a required positional argument of [HashJoin] rather than an
 // option, because the alternative is a join that looks correct and runs until
 // the process dies (docs/design/adr/0016-hash-join-bound.md). The position
 // comes from engines that learned it the
@@ -20,7 +20,7 @@ import (
 //
 // The zero value is not usable, and deliberately so: a limit of zero entries
 // under the zero policy would silently drop every row, which is the failure
-// this type exists to prevent. [StreamTable] rejects it.
+// this type exists to prevent. [HashJoin] rejects it.
 type BuildLimit struct {
 	// MaxEntries is the largest number of build-side elements the table holds.
 	// It must be positive.
@@ -57,7 +57,7 @@ type BuildLimit struct {
 // table, and the interval join has one of its own.
 //
 // Unexported for the reason [sluice.Overflow.Valid] gives: every caller is in
-// this package, and [StreamTable] names the field it refuses.
+// this package, and [HashJoin] names the field it refuses.
 func (l BuildLimit) valid() bool {
 	return l.MaxEntries > 0 && (l.OnOverflow == sluice.Fail || l.OnOverflow == sluice.DropNewest)
 }
@@ -142,7 +142,7 @@ const initialBuildTable = 64
 // previous one under the same key, growing the map toward the limit rather
 // than letting the runtime grow it one insertion at a time.
 func (t *mapTable[K, B]) Put(k K, v B) {
-	// Safe: StreamTable caps MaxEntries at maxBuildEntries before building
+	// Safe: HashJoin caps MaxEntries at maxBuildEntries before building
 	// this table, and the join stops filling at that bound, so len(t.vals) cannot reach int32's range.
 	idx := int32(len(t.vals)) //nolint:gosec // G115: bounded by maxBuildEntries
 	previous, seen := t.head[k]
@@ -213,9 +213,9 @@ func (t *mapTable[K, B]) Get(k K) []B {
 // skewed key is exactly what makes a table grow unexpectedly.
 func (t *mapTable[K, B]) Len() int { return len(t.vals) }
 
-// StreamTable joins a streamed side against a materialised one.
+// HashJoin joins a streamed side against a materialised one.
 //
-//	enriched := StreamTable(orders, customers,
+//	enriched := HashJoin(orders, customers,
 //	    func(o Order) int { return o.CustomerID },
 //	    func(c Customer) int { return c.ID },
 //	    func(o Order, c Customer) Enriched { return Enriched{o, c} },
@@ -281,40 +281,39 @@ func (t *mapTable[K, B]) Len() int { return len(t.vals) }
 // BenchmarkJoinHash; the figures live in docs/design/architecture.md, "Strategies").
 // Materialising a side is what you do when you cannot sort, not a default.
 //
-// StreamTable panics if keyA, keyB or merge is nil, or if limit is not
+// HashJoin panics if keyProbe, keyBuild or combine is nil, or if limit is not
 // usable — which includes a MaxEntries past 2^31-1, the table's index
 // range.
-func StreamTable[A, B any, K comparable, R any](
+func HashJoin[A, B any, K comparable, R any](
 	probe sluice.Stream[A],
 	build sluice.Stream[B],
-	keyA func(A) K,
-	keyB func(B) K,
-	merge func(A, B) R,
+	keyProbe func(A) K,
+	keyBuild func(B) K,
+	combine func(A, B) R,
 	limit BuildLimit,
 ) sluice.Stream[R] {
-	checkJoinArgs(keyA, keyB, merge, limit)
+	checkJoinArgs(keyProbe, keyBuild, combine, limit)
 	if limit.MaxEntries > maxBuildEntries {
-		panic("sluice: StreamTable requires MaxEntries <= 2^31-1, the table's " +
+		panic("sluice: HashJoin requires MaxEntries <= 2^31-1, the table's " +
 			"int32 index range")
 	}
-	return joinStreamTable(probe, build, keyA, keyB, merge, limit,
+	return probeTable(probe, build, keyProbe, keyBuild, combine, limit,
 		newMapTable[K, B](limit.MaxEntries))
 }
 
 // checkJoinArgs rejects a misconfigured join where it is wired rather than when
-// the data arrives. Shared by both constructors so there is one set of rules to
-// keep true, not two that can drift.
+// the data arrives.
 func checkJoinArgs[A, B any, K comparable, R any](
-	keyA func(A) K,
-	keyB func(B) K,
-	merge func(A, B) R,
+	keyProbe func(A) K,
+	keyBuild func(B) K,
+	combine func(A, B) R,
 	limit BuildLimit,
 ) {
-	if keyA == nil || keyB == nil {
+	if keyProbe == nil || keyBuild == nil {
 		panic("sluice: a hash join requires non-nil key functions")
 	}
-	if merge == nil {
-		panic("sluice: a hash join requires a non-nil merge function")
+	if combine == nil {
+		panic("sluice: a hash join requires a non-nil combine function")
 	}
 	if !limit.valid() {
 		panic("sluice: a hash join requires a BuildLimit with a positive MaxEntries " +
@@ -322,21 +321,21 @@ func checkJoinArgs[A, B any, K comparable, R any](
 	}
 }
 
-// joinStreamTable is the shared body. The build side is materialised lazily —
+// probeTable is the join's body. The build side is materialised lazily —
 // on the first pull, not at construction — so that a join that is never
 // consumed reads nothing, which is the contract every other operator here
 // keeps.
-func joinStreamTable[A, B any, K comparable, R any](
+func probeTable[A, B any, K comparable, R any](
 	probe sluice.Stream[A],
 	build sluice.Stream[B],
-	keyA func(A) K,
-	keyB func(B) K,
-	merge func(A, B) R,
+	keyProbe func(A) K,
+	keyBuild func(B) K,
+	combine func(A, B) R,
 	limit BuildLimit,
 	table *mapTable[K, B],
 ) sluice.Stream[R] {
 	return func(yield func(sluice.Batch[R]) bool) {
-		fillTable(build, keyB, limit, table)
+		fillTable(build, keyBuild, limit, table)
 
 		// Output goes through the shared emitter, as in every other join:
 		// accumulating a probe batch's whole cross product into one slice
@@ -347,8 +346,8 @@ func joinStreamTable[A, B any, K comparable, R any](
 		out := newEmitter(yield)
 		probe(func(b sluice.Batch[A]) bool {
 			for _, a := range b.Items {
-				for _, bv := range table.Get(keyA(a)) {
-					if !out.push(merge(a, bv)) {
+				for _, bv := range table.Get(keyProbe(a)) {
+					if !out.push(combine(a, bv)) {
 						return false
 					}
 				}
@@ -365,14 +364,14 @@ func joinStreamTable[A, B any, K comparable, R any](
 // sluice.DropNewest — so the switch has no third case to guard against.
 func fillTable[K comparable, B any](
 	build sluice.Stream[B],
-	keyB func(B) K,
+	keyBuild func(B) K,
 	limit BuildLimit,
 	table *mapTable[K, B],
 ) {
 	build(func(b sluice.Batch[B]) bool {
 		for _, v := range b.Items {
 			if table.Len() < limit.MaxEntries {
-				table.Put(keyB(v), v)
+				table.Put(keyBuild(v), v)
 				continue
 			}
 			if limit.OnOverflow == sluice.Fail {

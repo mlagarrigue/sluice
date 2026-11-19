@@ -14,7 +14,7 @@ type impression struct {
 	at   time.Time
 }
 
-// Interval pairs two time-ordered streams on a key and a temporal window:
+// IntervalJoin pairs two time-ordered streams on a key and a temporal window:
 // here, the impression that preceded each click by at most fifteen seconds.
 // click and at mirror the fixture of the window example: both operators read
 // an event time off the element, so both need the same shape and the same
@@ -54,7 +54,7 @@ func ExampleTumbling() {
 	// [90, 100) [dave]
 }
 
-func ExampleInterval() {
+func ExampleIntervalJoin() {
 	clicks := []click{
 		{"alice", at(20)},
 		{"bob", at(30)},
@@ -69,7 +69,7 @@ func ExampleInterval() {
 
 	// The right side may sit up to fifteen seconds before the left and no
 	// later, which is what "the impression that led to this click" means.
-	attributed := join.Interval(
+	attributed := join.IntervalJoin(
 		sluice.Of(clicks, 4), sluice.Of(impressions, 4),
 		join.IntervalSpec[click, impression, string, string]{
 			KeyL:  func(c click) string { return c.user },
@@ -77,7 +77,7 @@ func ExampleInterval() {
 			TimeL: func(c click) time.Time { return c.at },
 			TimeR: func(i impression) time.Time { return i.at },
 			Lower: -15 * time.Second,
-			Merge: func(c click, i impression) string {
+			Combine: func(c click, i impression) string {
 				return fmt.Sprintf("%s clicked %ds after seeing the ad",
 					c.user, int(c.at.Sub(i.at).Seconds()))
 			},

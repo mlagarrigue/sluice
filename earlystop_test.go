@@ -93,9 +93,9 @@ func TestOperatorsPropagateEarlyStop(t *testing.T) {
 		// the probe at batch boundaries: the build key carries more rows
 		// than sluice.DefaultBatchSize so a single probe element fills a batch and
 		// the refusal arrives on the source's very next yield.
-		{"JoinStreamTable", func(s sluice.Stream[int]) sluice.Stream[int] {
+		{"JoinHashJoin", func(s sluice.Stream[int]) sluice.Stream[int] {
 			build := make([]int, sluice.DefaultBatchSize+1)
-			return join.StreamTable(s, sluice.Of(build, sluice.DefaultBatchSize),
+			return join.HashJoin(s, sluice.Of(build, sluice.DefaultBatchSize),
 				func(v int) int { return 0 },
 				func(v int) int { return 0 },
 				func(a, b int) int { return a },

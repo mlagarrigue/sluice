@@ -35,7 +35,7 @@ func BenchmarkJoinHash(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		join.StreamTable(
+		join.HashJoin(
 			sluice.Of(probe, 1024), sluice.Of(build, 1024),
 			func(v int64) int64 { return v },
 			func(v int64) int64 { return v },
@@ -90,7 +90,7 @@ func BenchmarkJoinHashBuildOnly(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		join.StreamTable(
+		join.HashJoin(
 			sluice.Of(probe, 1024), sluice.Of(build, 1024),
 			func(v int64) int64 { return v },
 			func(v int64) int64 { return v },
