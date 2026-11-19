@@ -307,6 +307,10 @@ type Problem struct {
 // Remedy is an affordance in the shape a client reads it. Its Path is the same
 // path the problem carries, which is what lets a client pair the two by
 // comparison rather than by convention.
+//
+// It doubles [diagnostics.Affordance] on purpose: that one is the domain's
+// value, this one the JSON a response carries, and keeping them apart lets
+// either change without moving the other.
 type Remedy struct {
 	Action string  `json:"action"`
 	Method string  `json:"method,omitempty"`
@@ -318,7 +322,8 @@ type Remedy struct {
 // Input describes one field an action accepts. It carries every field of
 // [diagnostics.Input]: a read-only field dropped here would be offered to the
 // client as editable, and a suggested value dropped here would be a remedy
-// the client cannot apply.
+// the client cannot apply. The two are kept apart as [Remedy] is kept apart
+// from [diagnostics.Affordance]: the domain's value there, the JSON here.
 type Input struct {
 	Name     string `json:"name"`
 	Kind     string `json:"kind,omitempty"`
