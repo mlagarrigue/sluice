@@ -3,9 +3,9 @@
 // running counts per point and nothing else.
 //
 //	var in, out probe.Counter
-//	s := probe.Probe(source, &in)
+//	s := probe.Count(source, &in)
 //	s = expensiveStage(s)
-//	s = probe.Probe(s, &out)
+//	s = probe.Count(s, &out)
 //
 // # What the difference between two probes says
 //
@@ -66,7 +66,7 @@ func (c *Counter) Batches() int64 { return c.batches.Load() }
 // Elements reports how many elements have been accepted downstream of the probe.
 func (c *Counter) Elements() int64 { return c.elems.Load() }
 
-// Probe counts the batches and elements passing a point in the pipeline. It
+// Count counts the batches and elements passing a point in the pipeline. It
 // is a pass-through: the stream it returns yields exactly what s yields, in
 // the same batches, with the same validity.
 //
@@ -80,11 +80,11 @@ func (c *Counter) Elements() int64 { return c.elems.Load() }
 // at 1024-element batches that is measured as indistinguishable from the
 // pipeline without the probe (see BenchmarkProbe in internal/bench).
 //
-// Probe panics if c is nil, at construction rather than at first use: a nil
+// Count panics if c is nil, at construction rather than at first use: a nil
 // counter is a wiring mistake, and the panic should point at the wiring.
-func Probe[T any](s sluice.Stream[T], c *Counter) sluice.Stream[T] {
+func Count[T any](s sluice.Stream[T], c *Counter) sluice.Stream[T] {
 	if c == nil {
-		panic("probe: Probe requires a non-nil Counter")
+		panic("probe: Count requires a non-nil Counter")
 	}
 	return func(yield func(sluice.Batch[T]) bool) {
 		s(func(b sluice.Batch[T]) bool {

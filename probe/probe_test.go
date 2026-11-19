@@ -12,10 +12,10 @@ func TestProbeCounts(t *testing.T) {
 	src := []int{1, 2, 3, 4, 5, 6, 7}
 	var c Counter
 
-	got := sluice.Collect(Probe(sluice.Of(src, 3), &c))
+	got := sluice.Collect(Count(sluice.Of(src, 3), &c))
 
 	if !slices.Equal(got, src) {
-		t.Errorf("Probe altered the stream: %v, want %v", got, src)
+		t.Errorf("Count altered the stream: %v, want %v", got, src)
 	}
 	if c.Batches() != 3 {
 		t.Errorf("Batches() = %d, want 3", c.Batches())
@@ -30,7 +30,7 @@ func TestProbeCounts(t *testing.T) {
 func TestProbeCountsAcceptedOnly(t *testing.T) {
 	var c Counter
 	n := 0
-	Probe(sluice.Of(make([]int, 10), 2), &c)(func(sluice.Batch[int]) bool {
+	Count(sluice.Of(make([]int, 10), 2), &c)(func(sluice.Batch[int]) bool {
 		n++
 		return n < 3 // accept 2 batches, refuse the 3rd
 	})
@@ -48,7 +48,7 @@ func TestProbeCountsAcceptedOnly(t *testing.T) {
 func TestProbeCountsEmptyBatches(t *testing.T) {
 	var c Counter
 	filtered := sluice.Filter(sluice.Of([]int{1, 2, 3, 4}, 2), func(int) bool { return false })
-	sluice.Collect(Probe(filtered, &c))
+	sluice.Collect(Count(filtered, &c))
 	if c.Batches() != 2 || c.Elements() != 0 {
 		t.Errorf("Batches, Elements = %d, %d, want 2, 0", c.Batches(), c.Elements())
 	}
@@ -72,7 +72,7 @@ func TestProbeConcurrentReads(t *testing.T) {
 		}
 	})
 
-	sluice.Collect(Probe(sluice.Of(make([]int, 1<<12), 64), &c))
+	sluice.Collect(Count(sluice.Of(make([]int, 1<<12), 64), &c))
 	close(done)
 	wg.Wait()
 
@@ -87,5 +87,5 @@ func TestProbeNilCounterPanics(t *testing.T) {
 			t.Error("nil Counter: no panic")
 		}
 	}()
-	Probe(sluice.Empty[int](), nil)
+	Count(sluice.Empty[int](), nil)
 }

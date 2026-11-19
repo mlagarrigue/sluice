@@ -11,12 +11,12 @@ import (
 // come out. In a synchronous pull pipeline that is the stage's selectivity —
 // here, the rows the filter dropped — not a measure of how slow it is: every
 // stage runs at the same pace, and time is a profiler's question.
-func ExampleProbe() {
+func ExampleCount() {
 	var in, out probe.Counter
 
-	src := probe.Probe(sluice.Of([]int{1, 2, 3, 4, 5, 6, 7, 8}, 2), &in)
+	src := probe.Count(sluice.Of([]int{1, 2, 3, 4, 5, 6, 7, 8}, 2), &in)
 	kept := sluice.Filter(src, func(v int) bool { return v%2 == 0 })
-	result := probe.Probe(kept, &out)
+	result := probe.Count(kept, &out)
 
 	fmt.Println(sluice.Collect(result))
 	fmt.Println("in: ", in.Elements(), "elements in", in.Batches(), "batches")
@@ -39,7 +39,7 @@ func ExampleCounter() {
 	var c probe.Counter
 
 	seen := 0
-	probe.Probe(sluice.Of([]int{1, 2, 3, 4, 5, 6}, 2), &c)(func(sluice.Batch[int]) bool {
+	probe.Count(sluice.Of([]int{1, 2, 3, 4, 5, 6}, 2), &c)(func(sluice.Batch[int]) bool {
 		seen++
 		return seen < 2 // take one batch, refuse the second
 	})

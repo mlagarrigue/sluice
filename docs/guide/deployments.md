@@ -255,8 +255,9 @@ counters your program reads when it likes
   window, losses, retransmissions, the datagram size reached; and
   `Listener.DiscardedPackets` for what never reached a connection, and
   `Listener.ReadErrors` for a socket that fails its reads.
-- **A pipeline's flow** (`probe`): two counts per point; the difference
-  between two probes says where elements stop.
+- **A pipeline's flow** (`probe`): `s = probe.Count(s, &c)` counts the
+  batches and elements that pass a point into a `probe.Counter`; the
+  difference between two counters says where elements stop.
 
 > **In plain words:** plug the `Logger` into your service's log, and
 > export the counters you want to follow through your own metrics.

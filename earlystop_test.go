@@ -43,7 +43,7 @@ func TestOperatorsPropagateEarlyStop(t *testing.T) {
 		{"sluice.Convert", func(s sluice.Stream[int]) sluice.Stream[int] {
 			return sluice.Convert(s, func(v int) int { return v })
 		}},
-		{"probe.Probe", func(s sluice.Stream[int]) sluice.Stream[int] { return probe.Probe(s, &probe.Counter{}) }},
+		{"probe.Count", func(s sluice.Stream[int]) sluice.Stream[int] { return probe.Count(s, &probe.Counter{}) }},
 		{"pushdown.AdvanceBy", func(s sluice.Stream[int]) sluice.Stream[int] {
 			return pushdown.AdvanceBy(s, &pushdown.Demand{}, func(v int) []byte { return []byte{byte(v >> 8), byte(v)} })
 		}},

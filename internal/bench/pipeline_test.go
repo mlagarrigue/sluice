@@ -90,7 +90,7 @@ func BenchmarkStreamEntry(b *testing.B) {
 	reportPerElem(b, N)
 }
 
-// BenchmarkProbe answers the obligation probe.Probe's doc makes: two atomic
+// BenchmarkProbe answers the obligation probe.Count's doc makes: two atomic
 // adds per 1024-element batch must be indistinguishable from the pipeline
 // without the probe. Compare against BenchmarkProbeBaseline in the same run.
 func BenchmarkProbeBaseline(b *testing.B) {
@@ -117,7 +117,7 @@ func BenchmarkProbe(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		probe.Probe(sluice.Map(sluice.Of(src, 1024), inc), &c)(func(bt sluice.Batch[int64]) bool {
+		probe.Count(sluice.Map(sluice.Of(src, 1024), inc), &c)(func(bt sluice.Batch[int64]) bool {
 			for _, v := range bt.Items {
 				acc += v
 			}

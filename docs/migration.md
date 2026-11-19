@@ -20,11 +20,16 @@ behavior that keep the signatures — a value now refused — come last.
 
 ### Diagnostics: `diagnostics`
 
-- **The severities carry their type's name** (feat(diagnostics)!: severities named after their type):
+- **The severities carry their type's name** (`4f077f8`):
   `Info`, `Warning`, `Error` and `Critical` are renamed `SeverityInfo`, `SeverityWarning`,
   `SeverityError` and `SeverityCritical`, as `OriginSQL` names its `Origin`; a bare
   `diagnostics.Error`, now gone, read as the `error` type. Rename the constants; their values, their order and what `String` prints are
   unchanged.
+
+### Instrumentation: `probe`
+
+- **`Probe` is renamed `Count`** (feat(diagnostics)!: probe.Count names what a probe does): `probe.Probe(s, &c)`
+  stuttered; write `probe.Count(s, &c)`. The `Counter`, its methods and the cost are unchanged.
 
 ### Joins: `join`
 
