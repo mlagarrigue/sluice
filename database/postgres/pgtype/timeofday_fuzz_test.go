@@ -43,7 +43,7 @@ func FuzzDecodeTime(f *testing.F) {
 }
 
 func FuzzDecodeTimeTZ(f *testing.F) {
-	f.Add(AppendTimeTZ(nil, TimeTZ{Micros: 9 * 3_600_000_000, OffsetSeconds: -7200}))
+	f.Add(AppendTimeTZ(nil, TimeTZ{Micros: 9 * 3_600_000_000, SecondsWest: -7200}))
 	f.Add(AppendTimeTZ(nil, TimeTZ{}))
 	f.Add(make([]byte, 11))
 	f.Add(make([]byte, 13))
@@ -59,8 +59,8 @@ func FuzzDecodeTimeTZ(f *testing.F) {
 		}
 		// Zone flips the sign; doing it twice must return the wire value, or
 		// the two conventions have drifted apart.
-		if got := -int32(v.Zone()); got != v.OffsetSeconds { //nolint:gosec // G115: an offset in seconds
-			t.Fatalf("Zone() round trip: %d became %d", v.OffsetSeconds, got)
+		if got := -int32(v.Zone()); got != v.SecondsWest { //nolint:gosec // G115: an offset in seconds
+			t.Fatalf("Zone() round trip: %d became %d", v.SecondsWest, got)
 		}
 		if got := AppendTimeTZ(nil, v); !bytes.Equal(got, b) {
 			t.Fatalf("DecodeTimeTZ(%x) -> %+v -> %x", b, v, got)

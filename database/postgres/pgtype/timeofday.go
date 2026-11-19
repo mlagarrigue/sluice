@@ -91,26 +91,40 @@ type TimeTZ struct {
 	// Micros is microseconds since midnight in the stated offset.
 	Micros int64
 
-	// OffsetSeconds is the zone offset **as the wire carries it**, which is
-	// the number of seconds to *subtract* to reach UTC — the opposite sign
-	// from [time.Time.Zone] and from an ISO 8601 suffix. UTC+2 travels as
-	// -7200.
+	// SecondsWest is the zone offset as the wire carries it: seconds west
+	// of UTC, the number to *add* to the local time to reach UTC — the
+	// opposite sign from [time.Time.Zone] and from an ISO 8601 suffix.
+	// UTC+2 is -7200, UTC-5 is 18000.
 	//
 	// It is stored in the wire's convention rather than silently flipped,
 	// because a sign error here is invisible: every value still decodes, and
-	// every one is two hours out in the direction nobody checks. Use
-	// [TimeTZ.Zone] to read it the way Go states offsets.
-	OffsetSeconds int32
+	// every one is hours out in the direction nobody checks. The name says
+	// the direction; it was OffsetSeconds, which a reader filled as Go
+	// states offsets. [TimeTZOf] builds a value from a [time.Time], and
+	// [TimeTZ.Zone] reads the offset the way Go states it.
+	SecondsWest int32
+}
+
+// TimeTZOf is t's time of day in t's own zone, with that zone's offset:
+// TimeTZOf of 09:00 in UTC+2 is {Micros: 09:00, SecondsWest: -7200}, which
+// PostgreSQL reads as 09:00:00+02.
+func TimeTZOf(t time.Time) TimeTZ {
+	h, m, sec := t.Clock()
+	_, east := t.Zone()
+	return TimeTZ{
+		Micros:      (int64(h)*3600+int64(m)*60+int64(sec))*1_000_000 + int64(t.Nanosecond()/1000),
+		SecondsWest: int32(-east), //nolint:gosec // G115: a zone offset, under a day
+	}
 }
 
 // Zone returns the offset the way [time.Time.Zone] does — seconds *east* of
-// UTC — which is the opposite sign from [TimeTZ.OffsetSeconds].
-func (t TimeTZ) Zone() int { return -int(t.OffsetSeconds) }
+// UTC — which is the opposite sign from [TimeTZ.SecondsWest].
+func (t TimeTZ) Zone() int { return -int(t.SecondsWest) }
 
 // AppendTimeTZ appends a `timetz`: the microseconds, then the offset.
 func AppendTimeTZ(dst []byte, t TimeTZ) []byte {
 	dst = AppendInt8(dst, t.Micros)
-	return AppendInt4(dst, t.OffsetSeconds)
+	return AppendInt4(dst, t.SecondsWest)
 }
 
 // DecodeTimeTZ decodes a `timetz`.
@@ -119,8 +133,8 @@ func DecodeTimeTZ(b []byte) (TimeTZ, error) {
 		return TimeTZ{}, fmt.Errorf("%w: timetz is %d bytes, want 12", ErrCodec, len(b))
 	}
 	return TimeTZ{
-		Micros:        int64(binary.BigEndian.Uint64(b[0:8])),  //nolint:gosec // G115: the protocol field is int64
-		OffsetSeconds: int32(binary.BigEndian.Uint32(b[8:12])), //nolint:gosec // G115: the protocol field is int32
+		Micros:      int64(binary.BigEndian.Uint64(b[0:8])),  //nolint:gosec // G115: the protocol field is int64
+		SecondsWest: int32(binary.BigEndian.Uint32(b[8:12])), //nolint:gosec // G115: the protocol field is int32
 	}, nil
 }
 

@@ -83,10 +83,10 @@ func TestIntegrationTimeTZVectors(t *testing.T) {
 		literal string
 		value   pgtype.TimeTZ
 	}{
-		{"'09:00:00+02'", pgtype.TimeTZ{Micros: 9 * 3_600_000_000, OffsetSeconds: -7200}},
-		{"'09:00:00-05'", pgtype.TimeTZ{Micros: 9 * 3_600_000_000, OffsetSeconds: 18000}},
+		{"'09:00:00+02'", pgtype.TimeTZ{Micros: 9 * 3_600_000_000, SecondsWest: -7200}},
+		{"'09:00:00-05'", pgtype.TimeTZ{Micros: 9 * 3_600_000_000, SecondsWest: 18000}},
 		{"'00:00:00+00'", pgtype.TimeTZ{}},
-		{"'13:45:30.5+05:30'", pgtype.TimeTZ{Micros: 13*3_600_000_000 + 45*60_000_000 + 30_500_000, OffsetSeconds: -19800}},
+		{"'13:45:30.5+05:30'", pgtype.TimeTZ{Micros: 13*3_600_000_000 + 45*60_000_000 + 30_500_000, SecondsWest: -19800}},
 	} {
 		t.Run(tc.literal, func(t *testing.T) {
 			if !serverAgrees(t, conn, "SELECT $1::timetz = "+tc.literal+"::timetz",

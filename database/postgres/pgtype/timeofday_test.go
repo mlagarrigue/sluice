@@ -80,12 +80,35 @@ func TestTimeRejectsAWrongLength(t *testing.T) {
 	}
 }
 
-// The sign of a timetz offset is the trap: the wire carries seconds to
-// *subtract*, which is the opposite of every other place an offset appears.
-// A codec that flipped it would still decode everything, two hours out.
+// The sign of a timetz offset is the trap: the wire carries seconds west of
+// UTC, the opposite of every other place an offset appears. A codec that
+// flipped it would still decode everything, two hours out.
+// A time of day written from a time.Time comes back the same instant: built
+// by TimeTZOf, through the wire, and read back by Zone on the same date. A
+// value filled as Go states offsets — +7200 for UTC+2 — would come back four
+// hours out; the field's name, SecondsWest, says which way it goes.
+func TestTimeTZOfKeepsTheInstant(t *testing.T) {
+	for _, east := range []int{7200, -5 * 3600, 5*3600 + 1800, 0} {
+		at := time.Date(2026, 1, 15, 9, 30, 15, 250_000_000, time.FixedZone("", east))
+		v := TimeTZOf(at)
+		if v.SecondsWest != int32(-east) { //nolint:gosec // G115: a zone offset
+			t.Errorf("UTC%+d: SecondsWest %d, want %d", east/3600, v.SecondsWest, -east)
+		}
+		got, err := DecodeTimeTZ(AppendTimeTZ(nil, v))
+		if err != nil {
+			t.Fatal(err)
+		}
+		back := time.Date(2026, 1, 15, 0, 0, 0, 0, time.FixedZone("", got.Zone())).
+			Add(time.Duration(got.Micros) * time.Microsecond)
+		if !back.Equal(at) {
+			t.Errorf("UTC%+d: %v came back as %v", east/3600, at, back)
+		}
+	}
+}
+
 func TestTimeTZOffsetSignIsTheWireConvention(t *testing.T) {
 	// 09:00 at UTC+2 — the wire says -7200.
-	v := TimeTZ{Micros: 9 * 3_600_000_000, OffsetSeconds: -7200}
+	v := TimeTZ{Micros: 9 * 3_600_000_000, SecondsWest: -7200}
 
 	raw := AppendTimeTZ(nil, v)
 	if len(raw) != 12 {

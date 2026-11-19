@@ -18,9 +18,16 @@ behavior that keep the signatures — a value now refused — come last.
 
 ## Since v0.5.1
 
+### Database: `postgres`
+
+- **`pgtype.TimeTZ.OffsetSeconds` becomes `SecondsWest`** (fix(postgres)!: TimeTZ names its offset SecondsWest):
+  the value and its sign are unchanged — seconds west of UTC, the wire's convention, so UTC+2 is
+  -7200. Rename the field; a value filled as Go states offsets (+7200 for UTC+2) was four hours out,
+  and `pgtype.TimeTZOf(t)` now builds one from a `time.Time` instead.
+
 ### Long jobs: `phase`
 
-- **`Lease` gains `Lost() <-chan struct{}`** (feat(phase)!: a lost lease ends the phase (ADR 0027)): a
+- **`Lease` gains `Lost() <-chan struct{}`** (`8e23183`): a
   `Store` of your own returns a lease that closes the channel once it finds its lock lost — expired,
   taken over, its connection gone — and never on `Release`. A store that cannot tell returns a nil
   channel, which never closes, and keeps the old behavior. `Job.Run` now cancels the running phase's

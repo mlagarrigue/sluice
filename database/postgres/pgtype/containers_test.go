@@ -447,7 +447,7 @@ func TestEveryCodecIsDistinctAndRoundTrips(t *testing.T) {
 	check("timestamp", roundTrip(TimestampCodec(), time.Date(2024, 3, 1, 1, 2, 3, 0, time.UTC)))
 	check("timestamptz", roundTrip(TimestampTZCodec(), time.Date(2024, 3, 1, 1, 2, 3, 0, time.UTC)))
 	check("interval", roundTrip(IntervalCodec(), Interval{Months: 1, Days: 2, Micros: 3}))
-	check("timetz", roundTrip(TimeTZCodec(), TimeTZ{Micros: 1, OffsetSeconds: 3600}))
+	check("timetz", roundTrip(TimeTZCodec(), TimeTZ{Micros: 1, SecondsWest: 3600}))
 	check("bit", roundTrip(BitCodec(), Bits{Len: 3, Bytes: []byte{0xa0}}))
 	check("varbit", roundTrip(VarbitCodec(), Bits{Len: 1, Bytes: []byte{0x80}}))
 	check("numeric", roundTrip(NumericCodec(), mustNumeric(t, "12.5")))

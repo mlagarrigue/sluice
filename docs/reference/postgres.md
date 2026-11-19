@@ -116,6 +116,11 @@ the other everyday types, and the system catalogue's own.
 | `tsvector` | `[]Lexeme` | `TSVector` | — |
 | `tsquery` | `[]TSQueryItem` | `TSQuery` | — |
 
+A `TimeTZ` holds its offset as the wire does, in seconds west of UTC
+(`SecondsWest`: UTC+2 is -7200, the opposite of `time.Time.Zone`): build one
+from a `time.Time` with `pgtype.TimeTZOf`, and read the offset the Go way
+with its `Zone` method.
+
 **The system catalogue's types: the pair and the codec.**
 
 | PostgreSQL | Go | X | Scan |
