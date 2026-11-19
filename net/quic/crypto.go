@@ -417,7 +417,7 @@ func (o *packetOpener) withoutPrevious() *packetOpener {
 	return &packetOpener{k: o.k, phase: &p}
 }
 
-// NewSealer and NewOpener build one direction's Initial protection from its
+// newPacketSealer and newPacketOpener build one direction's Initial protection from its
 // secret. Initial keys are always AES-128-GCM under SHA-256 (RFC 9001 §5.2);
 // the handshake and application levels follow the negotiated suite and are
 // built internally from the suite the TLS stack reports.

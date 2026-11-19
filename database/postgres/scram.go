@@ -53,7 +53,7 @@ const (
 	defaultMaxIterations = 1 << 20
 )
 
-// minSaltLen is the shortest salt this client will derive against.
+// defaultMinSaltLen is the shortest salt this client will derive against.
 //
 // It is the same argument as the iteration floor, applied to the other input
 // the server chooses: a short salt shrinks the space a precomputed table has

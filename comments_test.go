@@ -418,3 +418,161 @@ func TestLongFunctionsHaveAReadingPlan(t *testing.T) {
 		}
 	}
 }
+
+// commentLink is a doc link: [Name], [Name.Member], [pkg.Name] or
+// [pkg.Name.Member], a pointer star allowed, not preceded by what would make
+// it an index expression ("buf[i]") or a slice type ("[]byte").
+var commentLink = regexp.MustCompile(`(?:^|[^\w\]\)])\[\*?([A-Za-z_]\w*(?:\.[A-Za-z_]\w*){0,2})\]`)
+
+// commentCamel is a word written as a Go identifier of more than one part,
+// lower case first ("appendChunked"), or a qualified one ("w.cfg.limit").
+var commentCamel = regexp.MustCompile(`\b[a-z][a-z0-9]*[A-Z]\w*\b`)
+
+// commentWordsOutsideGo are the camelCase words of the tree's comments
+// that name nothing of this tree, each with what it is. A word that is a
+// typo of an identifier, or an old name of one, is not one of them.
+var commentWordsOutsideGo = map[string]string{
+	"keepAliveTimeout": "Node.js http.Server", "headersTimeout": "Node.js http.Server",
+	"requestTimeout": "Node.js http.Server", "createServer": "Node.js http",
+	"maxRequestsPerSocket": "Node.js http.Server", "connectionTimeout": "Node.js and Java pools",
+	"createTimeoutException": "HikariCP", "connectionTimeoutMillis": "node-postgres",
+	"pqSendSome": "libpq", "pgSQL": "PL/pgSQL",
+	"sha224WithRSAEncryption": "RFC 4055", "signatureAlgorithm": "RFC 5280",
+	"hashAlgorithm": "RFC 4055", "digitalSignature": "RFC 5280 key usage",
+	"kPersistentCongestionThreshold": "RFC 9002", "kGranularity": "RFC 9002",
+	"maxUselessRecords": "crypto/tls, unexported", "kB": "a unit",
+	"saleQty": "a field of the documentation's example model",
+	"macOS":   "an operating system", "gRPC": "a protocol",
+}
+
+// TestCommentsNameIdentifiersThatExist reads the comments of the
+// production code for the identifiers they name — a doc link, a word
+// written as an identifier — and checks each against the identifiers the
+// tree declares or uses. A comment that names a function under a name it
+// never had ("NewSealer and NewOpener build…", "[Opener.Open]", "minSaltLen
+// is") sends its reader looking for what does not exist; nothing caught
+// those three until a review did.
+func TestCommentsNameIdentifiersThatExist(t *testing.T) {
+	mod, err := os.ReadFile("go.mod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _, _ := strings.Cut(string(mod), "\n")
+	module := strings.TrimSpace(strings.TrimPrefix(first, "module"))
+	sources := goSources(t)
+	idents, packages, outside := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	for _, src := range sources {
+		packages[src.file.Name.Name] = true
+		for _, im := range src.file.Imports {
+			if p := strings.Trim(im.Path.Value, `"`); !strings.HasPrefix(p, module) {
+				outside[p[strings.LastIndex(p, "/")+1:]] = true
+			}
+		}
+		ast.Inspect(src.file, func(n ast.Node) bool {
+			if id, ok := n.(*ast.Ident); ok {
+				idents[id.Name] = true
+			}
+			return true
+		})
+	}
+	for _, src := range sources {
+		if src.test || src.generated || src.nested {
+			continue
+		}
+		imports := map[string]bool{} // package name → whether it is the tree's
+		for _, im := range src.file.Imports {
+			p := strings.Trim(im.Path.Value, `"`)
+			name := p[strings.LastIndex(p, "/")+1:]
+			if im.Name != nil {
+				name = im.Name.Name
+			}
+			imports[name] = strings.HasPrefix(p, module)
+		}
+		for _, group := range src.file.Comments {
+			for _, c := range group.List {
+				text := strings.TrimPrefix(c.Text, "//")
+				if strings.HasPrefix(text, "\t") || strings.HasPrefix(text, "go:") || strings.HasPrefix(text, "nolint") {
+					continue // a code block of the doc, or a directive
+				}
+				pos := src.fset.Position(c.Pos())
+				for _, m := range commentLink.FindAllStringSubmatch(text, -1) {
+					parts := strings.Split(m[1], ".")
+					if len(parts) > 1 {
+						tree, imported := imports[parts[0]]
+						switch {
+						case imported && !tree, !imported && outside[parts[0]]:
+							continue // the standard library's, or another module's
+						case imported || packages[parts[0]] && !idents[parts[0]]:
+							parts = parts[1:]
+						}
+					}
+					if len(parts) == 1 && !unicode.IsUpper(rune(parts[0][0])) {
+						continue // [i], [n]: a word in brackets, not a link
+					}
+					for _, p := range parts {
+						if !idents[p] {
+							t.Errorf("%s: the link [%s] names %s, which the tree does not declare", pos, m[1], p)
+							break
+						}
+					}
+				}
+				for _, loc := range commentCamel.FindAllStringIndex(text, -1) {
+					w := text[loc[0]:loc[1]]
+					if strings.HasPrefix(text[loc[1]:], "*") {
+						continue // lastValidated*: the fields that share the prefix
+					}
+					if idents[w] || idents[strings.TrimSuffix(w, "s")] || commentWordsOutsideGo[w] != "" {
+						continue
+					}
+					t.Errorf("%s: the comment names %s, which the tree does not declare", pos, w)
+				}
+			}
+		}
+		for _, d := range src.file.Decls {
+			name, doc := declName(d)
+			if doc == nil || name == "" {
+				continue
+			}
+			first, _, _ := strings.Cut(strings.TrimSpace(doc.Text()), " ")
+			first = strings.TrimSuffix(strings.TrimRight(first, ",.:;"), "()")
+			if first != name && isCamel(first) && !idents[first] {
+				t.Errorf("%s: the doc of %s opens on %s, which the tree does not declare", src.fset.Position(doc.Pos()), name, first)
+			}
+		}
+	}
+}
+
+// declName is the name a declaration's doc comment is about, and that doc.
+func declName(d ast.Decl) (string, *ast.CommentGroup) {
+	switch d := d.(type) {
+	case *ast.FuncDecl:
+		return d.Name.Name, d.Doc
+	case *ast.GenDecl:
+		if d.Lparen.IsValid() || len(d.Specs) != 1 {
+			return "", nil
+		}
+		switch s := d.Specs[0].(type) {
+		case *ast.TypeSpec:
+			return s.Name.Name, d.Doc
+		case *ast.ValueSpec:
+			if len(s.Names) == 1 {
+				return s.Names[0].Name, d.Doc
+			}
+		}
+	}
+	return "", nil
+}
+
+// isCamel reports a word of two humps or more: "NewSealer", "minSaltLen".
+func isCamel(w string) bool {
+	if len(w) < 2 || !unicode.IsLetter(rune(w[0])) {
+		return false
+	}
+	humps := 0
+	for i, r := range w {
+		if i > 0 && unicode.IsUpper(r) && unicode.IsLower(rune(w[i-1])) {
+			humps++
+		}
+	}
+	return humps > 0
+}

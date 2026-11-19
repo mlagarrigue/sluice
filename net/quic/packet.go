@@ -61,7 +61,7 @@ type longHeader struct {
 // exactly one.
 //
 // The packet number is *not* decoded: it is protected, and unprotecting it
-// needs keys this function does not have. [Opener.Open] does both together,
+// needs keys this function does not have. [packetOpener.Open] does both together,
 // because doing them apart is how a header gets used before it has been
 // authenticated.
 func parseLongHeader(b []byte) (longHeader, []byte, error) {
