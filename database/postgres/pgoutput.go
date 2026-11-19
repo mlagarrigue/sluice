@@ -177,12 +177,23 @@ const (
 	ValueUnchanged
 )
 
-// maxReplicationRelations bounds the relation table a stream keeps. A
-// publication's tables are described once each and again when their shape
-// changes, under the same OID, so the table grows with the tables published;
-// a server describing more distinct relations than this is refused rather
-// than followed into memory.
+// maxReplicationRelations bounds the relation table a stream keeps unless
+// [ReplicationConfig.MaxRelations] says otherwise. A publication's tables
+// are described once each and again when their shape changes, under the
+// same OID, so the table grows with the tables published; a server
+// describing more distinct relations than this is refused rather than
+// followed into memory. A publication of partitioned tables, one relation a
+// partition, can pass it: the setting is for that operator.
 const maxReplicationRelations = 1 << 14
+
+// maxReplicationRelationsCeiling is the most MaxRelations takes: a million
+// relations, a 4 GiB byte budget at relationBytesEach.
+const maxReplicationRelationsCeiling = 1 << 20
+
+// relationBytesEach is the byte budget of the relation table per relation
+// allowed, so that raising the count raises the budget with it: 4 KiB, 64
+// MiB at the default count (maxReplicationRelationBytes).
+const relationBytesEach = 4 << 10
 
 // maxReplicationRelationBytes bounds the relation table together: the
 // namespace, name and column names of every relation kept, plus
@@ -202,7 +213,7 @@ const maxReplicationRelations = 1 << 14
 // bound is reachable by a conformant server before this one is: 16,384
 // tables of thirty columns, FOR ALL TABLES on a very large schema, cost
 // about 28 MiB.
-const maxReplicationRelationBytes = 64 << 20
+const maxReplicationRelationBytes = maxReplicationRelations * relationBytesEach
 
 // relationColumnCost is what a [RelationColumn] costs the table beyond its
 // name: the struct itself, the name's header included.
@@ -227,8 +238,20 @@ const pgEpochMicros = 946_684_800_000_000
 type replDecoder struct {
 	relations map[uint32]*Relation
 	// relationBytes is the cost of every relation in the table, bounded by
-	// maxReplicationRelationBytes.
+	// relationBytesEach for each relation the table may hold.
 	relationBytes int
+	// maxRelations is ReplicationConfig.MaxRelations, zero for
+	// maxReplicationRelations.
+	maxRelations int
+}
+
+// relationLimits are the table's bounds: in relations, and in bytes.
+func (d *replDecoder) relationLimits() (count, bytes int) {
+	count = d.maxRelations
+	if count == 0 {
+		count = maxReplicationRelations
+	}
+	return count, count * relationBytesEach
 }
 
 // replReader walks one message body; every read checks what remains.
@@ -476,8 +499,9 @@ func (d *replDecoder) relation(r *replReader) {
 		d.relations = make(map[uint32]*Relation)
 	}
 	old, known := d.relations[rel.OID]
-	if !known && len(d.relations) >= maxReplicationRelations {
-		r.err = fmt.Errorf("%w: the server described more than %d relations", ErrProtocol, maxReplicationRelations)
+	maxCount, maxBytes := d.relationLimits()
+	if !known && len(d.relations) >= maxCount {
+		r.err = fmt.Errorf("%w: the server described more than %d relations (ReplicationConfig.MaxRelations)", ErrProtocol, maxCount)
 		return
 	}
 	// A redescription replaces its predecessor in the table, so it is
@@ -486,8 +510,8 @@ func (d *replDecoder) relation(r *replReader) {
 	if known {
 		total -= old.cost()
 	}
-	if total > maxReplicationRelationBytes {
-		r.err = fmt.Errorf("%w: a Relation of %d bytes takes the relation table past its %d-byte budget", ErrProtocol, rel.cost(), maxReplicationRelationBytes)
+	if total > maxBytes {
+		r.err = fmt.Errorf("%w: a Relation of %d bytes takes the relation table past its %d-byte budget", ErrProtocol, rel.cost(), maxBytes)
 		return
 	}
 	// A new value rather than an update in place: changes already delivered

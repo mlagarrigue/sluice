@@ -157,8 +157,10 @@ The figures are a laptop's ([measurements](#measurements-what-is-missing)).
 - **A replication stream keeps at most 16,384 relations and 64 MiB of
   their description** — the table of the relations the server describes,
   their names and columns. Past either, `Replicate` returns `ErrProtocol`.
-  A thousand tables of a hundred columns cost under 6 MiB. There is no
-  setting: the bound in bytes holds the memory whatever the schema
+  A thousand tables of a hundred columns cost under 6 MiB. A publication of
+  partitioned tables counts one relation a partition:
+  `ReplicationConfig.MaxRelations` raises the count, up to 1,048,576, and
+  the byte budget with it, 4 KiB a relation
   ([ADR 0023](../design/adr/0023-logical-replication.md)).
 - **A message from the server is bounded at 64 MiB** — a row with all its
   values, a COPY chunk. Over it, the message is refused unread and the

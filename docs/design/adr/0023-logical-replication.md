@@ -1,7 +1,7 @@
 # ADR 0023 — Logical replication is a `Source` of changes, acknowledged by the consumer
 
 - **Created:** 2026-10-23
-- **Revised:** 2026-10-23 (LISTEN/NOTIFY has its own record), 2026-10-27 (the relation table is bounded in bytes), 2026-10-28 (a batch is bounded in bytes too, and a Truncate split at BatchChanges; Type and Origin delivered)
+- **Revised:** 2026-11-19 (the relation count is a setting, MaxRelations, the byte budget following it; subheadings); 3 earlier, from 2026-10-23, in its `git log`
 - **Theme:** postgres
 
 ## Problem
@@ -14,6 +14,8 @@ only the simple query protocol and answers `START_REPLICATION` with a stream
 nothing read.
 
 ## Decision
+
+### The stream and its changes
 
 **An entry point of its own.** `Replicate(ctx, dial, cfg, ReplicationConfig)`
 opens the connection with `replication=database`, runs
@@ -41,6 +43,14 @@ streamed-transaction messages of protocol 2 and later) is refused with
 `ErrProtocol`, since it was not asked for. The relation table is bounded in
 count and in bytes: a server describing more relations, or longer names,
 than a budget allows is refused rather than followed into memory.
+
+The count is a setting (`ReplicationConfig.MaxRelations`, zero: 16,384): a publication
+of partitioned tables describes one relation a partition and passes the
+default with a conformant server, and its operator has a reason to raise it.
+The byte budget is 4 KiB per relation allowed, so a raised count raises it
+too and the bytes still hold the memory.
+
+### Batches and acknowledgement
 
 **A batch is what the server has already delivered**, capped by
 `ReplicationConfig.BatchChanges` (zero: `sluice.DefaultBatchSize`) and by

@@ -63,6 +63,15 @@ type ReplicationConfig struct {
 	// value is refused. The position is also reported whenever the server
 	// asks for a reply, and when the stream stops.
 	StatusInterval time.Duration
+
+	// MaxRelations is the most distinct relations the stream keeps
+	// described: each table the publications hold, each partition of a
+	// partitioned one. A server that describes one more is refused with
+	// [ErrProtocol] rather than followed into memory. Zero means 16,384;
+	// a negative value, or one above 1,048,576, is refused. The relation
+	// table's byte budget is 4 KiB per relation allowed — 64 MiB at the
+	// default — so that a raised count is not stopped by the bytes first.
+	MaxRelations int
 }
 
 // defaultStatusInterval is [ReplicationConfig.StatusInterval] when zero.
@@ -160,7 +169,10 @@ func Replicate(ctx context.Context, dial DialFunc, cfg Config, rcfg ReplicationC
 		_ = c.Close()
 		return nil, err
 	}
-	r := &Replication{c: c, batch: batch, batchBytes: batchBytes, interval: interval, sent: rcfg.Start, sentAt: time.Now()}
+	r := &Replication{
+		c: c, batch: batch, batchBytes: batchBytes, interval: interval, sent: rcfg.Start, sentAt: time.Now(),
+		dec: replDecoder{maxRelations: rcfg.MaxRelations},
+	}
 	r.acked.Store(uint64(rcfg.Start))
 	return r, nil
 }
@@ -185,6 +197,9 @@ func startReplicationSQL(rc ReplicationConfig) (string, error) {
 	}
 	if rc.StatusInterval < 0 {
 		return "", fmt.Errorf("postgres: ReplicationConfig.StatusInterval %v is negative — zero means %v", rc.StatusInterval, defaultStatusInterval)
+	}
+	if rc.MaxRelations < 0 || rc.MaxRelations > maxReplicationRelationsCeiling {
+		return "", fmt.Errorf("postgres: ReplicationConfig.MaxRelations %d is outside 1..%d — zero means %d", rc.MaxRelations, maxReplicationRelationsCeiling, maxReplicationRelations)
 	}
 	pubs := make([]string, len(rc.Publications))
 	for i, p := range rc.Publications {

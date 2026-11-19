@@ -61,6 +61,7 @@ Each field left at zero takes the value of the "Zero" column; what
 | `BatchChanges` | `sluice.DefaultBatchSize` | ≥ 0 | changes per batch |
 | `BatchBytes` | 64 MiB | 0 to 1 GiB | bytes of messages per batch |
 | `StatusInterval` | 10 s | ≥ 0 | how often, at most, the acknowledged position is reported |
+| `MaxRelations` | 16,384 | 0 to 1,048,576 | distinct relations the stream keeps described; the table's byte budget is 4 KiB each |
 
 ## The codecs
 
