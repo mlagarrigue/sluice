@@ -224,7 +224,7 @@ func TestDateFollowsTheStatus(t *testing.T) {
 
 			s := newBenchH2Server(Config{})
 			s.date = testDate
-			h2, err := s.appendHead(nil, 1, method, tt.r, s.cfg.MaxFrameSize)
+			h2, err := s.appendHead(nil, 1, method, tt.r, s.cfg.Advanced.MaxFrameSize)
 			if err != nil {
 				t.Fatal(err)
 			}

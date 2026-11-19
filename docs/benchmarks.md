@@ -2020,7 +2020,7 @@ measure is the tail: over a 20 ms network each reconnection holds one request
 in 1024 for two extra round trips, which is exactly the p99.9 the comparison
 study measures (axis D).
 
-`Config.MaxRequestsPerBatch` only binds for a client that pipelines.
+`Config.Advanced.MaxRequestsPerBatch` only binds for a client that pipelines.
 `BenchmarkBatchLimitTLS*`, one connection with 256 requests written before
 any answer is read: 8 against 64, +83% per request (0 of 14); 256 against
 64, −16% (12 of 14), one response write per batch instead of four. The

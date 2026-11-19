@@ -31,7 +31,7 @@ func TestH2ErrorGoAwayOutlivesUnreadFrames(t *testing.T) {
 			served <- err
 			return
 		}
-		served <- ServeH2Conn(t.Context(), c, Config{Logger: discardLogger(), LingerTimeout: 100 * time.Millisecond}, echoTarget)
+		served <- ServeH2Conn(t.Context(), c, Config{Logger: discardLogger(), Advanced: AdvancedConfig{LingerTimeout: 100 * time.Millisecond}}, echoTarget)
 	}()
 
 	d := net.Dialer{Control: func(_, _ string, rc syscall.RawConn) error {
@@ -102,7 +102,7 @@ func TestH2IdleGoAwayOutlivesUnreadPings(t *testing.T) {
 		// The linger leaves a loaded machine (check.sh runs every package at
 		// once) time to drain what was written; a reverted fix resets the
 		// connection over the unread PINGs however long it is.
-		cfg := Config{Logger: discardLogger(), ReadTimeout: idle, IdleTimeout: idle, LingerTimeout: 3 * time.Second}
+		cfg := Config{Logger: discardLogger(), ReadTimeout: idle, IdleTimeout: idle, Advanced: AdvancedConfig{LingerTimeout: 3 * time.Second}}
 		served <- ServeH2Conn(t.Context(), c, cfg, echoTarget)
 	}()
 

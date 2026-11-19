@@ -16,7 +16,7 @@ func FuzzParseFrame(f *testing.F) {
 
 	cfg := Config{}.mustResolve()
 	f.Fuzz(func(t *testing.T, data []byte) {
-		fr, n, err := parseFrame(data, cfg.MaxFrameSize)
+		fr, n, err := parseFrame(data, cfg.Advanced.MaxFrameSize)
 		if err != nil {
 			if n != 0 {
 				t.Errorf("a refused frame reported %d bytes consumed", n)
@@ -29,7 +29,7 @@ func FuzzParseFrame(f *testing.F) {
 		if len(fr.Payload) != n-frameHeaderSize {
 			t.Errorf("payload is %d bytes for a frame of %d", len(fr.Payload), n)
 		}
-		if len(fr.Payload) > cfg.MaxFrameSize {
+		if len(fr.Payload) > cfg.Advanced.MaxFrameSize {
 			t.Errorf("a payload of %d bytes was accepted", len(fr.Payload))
 		}
 		if fr.StreamID&0x80000000 != 0 {

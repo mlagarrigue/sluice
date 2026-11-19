@@ -36,7 +36,7 @@ import (
 // # The scheduling policy, stated
 //
 // Round-robin over the streams that have data queued, one frame each per pass,
-// repeated until the round's byte budget ([Config.MaxWriteBufferBytes]) is
+// repeated until the round's byte budget ([AdvancedConfig.MaxWriteBufferBytes]) is
 // spent or nothing can progress. One stream alone therefore gets the whole
 // budget and pays one syscall for it; eight streams share it evenly and none
 // is starved by a large neighbour. No priorities: RFC 9113 deprecated the
@@ -115,7 +115,7 @@ type h2Job struct {
 
 	// deadline bounds the wait for credit, not the response. It is refreshed
 	// when the head goes out and then each time the job has written
-	// [Config.WriteProgressBytes] since the last refresh — progress counts in
+	// [AdvancedConfig.WriteProgressBytes] since the last refresh — progress counts in
 	// bytes, not in writes, since a peer that grants one byte per timeout
 	// would otherwise hold the stream open forever (data dribble,
 	// CVE-2019-9511). written is that count.
@@ -316,7 +316,7 @@ func (w *h2Writer) run() {
 			w.park()
 		}
 
-		ctrlFull := len(w.ctrl) >= w.cfg.MaxPendingControlBytes
+		ctrlFull := len(w.ctrl) >= w.cfg.Advanced.MaxPendingControlBytes
 		w.out = w.out[:0]
 		w.out = append(w.out, w.ctrl...)
 		w.ctrl = w.ctrl[:0]
@@ -453,7 +453,7 @@ func (w *h2Writer) fill() []*h2Job {
 	if len(w.jobs) == 0 {
 		return nil
 	}
-	budget := max(w.cfg.MaxWriteBufferBytes, w.maxFrame)
+	budget := max(w.cfg.Advanced.MaxWriteBufferBytes, w.maxFrame)
 	for progress := true; progress && budget > 0; {
 		progress = false
 		for k := 0; k < len(w.jobs) && budget > 0; k++ {
@@ -572,7 +572,7 @@ func (w *h2Writer) emit(j *h2Job) (int, error) {
 	j.endSent = j.endSent || flags&flagEndStream != 0
 	w.connWind -= spent
 	w.windows[j.id] -= spent
-	if j.written += n; j.written >= w.cfg.WriteProgressBytes {
+	if j.written += n; j.written >= w.cfg.Advanced.WriteProgressBytes {
 		j.written = 0
 		j.deadline = time.Now().Add(w.cfg.WriteTimeout)
 	}
@@ -763,7 +763,7 @@ const (
 // is always done by the time it is needed, and its buffer can be reused.
 //
 // The only wait is for room: a queued job holding one round's budget or more
-// of unframed bytes ([Config.MaxWriteBufferBytes]) is a peer that reads
+// of unframed bytes ([AdvancedConfig.MaxWriteBufferBytes]) is a peer that reads
 // slower than the producer yields, and the producer then runs at the window's
 // pace, bounded by the same deadline every stalled job has. This is the whole
 // difference between a batch on HTTP/2 and on HTTP/3 before it: the streamed
@@ -785,8 +785,8 @@ func (w *h2Writer) extend(id uint32, cur, spare *h2Job, data []byte) (*h2Job, er
 		if w.err != nil {
 			return cur, w.err
 		}
-		if len(cur.data)-cur.off < w.cfg.MaxWriteBufferBytes {
-			if cur.off >= w.cfg.MaxWriteBufferBytes {
+		if len(cur.data)-cur.off < w.cfg.Advanced.MaxWriteBufferBytes {
+			if cur.off >= w.cfg.Advanced.MaxWriteBufferBytes {
 				// What is framed was copied into the round's frames (emit),
 				// so nothing reads it any more: the unframed rest moves to
 				// the front. A job a slow reader keeps queued would
@@ -952,7 +952,7 @@ func (w *h2Writer) ackSettings(table tableSizes) error {
 // left as it is; the unframed block is gathered in tableBlock, kept from
 // one change of the setting to the next, so that a peer flipping
 // HEADER_TABLE_SIZE costs this end no allocation (the godoc of
-// Config.MaxPendingControlBytes). tableBlock grows to the largest head this
+// Config.Advanced.MaxPendingControlBytes). tableBlock grows to the largest head this
 // end sent behind a change, a size the handler sets, not the peer.
 func (w *h2Writer) appendTableUpdated(dst []byte, id uint32, head []byte) ([]byte, error) {
 	block := w.appendTableUpdate(w.tableBlock[:0])
@@ -1091,7 +1091,7 @@ func (w *h2Writer) bareHeadLocked(block []byte, status int) []byte {
 // waitCtrlLocked blocks while the control queue is at its bound, and reports
 // the writer's failure if it has one.
 func (w *h2Writer) waitCtrlLocked() error {
-	for len(w.ctrl) >= w.cfg.MaxPendingControlBytes && w.err == nil && !w.stopping {
+	for len(w.ctrl) >= w.cfg.Advanced.MaxPendingControlBytes && w.err == nil && !w.stopping {
 		w.cond.Wait()
 	}
 	return w.err
@@ -1338,7 +1338,7 @@ func (w *h2Writer) setInitialWindow(v int32) error {
 }
 
 // setMaxFrame applies the peer's SETTINGS_MAX_FRAME_SIZE, capped at this
-// end's own [Config.MaxFrameSize].
+// end's own [AdvancedConfig.MaxFrameSize].
 //
 // The peer's value is a ceiling it will accept, not a size this end must
 // use (RFC 9113 §4.2). Taken as is, a peer advertising 16 MiB made one DATA
@@ -1348,7 +1348,7 @@ func (w *h2Writer) setInitialWindow(v int32) error {
 func (w *h2Writer) setMaxFrame(n int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.maxFrame = min(n, w.cfg.MaxFrameSize)
+	w.maxFrame = min(n, w.cfg.Advanced.MaxFrameSize)
 }
 
 // stop ends the write side once everything already queued has gone out.

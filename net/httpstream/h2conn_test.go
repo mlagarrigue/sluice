@@ -2455,7 +2455,7 @@ func TestH2FramesLeaveAtOurMaxFrameSizeNotThePeers(t *testing.T) {
 // before the write received a HEADERS over its limit.
 func TestH2HeaderBlocksAreFramedAtTheProtocolFloor(t *testing.T) {
 	big := bytes.Repeat([]byte("v"), 20000)
-	addr, _ := serveH2(t, Config{MaxFrameSize: 1 << 20}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveH2(t, Config{Advanced: AdvancedConfig{MaxFrameSize: 1 << 20}}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		res := make([]Response, b.Len())
 		for i := range res {
 			res[i] = Response{Status: 200, Headers: []Header{{Name: []byte("x-big"), Value: big}}, Body: []byte("ok")}
@@ -2721,7 +2721,7 @@ func TestH2StalledStreamDoesNotDelayTheNext(t *testing.T) {
 
 // A peer that is reading, however slowly, is served to the end: WriteTimeout
 // is a time without progress, and a stream that has written
-// Config.WriteProgressBytes since its deadline last moved gets the whole
+// Config.Advanced.WriteProgressBytes since its deadline last moved gets the whole
 // timeout again. The client grants 1500 bytes a stream every two thirds of the
 // timeout — over the 1024-byte floor, under the 4 KiB default, which is what
 // makes the field, and not the default, the reason the body arrives whole —
@@ -2745,7 +2745,7 @@ func testH2SlowReaderAboveTheProgressFloorIsServedToTheEnd(t *testing.T) {
 	served := make(chan struct{})
 	go func() {
 		defer close(served)
-		_ = ServeH2Conn(ctx, server, Config{WriteTimeout: timeout, WriteProgressBytes: 1024},
+		_ = ServeH2Conn(ctx, server, Config{WriteTimeout: timeout, Advanced: AdvancedConfig{WriteProgressBytes: 1024}},
 			func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 				res := make([]Response, b.Len())
 				for i := range res {
@@ -2789,7 +2789,7 @@ func testH2SlowReaderAboveTheProgressFloorIsServedToTheEnd(t *testing.T) {
 	}
 	if code, reset := c.resets[1]; reset {
 		t.Fatalf("a client granting %d bytes per %v was reset with %#x after %d of %d bytes: "+
-			"the progress floor does not follow Config.WriteProgressBytes", grant, 2*timeout/3, code, len(c.got[1]), len(body))
+			"the progress floor does not follow Config.Advanced.WriteProgressBytes", grant, 2*timeout/3, code, len(c.got[1]), len(body))
 	}
 	if !c.ended[1] || c.got[1] != string(body) {
 		t.Errorf("the answer ended=%v with %d of %d bytes, want it whole", c.ended[1], len(c.got[1]), len(body))

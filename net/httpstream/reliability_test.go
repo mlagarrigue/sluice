@@ -281,7 +281,7 @@ func TestConnectionCloseStopsBatchingFurtherPipelinedRequests(t *testing.T) {
 // and the client must be told the connection is over rather than discovering
 // it as a reset.
 func TestMaxRequestsPerConnCapsAWholeBatch(t *testing.T) {
-	cfg := Config{MaxRequestsPerConn: 2, MaxRequestsPerBatch: 8}
+	cfg := Config{MaxRequestsPerConn: 2, Advanced: AdvancedConfig{MaxRequestsPerBatch: 8}}
 	addr, sizes := serveTest(t, cfg, echoTarget)
 	c := dial(t, addr)
 
@@ -374,7 +374,7 @@ func TestMaxRequestsPerConnSaysCloseToHTTP10KeepAlive(t *testing.T) {
 // misses exactly this case: the last batch runs full, so nothing marks it,
 // and the connection closes without telling the client.
 func TestMaxRequestsPerConnCapsAnExactMultipleOfBatches(t *testing.T) {
-	cfg := Config{MaxRequestsPerConn: 4, MaxRequestsPerBatch: 2}
+	cfg := Config{MaxRequestsPerConn: 4, Advanced: AdvancedConfig{MaxRequestsPerBatch: 2}}
 	addr, sizes := serveTest(t, cfg, echoTarget)
 	c := dial(t, addr)
 

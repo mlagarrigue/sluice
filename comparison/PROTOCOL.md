@@ -1633,7 +1633,7 @@ bring what the author does not know about their stack.
 | QUIC (under HTTP/3) | Sluice.go's `quic`; external reference: `quic-go` | `quic`: **experimental**, not yet confronted with another implementation |
 | PostgreSQL driver | `sluice/postgres`; `pgx` under the same `gateway` | `sluice/postgres`: the example's path |
 | Batching | `gateway`: `Size` (max batch size), `Within` (max wait from the first key) | both mandatory, no default for `Within` |
-| Batch on the transport side | `httpstream` `Config.MaxRequestsPerBatch` (default 64), `MaxConcurrentStreams` (h2/h3, default 64 in h3) | |
+| Batch on the transport side | `httpstream` `Config.Advanced.MaxRequestsPerBatch` (default 64), `MaxConcurrentStreams` (h2/h3, default 64 in h3) | |
 | Life of a connection | `httpstream` `Config.MaxRequestsPerConn`: **default 1,024**, then the connection is closed | see the pitfall below |
 | Response | buffered (`web.WriteJSON`); streamed (`httpstream` `Response.Stream`, one batch at a time) | |
 | Compression | none today; gzip and deflate possible through the stdlib | to prototype **in the `benchmarks/` module** before any API decision (§8.5) |

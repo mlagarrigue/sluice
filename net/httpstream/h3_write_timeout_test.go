@@ -117,7 +117,7 @@ func slowH3Client(t *testing.T, s *quic.Stream, step int, pace, bound time.Durat
 
 // A client that reads slowly but steadily is served to the end over HTTP/3:
 // WriteTimeout is a time without progress, so a write that times out having
-// put Config.WriteProgressBytes on the wire gets the timeout again from where
+// put Config.Advanced.WriteProgressBytes on the wire gets the timeout again from where
 // it stopped. The client's stream window is 4 KiB and it reads 3000 bytes
 // every 150ms, which re-grants 3000 bytes of credit at that pace — over the
 // 1024-byte floor in every timeout, so the 24 KiB answer takes four timeouts
@@ -129,7 +129,7 @@ func TestH3SlowReaderAboveTheProgressFloorIsServedToTheEnd(t *testing.T) {
 	)
 	clientParams := quic.DefaultConfig()
 	clientParams.InitialMaxStreamDataBidiLocal = 4096
-	conn, _, _ := startH3With(t, Config{WriteTimeout: timeout, WriteProgressBytes: 1024}, quic.DefaultConfig(), clientParams,
+	conn, _, _ := startH3With(t, Config{WriteTimeout: timeout, Advanced: AdvancedConfig{WriteProgressBytes: 1024}}, quic.DefaultConfig(), clientParams,
 		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			res := make([]Response, b.Len())
 			for i := range res {

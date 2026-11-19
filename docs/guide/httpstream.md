@@ -104,7 +104,7 @@ holding back the first one: a producer that yields tiny batches at a high
 rate pays one write per round of the writer and one wake-up of the reader on
 the client side per DATA frame. Size your batches accordingly — a bigger
 batch divides that cost by as much — and remember that
-`Config.MaxWriteBufferBytes` bounds how far ahead of the socket a
+`Config.Advanced.MaxWriteBufferBytes` bounds how far ahead of the socket a
 producer may be, per stream.
 
 ### What it is held to

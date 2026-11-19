@@ -77,7 +77,7 @@ func TestH2CloseCountsAHandlerStillRunning(t *testing.T) {
 // closes once the last answer is out.
 func TestH2DrainAnswersEveryRequestInFlight(t *testing.T) {
 	g := newGated("/a", "/b")
-	addr, cancel, served := serveH2Direct(t, Config{ShutdownGrace: 10 * time.Second, LingerTimeout: 50 * time.Millisecond, Logger: discardLogger()}, g.handle)
+	addr, cancel, served := serveH2Direct(t, Config{ShutdownGrace: 10 * time.Second, Advanced: AdvancedConfig{LingerTimeout: 50 * time.Millisecond}, Logger: discardLogger()}, g.handle)
 	c := dialH2(t, addr)
 	c.request(1, "GET", "/a")
 	c.flush()
@@ -117,7 +117,7 @@ func TestH2DrainAnswersEveryRequestInFlight(t *testing.T) {
 // A drain that finds the peer silent after its preface refuses it once
 // LingerTimeout has passed: the preface alone does not take the greeting.
 func TestH2DrainRefusesAPeerSilentAfterItsPreface(t *testing.T) {
-	addr, cancel, served := serveH2Direct(t, Config{ShutdownGrace: 10 * time.Second, LingerTimeout: 50 * time.Millisecond, ReadTimeout: 10 * time.Second}, echoTarget)
+	addr, cancel, served := serveH2Direct(t, Config{ShutdownGrace: 10 * time.Second, Advanced: AdvancedConfig{LingerTimeout: 50 * time.Millisecond}, ReadTimeout: 10 * time.Second}, echoTarget)
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatal(err)

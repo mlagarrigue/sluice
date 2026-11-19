@@ -87,7 +87,7 @@ func TestBatchesAtTheirBounds(t *testing.T) {
 		{"the connection bound over two batches", 2, 3, 4, []int{2, 1}, false},
 	}
 	for _, tt := range tests {
-		cfg := Config{MaxRequestsPerBatch: tt.batch, MaxRequestsPerConn: tt.conn}.mustResolve()
+		cfg := Config{Advanced: AdvancedConfig{MaxRequestsPerBatch: tt.batch}, MaxRequestsPerConn: tt.conn}.mustResolve()
 		r := &h1Conn{cfg: cfg, conn: &scriptConn{data: []byte(strings.Repeat(get, tt.requests)), sizes: []int{0}}}
 		var got []int
 		var last Request

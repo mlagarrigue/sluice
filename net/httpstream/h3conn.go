@@ -319,7 +319,7 @@ const h3NoFieldSectionLimit = ^uint64(0)
 func newH3Assembler(cfg Config) *h3Assembler {
 	return &h3Assembler{
 		cfg:     cfg,
-		qpack:   newQPACKDecoder(cfg.QPACKStatic, cfg.MaxHeaderBytes),
+		qpack:   newQPACKDecoder(cfg.Advanced.QPACKStatic, cfg.MaxHeaderBytes),
 		streams: make(map[quic.StreamID]*h3Stream),
 		refused: make(map[quic.StreamID]struct{}),
 		charged: make(map[quic.StreamID]struct{}),

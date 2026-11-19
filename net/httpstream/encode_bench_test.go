@@ -29,7 +29,7 @@ func BenchmarkH2Encode(b *testing.B) {
 	s := newBenchH2Server(Config{})
 	r := benchResponse()
 	method := []byte("GET")
-	maxFrame := s.cfg.MaxFrameSize
+	maxFrame := s.cfg.Advanced.MaxFrameSize
 	s.date = dateFor(time.Now()) // read once per batch, as answer does
 	var dst []byte
 

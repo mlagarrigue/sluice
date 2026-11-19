@@ -162,7 +162,7 @@ func TestContinuationFloodIsBounded(t *testing.T) {
 	for range 64 {
 		script = append(script, frame(frameContinuation, 0, 1, make([]byte, 16))...)
 	}
-	_, err := readFrames(t, script, Config{MaxContinuationFrames: 8})
+	_, err := readFrames(t, script, Config{Advanced: AdvancedConfig{MaxContinuationFrames: 8}})
 	if !errors.Is(err, ErrH2Protocol) {
 		t.Fatalf("err = %v, want ErrH2Protocol", err)
 	}
@@ -236,7 +236,7 @@ func TestFrameParsingAllocatesNothing(t *testing.T) {
 	cfg := Config{}.mustResolve()
 	var sink h2Frame
 	allocs := testing.AllocsPerRun(200, func() {
-		sink, _, _ = parseFrame(raw, cfg.MaxFrameSize)
+		sink, _, _ = parseFrame(raw, cfg.Advanced.MaxFrameSize)
 	})
 	if allocs != 0 {
 		t.Errorf("parsing a frame allocated %.1f times", allocs)
@@ -250,7 +250,7 @@ func TestFrameParsingAllocatesNothing(t *testing.T) {
 // operator who reads the error knows what to raise, without looking the
 // number up.
 func TestH2BoundErrorsNameTheirField(t *testing.T) {
-	cfg := Config{MaxHeaderBytes: 16, MaxContinuationFrames: 1}.mustResolve()
+	cfg := Config{MaxHeaderBytes: 16, Advanced: AdvancedConfig{MaxContinuationFrames: 1}}.mustResolve()
 	r := &frameReader{cfg: cfg}
 	block := h2Frame{Type: frameHeaders, StreamID: 1, Payload: make([]byte, 8)}
 	cont := h2Frame{Type: frameContinuation, StreamID: 1, Payload: make([]byte, 4)}
@@ -261,13 +261,13 @@ func TestH2BoundErrorsNameTheirField(t *testing.T) {
 		name, field string
 		err         error
 	}{
-		{"CONTINUATION count", "Config.MaxContinuationFrames", func() error {
+		{"CONTINUATION count", "Config.Advanced.MaxContinuationFrames", func() error {
 			_ = r.trackHeaderBlock(block)
 			_ = r.trackHeaderBlock(cont)
 			return r.trackHeaderBlock(cont)
 		}()},
 		{"header block", "Config.MaxHeaderBytes", (&frameReader{cfg: cfg}).trackHeaderBlock(big)},
-		{"frame size", "Config.MaxFrameSize", frameErr},
+		{"frame size", "Config.Advanced.MaxFrameSize", frameErr},
 	} {
 		if c.err == nil || !strings.Contains(c.err.Error(), c.field) {
 			t.Errorf("%s: %v, want an error naming %s", c.name, c.err, c.field)

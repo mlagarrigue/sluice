@@ -14,7 +14,7 @@ import (
 // yields, keeps the job queued with bytes left at the end of every round:
 // what was framed must be let go while the job stays in the queue.
 func TestH2QueuedStreamedJobKeepsNoFramedBytes(t *testing.T) {
-	cfg := Config{MaxWriteBufferBytes: 16 << 10, WriteTimeout: 10 * time.Second}.mustResolve()
+	cfg := Config{Advanced: AdvancedConfig{MaxWriteBufferBytes: 16 << 10}, WriteTimeout: 10 * time.Second}.mustResolve()
 	srv, cli := net.Pipe()
 	defer cli.Close()
 	w := newH2Writer(srv, cfg)
@@ -70,7 +70,7 @@ func TestH2QueuedStreamedJobKeepsNoFramedBytes(t *testing.T) {
 	w.stop()
 	_ = srv.Close()
 	<-w.done
-	if bound := 4 * cfg.MaxWriteBufferBytes; most > bound {
+	if bound := 4 * cfg.Advanced.MaxWriteBufferBytes; most > bound {
 		t.Fatalf("a queued streamed job held a buffer of %d bytes, over %d (4 x MaxWriteBufferBytes)", most, bound)
 	}
 }

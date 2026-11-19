@@ -141,7 +141,7 @@ func TestH2TrailersOverTheBoundOnARunningAnswerCutIt(t *testing.T) {
 // before it resets, so that the answer is out whatever the scheduling; the
 // server cannot tell that from a reset sent before the END_STREAM arrived.
 func TestCancellingAnsweredRequestsIsNotRapidReset(t *testing.T) {
-	addr, _ := serveH2(t, Config{MaxFramesPerBatch: 4}, echoTarget)
+	addr, _ := serveH2(t, Config{Advanced: AdvancedConfig{MaxFramesPerBatch: 4}}, echoTarget)
 	c := dialH2(t, addr)
 	var code [4]byte
 	be32put(code[:], errCancel)

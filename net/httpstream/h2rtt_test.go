@@ -13,7 +13,7 @@ import (
 )
 
 // The flow-control window is a throughput ceiling on a link with latency, and
-// [Config.InitialWindowSize] exists to lift it. This file measures the lift
+// [AdvancedConfig.InitialWindowSize] exists to lift it. This file measures the lift
 // rather than asserting it: a 4 MiB upload through a proxy that adds 50 ms
 // each way, with the default window and with 1 MiB, and the ratio between
 // the two is the number the field's godoc quotes.
@@ -47,7 +47,7 @@ func TestH2UploadThroughputAtRTT(t *testing.T) {
 // express reaches the wire as given; one larger is refused at start
 // (TestConfigRefusesAnOutOfRangeValue).
 func TestH2InitialWindowSizeIsBounded(t *testing.T) {
-	addr, _ := serveH2(t, Config{InitialWindowSize: maxWindow}, echoTarget)
+	addr, _ := serveH2(t, Config{Advanced: AdvancedConfig{InitialWindowSize: maxWindow}}, echoTarget)
 	c := dialH2(t, addr)
 	c.pump(func() bool { return len(c.settings) > 0 })
 	if got := c.settings[settingInitialWindowSize]; got != maxWindow {
@@ -68,7 +68,7 @@ func TestH2ConnWindowFollowsStreams(t *testing.T) {
 		{100, 1 << 20, 100 << 20},
 		{100, 1 << 30, maxWindow},
 	} {
-		cfg := Config{MaxConcurrentStreams: tc.streams, InitialWindowSize: tc.window}.mustResolve()
+		cfg := Config{MaxConcurrentStreams: tc.streams, Advanced: AdvancedConfig{InitialWindowSize: tc.window}}.mustResolve()
 		if got := connWindow(cfg); got != tc.want {
 			t.Errorf("streams=%d window=%d: connection window %d, want %d", tc.streams, tc.window, got, tc.want)
 		}
@@ -84,9 +84,9 @@ func uploadThroughput(t *testing.T, window, size int) float64 {
 	cfg := Config{
 		// The upload is measured as one assembled body, the window's own
 		// round trips and nothing else.
-		BodyDelivery:      BodyWhole,
-		InitialWindowSize: window,
-		MaxBodyBytes:      2 * size,
+		BodyDelivery: BodyWhole,
+		Advanced:     AdvancedConfig{InitialWindowSize: window},
+		MaxBodyBytes: 2 * size,
 		// The default upload takes seconds at this RTT; the clocks that
 		// would otherwise cut it short are not what is measured here.
 		ReadTimeout:  2 * time.Minute,

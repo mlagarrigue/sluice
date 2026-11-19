@@ -130,24 +130,24 @@ func TestEndsStreamOnlyOnDataAndHeaders(t *testing.T) {
 // MaxFrameSize, CONTINUATION frames per block, a header block's bytes.
 func TestFrameReaderAtItsBounds(t *testing.T) {
 	ping := frame(framePing, 0, 0, make([]byte, 8))
-	batches, err := readFrames(t, append(prefaced(), bytes.Repeat(ping, 3)...), Config{MaxFramesPerBatch: 2})
+	batches, err := readFrames(t, append(prefaced(), bytes.Repeat(ping, 3)...), Config{Advanced: AdvancedConfig{MaxFramesPerBatch: 2}})
 	if err != nil || len(batches) != 2 || len(batches[0]) != 2 || len(batches[1]) != 2 {
 		t.Errorf("four frames two per batch: %d batches, %v", len(batches), err)
 	}
 
 	cfg := Config{}
-	big := frame(frameData, 0, 1, make([]byte, cfg.mustResolve().MaxFrameSize))
+	big := frame(frameData, 0, 1, make([]byte, cfg.mustResolve().Advanced.MaxFrameSize))
 	if _, err := readFrames(t, append(prefaced(), big...), cfg); err != nil {
 		t.Errorf("a frame of MaxFrameSize: %v", err)
 	}
 	// The first SETTINGS shares the buffer with the preface: as large as a
 	// frame may be, unknown identifiers, which are ignored (§6.5.2).
-	settings := frame(frameSettings, 0, 0, make([]byte, cfg.mustResolve().MaxFrameSize/6*6))
+	settings := frame(frameSettings, 0, 0, make([]byte, cfg.mustResolve().Advanced.MaxFrameSize/6*6))
 	if _, err := readFrames(t, append([]byte(Preface), settings...), cfg); err != nil {
 		t.Errorf("a first SETTINGS near MaxFrameSize behind the preface: %v", err)
 	}
 
-	cfg = Config{MaxContinuationFrames: 2, MaxHeaderBytes: 32}
+	cfg = Config{Advanced: AdvancedConfig{MaxContinuationFrames: 2}, MaxHeaderBytes: 32}
 	open := frame(frameHeaders, 0, 1, make([]byte, 16))
 	cont := frame(frameContinuation, 0, 1, nil)
 	last := frame(frameContinuation, flagEndHeaders, 1, nil)

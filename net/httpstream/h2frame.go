@@ -296,8 +296,8 @@ func (r *frameReader) parseBuffered() (batch []h2Frame, used int, err error) {
 	}
 
 	r.batch = r.batch[:0]
-	for len(r.batch) < r.cfg.MaxFramesPerBatch {
-		f, n, err := parseFrame(r.buf[used:r.n], r.cfg.MaxFrameSize)
+	for len(r.batch) < r.cfg.Advanced.MaxFramesPerBatch {
+		f, n, err := parseFrame(r.buf[used:r.n], r.cfg.Advanced.MaxFrameSize)
 		if errors.Is(err, errIncomplete) {
 			break
 		}
@@ -338,9 +338,9 @@ func (r *frameReader) trackHeaderBlock(f h2Frame) error {
 		}
 		r.continuations++
 		r.headerBlock += len(f.Payload)
-		if r.continuations > r.cfg.MaxContinuationFrames {
-			return fmt.Errorf("%w: over %d CONTINUATION frames in one header block (Config.MaxContinuationFrames)",
-				ErrH2Protocol, r.cfg.MaxContinuationFrames)
+		if r.continuations > r.cfg.Advanced.MaxContinuationFrames {
+			return fmt.Errorf("%w: over %d CONTINUATION frames in one header block (Config.Advanced.MaxContinuationFrames)",
+				ErrH2Protocol, r.cfg.Advanced.MaxContinuationFrames)
 		}
 		if r.headerBlock > r.cfg.MaxHeaderBytes {
 			return fmt.Errorf("%w: a header block over %d bytes (Config.MaxHeaderBytes)", ErrH2Protocol, r.cfg.MaxHeaderBytes)
@@ -367,7 +367,7 @@ func (r *frameReader) trackHeaderBlock(f h2Frame) error {
 }
 
 func (r *frameReader) fill() error {
-	limit := len(Preface) + frameHeaderSize + r.cfg.MaxFrameSize
+	limit := len(Preface) + frameHeaderSize + r.cfg.Advanced.MaxFrameSize
 	if r.n >= limit {
 		return fmt.Errorf("%w: a frame fills the %d-byte buffer without completing", ErrTooLarge, limit)
 	}
@@ -512,7 +512,7 @@ func parseFrame(buf []byte, maxFrameSize int) (h2Frame, int, error) {
 	if length > maxFrameSize {
 		// §4.2 mandates FRAME_SIZE_ERROR for a frame over the advertised
 		// maximum, which errFrameSize puts on the GOAWAY.
-		return f, 0, fmt.Errorf("%w: %w: a frame declares %d bytes, over the %d-byte maximum (Config.MaxFrameSize)",
+		return f, 0, fmt.Errorf("%w: %w: a frame declares %d bytes, over the %d-byte maximum (Config.Advanced.MaxFrameSize)",
 			ErrH2Protocol, errFrameSize, length, maxFrameSize)
 	}
 	f.Type, f.Flags = buf[3], buf[4]

@@ -373,7 +373,7 @@ func (c *closeOrderConn) Close() error {
 // to the 65535-byte default, the field being reachable through ServeH2Conn
 // alone.
 func TestServerHonoursInitialWindowSize(t *testing.T) {
-	srv := &Server{Config: Config{InitialWindowSize: 1 << 20}, Handler: echoTarget}
+	srv := &Server{Config: Config{Advanced: AdvancedConfig{InitialWindowSize: 1 << 20}}, Handler: echoTarget}
 	addr, _ := serveTCP(t, srv)
 	c := dialH2(t, addr)
 	c.pump(func() bool { return len(c.settings) > 0 })

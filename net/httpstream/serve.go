@@ -142,7 +142,7 @@ import (
 // −42% per request at depth 64, and the curve is flat past 8: the read, the
 // refill and the hand-off are paid once per batch while the parse is paid
 // once per request, so what batching removes runs out. Depth 8 is the number
-// to set [Config.MaxRequestsPerBatch] from rather than a reason to raise it.
+// to set [AdvancedConfig.MaxRequestsPerBatch] from rather than a reason to raise it.
 //
 // Against a real backend the transport's nanoseconds are noise beside a
 // database round trip, so the unit that decides is **round trips**.
@@ -285,7 +285,7 @@ func newConnSet(c Config) *connSet {
 	return &connSet{
 		conns: map[net.Conn]*connState{}, max: max(c.MaxConns, 0),
 		maxPerIP: max(c.MaxConnsPerIP, 0), byIP: map[netip.Prefix]int{},
-		v4Bits: c.IPv4PrefixBits, v6Bits: c.IPv6PrefixBits,
+		v4Bits: c.Advanced.IPv4PrefixBits, v6Bits: c.Advanced.IPv6PrefixBits,
 		draining: draining, beginDrain: begin,
 	}
 }
@@ -635,7 +635,7 @@ func serveConn(ctx context.Context, c *prefixConn, st *connState, cfg Config, ha
 // the write side is closed first, which is the client's EOF, and whatever
 // it still sends is read and dropped until it closes in turn or a short
 // deadline passes; the caller's Close then finds the socket empty. The
-// deadline is [Config.LingerTimeout]. A connection that
+// deadline is [AdvancedConfig.LingerTimeout]. A connection that
 // cannot half-close (a pipe, a wrapper without CloseWrite) is closed in one
 // stage as before.
 func tearDown(c *prefixConn, cfg Config) {
@@ -644,7 +644,7 @@ func tearDown(c *prefixConn, cfg Config) {
 
 // linger is tearDown's two stages on any connection: the write side closed,
 // then what the peer still sends read and dropped until it closes in turn
-// or [Config.LingerTimeout] passes. A connection put behind a prefixConn is
+// or [AdvancedConfig.LingerTimeout] passes. A connection put behind a prefixConn is
 // unwrapped first, since the half-close is the underlying socket's.
 func linger(c net.Conn, cfg Config) {
 	if pc, ok := c.(*prefixConn); ok {
@@ -654,7 +654,7 @@ func linger(c net.Conn, cfg Config) {
 	if !ok || cw.CloseWrite() != nil {
 		return
 	}
-	if err := c.SetReadDeadline(time.Now().Add(cfg.LingerTimeout)); err != nil {
+	if err := c.SetReadDeadline(time.Now().Add(cfg.Advanced.LingerTimeout)); err != nil {
 		return
 	}
 	var sink [4 << 10]byte
@@ -845,7 +845,7 @@ type writeBound struct {
 }
 
 func writeBoundOf(cfg Config) writeBound {
-	return writeBound{timeout: cfg.WriteTimeout, progress: cfg.WriteProgressBytes, log: cfg.logger()}
+	return writeBound{timeout: cfg.WriteTimeout, progress: cfg.Advanced.WriteProgressBytes, log: cfg.logger()}
 }
 
 // write puts p on the wire with write, under deadlines it sets through

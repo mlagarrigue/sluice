@@ -82,7 +82,7 @@ func TestH3BodyOverManyDatagramsPastMaxBodyBytesIsRefused(t *testing.T) {
 // documented sweet spot of 8 here: a batching knob, it must not influence
 // admission, and before the two were separated it silently did.
 func TestH3TheStreamOverTheLimitIsRefused(t *testing.T) {
-	a := testAssembler(Config{MaxRequestsPerBatch: 8})
+	a := testAssembler(Config{Advanced: AdvancedConfig{MaxRequestsPerBatch: 8}})
 	if a.cfg.MaxConcurrentStreams != defaultMaxConcurrency {
 		t.Fatalf("MaxConcurrentStreams defaults to %d, not the %d HTTP/2 advertises", a.cfg.MaxConcurrentStreams, defaultMaxConcurrency)
 	}

@@ -89,7 +89,7 @@ func framesOn(frames []h2Frame, typ byte, id uint32) []h2Frame {
 // The rapid-reset allowance is four batches' worth of frames plus two for
 // each completed request, and that many resets are allowed — not one fewer.
 func TestH2ResetAllowanceIsExact(t *testing.T) {
-	s := newBenchH2Server(Config{BodyDelivery: BodyWhole, MaxFramesPerBatch: 2})
+	s := newBenchH2Server(Config{BodyDelivery: BodyWhole, Advanced: AdvancedConfig{MaxFramesPerBatch: 2}})
 	s.served = 3
 	allowance := 2*4 + 2*3
 	for i := range allowance {
@@ -106,7 +106,7 @@ func TestH2ResetAllowanceIsExact(t *testing.T) {
 // The request counted as served gives its credit back when it is cancelled,
 // so the pairs spend the flat allowance and trip it at its end.
 func TestH2CancelledRequestsEarnNoResetAllowance(t *testing.T) {
-	s := newBenchH2Server(Config{BodyDelivery: BodyWhole, MaxFramesPerBatch: 1, MaxConcurrentStreams: 1000})
+	s := newBenchH2Server(Config{BodyDelivery: BodyWhole, Advanced: AdvancedConfig{MaxFramesPerBatch: 1}, MaxConcurrentStreams: 1000})
 	const flat = 1 * 4
 	for i := range 50 {
 		id := uint32(2*i + 1) //nolint:gosec // G115: i < 50
@@ -391,7 +391,7 @@ func TestH2BodyBoundsAreInclusive(t *testing.T) {
 	if got := queued(t, s); len(framesOn(got, frameRSTStream, 9)) != 0 {
 		t.Fatal("four unfinished bodies of MaxBodyBytes were refused: the aggregate bound is 4×")
 	}
-	s.resets = s.cfg.MaxFramesPerBatch*4 + 2*s.served
+	s.resets = s.cfg.Advanced.MaxFramesPerBatch*4 + 2*s.served
 	_, _, err := s.consume([]h2Frame{headersFrame(11, flagEndHeaders, headBlock("POST", "/")), dataFrame(11, 0, 1)})
 	if err == nil || !strings.Contains(err.Error(), "over 40 bytes") {
 		t.Fatalf("past the aggregate bound with no reset left: %v, want the 40-byte bound named", err)
@@ -414,7 +414,7 @@ func TestH2WriterFailureEndsTheRead(t *testing.T) {
 		t.Error("the interim 100 met a failed writer and the read went on")
 	}
 
-	s = newBenchH2Server(Config{BodyDelivery: BodyWhole, InitialWindowSize: 1000})
+	s = newBenchH2Server(Config{BodyDelivery: BodyWhole, Advanced: AdvancedConfig{InitialWindowSize: 1000}})
 	feed(t, s, headersFrame(1, flagEndHeaders, headBlock("POST", "/")))
 	failed(s)
 	if _, _, err := s.consume([]h2Frame{dataFrame(1, 0, 600)}); err == nil {
@@ -474,7 +474,7 @@ func TestH2LateBlockOnAForgottenStreamSpansFrames(t *testing.T) {
 // A stream's window is spent exactly, and granted back once less than half
 // of it is left — not at half.
 func TestH2StreamWindowEdges(t *testing.T) {
-	s := newBenchH2Server(Config{BodyDelivery: BodyWhole, InitialWindowSize: 1000, MaxBodyBytes: 4000})
+	s := newBenchH2Server(Config{BodyDelivery: BodyWhole, Advanced: AdvancedConfig{InitialWindowSize: 1000}, MaxBodyBytes: 4000})
 	feed(t, s, h2Frame{Type: frameSettings, Flags: flagAck}) // no grace past the advertised window
 	feed(t, s, headersFrame(1, flagEndHeaders, headBlock("POST", "/")), dataFrame(1, 0, 1000))
 	if got := queued(t, s); len(framesOn(got, frameRSTStream, 1)) != 0 {
@@ -534,7 +534,7 @@ func TestH2ZeroContentLengthRefusesABody(t *testing.T) {
 // Before the peer acknowledges a smaller initial window, it may send up to
 // the protocol's default (RFC 9113 §6.9.3) and not a byte more.
 func TestH2GraceBeforeTheSettingsAckIsTheDefaultWindow(t *testing.T) {
-	s := newBenchH2Server(Config{BodyDelivery: BodyStreamed, InitialWindowSize: 1000, MaxBodyBytes: 1 << 20})
+	s := newBenchH2Server(Config{BodyDelivery: BodyStreamed, Advanced: AdvancedConfig{InitialWindowSize: 1000}, MaxBodyBytes: 1 << 20})
 	const frame = 16384
 	feed(t, s, headersFrame(1, flagEndHeaders, headBlock("POST", "/")),
 		dataFrame(1, 0, frame), dataFrame(1, 0, frame), dataFrame(1, 0, frame), dataFrame(1, 0, frame-1))
@@ -579,7 +579,7 @@ func TestH2EnablePushOfOneIsAccepted(t *testing.T) {
 // A SETTINGS frame applies every entry it carries: the frame size beside an
 // initial window.
 func TestH2SettingsApplyEveryEntry(t *testing.T) {
-	s := newBenchH2Server(Config{BodyDelivery: BodyWhole, MaxFrameSize: 32768})
+	s := newBenchH2Server(Config{BodyDelivery: BodyWhole, Advanced: AdvancedConfig{MaxFrameSize: 32768}})
 	feed(t, s, h2SettingsFrame(
 		[2]uint32{settingInitialWindowSize, 1000},
 		[2]uint32{settingMaxFrameSize, 32768}))

@@ -285,7 +285,7 @@ func (d *qpackDecoder) staticAt(i uint64) (Header, error) {
 
 // errQPACKIndexed reports an indexed field line naming no entry of the static
 // table in use — an index past RFC 9204 Appendix A's ninety-nine, or any
-// index at all when [Config.QPACKStatic] was set to an empty table to refuse
+// index at all when [AdvancedConfig.QPACKStatic] was set to an empty table to refuse
 // them. Refused rather than guessed, as everywhere else in this package.
 var errQPACKIndexed = fmt.Errorf("%w: an indexed field line names no entry of the static table in use", ErrH3Protocol)
 

@@ -92,7 +92,7 @@ const connRecvWindow = 1 << 20
 // credit never binds before the streams' own does, and never below the floor
 // the default configuration always granted.
 func connWindow(cfg Config) int32 {
-	sum := min(int64(cfg.MaxConcurrentStreams)*int64(cfg.InitialWindowSize), maxWindow)
+	sum := min(int64(cfg.MaxConcurrentStreams)*int64(cfg.Advanced.InitialWindowSize), maxWindow)
 	return int32(max(sum, connRecvWindow)) //nolint:gosec // G115: capped at maxWindow
 }
 
@@ -857,10 +857,10 @@ func (s *h2Conn) hello() error {
 	var payload []byte
 	settings := [][2]uint32{
 		{settingEnablePush, 0}, // a server does not push here
-		{settingMaxConcurrent, uint32(s.cfg.MaxConcurrentStreams)},  //nolint:gosec // G115: at most maxConcurrentStreams (Config.resolve)
-		{settingInitialWindowSize, uint32(s.cfg.InitialWindowSize)}, //nolint:gosec // G115: same
-		{settingMaxFrameSize, uint32(s.cfg.MaxFrameSize)},           //nolint:gosec // G115: same
-		{settingMaxHeaderListSize, uint32(s.cfg.MaxHeaderBytes)},    //nolint:gosec // G115: same
+		{settingMaxConcurrent, uint32(s.cfg.MaxConcurrentStreams)},           //nolint:gosec // G115: at most maxConcurrentStreams (Config.resolve)
+		{settingInitialWindowSize, uint32(s.cfg.Advanced.InitialWindowSize)}, //nolint:gosec // G115: same
+		{settingMaxFrameSize, uint32(s.cfg.Advanced.MaxFrameSize)},           //nolint:gosec // G115: same
+		{settingMaxHeaderListSize, uint32(s.cfg.MaxHeaderBytes)},             //nolint:gosec // G115: same
 	}
 	for _, kv := range settings {
 		payload = binary.BigEndian.AppendUint16(payload, uint16(kv[0])) //nolint:gosec // G115: setting identifiers are 16 bits
@@ -950,7 +950,7 @@ func (s *h2Conn) beginDrain() {
 	s.drainStep.Store(drainBegun)
 	_ = s.w.control(h2Frame{Type: framePing, Payload: []byte(drainPing)})
 	if s.greeted.Load() == greetPending {
-		s.greetWait.Store(time.AfterFunc(s.cfg.LingerTimeout, s.refuseSilent))
+		s.greetWait.Store(time.AfterFunc(s.cfg.Advanced.LingerTimeout, s.refuseSilent))
 	}
 }
 

@@ -40,9 +40,9 @@ func serve(ctx context.Context, o options, a *app, ln net.Listener, tlsCfg *tls.
 // transport.
 func httpstreamConfig(o options) httpstream.Config {
 	return httpstream.Config{
-		MaxBodyBytes:        maxBody,
-		MaxRequestsPerBatch: o.maxRequestsPerBatch,
-		MaxRequestsPerConn:  o.perConn(),
+		MaxBodyBytes:       maxBody,
+		Advanced:           httpstream.AdvancedConfig{MaxRequestsPerBatch: o.maxRequestsPerBatch},
+		MaxRequestsPerConn: o.perConn(),
 	}
 }
 

@@ -387,7 +387,7 @@ func TestShutdownClosesAPrefaceOnlyH2ConnectionAfterTheLinger(t *testing.T) {
 		t.Fatal(err)
 	}
 	const linger = 50 * time.Millisecond
-	srv := &Server{Config: Config{ShutdownGrace: 1500 * time.Millisecond, LingerTimeout: linger}, Handler: echoTarget}
+	srv := &Server{Config: Config{ShutdownGrace: 1500 * time.Millisecond, Advanced: AdvancedConfig{LingerTimeout: linger}}, Handler: echoTarget}
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(ln) }()
 	t.Cleanup(func() { _ = srv.Close() })

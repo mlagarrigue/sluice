@@ -105,7 +105,7 @@ var errBodyConnClosed = fmt.Errorf("%w: the connection closed mid-body", ErrMalf
 // peer have in hand, the ring's ceiling (zero: none).
 func newBodyQueue(cfg Config, id uint64, first []byte, declared int, expect bool, window int) *bodyQueue {
 	b := &bodyQueue{
-		id: id, limit: max(cfg.MaxBodyBytes, cfg.MaxStreamedBodyBytes), timeout: cfg.ReadTimeout, need: cfg.ReadProgressBytes,
+		id: id, limit: max(cfg.MaxBodyBytes, cfg.MaxStreamedBodyBytes), timeout: cfg.ReadTimeout, need: cfg.Advanced.ReadProgressBytes,
 		wake: make(chan struct{}, 1), total: len(first), declared: declared, expect: expect, ring: window,
 	}
 	if len(first) > 0 {
@@ -122,10 +122,10 @@ func newBodyQueue(cfg Config, id uint64, first []byte, declared int, expect bool
 // newH2Body turns st, whose head is complete and whose body has not ended,
 // into a streamed body. Called by the reader.
 func (s *h2Conn) newH2Body(st *h2Stream) *bodyQueue {
-	window := s.cfg.InitialWindowSize + int(st.windowGrace)
+	window := s.cfg.Advanced.InitialWindowSize + int(st.windowGrace)
 	b := newBodyQueue(s.cfg, uint64(st.id), st.body, st.declared, expectsContinue(st.req), window)
 	b.h2 = s
-	b.initial = int32(s.cfg.InitialWindowSize) //nolint:gosec // G115: capped by resolve
+	b.initial = int32(s.cfg.Advanced.InitialWindowSize) //nolint:gosec // G115: capped by resolve
 	b.window, b.grace = st.recvWind, st.windowGrace
 	b.interim = func() error { return s.w.interim(st.id, 100, nil) }
 	id := st.id

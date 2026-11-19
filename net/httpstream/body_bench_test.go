@@ -72,7 +72,7 @@ func BenchmarkReadSmallBody(b *testing.B) {
 				for b.Loop() {
 					conn := &replayConn{data: data, max: bytesPerRun}
 					src := Requests(conn, Config{
-						MaxRequestsPerBatch:  depth,
+						Advanced:             AdvancedConfig{MaxRequestsPerBatch: depth},
 						MaxRequestsPerConn:   requests,
 						MaxStreamedBodyBytes: side.limit,
 					})

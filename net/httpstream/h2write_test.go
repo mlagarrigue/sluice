@@ -58,7 +58,7 @@ func TestTableUpdatedHeadReframesAMultiFrameHead(t *testing.T) {
 // A SETTINGS that changes HEADER_TABLE_SIZE owes the next head an update,
 // and reframing that head costs this end no allocation once the writer has
 // sent one: a peer flipping the setting, one request per flip, is paid in
-// its own bandwidth, as the godoc of Config.MaxPendingControlBytes says of
+// its own bandwidth, as the godoc of Config.Advanced.MaxPendingControlBytes says of
 // every control frame.
 func TestH2TableSizeFlipCostsTheWriterNoAllocation(t *testing.T) {
 	cfg := Config{}.mustResolve()

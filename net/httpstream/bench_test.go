@@ -63,7 +63,7 @@ func BenchmarkReadPipelined(b *testing.B) {
 			b.SetBytes(int64(bytesPerRun))
 			for b.Loop() {
 				conn := &replayConn{data: data, max: bytesPerRun}
-				src := Requests(conn, Config{MaxRequestsPerBatch: depth, MaxRequestsPerConn: requests})
+				src := Requests(conn, Config{Advanced: AdvancedConfig{MaxRequestsPerBatch: depth}, MaxRequestsPerConn: requests})
 				n := 0
 				src.Stream()(func(batch sluice.Batch[Request]) bool {
 					n += batch.Len()
@@ -114,7 +114,7 @@ func BenchmarkReadPipelinedBuffer(b *testing.B) {
 	for _, size := range []int{4 << 10, 64 << 10, 1 << 20} {
 		b.Run(fmt.Sprintf("buffer=%dKiB", size>>10), func(b *testing.B) {
 			requests := size / len(req)
-			cfg := Config{MaxRequestsPerBatch: 64, MaxRequestsPerConn: requests, BodyDelivery: BodyWhole}.mustResolve()
+			cfg := Config{Advanced: AdvancedConfig{MaxRequestsPerBatch: 64}, MaxRequestsPerConn: requests, BodyDelivery: BodyWhole}.mustResolve()
 			if size > cfg.maxBuffer() {
 				b.Skipf("buffer %d is past maxBuffer %d", size, cfg.maxBuffer())
 			}

@@ -245,7 +245,7 @@ func (s *h2Conn) reset(se streamError) error {
 // states what "completed" has to mean for the bound to hold.
 func (s *h2Conn) countReset() error {
 	s.resets++
-	if s.resets > s.cfg.MaxFramesPerBatch*4+2*s.served {
+	if s.resets > s.cfg.Advanced.MaxFramesPerBatch*4+2*s.served {
 		return fmt.Errorf("%w: %w: %d stream resets against %d completed requests",
 			ErrH2Protocol, errCalm, s.resets, s.served)
 	}
@@ -909,7 +909,7 @@ func (s *h2Conn) data(f h2Frame) (*h2Stream, error) {
 
 	// Not on a stream the peer has just ended: nothing more will arrive on
 	// it, and the grant would name a stream that is closing.
-	initial := int32(s.cfg.InitialWindowSize) //nolint:gosec // G115: capped by Config.resolve
+	initial := int32(s.cfg.Advanced.InitialWindowSize) //nolint:gosec // G115: capped by Config.resolve
 	// Rounded up: at a window of 1, initial/2 is 0 and a window at 0 would
 	// never be granted back. When bodies stream, a body still arriving at
 	// the end of this batch is handed over and its window goes back as the
@@ -1071,10 +1071,10 @@ func (s *h2Conn) stream(id uint32) (*h2Stream, error) {
 	}
 	s.openID(id)
 	st := &h2Stream{
-		id: id, declared: -1, recvWind: int32(s.cfg.InitialWindowSize), //nolint:gosec // G115: capped by Config.resolve
+		id: id, declared: -1, recvWind: int32(s.cfg.Advanced.InitialWindowSize), //nolint:gosec // G115: capped by Config.resolve
 		deadline: time.Now().Add(s.cfg.ReadTimeout),
 	}
-	if !s.settingsAcked && s.cfg.InitialWindowSize < defaultInitialWindow {
+	if !s.settingsAcked && s.cfg.Advanced.InitialWindowSize < defaultInitialWindow {
 		// RFC 9113 §6.9.3: "the receiver MUST be prepared to receive data
 		// that exceeds this window size, since the sender might send data
 		// that exceeds the lower limit prior to processing the SETTINGS
@@ -1082,7 +1082,7 @@ func (s *h2Conn) stream(id uint32) (*h2Stream, error) {
 		// WINDOW_UPDATE arithmetic matches the peer's once it has read the
 		// SETTINGS (§6.9.2 adjusts its active windows by the difference);
 		// the overshoot the default allowed is tolerated on top.
-		st.windowGrace = int32(defaultInitialWindow - s.cfg.InitialWindowSize) //nolint:gosec // G115: both under 2^31-1
+		st.windowGrace = int32(defaultInitialWindow - s.cfg.Advanced.InitialWindowSize) //nolint:gosec // G115: both under 2^31-1
 	}
 	s.streams[id] = st
 	s.open.Add(1)

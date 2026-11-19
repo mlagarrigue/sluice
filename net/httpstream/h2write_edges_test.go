@@ -49,7 +49,7 @@ func TestH2WriterRunnableAtTheWindowsEdges(t *testing.T) {
 // pass, and the next round starts from the next job.
 func TestH2WriterRoundAtItsBudget(t *testing.T) {
 	w := testWriter(1, 3)
-	w.maxFrame, w.cfg.MaxWriteBufferBytes = 4, 8
+	w.maxFrame, w.cfg.Advanced.MaxWriteBufferBytes = 4, 8
 	a := &h2Job{id: 1, headSent: true, data: make([]byte, 12)}
 	b := &h2Job{id: 3, headSent: true, data: make([]byte, 12)}
 	w.jobs = []*h2Job{a, b}
@@ -63,7 +63,7 @@ func TestH2WriterRoundAtItsBudget(t *testing.T) {
 
 	// A budget spent mid-pass stops the pass there.
 	w = testWriter(1, 3)
-	w.maxFrame, w.cfg.MaxWriteBufferBytes = 4, 4
+	w.maxFrame, w.cfg.Advanced.MaxWriteBufferBytes = 4, 4
 	a = &h2Job{id: 1, headSent: true, data: make([]byte, 12)}
 	b = &h2Job{id: 3, headSent: true, data: make([]byte, 12)}
 	w.jobs = []*h2Job{a, b}
@@ -99,7 +99,7 @@ func TestH2WriterEmitAtItsEdges(t *testing.T) {
 	}
 
 	w = testWriter(1)
-	w.cfg.WriteProgressBytes = 3
+	w.cfg.Advanced.WriteProgressBytes = 3
 	j := &h2Job{id: 1, headSent: true, data: []byte("abc"), end: true}
 	if n, err := w.emit(j); n != 3 || err != nil {
 		t.Fatalf("emit: %d, %v", n, err)
@@ -146,7 +146,7 @@ func TestH2WriterWaitsWhereItMust(t *testing.T) {
 	if !blocks(t, w, func() error { return w.finish(1, j, nil, nil, false) }, func() { w.settle(j, nil) }) {
 		t.Error("finish returned before the stream's last job left the writer")
 	}
-	w.ctrl = make([]byte, w.cfg.MaxPendingControlBytes)
+	w.ctrl = make([]byte, w.cfg.Advanced.MaxPendingControlBytes)
 	wait := func() error { w.mu.Lock(); defer w.mu.Unlock(); return w.waitCtrlLocked() }
 	if !blocks(t, w, wait, func() { w.stopping = true }) {
 		t.Error("the control queue at its bound let another frame in")

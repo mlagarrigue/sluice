@@ -13,7 +13,7 @@ import (
 // SETTINGS get an acknowledgement of their own size at most, the others get
 // nothing), and none costs it a heap allocation per frame. A flood of them
 // is therefore paid in the peer's own bandwidth, linearly, and bounded by
-// the control queue's backpressure (Config.MaxPendingControlBytes) and by
+// the control queue's backpressure (Config.Advanced.MaxPendingControlBytes) and by
 // the idle timeout, which they do not restart
 // (TestH2PingAloneDoesNotKeepAnIdleConnection). The vectors that do amplify
 // — rapid reset, CONTINUATION floods, header blocks — have their own bounds.

@@ -125,13 +125,13 @@ Supported, with a window to set. HTTP/2 lets a sender have only a *window*
 of unacknowledged bytes in flight; the default stream window of 65535 bytes
 is one round trip's worth, at most 0.65 MB/s at 100 ms of RTT (round-trip time,
 the delay for a packet to go and its answer to come back).
-`Config.InitialWindowSize` raises it, for `Serve`, `Server` and
+`Config.Advanced.InitialWindowSize` raises it, for `Serve`, `Server` and
 `ServeH2Conn` alike, and 1 MiB measured eleven times the default on a 4 MiB
 upload through a proxy adding 100 ms. The connection window follows it, so
 it never queues what the streams alone admit.
 
 Where it is decided: `net/httpstream/httpstream.go`,
-`Config.InitialWindowSize`; `h2rtt_test.go`, `TestH2UploadThroughputAtRTT`.
+`Config.Advanced.InitialWindowSize`; `h2rtt_test.go`, `TestH2UploadThroughputAtRTT`.
 
 ## QUIC clients behind a mobile NAT
 

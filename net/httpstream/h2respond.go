@@ -616,7 +616,7 @@ func (st *h2Streamer) done() {
 // last DATA frame when the end catches that job in time. The producer still
 // cannot run away: [h2Writer.extend] makes it wait once a queued job holds a
 // round's budget of unframed bytes, so what is held is bounded by
-// [Config.MaxWriteBufferBytes] per stream, and a stalled window stops the
+// [AdvancedConfig.MaxWriteBufferBytes] per stream, and a stalled window stops the
 // pull after [Config.WriteTimeout] as before.
 //
 // Before that, the hand-off blocked until the bytes were written, and a

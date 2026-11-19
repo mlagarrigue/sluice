@@ -13,7 +13,7 @@ import (
 func TestH2StreamedBodyRingStopsAtTheWindow(t *testing.T) {
 	for _, window := range []int{1 << 20, 600_000} {
 		s := newBenchH2Server(Config{
-			BodyDelivery: BodyStreamed, InitialWindowSize: window,
+			BodyDelivery: BodyStreamed, Advanced: AdvancedConfig{InitialWindowSize: window},
 			MaxBodyBytes: 1 << 10, MaxStreamedBodyBytes: 8 << 20,
 		})
 		s.settingsAcked = true // streams start at the advertised window, no grace

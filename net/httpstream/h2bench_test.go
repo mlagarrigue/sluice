@@ -330,7 +330,7 @@ func BenchmarkH2BatchBesideOpenUploads(b *testing.B) {
 // them to leave.
 func parkProducers(tb testing.TB, w *h2Writer, n int) (release func()) {
 	tb.Helper()
-	data := make([]byte, w.cfg.MaxWriteBufferBytes)
+	data := make([]byte, w.cfg.Advanced.MaxWriteBufferBytes)
 	var left sync.WaitGroup
 	parked := make(chan struct{}, n)
 	w.mu.Lock()

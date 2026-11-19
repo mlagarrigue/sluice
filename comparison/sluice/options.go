@@ -110,7 +110,7 @@ func parseOptions(args []string) (options, error) {
 	fs.DurationVar(&o.gatewayWithin, "gateway-within", 2*time.Millisecond, "axis C: gateway Within, how long the first key of a batch waits")
 	fs.BoolVar(&o.gatewayEager, "gateway-eager", false, "axis C: gateway Eager, no window: a batch leaves at once with every key queued behind it (-gateway-within is then unused)")
 	fs.IntVar(&o.maxRequestsPerBatch, "max-requests-per-batch", 0,
-		"axis D: httpstream Config.MaxRequestsPerBatch; 0 is the package default (64); httpstream transports only")
+		"axis D: httpstream Config.Advanced.MaxRequestsPerBatch; 0 is the package default (64); httpstream transports only")
 	fs.IntVar(&o.maxRequestsPerConn, "max-requests-per-conn", 0,
 		"axis D: httpstream Config.MaxRequestsPerConn; 0 is the package default (1024), -1 is unbounded; httpstream transports only")
 	fs.StringVar(&o.response, "response", responseBuffered,

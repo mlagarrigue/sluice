@@ -168,6 +168,12 @@ const (
 // for says which protocols read it, and a bound the protocols share is set
 // once, here, whichever function serves the connection. See
 // docs/design/adr/0018.
+//
+// The fields set here are the ones a deployment sets before production:
+// timeouts, size and connection limits, the logger. Those that ask for
+// knowledge of a protocol or a measurement of one's own traffic to change —
+// frame sizes, flow-control windows, batch sizes, write rounds — are in
+// [Config.Advanced], under the same rules.
 type Config struct {
 	// MaxRequestLineBytes bounds the method, target and version together.
 	// Zero means 8 KiB. HTTP/1.1 only: HTTP/2 and HTTP/3 carry them as
@@ -236,34 +242,20 @@ type Config struct {
 	// 413 before any of the body is read, and before the 100 Continue a
 	// client may be waiting for, which goes out when the handler first waits
 	// for the body; a body of unannounced length that grows past it ends its
-	// stream with ErrTooLarge. The body must move by ReadProgressBytes within
+	// stream with ErrTooLarge. The body must move by Advanced.ReadProgressBytes within
 	// each ReadTimeout of waiting; there is no deadline on the whole body, so
 	// a large upload that keeps moving is not cut, and a client that stops,
 	// or drips, is.
 	//
 	// Over HTTP/2 and HTTP/3 a streamed body's window is granted back as the
 	// handler consumes it, so what it holds is bounded by the stream window —
-	// InitialWindowSize, or the QUIC transport's — and by MaxConcurrentStreams
+	// Advanced.InitialWindowSize, or the QUIC transport's — and by MaxConcurrentStreams
 	// times that across a connection, rather than by the aggregate bound
 	// MaxBodyBytes states for the bodies assembled whole. A body left unread
 	// when its handler returns is stopped after the response: the HTTP/1.1
 	// connection closes, the HTTP/2 stream is reset with NO_ERROR, and the
 	// HTTP/3 client is sent STOP_SENDING with H3_NO_ERROR.
 	MaxStreamedBodyBytes int
-
-	// MaxRequestsPerBatch bounds how many pipelined requests are handed over
-	// at once. Zero means 64. HTTP/1.1 only: an HTTP/2 batch is bounded in
-	// frames (MaxFramesPerBatch) and an HTTP/3 batch is what one
-	// datagram carried, each already bounded by MaxConcurrentStreams. It is
-	// what keeps a client that writes ten
-	// thousand requests in one burst from turning them into one batch and one
-	// allocation the size of the burst. For a client that sends one request
-	// at a time the bound never binds — a batch is whatever one read
-	// returned; for one that pipelines 256 deep, 8 costs +83% per request
-	// against 64 and 256 saves 16%, one response write per batch instead of
-	// four (docs/benchmarks.md, "The connection budget and the batch
-	// bound"). 64 is the allocation bound, not the measured optimum.
-	MaxRequestsPerBatch int
 
 	// MaxConcurrentStreams bounds how many request streams one HTTP/2 or
 	// HTTP/3 connection may have open and unfinished at once; the stream over
@@ -287,7 +279,7 @@ type Config struct {
 	// batches of frames over HTTP/2, four times this bound over HTTP/3 — is
 	// closed (ENHANCE_YOUR_CALM, H3_EXCESSIVE_LOAD): the rapid-reset bound,
 	// CVE-2023-44487.
-	// It exists beside MaxRequestsPerBatch because the two bound different
+	// It exists beside Advanced.MaxRequestsPerBatch because the two bound different
 	// things — one is how many requests ride one hand-off, the other how
 	// much assembly state a peer may park — and tuning the batch size must
 	// not change who is admitted. HTTP/2 and HTTP/3 only: HTTP/1.1, being
@@ -345,21 +337,13 @@ type Config struct {
 	// tolerated; over HTTP/2 and HTTP/3 it is the stream still assembling
 	// that is reset, not the connection. A streamed body ([Request.Stream])
 	// has it as WriteTimeout has its writes: ReadTimeout of waiting to
-	// deliver [Config.ReadProgressBytes], given back whole each time it
+	// deliver [AdvancedConfig.ReadProgressBytes], given back whole each time it
 	// has, so an upload that keeps moving is read to the end and one that
 	// drips a byte at a time is cut.
 	ReadTimeout time.Duration
 
-	// ReadProgressBytes is the progress that moves [Config.ReadTimeout] on a
-	// streamed body: how much of it must arrive for the wait to start
-	// again. Only waiting for the peer counts, not the handler's own time
-	// between two reads; a body shorter than this has ReadTimeout to arrive
-	// whole. Zero means 4 KiB — 400 bytes a second at the default timeout,
-	// as for [Config.WriteProgressBytes]. Every protocol.
-	ReadProgressBytes int
-
 	// WriteTimeout is how long a response may go without progress: a write
-	// that has not put [Config.WriteProgressBytes] on the wire by the time it
+	// that has not put [AdvancedConfig.WriteProgressBytes] on the wire by the time it
 	// passes is given up on, and one that has gets the same time again, so a
 	// slow client that keeps reading is served to the end and one that stops
 	// is not waited on. Over HTTP/1.1 the progress is the socket's and giving
@@ -380,15 +364,6 @@ type Config struct {
 	// connection whatever the progress: crypto/tls makes a write that timed
 	// out fatal to the connection, so there is no second wait to grant.
 	WriteTimeout time.Duration
-
-	// WriteProgressBytes is the progress that moves [Config.WriteTimeout]:
-	// how much of a response must go out for the wait to start again. Zero
-	// means 4 KiB — a quarter of the smallest frame an HTTP/2 peer may ask
-	// for, 400 bytes a second at the default timeout, which no client that is
-	// reading falls under. It is a number of bytes rather than a share of
-	// anything the peer announces, so that the peer cannot move it. Every
-	// protocol.
-	WriteProgressBytes int
 
 	// MaxConns bounds how many connections [Serve] holds open at once,
 	// HTTP/1.1 and HTTP/2 together. Zero means no bound. The connection
@@ -418,8 +393,8 @@ type Config struct {
 	// MaxConnsPerIP is the same bound applied per remote address, so that
 	// one peer cannot hold the whole MaxConns on its own; the connection
 	// over it is closed as it is accepted, the same way. The port is ignored
-	// and an address is counted by its prefix, IPv4PrefixBits or
-	// IPv6PrefixBits long; an IPv4-mapped IPv6 address counts as IPv4. A
+	// and an address is counted by its prefix, Advanced.IPv4PrefixBits or
+	// Advanced.IPv6PrefixBits long; an IPv4-mapped IPv6 address counts as IPv4. A
 	// connection whose remote address is not IP, a Unix socket's, is bound
 	// by MaxConns alone: its peers share one empty address, and a per-peer
 	// bound would be a second total. Zero means no bound: a figure that is
@@ -427,18 +402,6 @@ type Config struct {
 	// chooses. [ServeH3Conn] is not bound by it: the QUIC listener has its own,
 	// [github.com/mlagarrigue/sluice/net/quic.ListenerConfig].MaxConnsPerIP.
 	MaxConnsPerIP int
-
-	// IPv4PrefixBits and IPv6PrefixBits are how much of a remote address
-	// MaxConnsPerIP counts by: two addresses that share that many leading
-	// bits share one count. Zero means 32 and 64. Every IPv6 host has at
-	// least a /64 (RFC 4291 §2.5.4), so a count by the full 128 bits is one
-	// it steps around by changing address; a site usually holds more (RFC
-	// 6177), so the /64 bounds a host and 56 or 48 bounds the site. An IPv4
-	// host rarely holds more than one address.
-	// A value outside 1..32 or 1..128 is a configuration error. The QUIC
-	// listener's fields of the same names count the same way.
-	IPv4PrefixBits int
-	IPv6PrefixBits int
 
 	// ShutdownGrace is how long [Serve], [ServeH2Conn] or [ServeH3Conn], once its
 	// context is cancelled, waits for the requests already in flight to be
@@ -492,6 +455,89 @@ type Config struct {
 	// budget rate-limits what it receives. Nil means [slog.Default]. It
 	// serves every protocol.
 	Logger *slog.Logger
+
+	// EarlyData says which requests may be acted on although they could be
+	// a replay: an HTTP/3 request that arrived in 0-RTT, on a connection
+	// whose handshake has not completed yet ([quic.ListenerConfig.EarlyData]
+	// accepts it), and on any protocol a request carrying Early-Data, which
+	// an intermediary adds to a request it received in early data itself
+	// (RFC 8470 §5.1). Nil allows none, which is RFC 8470 §2's rule when
+	// the resource has said nothing. ADR 0019 has the design.
+	//
+	// A 0-RTT request it does not allow waits for the handshake to complete
+	// and is then handled like any other: a replay never completes it, so
+	// it is never handled, and the client pays nothing more than without
+	// 0-RTT. A request carrying Early-Data it does not allow is answered
+	// 425 Too Early without reaching the handler, since waiting does not
+	// make it safe (§5.2): the client retries it once its own handshake is
+	// through.
+	//
+	// The method alone does not decide — a resource may have side effects
+	// on GET (§2) — so the predicate sees the whole request. It is called
+	// on the connection's goroutine, concurrently across connections, and
+	// must not keep r.
+	EarlyData func(r *Request) bool
+
+	// Advanced holds the settings that ask for knowledge of a protocol, or
+	// a measurement of one's own traffic, to change. Its zero value is the
+	// default of every one of them, which is where a deployment that has
+	// not measured leaves it.
+	Advanced AdvancedConfig
+}
+
+// AdvancedConfig holds the settings of a [Config] that ask for expertise to
+// change: HTTP/2's frame and window sizes, CONTINUATION and control-queue
+// bounds, how many requests or frames ride one batch, the progress that moves
+// a read or write timeout, how a closing HTTP/1.1 connection lingers, how
+// addresses are grouped for [Config.MaxConnsPerIP], and HTTP/3's QPACK static
+// table. Each is bounded by default, as every field of Config is; changing
+// one means knowing the protocol it names (RFC 9113 for HTTP/2) or having
+// measured the traffic it shapes, and each comment says which. Zero is the
+// default and a negative value is refused, as in Config. A field name alone
+// in these comments is one of Config's, or of this type's.
+type AdvancedConfig struct {
+	// MaxRequestsPerBatch bounds how many pipelined requests are handed over
+	// at once. Zero means 64. HTTP/1.1 only: an HTTP/2 batch is bounded in
+	// frames (MaxFramesPerBatch) and an HTTP/3 batch is what one
+	// datagram carried, each already bounded by MaxConcurrentStreams. It is
+	// what keeps a client that writes ten
+	// thousand requests in one burst from turning them into one batch and one
+	// allocation the size of the burst. For a client that sends one request
+	// at a time the bound never binds — a batch is whatever one read
+	// returned; for one that pipelines 256 deep, 8 costs +83% per request
+	// against 64 and 256 saves 16%, one response write per batch instead of
+	// four (docs/benchmarks.md, "The connection budget and the batch
+	// bound"). 64 is the allocation bound, not the measured optimum.
+	MaxRequestsPerBatch int
+
+	// ReadProgressBytes is the progress that moves [Config.ReadTimeout] on a
+	// streamed body: how much of it must arrive for the wait to start
+	// again. Only waiting for the peer counts, not the handler's own time
+	// between two reads; a body shorter than this has ReadTimeout to arrive
+	// whole. Zero means 4 KiB — 400 bytes a second at the default timeout,
+	// as for [AdvancedConfig.WriteProgressBytes]. Every protocol.
+	ReadProgressBytes int
+
+	// WriteProgressBytes is the progress that moves [Config.WriteTimeout]:
+	// how much of a response must go out for the wait to start again. Zero
+	// means 4 KiB — a quarter of the smallest frame an HTTP/2 peer may ask
+	// for, 400 bytes a second at the default timeout, which no client that is
+	// reading falls under. It is a number of bytes rather than a share of
+	// anything the peer announces, so that the peer cannot move it. Every
+	// protocol.
+	WriteProgressBytes int
+
+	// IPv4PrefixBits and IPv6PrefixBits are how much of a remote address
+	// MaxConnsPerIP counts by: two addresses that share that many leading
+	// bits share one count. Zero means 32 and 64. Every IPv6 host has at
+	// least a /64 (RFC 4291 §2.5.4), so a count by the full 128 bits is one
+	// it steps around by changing address; a site usually holds more (RFC
+	// 6177), so the /64 bounds a host and 56 or 48 bounds the site. An IPv4
+	// host rarely holds more than one address.
+	// A value outside 1..32 or 1..128 is a configuration error. The QUIC
+	// listener's fields of the same names count the same way.
+	IPv4PrefixBits int
+	IPv6PrefixBits int
 
 	// LingerTimeout is how long a closing HTTP/1.1 connection, its write side
 	// already shut, reads and drops what the client still sends before the
@@ -601,28 +647,6 @@ type Config struct {
 	// Nothing outside this package's tests sets it, and a deployment has no
 	// reason to: a real client speaks the RFC's table and no other.
 	QPACKStatic []Header
-
-	// EarlyData says which requests may be acted on although they could be
-	// a replay: an HTTP/3 request that arrived in 0-RTT, on a connection
-	// whose handshake has not completed yet ([quic.ListenerConfig.EarlyData]
-	// accepts it), and on any protocol a request carrying Early-Data, which
-	// an intermediary adds to a request it received in early data itself
-	// (RFC 8470 §5.1). Nil allows none, which is RFC 8470 §2's rule when
-	// the resource has said nothing. ADR 0019 has the design.
-	//
-	// A 0-RTT request it does not allow waits for the handshake to complete
-	// and is then handled like any other: a replay never completes it, so
-	// it is never handled, and the client pays nothing more than without
-	// 0-RTT. A request carrying Early-Data it does not allow is answered
-	// 425 Too Early without reaching the handler, since waiting does not
-	// make it safe (§5.2): the client retries it once its own handshake is
-	// through.
-	//
-	// The method alone does not decide — a resource may have side effects
-	// on GET (§2) — so the predicate sees the whole request. It is called
-	// on the connection's goroutine, concurrently across connections, and
-	// must not keep r.
-	EarlyData func(r *Request) bool
 }
 
 // The defaults a bound takes when its field is zero, named because more than
@@ -657,36 +681,36 @@ func (c Config) resolve() (Config, error) {
 		orDefault("Config.MaxHeaderBytes", &c.MaxHeaderBytes, defaultMaxHeaderBytes),
 		orDefault("Config.MaxHeaders", &c.MaxHeaders, defaultMaxHeaders),
 		orDefault("Config.MaxBodyBytes", &c.MaxBodyBytes, defaultMaxBodyBytes),
-		orDefault("Config.MaxRequestsPerBatch", &c.MaxRequestsPerBatch, 64),
+		orDefault("Config.Advanced.MaxRequestsPerBatch", &c.Advanced.MaxRequestsPerBatch, 64),
 		orDefault("Config.MaxConcurrentStreams", &c.MaxConcurrentStreams, defaultMaxConcurrency),
 		orDefault("Config.MaxRequestsPerConn", &c.MaxRequestsPerConn, 1024),
 		orDefault("Config.IdleTimeout", &c.IdleTimeout, defaultIdleTimeout),
 		orDefault("Config.ReadTimeout", &c.ReadTimeout, defaultReadTimeout),
 		orDefault("Config.WriteTimeout", &c.WriteTimeout, defaultWriteTimeout),
-		orDefault("Config.WriteProgressBytes", &c.WriteProgressBytes, defaultMaxFrameSize/4),
-		orDefault("Config.ReadProgressBytes", &c.ReadProgressBytes, defaultMaxFrameSize/4),
+		orDefault("Config.Advanced.WriteProgressBytes", &c.Advanced.WriteProgressBytes, defaultMaxFrameSize/4),
+		orDefault("Config.Advanced.ReadProgressBytes", &c.Advanced.ReadProgressBytes, defaultMaxFrameSize/4),
 		orDefault("Config.ShutdownGrace", &c.ShutdownGrace, 5*time.Second),
-		orDefault("Config.MaxFramesPerBatch", &c.MaxFramesPerBatch, 64),
-		orDefault("Config.MaxContinuationFrames", &c.MaxContinuationFrames, 16),
-		orDefault("Config.MaxPendingControlBytes", &c.MaxPendingControlBytes, 16<<10),
-		orDefault("Config.MaxWriteBufferBytes", &c.MaxWriteBufferBytes, 64<<10),
+		orDefault("Config.Advanced.MaxFramesPerBatch", &c.Advanced.MaxFramesPerBatch, 64),
+		orDefault("Config.Advanced.MaxContinuationFrames", &c.Advanced.MaxContinuationFrames, 16),
+		orDefault("Config.Advanced.MaxPendingControlBytes", &c.Advanced.MaxPendingControlBytes, 16<<10),
+		orDefault("Config.Advanced.MaxWriteBufferBytes", &c.Advanced.MaxWriteBufferBytes, 64<<10),
 	)
 	// RFC 9113 §6.5.2 bounds both settings; a value outside would be
 	// advertised as a setting a conformant peer must answer with a connection
 	// error, so every connection would end at its first SETTINGS.
 	switch {
-	case c.MaxFrameSize == 0:
-		c.MaxFrameSize = defaultMaxFrameSize
-	case c.MaxFrameSize < defaultMaxFrameSize || c.MaxFrameSize > maxFrameSize:
-		err = errors.Join(err, fmt.Errorf("httpstream: Config.MaxFrameSize %d is outside %d..%d (RFC 9113 §6.5.2) — zero means %d",
-			c.MaxFrameSize, defaultMaxFrameSize, maxFrameSize, defaultMaxFrameSize))
+	case c.Advanced.MaxFrameSize == 0:
+		c.Advanced.MaxFrameSize = defaultMaxFrameSize
+	case c.Advanced.MaxFrameSize < defaultMaxFrameSize || c.Advanced.MaxFrameSize > maxFrameSize:
+		err = errors.Join(err, fmt.Errorf("httpstream: Config.Advanced.MaxFrameSize %d is outside %d..%d (RFC 9113 §6.5.2) — zero means %d",
+			c.Advanced.MaxFrameSize, defaultMaxFrameSize, maxFrameSize, defaultMaxFrameSize))
 	}
 	switch {
-	case c.InitialWindowSize == 0:
-		c.InitialWindowSize = defaultInitialWindow
-	case c.InitialWindowSize < 0 || c.InitialWindowSize > maxWindow:
-		err = errors.Join(err, fmt.Errorf("httpstream: Config.InitialWindowSize %d is outside 1..%d (RFC 9113 §6.5.2) — zero means %d",
-			c.InitialWindowSize, maxWindow, defaultInitialWindow))
+	case c.Advanced.InitialWindowSize == 0:
+		c.Advanced.InitialWindowSize = defaultInitialWindow
+	case c.Advanced.InitialWindowSize < 0 || c.Advanced.InitialWindowSize > maxWindow:
+		err = errors.Join(err, fmt.Errorf("httpstream: Config.Advanced.InitialWindowSize %d is outside 1..%d (RFC 9113 §6.5.2) — zero means %d",
+			c.Advanced.InitialWindowSize, maxWindow, defaultInitialWindow))
 	}
 	err = errors.Join(err, ceilings(c))
 	if c.MaxConcurrentStreams > maxConcurrentStreams {
@@ -706,18 +730,18 @@ func (c Config) resolve() (Config, error) {
 	if c.MaxConnsPerIP < 0 {
 		err = errors.Join(err, fmt.Errorf("httpstream: Config.MaxConnsPerIP %d is negative — zero means no bound", c.MaxConnsPerIP))
 	}
-	err = errors.Join(err, ipkey.Check("httpstream: Config.", &c.IPv4PrefixBits, &c.IPv6PrefixBits))
+	err = errors.Join(err, ipkey.Check("httpstream: Config.Advanced.", &c.Advanced.IPv4PrefixBits, &c.Advanced.IPv6PrefixBits))
 	if c.KeepAlive < 0 {
 		err = errors.Join(err, fmt.Errorf("httpstream: Config.KeepAlive %v is negative — zero means none", c.KeepAlive))
 	}
-	if c.LingerTimeout < 0 {
-		err = errors.Join(err, fmt.Errorf("httpstream: Config.LingerTimeout %v is negative — zero means a second, or ReadTimeout if shorter", c.LingerTimeout))
+	if c.Advanced.LingerTimeout < 0 {
+		err = errors.Join(err, fmt.Errorf("httpstream: Config.Advanced.LingerTimeout %v is negative — zero means a second, or ReadTimeout if shorter", c.Advanced.LingerTimeout))
 	}
 	if err != nil {
 		return Config{}, err
 	}
-	if c.LingerTimeout == 0 {
-		c.LingerTimeout = min(c.ReadTimeout, time.Second)
+	if c.Advanced.LingerTimeout == 0 {
+		c.Advanced.LingerTimeout = min(c.ReadTimeout, time.Second)
 	}
 	// After MaxBodyBytes has its own default: the two are read together,
 	// and a streamed body's bound is the whole one unless it is raised.

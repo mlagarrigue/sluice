@@ -20,7 +20,7 @@ behavior that keep the signatures — a value now refused — come last.
 
 ### The core: `sluice`
 
-- **`Of` copies, so `Map` leaves the caller's slice intact** (feat(core)!: Of copies, so Map leaves the input intact):
+- **`Of` copies, so `Map` leaves the caller's slice intact** (`6c7cb84`):
   the batches of `Of` are no longer the caller's slice but a buffer of its own, reused from one batch
   to the next. Code that read `xs` after `Map(Of(xs, n), f)` to find the transformed values takes them
   from the pipeline's output (`Collect`) instead; code that kept a batch of `Of` past the call that
@@ -88,6 +88,17 @@ behavior that keep the signatures — a value now refused — come last.
   channel, which never closes, and keeps the old behavior. `Job.Run` now cancels the running phase's
   context when the channel closes, its cause `phase.ErrLeaseLost`.
 
+### HTTP: `net/httpstream`
+
+- **The expert settings move under `Config.Advanced`** (feat(httpstream)!: expert settings move under Config.Advanced):
+  `MaxRequestsPerBatch`, `ReadProgressBytes`, `WriteProgressBytes`, `IPv4PrefixBits`, `IPv6PrefixBits`,
+  `LingerTimeout`, `MaxFrameSize`, `MaxFramesPerBatch`, `MaxContinuationFrames`, `InitialWindowSize`,
+  `MaxPendingControlBytes`, `MaxWriteBufferBytes` and `QPACKStatic` are fields of the new
+  `AdvancedConfig`, which `Config` holds as `Advanced`, so that `go doc` shows a deployment's settings
+  first. Write `Advanced: httpstream.AdvancedConfig{InitialWindowSize: 1 << 20}` in a literal and
+  `cfg.Advanced.InitialWindowSize` elsewhere; the defaults, the bounds and what each field does are
+  unchanged, and an error now names the field `Config.Advanced.InitialWindowSize`.
+
 ### Web: `web`, `web/stream` and `gateway`
 
 - **`web.Server` becomes `web.Drainer`, and the closers are `Drainer`s** (`c317c88`): the closers
@@ -104,13 +115,13 @@ behavior that keep the signatures — a value now refused — come last.
 
 ### QUIC: `net/quic`
 
-- **Names that read as what they hold** (feat(quic)!: names that read as what they hold, ADR 0015):
+- **Names that read as what they hold** (`b5806e3`):
   `Credit` is renamed `CreditPolicy` (a policy, not an amount; `CreditOnDelivery` and
   `CreditOnRelease` keep theirs), `ListenerConfig.PreferredAddress` is renamed `PreferredSocket`
   (it is a socket), `ListenerConfig.TokenKey` is renamed `RetryTokenKey`, and `Conn.Stream` becomes
   `Conn.OpenStreamsTo`, since it opens every lower-numbered stream of its kind. Rename the uses.
 - **`FrameStream` is gone from the exported names**
-  (feat(quic)!: names that read as what they hold, ADR 0015): test a frame with `Frame.IsStream`, which also
+  (`b5806e3`): test a frame with `Frame.IsStream`, which also
   covers the seven other STREAM types.
 
 ## From v0.4.0 to v0.5.0

@@ -38,7 +38,7 @@ func (c *slowReaderConn) Close() error { return nil }
 // when it passed, so a client reading at 8 KiB per timeout, twenty times the
 // floor the field promises, was cut where HTTP/1.1 serves it.
 func TestH2SocketWriteKeepsTheProgressRule(t *testing.T) {
-	cfg := Config{WriteTimeout: time.Second, WriteProgressBytes: 4 << 10, MaxWriteBufferBytes: 64 << 10}
+	cfg := Config{WriteTimeout: time.Second, Advanced: AdvancedConfig{WriteProgressBytes: 4 << 10, MaxWriteBufferBytes: 64 << 10}}
 	buf := make([]byte, 64<<10) // one round at the default budget
 	const grant = 8 << 10       // twice the progress per timeout: a client that reads
 
@@ -50,7 +50,7 @@ func TestH2SocketWriteKeepsTheProgressRule(t *testing.T) {
 	w := &h2Writer{conn: h2c, cfg: cfg}
 	if err := w.writeAll(buf); err != nil || h2c.written != len(buf) {
 		t.Fatalf("h2Writer.writeAll gave up after %d of %d bytes, each timeout seeing %d >= WriteProgressBytes %d: %v",
-			h2c.written, len(buf), grant, cfg.WriteProgressBytes, err)
+			h2c.written, len(buf), grant, cfg.Advanced.WriteProgressBytes, err)
 	}
 	// And a client under the floor is still cut, as on HTTP/1.1.
 	stalled := &slowReaderConn{grant: 1 << 10}

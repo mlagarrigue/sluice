@@ -155,7 +155,7 @@ func benchConnLimit(b *testing.B, perConn int, stagger bool) {
 	b.ReportMetric(float64(counted.accepted.Load()-before)*1000/float64(b.N), "conns/1000req")
 }
 
-// What Config.MaxRequestsPerBatch changes for a client that does pipeline:
+// What Config.Advanced.MaxRequestsPerBatch changes for a client that does pipeline:
 // one connection, 256 requests written before any answer is read, over TLS.
 // With a client that sends one request at a time the bound never binds — a
 // batch is whatever one read returned — so this is its only measurement.
@@ -169,8 +169,8 @@ func BenchmarkBatchLimitTLS256(b *testing.B) { benchBatchLimit(b, 256) }
 func benchBatchLimit(b *testing.B, perBatch int) {
 	b.Helper()
 	addr, cert, _ := startTLSStream(b, httpstream.Config{
-		MaxRequestsPerBatch: perBatch,
-		MaxRequestsPerConn:  math.MaxInt,
+		Advanced:           httpstream.AdvancedConfig{MaxRequestsPerBatch: perBatch},
+		MaxRequestsPerConn: math.MaxInt,
 	})
 	pool := x509.NewCertPool()
 	leaf, err := x509.ParseCertificate(cert.Certificate[0])

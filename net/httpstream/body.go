@@ -321,7 +321,7 @@ func (b *bodyStream) read() error {
 	left := b.progress.left(r.cfg.ReadTimeout)
 	if left <= 0 {
 		return fmt.Errorf("%w: the body did not move by %d bytes within the read timeout %v",
-			os.ErrDeadlineExceeded, r.cfg.ReadProgressBytes, r.cfg.ReadTimeout)
+			os.ErrDeadlineExceeded, r.cfg.Advanced.ReadProgressBytes, r.cfg.ReadTimeout)
 	}
 	start := time.Now()
 	if err := r.conn.SetReadDeadline(start.Add(left)); err != nil {
@@ -329,7 +329,7 @@ func (b *bodyStream) read() error {
 	}
 	n, err := r.conn.Read(r.buf[r.n:])
 	b.progress.wait(time.Since(start))
-	b.progress.moved(n, r.cfg.ReadProgressBytes)
+	b.progress.moved(n, r.cfg.Advanced.ReadProgressBytes)
 	r.n += n
 	if n > 0 {
 		return nil
@@ -457,7 +457,7 @@ type streamBody struct {
 func (streamBody) Error() string { return "httpstream: the body streams" }
 
 // readProgress is the clock a streamed body reads under: ReadTimeout of
-// waiting for the peer to deliver [Config.ReadProgressBytes], refilled each
+// waiting for the peer to deliver [AdvancedConfig.ReadProgressBytes], refilled each
 // time it has — WriteTimeout's rule on the reading side. Only time spent
 // waiting for the peer counts; the handler's own between two reads does
 // not. A timeout re-armed at every read is no bound at all: a peer that

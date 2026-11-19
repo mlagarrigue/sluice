@@ -71,33 +71,33 @@ func TestConfigRefusesAnOutOfRangeValue(t *testing.T) {
 		// of range, on both sides of the two.
 		{"BodyDelivery", Config{BodyDelivery: -1}, "-1"},
 		{"BodyDelivery", Config{BodyDelivery: BodyWhole + 1}, "2"},
-		{"MaxRequestsPerBatch", Config{MaxRequestsPerBatch: -1}, "-1"},
+		{"Advanced.MaxRequestsPerBatch", Config{Advanced: AdvancedConfig{MaxRequestsPerBatch: -1}}, "-1"},
 		{"MaxConcurrentStreams", Config{MaxConcurrentStreams: -1}, "-1"},
 		{"MaxRequestsPerConn", Config{MaxRequestsPerConn: -1}, "-1"},
 		{"IdleTimeout", Config{IdleTimeout: -time.Second}, "-1s"},
 		{"ReadTimeout", Config{ReadTimeout: -time.Second}, "-1s"},
 		{"WriteTimeout", Config{WriteTimeout: -time.Second}, "-1s"},
-		{"WriteProgressBytes", Config{WriteProgressBytes: -1}, "-1"},
+		{"Advanced.WriteProgressBytes", Config{Advanced: AdvancedConfig{WriteProgressBytes: -1}}, "-1"},
 		{"MaxConns", Config{MaxConns: -1}, "-1"},
 		{"MaxConnsPerIP", Config{MaxConnsPerIP: -1}, "-1"},
-		{"IPv4PrefixBits", Config{IPv4PrefixBits: -1}, "-1"},
-		{"IPv4PrefixBits", Config{IPv4PrefixBits: 33}, "33"},
-		{"IPv6PrefixBits", Config{IPv6PrefixBits: -1}, "-1"},
-		{"IPv6PrefixBits", Config{IPv6PrefixBits: 129}, "129"},
+		{"Advanced.IPv4PrefixBits", Config{Advanced: AdvancedConfig{IPv4PrefixBits: -1}}, "-1"},
+		{"Advanced.IPv4PrefixBits", Config{Advanced: AdvancedConfig{IPv4PrefixBits: 33}}, "33"},
+		{"Advanced.IPv6PrefixBits", Config{Advanced: AdvancedConfig{IPv6PrefixBits: -1}}, "-1"},
+		{"Advanced.IPv6PrefixBits", Config{Advanced: AdvancedConfig{IPv6PrefixBits: 129}}, "129"},
 		{"ShutdownGrace", Config{ShutdownGrace: -time.Second}, "-1s"},
-		{"LingerTimeout", Config{LingerTimeout: -time.Second}, "-1s"},
+		{"Advanced.LingerTimeout", Config{Advanced: AdvancedConfig{LingerTimeout: -time.Second}}, "-1s"},
 		{"KeepAlive", Config{KeepAlive: -time.Second}, "-1s"},
 		// RFC 9113 §6.5.2 bounds what this end may advertise: a frame size
 		// below 2^14 or over 2^24-1, a window over 2^31-1.
-		{"MaxFrameSize", Config{MaxFrameSize: -1}, "-1"},
-		{"MaxFrameSize", Config{MaxFrameSize: defaultMaxFrameSize - 1}, "16383"},
-		{"MaxFrameSize", Config{MaxFrameSize: maxFrameSize + 1}, "16777216"},
-		{"MaxFramesPerBatch", Config{MaxFramesPerBatch: -1}, "-1"},
-		{"MaxContinuationFrames", Config{MaxContinuationFrames: -1}, "-1"},
-		{"InitialWindowSize", Config{InitialWindowSize: -1}, "-1"},
-		{"InitialWindowSize", Config{InitialWindowSize: maxWindow + 1}, "2147483648"},
-		{"MaxPendingControlBytes", Config{MaxPendingControlBytes: -1}, "-1"},
-		{"MaxWriteBufferBytes", Config{MaxWriteBufferBytes: -1}, "-1"},
+		{"Advanced.MaxFrameSize", Config{Advanced: AdvancedConfig{MaxFrameSize: -1}}, "-1"},
+		{"Advanced.MaxFrameSize", Config{Advanced: AdvancedConfig{MaxFrameSize: defaultMaxFrameSize - 1}}, "16383"},
+		{"Advanced.MaxFrameSize", Config{Advanced: AdvancedConfig{MaxFrameSize: maxFrameSize + 1}}, "16777216"},
+		{"Advanced.MaxFramesPerBatch", Config{Advanced: AdvancedConfig{MaxFramesPerBatch: -1}}, "-1"},
+		{"Advanced.MaxContinuationFrames", Config{Advanced: AdvancedConfig{MaxContinuationFrames: -1}}, "-1"},
+		{"Advanced.InitialWindowSize", Config{Advanced: AdvancedConfig{InitialWindowSize: -1}}, "-1"},
+		{"Advanced.InitialWindowSize", Config{Advanced: AdvancedConfig{InitialWindowSize: maxWindow + 1}}, "2147483648"},
+		{"Advanced.MaxPendingControlBytes", Config{Advanced: AdvancedConfig{MaxPendingControlBytes: -1}}, "-1"},
+		{"Advanced.MaxWriteBufferBytes", Config{Advanced: AdvancedConfig{MaxWriteBufferBytes: -1}}, "-1"},
 	} {
 		t.Run(tc.field+"="+tc.value, func(t *testing.T) {
 			want := fmt.Sprintf("Config.%s %s", tc.field, tc.value)
@@ -166,8 +166,12 @@ func TestZeroConfigResolvesToTheDefaultsItsCommentsName(t *testing.T) {
 	checked := map[string]bool{}
 	ast.Inspect(f, func(n ast.Node) bool {
 		ts, ok := n.(*ast.TypeSpec)
-		if !ok || ts.Name.Name != "Config" {
+		if !ok || ts.Name.Name != "Config" && ts.Name.Name != "AdvancedConfig" {
 			return true
+		}
+		values, prefix := resolved, "Config."
+		if ts.Name.Name == "AdvancedConfig" {
+			values, prefix = resolved.FieldByName("Advanced"), "Config.Advanced."
 		}
 		for _, field := range ts.Type.(*ast.StructType).Fields.List {
 			m := zeroMeans.FindStringSubmatch(strings.Join(strings.Fields(field.Doc.Text()), " "))
@@ -184,8 +188,8 @@ func TestZeroConfigResolvesToTheDefaultsItsCommentsName(t *testing.T) {
 			} else {
 				continue // "no bound", "MaxBodyBytes", "32 and 64": read by their own tests
 			}
-			if got := resolved.FieldByName(name).Int(); got != want {
-				t.Errorf("Config.%s resolves to %d from zero; its comment says %q", name, got, phrase)
+			if got := values.FieldByName(name).Int(); got != want {
+				t.Errorf("%s%s resolves to %d from zero; its comment says %q", prefix, name, got, phrase)
 			}
 			checked[name] = true
 		}
@@ -193,7 +197,7 @@ func TestZeroConfigResolvesToTheDefaultsItsCommentsName(t *testing.T) {
 	})
 	for _, name := range []string{"MaxHeaders", "MaxRequestsPerConn", "MaxFramesPerBatch", "MaxBodyBytes", "ReadTimeout"} {
 		if !checked[name] {
-			t.Errorf("Config.%s's default was not read from its comment: the comment changed shape, or the parser did", name)
+			t.Errorf("%s's default was not read from its comment: the comment changed shape, or the parser did", name)
 		}
 	}
 }
@@ -213,11 +217,11 @@ func TestTransportParametersRefusesMoreStreamsThanServeH3Serves(t *testing.T) {
 // Every value inside a range is kept as given, the ends included.
 func TestConfigKeepsTheEndsOfTheHTTP2Ranges(t *testing.T) {
 	for _, size := range []int{defaultMaxFrameSize, maxFrameSize} {
-		if got := (Config{MaxFrameSize: size}).mustResolve().MaxFrameSize; got != size {
+		if got := (Config{Advanced: AdvancedConfig{MaxFrameSize: size}}).mustResolve().Advanced.MaxFrameSize; got != size {
 			t.Errorf("MaxFrameSize %d became %d", size, got)
 		}
 	}
-	if got := (Config{InitialWindowSize: maxWindow}).mustResolve().InitialWindowSize; got != maxWindow {
+	if got := (Config{Advanced: AdvancedConfig{InitialWindowSize: maxWindow}}).mustResolve().Advanced.InitialWindowSize; got != maxWindow {
 		t.Errorf("InitialWindowSize %d became %d", maxWindow, got)
 	}
 }
@@ -232,9 +236,9 @@ func TestLingerTimeoutResolves(t *testing.T) {
 		{Config{}, time.Second},
 		{Config{ReadTimeout: 200 * time.Millisecond}, 200 * time.Millisecond},
 		{Config{ReadTimeout: time.Minute}, time.Second},
-		{Config{LingerTimeout: 5 * time.Second, ReadTimeout: time.Second}, 5 * time.Second},
+		{Config{Advanced: AdvancedConfig{LingerTimeout: 5 * time.Second}, ReadTimeout: time.Second}, 5 * time.Second},
 	} {
-		if got := tc.cfg.mustResolve().LingerTimeout; got != tc.want {
+		if got := tc.cfg.mustResolve().Advanced.LingerTimeout; got != tc.want {
 			t.Errorf("%+v: LingerTimeout %v, want %v", tc.cfg, got, tc.want)
 		}
 	}
@@ -261,7 +265,7 @@ func TestTearDownLingersForLingerTimeout(t *testing.T) {
 
 	const linger = 50 * time.Millisecond
 	start := time.Now()
-	tearDown(&prefixConn{Conn: server}, Config{LingerTimeout: linger, ReadTimeout: time.Minute}.mustResolve())
+	tearDown(&prefixConn{Conn: server}, Config{Advanced: AdvancedConfig{LingerTimeout: linger}, ReadTimeout: time.Minute}.mustResolve())
 	if took := time.Since(start); took < linger || took > 500*time.Millisecond {
 		t.Errorf("tearDown took %v against a silent client, want about %v", took, linger)
 	}

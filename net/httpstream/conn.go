@@ -304,7 +304,7 @@ func (r *h1Conn) parseBuffered() (batch []Request, used int, err error) {
 	// not carry a request beyond one that already said Connection: close —
 	// both bounds are on how many requests this call may take, not just how
 	// many fit in the buffer.
-	limit := min(r.cfg.MaxRequestsPerBatch, r.cfg.MaxRequestsPerConn-r.served)
+	limit := min(r.cfg.Advanced.MaxRequestsPerBatch, r.cfg.MaxRequestsPerConn-r.served)
 	for len(r.batch) < limit {
 		start := len(r.headers)
 		if r.progress.at != used {

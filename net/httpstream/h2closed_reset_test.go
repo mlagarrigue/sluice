@@ -144,7 +144,7 @@ func TestH2NothingQueuedForAStreamTheWriterForgot(t *testing.T) {
 	t.Cleanup(func() { _ = a.Close(); _ = b.Close() })
 	w := newH2Writer(a, cfg) // run is not started: the control queue is inspected, never written
 	s := &h2Conn{cfg: cfg, w: w, streams: map[uint32]*h2Stream{}, closed: map[uint32]h2State{}}
-	st := &h2Stream{id: 1, declared: -1, recvWind: int32(cfg.InitialWindowSize)}
+	st := &h2Stream{id: 1, declared: -1, recvWind: int32(cfg.Advanced.InitialWindowSize)}
 	st.req = Request{Headers: []Header{{Name: []byte("expect"), Value: []byte("100-continue")}}}
 	w.open(st.id)
 	body := s.newH2Body(st)
@@ -178,7 +178,7 @@ func TestH2NothingQueuedForAStreamTheWriterForgot(t *testing.T) {
 	ctrl := append([]byte(nil), w.ctrl...)
 	w.mu.Unlock()
 	for len(ctrl) > 0 {
-		f, n, err := parseFrame(ctrl, cfg.MaxFrameSize)
+		f, n, err := parseFrame(ctrl, cfg.Advanced.MaxFrameSize)
 		if err != nil {
 			t.Fatalf("control queue: %v", err)
 		}
@@ -208,7 +208,7 @@ func TestH2HeadersOnAClosedStreamDoNotHoldTheIdleClock(t *testing.T) {
 			served <- err
 			return
 		}
-		cfg := Config{Logger: discardLogger(), ReadTimeout: 5 * time.Second, IdleTimeout: idle, LingerTimeout: 100 * time.Millisecond}
+		cfg := Config{Logger: discardLogger(), ReadTimeout: 5 * time.Second, IdleTimeout: idle, Advanced: AdvancedConfig{LingerTimeout: 100 * time.Millisecond}}
 		served <- ServeH2Conn(t.Context(), c, cfg, echoTarget)
 	}()
 	conn, err := net.Dial("tcp", ln.Addr().String())
@@ -267,7 +267,7 @@ func TestH2NoGrantOnAStreamForgottenLongAgo(t *testing.T) {
 		t.Fatal(err)
 	}
 	for ctrl := w.ctrl; len(ctrl) > 0; {
-		f, n, err := parseFrame(ctrl, cfg.MaxFrameSize)
+		f, n, err := parseFrame(ctrl, cfg.Advanced.MaxFrameSize)
 		if err != nil {
 			t.Fatalf("control queue: %v", err)
 		}
@@ -408,7 +408,7 @@ func TestH2NoResetOnAStreamForgottenLongAgo(t *testing.T) {
 	}
 	reset := map[uint32]bool{}
 	for ctrl := w.ctrl; len(ctrl) > 0; {
-		f, n, err := parseFrame(ctrl, cfg.MaxFrameSize)
+		f, n, err := parseFrame(ctrl, cfg.Advanced.MaxFrameSize)
 		if err != nil {
 			t.Fatalf("control queue: %v", err)
 		}

@@ -190,7 +190,7 @@ func TestH2RefusesDataPastTheStreamWindow(t *testing.T) {
 	// streamed body this handler never reads is reset with NO_ERROR as
 	// soon as the response goes out — a race with the violation that has
 	// nothing to do with §6.9.1.
-	addr, _ := serveH2(t, Config{BodyDelivery: BodyWhole, MaxFrameSize: 1 << 20}, echoTarget)
+	addr, _ := serveH2(t, Config{BodyDelivery: BodyWhole, Advanced: AdvancedConfig{MaxFrameSize: 1 << 20}}, echoTarget)
 	c := dialH2(t, addr)
 
 	c.frame(h2Frame{
