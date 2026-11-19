@@ -18,17 +18,17 @@ import (
 //
 // # Why it exists
 //
-// Before it, everything ran on the goroutine that read the socket — framing,
-// the handler, and streamed response bodies. Two consequences followed, and
-// both were connection-fatal rather than theoretical. A streamed response
-// could only spend the flow-control credit granted before it started, because
-// the goroutine that would read the WINDOW_UPDATE was the one blocked writing;
-// past 65535 bytes it gave up and took the connection with it. And while a
-// handler ran, the connection was deaf: no PING answered, no SETTINGS ACKed,
-// no RST_STREAM seen — a peer that uses PING for liveness kills a connection
-// that goes quiet.
+// Were everything to run on the goroutine that reads the socket — framing,
+// the handler, and streamed response bodies — two consequences would follow,
+// both connection-fatal. A streamed response could only spend the
+// flow-control credit granted before it started, because the goroutine that
+// would read the WINDOW_UPDATE would be the one blocked writing; past 65535
+// bytes it would give up and take the connection with it. And while a
+// handler ran, the connection would be deaf: no PING answered, no SETTINGS
+// ACKed, no RST_STREAM seen — a peer that uses PING for liveness kills a
+// connection that goes quiet.
 //
-// Splitting the write side off answers both. Waiting for credit is now a wait
+// Splitting the write side off answers both. Waiting for credit is a wait
 // on a condition variable that the read goroutine signals, and control frames
 // go out while a response is stalled because they are a separate queue that
 // jumps ahead of the data.
@@ -594,7 +594,7 @@ func (w *h2Writer) emit(j *h2Job) (int, error) {
 //
 // It returns an error only when the write side itself failed, which ends the
 // connection; every job of b is then settled with it. A per-stream outcome
-// is left on the job, where [h2Writer.await] reads it — that is the whole
+// is left on the job, where [h2Writer.awaitHead] reads it — that is the whole
 // difference between one bad stream and a dead connection.
 func (w *h2Writer) deliver(b *h2Sent) error {
 	w.mu.Lock()

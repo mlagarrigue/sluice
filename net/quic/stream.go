@@ -1028,7 +1028,7 @@ func (c *Conn) localStreamCountersLocked(uni bool) (opened, limit *uint64) {
 
 // waitStreamCreditLocked parks under mu until the peer's grant for the
 // kind of stream exceeds what this end has opened, the context ends, or
-// the connection closes. The waits ride c.cond, which the MAX_STREAMS
+// the connection closes. The waits ride c.openers, which the MAX_STREAMS
 // handler broadcasts when the limit rises and closeOnce on the way out; the
 // context's expiry broadcasts too, under mu, so a Wait that has not yet
 // parked cannot miss it. Called only once a wait is certain: the common

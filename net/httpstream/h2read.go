@@ -678,11 +678,11 @@ func (s *h2Conn) headers(f h2Frame) (*h2Stream, error) {
 		st.gotTrailers = true
 		// §8.1: the trailer block is the one that ends the stream, so a
 		// second HEADERS without END_STREAM is a malformed request, a stream
-		// error. Found by h2spec (8.1/1): before this check the block was
-		// decoded and the server then waited for a DATA or HEADERS that
-		// never came, holding the stream and its slot in the concurrency
-		// bound until the idle timeout — one of several such requests
-		// would quietly pin MaxConcurrentStreams.
+		// error (h2spec 8.1/1). Without this check the block would be
+		// decoded and the server would wait for a DATA or HEADERS that never
+		// comes, holding the stream and its slot in the concurrency bound
+		// until the idle timeout — several such requests would quietly pin
+		// MaxConcurrentStreams.
 		if !st.endStream {
 			return nil, streamFail(st.id, errProtocolError,
 				"%w: a trailer section on stream %d without END_STREAM", ErrH2Protocol, st.id)

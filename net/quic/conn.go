@@ -126,7 +126,7 @@ type Conn struct {
 	// reached: a MAX_STREAMS that raises it wakes them, and only them — on
 	// cond it woke every writer parked on the window as well, a wake-up per
 	// writer for each two-byte frame. The end reaches it too
-	// (wakeAllLocked), and the opener's context (waitForStreamLocked).
+	// (wakeAllLocked), and the opener's context (waitStreamCreditLocked).
 	openers sync.Cond
 
 	// writeRefusals counts sends refused by an ICMP surfacing on the

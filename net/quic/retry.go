@@ -22,7 +22,7 @@ import (
 // A Retry needs no connection and no server-side state to issue: everything
 // a later Initial must prove is encoded into the token itself, authenticated
 // with an HMAC key the issuing [Listener] holds — random per listener unless
-// [ListenerConfig.TokenKey] names one. With a random key a listener restart
+// [AdvancedListenerConfig.RetryTokenKey] names one. With a random key a listener restart
 // simply invalidates every outstanding token, which costs an abandoned
 // handshake attempt a client retries from scratch — not a correctness
 // problem, the same tolerance RFC 9000 already assumes of any stateless
@@ -143,7 +143,7 @@ func appendRetryPacket(dst, dcid, newSCID, odcid, token []byte) []byte {
 }
 
 // newRetryTokenKey draws an HMAC-SHA256 key for Retry tokens, what a zero
-// [ListenerConfig.TokenKey] stands for.
+// [AdvancedListenerConfig.RetryTokenKey] stands for.
 func newRetryTokenKey() ([32]byte, error) {
 	var k [32]byte
 	_, err := rand.Read(k[:])

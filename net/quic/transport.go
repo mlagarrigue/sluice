@@ -168,7 +168,7 @@ type TransportParameters struct {
 
 	// PreferredAddress is the server's invitation to move the connection
 	// to another address once the handshake confirms (§9.6). A
-	// [Listener] fills it in from [ListenerConfig.PreferredAddress]; a
+	// [Listener] fills it in from [AdvancedListenerConfig.PreferredSocket]; a
 	// client reads it and migrates on its own, once the handshake confirms.
 	// Server-only: a client announcing one is refused.
 	preferredAddress *preferredAddress

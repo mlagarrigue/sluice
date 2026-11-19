@@ -100,11 +100,11 @@ func connWindow(cfg Config) int32 {
 // connection.
 //
 // It is the distinction a multiplexed protocol exists to make. A client that
-// sends one malformed request among a hundred healthy ones loses that one:
-// before this type, it lost all hundred and the connection with them, because
-// every refusal this server could express was a GOAWAY. Connection errors are
-// now reserved for what they are for — framing and HPACK state, which cannot
-// be resynchronised once in doubt.
+// sends one malformed request among a hundred healthy ones loses that one,
+// not all hundred and the connection with them, as it would if every refusal
+// this server could express were a GOAWAY. Connection errors are reserved for
+// what they are for — framing and HPACK state, which cannot be resynchronised
+// once in doubt.
 type streamError struct {
 	id   uint32
 	code uint32
