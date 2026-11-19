@@ -232,14 +232,16 @@ func TestZeroRTTStaysWithTheInstanceThatIssuedTheTicket(t *testing.T) {
 	}
 }
 
-// lateFinishPC delays every datagram the client writes once it has heard
-// from the server, by delay: what the client sends in its first flight —
-// ClientHello and 0-RTT — arrives at once, and its Finished arrives late,
-// which holds the server's handshake open long enough to see what happens
-// to a 0-RTT request before it completes.
+// lateFinishPC holds every datagram the client writes once it has heard
+// from the server until release is closed or delay has passed, whichever
+// comes first: what the client sends in its first flight — ClientHello and
+// 0-RTT — arrives at once, and its Finished arrives late, which holds the
+// server's handshake open long enough to see what happens to a 0-RTT
+// request before it completes. A nil release waits for delay alone.
 type lateFinishPC struct {
 	net.PacketConn // the interface only: a *net.UDPConn would let quic-go write around WriteTo
 	delay          time.Duration
+	release        <-chan struct{}
 	heard          atomic.Bool
 }
 
@@ -256,7 +258,15 @@ func (p *lateFinishPC) WriteTo(b []byte, addr net.Addr) (int, error) {
 		return p.PacketConn.WriteTo(b, addr)
 	}
 	late := append([]byte(nil), b...)
-	time.AfterFunc(p.delay, func() { _, _ = p.PacketConn.WriteTo(late, addr) })
+	go func() {
+		t := time.NewTimer(p.delay)
+		defer t.Stop()
+		select {
+		case <-p.release:
+		case <-t.C:
+		}
+		_, _ = p.PacketConn.WriteTo(late, addr)
+	}()
 	return len(b), nil
 }
 
@@ -289,6 +299,7 @@ func TestHTTP3EarlyRequestWaitsForTheHandshake(t *testing.T) {
 			defer ln.Close()
 			type call struct{ early, completed bool }
 			calls := make(chan call, 4)
+			var handled atomic.Pointer[func()] // run by the handler once it has recorded its call
 			go func() {
 				for {
 					c, err := ln.Accept()
@@ -309,6 +320,9 @@ func TestHTTP3EarlyRequestWaitsForTheHandshake(t *testing.T) {
 						default:
 						}
 						calls <- call{acceptedEarly, completed}
+						if f := handled.Load(); f != nil {
+							(*f)()
+						}
 						out := make([]httpstream.Response, b.Len())
 						for i := range out {
 							out[i] = httpstream.Response{Status: 200, Body: []byte("ok")}
@@ -359,7 +373,20 @@ func TestHTTP3EarlyRequestWaitsForTheHandshake(t *testing.T) {
 				time.Sleep(5 * time.Millisecond)
 			}
 
-			get(http3.MethodGet0RTT, &lateFinishPC{PacketConn: listenUDP(t), delay: 300 * time.Millisecond})
+			// Where the handler may run early, the client's Finished waits for
+			// it: the handler sees the handshake open whatever the machine's
+			// load, where a fixed delay gave way under check.sh twice (2026-11-11
+			// and 2026-11-19). Where it may not, nothing can release the
+			// Finished but the delay, and the handler runs after it.
+			gate := make(chan struct{})
+			var once sync.Once
+			open := func() { once.Do(func() { close(gate) }) }
+			handled.Store(&open)
+			delay := 300 * time.Millisecond
+			if !tc.wantCompleted {
+				delay = timeout
+			}
+			get(http3.MethodGet0RTT, &lateFinishPC{PacketConn: listenUDP(t), delay: delay, release: gate})
 			got := <-calls
 			if !got.early {
 				t.Fatal("the resumed connection was not accepted in 0-RTT; the test proves nothing")
