@@ -1,7 +1,7 @@
 # ADR 0027 — The phase runner: resuming a long job where it died
 
 - **Created:** 2026-11-16
-- **Revised:** 2026-11-16 (the lock's connection is the job's own: the connector has no pool; the lock's key), 2026-11-16 (the lock's connection is never one a pool lends), 2026-11-19 (a lock lost while a phase runs ends that phase's context: `Lease.Lost`)
+- **Revised:** 2026-11-19 (`Job.LogicVersion`, `Report.RestartReason`, `DirStore.LeaseTTL`); 3 earlier, from 2026-11-16, in its `git log`
 - **Theme:** core
 
 ## Problem
@@ -33,10 +33,10 @@ most often a sluice pipeline.
 
 ```go
 job := phase.Job{
-	Name:   "orders-nightly",
-	Input:  phase.Input{"source": src, "day": day},
-	Logic:  3,
-	Store:  phase.Dir("/var/lib/etl"),
+	Name:         "orders-nightly",
+	Input:        phase.Input{"source": src, "day": day},
+	LogicVersion: 3,
+	Store:        phase.Dir("/var/lib/etl"),
 	Phases: []phase.Phase{
 		{Name: "extract", Run: extract, Verify: stagingCounts},
 		{Name: "transform", Run: transform, Verify: transformedCounts},
@@ -77,16 +77,16 @@ phase and every phase after it: each reads what the earlier ones wrote.
 ### A resume is valid only against the same input
 
 The fingerprint is a SHA-256 of the canonical form of the job's name,
-`Input` (keys sorted), `Logic` and the ordered list of phase names. `Logic`
-is bumped if and only if the same input can now produce different output.
+`Input` (keys sorted), `LogicVersion` and the ordered list of phase names.
+`LogicVersion` is bumped if and only if the same input can now produce different output.
 The operator's settings — worker counts, verbosity — have no place in
 `Input`: they live in the phases' functions, which the fingerprint does not
 see, and so apply to the phases that remain.
 
 A run whose fingerprint differs from the record starts from zero, and the
 `Report` says so, naming what changed — the record keeps the canonical
-input, not only its hash: "`day` was 2026-11-14, is 2026-11-15", "`Logic`
-3 → 4". That is a periodic job's ordinary case, not an error; what is
+input, not only its hash: "`day` was 2026-11-14, is 2026-11-15",
+"`LogicVersion` 3 → 4". That is a periodic job's ordinary case, not an error; what is
 excluded is resuming phases done under another fingerprint. `Job.Fresh`
 forces a restart with the same input.
 
@@ -164,7 +164,7 @@ Starting over and saying so, rather than failing: a new input is a
 periodic job's ordinary case, and a refusal would have the operator write
 `Fresh` every night — that is, disarm the guard. Keeping the canonical
 input in the clear makes the report something one reads: "the fingerprint
-changed" says nothing, "`Logic` 3 → 4" says why the phases done were run
+changed" says nothing, "`LogicVersion` 3 → 4" says why the phases done were run
 again.
 
 Refusing rather than waiting: two processes on the same working tables

@@ -21,10 +21,10 @@ destination.
 
 ```go
 job := phase.Job{
-	Name:  "orders-nightly",
-	Input: phase.Input{"day": "2026-11-15"},
-	Logic: 1,
-	Store: phase.Dir("/var/lib/etl"),
+	Name:         "orders-nightly",
+	Input:        phase.Input{"day": "2026-11-15"},
+	LogicVersion: 1,
+	Store:        phase.Dir("/var/lib/etl"),
 	Phases: []phase.Phase{
 		{Name: "extract", Run: extract, Verify: checkStaging},
 		{Name: "load", Run: load},
@@ -52,10 +52,10 @@ ones wrote.
 ## The same input, or from zero
 
 `Input` is what the output depends on — the day processed, the source;
-`Logic` is a number you raise when the code changes what it produces. If
+`LogicVersion` is a number you raise when the code changes what it produces. If
 either changed since the record was written, the job starts from zero and
-`report.Restarted` says what changed: `day was "2026-11-14", is
-"2026-11-15"`, `Logic 1 → 2`. The number of workers or the log level do
+`report.RestartReason` says what changed: `day was "2026-11-14", is
+"2026-11-15"`, `LogicVersion 1 → 2`. The number of workers or the log level do
 not go in `Input`: they do not change the output, and a run that resumes
 applies its own to the phases that remain. `Job.Fresh` starts from zero
 with the same input.
@@ -66,7 +66,7 @@ A second run of the same job while a first one is running fails at once
 with `phase.ErrBusy`, naming the process that holds it. The store
 `phase.Dir` keeps a **lease** — a file the running process renews every
 ten seconds; if the process dies, the lease expires after thirty seconds
-(`DirStore.Lease`) and the next run takes it over. A process that lost its
+(`DirStore.LeaseTTL`) and the next run takes it over. A process that lost its
 lease — frozen for longer than the lease — has the context of its running
 phase cancelled as soon as its renewal sees the loss, and `Run` returns
 `phase.ErrLeaseLost`: a phase that honours its context stops instead of

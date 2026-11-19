@@ -31,17 +31,17 @@ type DirStore struct {
 	// Path is the directory; it must exist.
 	Path string
 
-	// Lease is how long a lease holds without being renewed; zero means
+	// LeaseTTL is how long a lease holds without being renewed; zero means
 	// 30 seconds. It bounds how long a dead process keeps its job locked.
-	Lease time.Duration
+	LeaseTTL time.Duration
 }
 
 // Dir is a [DirStore] over a directory, with the default lease.
 func Dir(path string) *DirStore { return &DirStore{Path: path} }
 
 func (d *DirStore) lease() time.Duration {
-	if d.Lease > 0 {
-		return d.Lease
+	if d.LeaseTTL > 0 {
+		return d.LeaseTTL
 	}
 	return 30 * time.Second
 }

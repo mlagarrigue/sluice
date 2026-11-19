@@ -48,11 +48,11 @@ func (w *world) phase(name string, n int64) phase.Phase {
 
 func (w *world) job(dir string, day string) *phase.Job {
 	return &phase.Job{
-		Name:   "orders-nightly",
-		Input:  phase.Input{"day": day},
-		Logic:  1,
-		Store:  phase.Dir(dir),
-		Phases: []phase.Phase{w.phase("extract", 10), w.phase("transform", 8), w.phase("load", 8)},
+		Name:         "orders-nightly",
+		Input:        phase.Input{"day": day},
+		LogicVersion: 1,
+		Store:        phase.Dir(dir),
+		Phases:       []phase.Phase{w.phase("extract", 10), w.phase("transform", 8), w.phase("load", 8)},
 	}
 }
 
@@ -83,8 +83,8 @@ func TestAJobResumesWhereItDied(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := outcomes(rep); !slices.Equal(got, []string{"extract=skipped", "transform=ran", "load=ran"}) || rep.Restarted != "" {
-		t.Errorf("resume: %v, restarted %q", got, rep.Restarted)
+	if got := outcomes(rep); !slices.Equal(got, []string{"extract=skipped", "transform=ran", "load=ran"}) || rep.RestartReason != "" {
+		t.Errorf("resume: %v, restarted %q", got, rep.RestartReason)
 	}
 	if !slices.Equal(w.ran, []string{"transform", "load"}) {
 		t.Errorf("ran %v", w.ran)
@@ -147,7 +147,7 @@ func TestAChangedInputStartsOverAndSaysWhy(t *testing.T) {
 		want string
 	}{
 		"next day":    {func(j *phase.Job) { j.Input["day"] = "2026-11-15" }, `day was "2026-11-14", is "2026-11-15"`},
-		"logic":       {func(j *phase.Job) { j.Logic = 2 }, "Logic 1 → 2"},
+		"logic":       {func(j *phase.Job) { j.LogicVersion = 2 }, "LogicVersion 1 → 2"},
 		"key added":   {func(j *phase.Job) { j.Input["region"] = "eu" }, `region was absent, is "eu"`},
 		"phase added": {func(j *phase.Job) { j.Phases = append(j.Phases, w.phase("index", 1)) }, "phases were [extract transform load], are [extract transform load index]"},
 		"fresh":       {func(j *phase.Job) { j.Fresh = true }, "Fresh was set"},
@@ -158,8 +158,8 @@ func TestAChangedInputStartsOverAndSaysWhy(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(rep.Restarted, tc.want) || rep.Phases[0].Outcome != phase.Ran {
-			t.Errorf("%s: restarted %q, %v", name, rep.Restarted, outcomes(rep))
+		if !strings.Contains(rep.RestartReason, tc.want) || rep.Phases[0].Outcome != phase.Ran {
+			t.Errorf("%s: restarted %q, %v", name, rep.RestartReason, outcomes(rep))
 		}
 		// Back to the first input, for the next case to change from.
 		if _, err := w.job(dir, "2026-11-14").Run(t.Context()); err != nil {
@@ -261,8 +261,8 @@ func TestARecordThatIsNotTheJobsIsRefusedOrReplaced(t *testing.T) {
 		t.Fatal(err)
 	}
 	rep, err := w.job(dir, "2026-11-15").Run(t.Context())
-	if err != nil || rep.Restarted != "the record's fingerprint is not this job's" {
-		t.Errorf("a forged fingerprint: %q, %v", rep.Restarted, err)
+	if err != nil || rep.RestartReason != "the record's fingerprint is not this job's" {
+		t.Errorf("a forged fingerprint: %q, %v", rep.RestartReason, err)
 	}
 
 	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {

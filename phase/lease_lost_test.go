@@ -15,7 +15,7 @@ import (
 // longer the job's while the second runs, not at its own next Save, or the
 // two fill the same working tables side by side.
 func TestALostLeaseEndsThePhaseRunning(t *testing.T) {
-	d := &DirStore{Path: t.TempDir(), Lease: 300 * time.Millisecond}
+	d := &DirStore{Path: t.TempDir(), LeaseTTL: 300 * time.Millisecond}
 	successorIn := make(chan struct{})
 	releaseSuccessor := make(chan struct{})
 	cancelled := make(chan error, 1)
@@ -64,7 +64,7 @@ func TestALostLeaseEndsThePhaseRunning(t *testing.T) {
 
 // Release is not a loss: a job that finishes leaves Lost open.
 func TestReleaseDoesNotCloseLost(t *testing.T) {
-	d := &DirStore{Path: t.TempDir(), Lease: 300 * time.Millisecond}
+	d := &DirStore{Path: t.TempDir(), LeaseTTL: 300 * time.Millisecond}
 	l, err := d.Lock(t.Context(), "job")
 	if err != nil {
 		t.Fatal(err)

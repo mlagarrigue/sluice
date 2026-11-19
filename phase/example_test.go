@@ -23,10 +23,10 @@ func Example() {
 	staging, loaded := 0, 0 // stand-ins for two tables
 	sourceUp := false
 	job := phase.Job{
-		Name:  "orders-nightly",
-		Input: phase.Input{"day": "2026-11-15"},
-		Logic: 1,
-		Store: phase.Dir(dir),
+		Name:         "orders-nightly",
+		Input:        phase.Input{"day": "2026-11-15"},
+		LogicVersion: 1,
+		Store:        phase.Dir(dir),
 		Phases: []phase.Phase{
 			{
 				Name: "extract",
@@ -82,7 +82,7 @@ func ExampleDir() {
 	defer func() { _ = os.RemoveAll(dir) }()
 
 	store := phase.Dir(dir)
-	store.Lease = 2 * time.Minute
+	store.LeaseTTL = 2 * time.Minute
 	job := phase.Job{
 		Name:  "reindex",
 		Store: store,

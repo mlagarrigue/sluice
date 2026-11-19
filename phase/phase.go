@@ -16,7 +16,7 @@
 //     emptied by a crash while its record survived saying "done" is the
 //     case a trusting default produces.
 //   - A resume is valid only against the same input. The job's name, its
-//     [Input], its [Job.Logic] version and the names of its phases are
+//     [Input], its [Job.LogicVersion] version and the names of its phases are
 //     fingerprinted; a run whose fingerprint differs from the record starts
 //     over, and its [Report] names what changed. Settings that do not change
 //     the output — worker counts, verbosity — have no place in Input: they
@@ -79,9 +79,9 @@ type Job struct {
 	// Input is what the job's output depends on; part of the fingerprint.
 	Input Input
 
-	// Logic is bumped if and only if the same input can now produce
+	// LogicVersion is bumped if and only if the same input can now produce
 	// different output; part of the fingerprint.
-	Logic int
+	LogicVersion int
 
 	// Store holds the job's lock and record.
 	Store Store
@@ -117,11 +117,11 @@ type PhaseReport struct {
 // Report is what a run did: the phases it reached, in order, and why the
 // record was discarded if it was.
 type Report struct {
-	// Restarted names what changed when the record was discarded — the
+	// RestartReason names what changed when the record was discarded — the
 	// input keys, the logic version, the phases — or says Fresh was set.
 	// Empty on a first run and on a resume.
-	Restarted string
-	Phases    []PhaseReport
+	RestartReason string
+	Phases        []PhaseReport
 }
 
 var jobName = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
@@ -153,7 +153,7 @@ func (j *Job) validate() error {
 // fresh is the record of a run that starts from zero.
 func (j *Job) fresh() Record {
 	// A nil Input and an empty one are the same input: one fingerprint.
-	r := Record{Input: Input{}, Logic: j.Logic}
+	r := Record{Input: Input{}, LogicVersion: j.LogicVersion}
 	maps.Copy(r.Input, j.Input)
 	names := make([]string, len(j.Phases))
 	for i, p := range j.Phases {
@@ -161,13 +161,15 @@ func (j *Job) fresh() Record {
 		r.Phases = append(r.Phases, PhaseRecord{Name: p.Name})
 	}
 	// encoding/json writes a map's keys sorted: the canonical form. Of
-	// strings and an int, Marshal cannot fail.
+	// strings and an int, Marshal cannot fail. The field names are part of
+	// the fingerprint: Logic stays Logic, whatever Job calls it, or every
+	// stored record would stop matching its job.
 	b, _ := json.Marshal(struct {
 		Name   string
 		Input  Input
 		Logic  int
 		Phases []string
-	}{j.Name, r.Input, j.Logic, names})
+	}{j.Name, r.Input, j.LogicVersion, names})
 	sum := sha256.Sum256(b)
 	r.Fingerprint = hex.EncodeToString(sum[:])
 	return r
@@ -195,8 +197,8 @@ func changes(was, is Record) string {
 			out = append(out, fmt.Sprintf("%s was %s, is %s", k, a, b))
 		}
 	}
-	if was.Logic != is.Logic {
-		out = append(out, fmt.Sprintf("Logic %d → %d", was.Logic, is.Logic))
+	if was.LogicVersion != is.LogicVersion {
+		out = append(out, fmt.Sprintf("LogicVersion %d → %d", was.LogicVersion, is.LogicVersion))
 	}
 	if a, b := phaseNames(was), phaseNames(is); !slices.Equal(a, b) {
 		out = append(out, fmt.Sprintf("phases were %v, are %v", a, b))
@@ -276,9 +278,9 @@ func (j *Job) Run(ctx context.Context) (rep Report, err error) {
 	case !found:
 		rec = fresh
 	case j.Fresh:
-		rep.Restarted, rec = "Fresh was set", fresh
+		rep.RestartReason, rec = "Fresh was set", fresh
 	case rec.Fingerprint != fresh.Fingerprint:
-		rep.Restarted, rec = changes(rec, fresh), fresh
+		rep.RestartReason, rec = changes(rec, fresh), fresh
 	case len(rec.Phases) != len(j.Phases):
 		return rep, fmt.Errorf("phase: job %q: the record lists %d phases under this job's fingerprint, the job %d",
 			j.Name, len(rec.Phases), len(j.Phases))

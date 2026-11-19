@@ -25,7 +25,7 @@ func lockDir(t *testing.T, d *DirStore) *dirLease {
 // expires, and not before.
 func TestALiveLeaseIsRenewedAndAnExpiredOneTakenOver(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		d := &DirStore{Path: t.TempDir(), Lease: 3 * time.Second}
+		d := &DirStore{Path: t.TempDir(), LeaseTTL: 3 * time.Second}
 		l := lockDir(t, d)
 		time.Sleep(10 * time.Second)
 		synctest.Wait()
@@ -66,7 +66,7 @@ func TestALiveLeaseIsRenewedAndAnExpiredOneTakenOver(t *testing.T) {
 // took writes nothing more either, and does not remove the other's lease.
 func TestALeaseLostStopsTheWrites(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		d := &DirStore{Path: t.TempDir(), Lease: 3 * time.Second}
+		d := &DirStore{Path: t.TempDir(), LeaseTTL: 3 * time.Second}
 		l := lockDir(t, d)
 		l.mu.Lock()
 		l.mine.Expires = time.Now().Add(-time.Second) // as if stopped past its lease
@@ -106,7 +106,7 @@ func TestALeaseLostStopsTheWrites(t *testing.T) {
 // a guard older than a lease, left by a taker that died, is removed for
 // the next run; a lease file that does not parse is a dead writer's.
 func TestTakingOverIsExclusive(t *testing.T) {
-	d := &DirStore{Path: t.TempDir(), Lease: time.Second}
+	d := &DirStore{Path: t.TempDir(), LeaseTTL: time.Second}
 	path := filepath.Join(d.Path, "job.lease")
 	if err := writeFile(path, leaseFile{Token: "dead", Expires: time.Now().Add(-time.Minute)}); err != nil {
 		t.Fatal(err)

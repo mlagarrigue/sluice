@@ -49,6 +49,10 @@ behavior that keep the signatures — a value now refused — come last.
 
 ### Long jobs: `phase`
 
+- **`Job.Logic` becomes `LogicVersion`, `Report.Restarted` becomes `RestartReason`,
+  `DirStore.Lease` becomes `LeaseTTL`** (refactor(phase)!: names that say what they hold, ADR 0027):
+  `Record.Logic` follows `Job`. Rename the fields; a record stored before keeps its JSON key `logic`
+  and its fingerprint, so a job resumes where it was.
 - **`Lease` gains `Lost() <-chan struct{}`** (`8e23183`): a
   `Store` of your own returns a lease that closes the channel once it finds its lock lost — expired,
   taken over, its connection gone — and never on `Release`. A store that cannot tell returns a nil

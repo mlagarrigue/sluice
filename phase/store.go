@@ -68,10 +68,10 @@ type Record struct {
 	// input, logic version and phase names.
 	Fingerprint string `json:"fingerprint"`
 
-	// Input and Logic are kept in the clear, so that a run that discards
+	// Input and LogicVersion are kept in the clear, so that a run that discards
 	// the record can say what changed.
-	Input Input `json:"input"`
-	Logic int   `json:"logic"`
+	Input        Input `json:"input"`
+	LogicVersion int   `json:"logic"`
 
 	Phases []PhaseRecord `json:"phases"`
 }
