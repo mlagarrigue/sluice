@@ -297,6 +297,15 @@ func TestQueryInt64SeparatesMissingFromInvalid(t *testing.T) {
 	if _, d, ok := web.QueryInt64(r, "line"); ok || d.Code != web.CodeInvalidParam {
 		t.Errorf("unparseable parameter gave ok=%v code=%q", ok, d.Code)
 	}
+	// An escape net/url cannot undo: Query drops the pair, and it read as
+	// absent. It is there, and unreadable.
+	r = httptest.NewRequest(http.MethodGet, "/orders?other=1&line=%zz", http.NoBody)
+	if _, d, ok := web.QueryInt64(r, "line"); ok || d.Code != web.CodeInvalidParam {
+		t.Errorf("a parameter with a broken escape gave ok=%v code=%q, want invalid", ok, d.Code)
+	}
+	if _, d, ok := web.QueryInt64(r, "order"); ok || d.Code != web.CodeMissingParam {
+		t.Errorf("beside it, an absent parameter gave ok=%v code=%q", ok, d.Code)
+	}
 }
 
 // The status rule, stated in full and asserted in full. A warning must not

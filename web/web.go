@@ -67,7 +67,9 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/mlagarrigue/sluice/diagnostics"
 	"github.com/mlagarrigue/sluice/web/internal/reqbody"
@@ -205,6 +207,12 @@ func QueryInt64(r *http.Request, name string) (int64, diagnostics.Diagnostic, bo
 	// parameter rather than costing an unbounded map.
 	vals, ok := r.URL.Query()[name]
 	if !ok || len(vals) == 0 {
+		// Query also drops a pair it cannot unescape: ?n=%zz leaves no n.
+		// That parameter is there and unreadable, not absent, and its fix is
+		// the other one.
+		if raw, found := undecodable(r.URL.RawQuery, name); found {
+			return 0, invalid(name, raw, "integer"), false
+		}
 		return 0, missing(name), false
 	}
 	raw := vals[0]
@@ -213,6 +221,21 @@ func QueryInt64(r *http.Request, name string) (int64, diagnostics.Diagnostic, bo
 		return 0, invalid(name, raw, "integer"), false
 	}
 	return v, diagnostics.Diagnostic{}, true
+}
+
+// undecodable reports a pair of rawQuery named name whose value does not
+// unescape, and that value as sent. Read on the missing path alone.
+func undecodable(rawQuery, name string) (string, bool) {
+	for pair := range strings.SplitSeq(rawQuery, "&") {
+		k, v, _ := strings.Cut(pair, "=")
+		if key, err := url.QueryUnescape(k); err != nil || key != name {
+			continue
+		}
+		if _, err := url.QueryUnescape(v); err != nil {
+			return v, true
+		}
+	}
+	return "", false
 }
 
 func missing(name string) diagnostics.Diagnostic {
