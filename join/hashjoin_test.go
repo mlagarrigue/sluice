@@ -202,7 +202,7 @@ func TestJoinOverflowDropNewest(t *testing.T) {
 		t.Fatalf("recorded %d diagnostics, want exactly 1", diags.Len())
 	}
 	d := diags.All()[0]
-	if d.Severity != diagnostics.Critical {
+	if d.Severity != diagnostics.SeverityCritical {
 		t.Errorf("severity = %v, want Critical: an overflow must be loud", d.Severity)
 	}
 	if d.Code != "Sluice.Join.BuildTableOverflow" {
@@ -520,7 +520,7 @@ func TestMapTableGrowthStopsAtTheLimit(t *testing.T) {
 // diagnostic a caller choosing a dropping policy would raise.
 func reportTo(diags *diagnostics.Collector) func(limit, held int) {
 	return func(limit, held int) {
-		diags.Add(diagnostics.NewDiagnostic(diagnostics.Critical, "Sluice.Join.BuildTableOverflow", diagnostics.Path{}).
+		diags.Add(diagnostics.NewDiagnostic(diagnostics.SeverityCritical, "Sluice.Join.BuildTableOverflow", diagnostics.Path{}).
 			WithMessage("BuildTableOverflow", map[string]any{"limit": limit, "held": held}))
 	}
 }

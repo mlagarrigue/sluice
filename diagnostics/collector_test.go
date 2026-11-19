@@ -34,7 +34,7 @@ func TestDiagnosticsCeiling(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			d := NewCollector(tc.limit)
 			for i := range tc.add {
-				d.Add(diag(Warning, "code"+string(rune('a'+i))))
+				d.Add(diag(SeverityWarning, "code"+string(rune('a'+i))))
 			}
 			if d.Len() != tc.wantKept {
 				t.Errorf("Len = %d, want %d", d.Len(), tc.wantKept)
@@ -51,10 +51,10 @@ func TestDiagnosticsCeiling(t *testing.T) {
 func TestDiagnosticsAddReportsAcceptance(t *testing.T) {
 	d := NewCollector(2)
 
-	if !d.Add(diag(Info, "a")) || !d.Add(diag(Info, "b")) {
+	if !d.Add(diag(SeverityInfo, "a")) || !d.Add(diag(SeverityInfo, "b")) {
 		t.Error("Add must report true while under the ceiling")
 	}
-	if d.Add(diag(Info, "c")) {
+	if d.Add(diag(SeverityInfo, "c")) {
 		t.Error("Add must report false once the ceiling is reached")
 	}
 }
@@ -63,10 +63,10 @@ func TestDiagnosticsAddReportsAcceptance(t *testing.T) {
 // order, not the most severe and not the last.
 func TestDiagnosticsKeepsFirstInOrder(t *testing.T) {
 	d := NewCollector(3)
-	d.Add(diag(Info, "first"))
-	d.Add(diag(Critical, "second"))
-	d.Add(diag(Warning, "third"))
-	d.Add(diag(Critical, "dropped-even-though-critical"))
+	d.Add(diag(SeverityInfo, "first"))
+	d.Add(diag(SeverityCritical, "second"))
+	d.Add(diag(SeverityWarning, "third"))
+	d.Add(diag(SeverityCritical, "dropped-even-though-critical"))
 
 	got := d.All()
 	want := []string{"first", "second", "third"}
@@ -91,11 +91,11 @@ func TestDiagnosticsWorst(t *testing.T) {
 		wantAny  bool
 		useLimit int
 	}{
-		{"nothing recorded", nil, Info, false, 10},
-		{"one info", []Severity{Info}, Info, true, 10},
-		{"warning beats info", []Severity{Info, Warning}, Warning, true, 10},
-		{"critical beats all", []Severity{Warning, Critical, Error}, Critical, true, 10},
-		{"worst is first", []Severity{Critical, Info}, Critical, true, 10},
+		{"nothing recorded", nil, SeverityInfo, false, 10},
+		{"one info", []Severity{SeverityInfo}, SeverityInfo, true, 10},
+		{"warning beats info", []Severity{SeverityInfo, SeverityWarning}, SeverityWarning, true, 10},
+		{"critical beats all", []Severity{SeverityWarning, SeverityCritical, SeverityError}, SeverityCritical, true, 10},
+		{"worst is first", []Severity{SeverityCritical, SeverityInfo}, SeverityCritical, true, 10},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -118,11 +118,11 @@ func TestDiagnosticsWorst(t *testing.T) {
 // more severe, and the contract says so rather than pretending otherwise.
 func TestDiagnosticsWorstIgnoresTruncated(t *testing.T) {
 	d := NewCollector(1)
-	d.Add(diag(Info, "kept"))
-	d.Add(diag(Critical, "dropped"))
+	d.Add(diag(SeverityInfo, "kept"))
+	d.Add(diag(SeverityCritical, "dropped"))
 
 	got, _ := d.Worst()
-	if got != Info {
+	if got != SeverityInfo {
 		t.Errorf("Worst = %v, want Info: it must not inspect what it did not keep", got)
 	}
 	if d.Truncated() != 1 {
@@ -132,9 +132,9 @@ func TestDiagnosticsWorstIgnoresTruncated(t *testing.T) {
 
 func TestDiagnosticsReset(t *testing.T) {
 	d := NewCollector(2)
-	d.Add(diag(Critical, "a"))
-	d.Add(diag(Critical, "b"))
-	d.Add(diag(Critical, "dropped"))
+	d.Add(diag(SeverityCritical, "a"))
+	d.Add(diag(SeverityCritical, "b"))
+	d.Add(diag(SeverityCritical, "dropped"))
 
 	d.Reset()
 
@@ -145,9 +145,9 @@ func TestDiagnosticsReset(t *testing.T) {
 		t.Errorf("Truncated after Reset = %d, want 0: the count describes one batch", d.Truncated())
 	}
 	// The ceiling survives: a reset collector is still bounded.
-	d.Add(diag(Info, "x"))
-	d.Add(diag(Info, "y"))
-	d.Add(diag(Info, "z"))
+	d.Add(diag(SeverityInfo, "x"))
+	d.Add(diag(SeverityInfo, "y"))
+	d.Add(diag(SeverityInfo, "z"))
 	if d.Len() != 2 || d.Truncated() != 1 {
 		t.Errorf("after Reset: Len = %d, Truncated = %d, want 2 and 1", d.Len(), d.Truncated())
 	}
@@ -169,7 +169,7 @@ func TestDiagnosticsResetReleasesReferences(t *testing.T) {
 		// the concrete type is used rather than the error interface.
 		cause := &trackedError{msg: "held by the diagnostic"}
 		runtime.AddCleanup(cause, func(bool) { close(collected) }, true)
-		d.Add(NewDiagnostic(Error, "code", Path{}).WithCause(cause))
+		d.Add(NewDiagnostic(SeverityError, "code", Path{}).WithCause(cause))
 	}()
 
 	d.Reset()
@@ -195,7 +195,7 @@ func TestDiagnosticsResetReleasesReferences(t *testing.T) {
 func TestDiagnosticsZeroValue(t *testing.T) {
 	var d Collector
 
-	if d.Add(diag(Critical, "a")) {
+	if d.Add(diag(SeverityCritical, "a")) {
 		t.Error("the zero collector must keep nothing")
 	}
 	if d.Len() != 0 {
@@ -230,7 +230,7 @@ func TestDiagnosticsFirstAddDoesNotClaimTheCeiling(t *testing.T) {
 	const huge = 1 << 20
 
 	d := NewCollector(huge)
-	d.Add(diag(Warning, "one"))
+	d.Add(diag(SeverityWarning, "one"))
 
 	if got := cap(d.All()); got > initialDiagnostics {
 		t.Errorf("one diagnostic under a %d ceiling reserved %d entries, want at most %d",
@@ -249,7 +249,7 @@ func TestDiagnosticsGrowsPastTheInitialReservation(t *testing.T) {
 
 	d := NewCollector(limit)
 	for range limit + 10 {
-		d.Add(diag(Info, "c"))
+		d.Add(diag(SeverityInfo, "c"))
 	}
 
 	if d.Len() != limit {
@@ -263,7 +263,7 @@ func TestDiagnosticsGrowsPastTheInitialReservation(t *testing.T) {
 // A small ceiling reserves only what it can hold, rather than the cap.
 func TestDiagnosticsSmallLimitReservesLess(t *testing.T) {
 	d := NewCollector(2)
-	d.Add(diag(Info, "a"))
+	d.Add(diag(SeverityInfo, "a"))
 
 	if got := cap(d.All()); got != 2 {
 		t.Errorf("a ceiling of 2 reserved %d entries, want 2", got)

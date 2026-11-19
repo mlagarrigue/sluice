@@ -52,26 +52,31 @@ import (
 // a warning without aborting. FHIR keeps fatal and error apart for the same
 // reason; SARIF separates level from kind.
 //
-// The zero value is [Info], so a Diagnostic built without stating a severity
-// reports the least alarming one rather than an unnamed number.
+// The zero value is [SeverityInfo], so a Diagnostic built without stating a
+// severity reports the least alarming one rather than an unnamed number.
+//
+// The constants carry the type's name, as [OriginSQL] carries Origin's: a
+// bare Error would read as the error type at every call site.
 type Severity uint8
 
 const (
-	// Info is a remark that changes nothing: a default was applied, a value was
-	// normalised.
-	Info Severity = iota
+	// SeverityInfo is a remark that changes nothing: a default was applied,
+	// a value was normalised.
+	SeverityInfo Severity = iota
 
-	// Warning is a value that is suspicious but accepted — an unusual price, a
-	// quantity far from the historical range.
-	Warning
+	// SeverityWarning is a value that is suspicious but accepted — an
+	// unusual price, a quantity far from the historical range.
+	SeverityWarning
 
-	// Error is a business rule that was violated. The element keeps flowing;
-	// what to do about it is the caller's decision, not the operator's.
-	Error
+	// SeverityError is a business rule that was violated. The element keeps
+	// flowing; what to do about it is the caller's decision, not the
+	// operator's.
+	SeverityError
 
-	// Critical is a violation that makes the element unusable — a referenced
-	// entity that does not exist, a constraint the storage layer rejected.
-	Critical
+	// SeverityCritical is a violation that makes the element unusable — a
+	// referenced entity that does not exist, a constraint the storage layer
+	// rejected.
+	SeverityCritical
 )
 
 // String renders the severity for logs. An unknown value renders as its number
@@ -79,13 +84,13 @@ const (
 // visible instead of silently reading as Info.
 func (s Severity) String() string {
 	switch s {
-	case Info:
+	case SeverityInfo:
 		return "Info"
-	case Warning:
+	case SeverityWarning:
 		return "Warning"
-	case Error:
+	case SeverityError:
 		return "Error"
-	case Critical:
+	case SeverityCritical:
 		return "Critical"
 	default:
 		return "Severity(" + strconv.Itoa(int(s)) + ")"

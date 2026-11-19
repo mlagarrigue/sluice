@@ -31,7 +31,7 @@ func ExamplePath_HasPrefix() {
 }
 
 func ExampleNewDiagnostic() {
-	d := diagnostics.NewDiagnostic(diagnostics.Error, "Sales.Order.InvalidQty",
+	d := diagnostics.NewDiagnostic(diagnostics.SeverityError, "Sales.Order.InvalidQty",
 		diagnostics.Field("lines").Index(7).Field("saleQty")).
 		WithMessage("QtyMustBeOverZero", map[string]any{"min": 1}).
 		WithOrigin(diagnostics.OriginBusinessRule)
@@ -50,7 +50,7 @@ func ExampleDiagnostic_Unwrap() {
 	// the driver error kept for the log and unreachable from a serializer.
 	pqErr := errors.New(`pq: null value in column "client_id"`)
 
-	d := diagnostics.NewDiagnostic(diagnostics.Critical, "Sales.Order.ClientMustExist",
+	d := diagnostics.NewDiagnostic(diagnostics.SeverityCritical, "Sales.Order.ClientMustExist",
 		diagnostics.Field("clientID")).
 		WithOrigin(diagnostics.OriginSQL).
 		WithCause(pqErr)
@@ -71,7 +71,7 @@ func ExampleCollector() {
 	diags := diagnostics.NewCollector(2)
 
 	for i := range 5 {
-		diags.Add(diagnostics.NewDiagnostic(diagnostics.Warning, "Sales.Order.OddPrice",
+		diags.Add(diagnostics.NewDiagnostic(diagnostics.SeverityWarning, "Sales.Order.OddPrice",
 			diagnostics.Field("lines").Index(i).Field("unitPrice")))
 	}
 
@@ -87,8 +87,8 @@ func ExampleCollector() {
 
 func ExampleCollector_Worst() {
 	diags := diagnostics.NewCollector(10)
-	diags.Add(diagnostics.NewDiagnostic(diagnostics.Info, "Sales.Order.Normalised", diagnostics.Path{}))
-	diags.Add(diagnostics.NewDiagnostic(diagnostics.Critical, "Sales.Order.ClientMustExist", diagnostics.Field("clientID")))
+	diags.Add(diagnostics.NewDiagnostic(diagnostics.SeverityInfo, "Sales.Order.Normalised", diagnostics.Path{}))
+	diags.Add(diagnostics.NewDiagnostic(diagnostics.SeverityCritical, "Sales.Order.ClientMustExist", diagnostics.Field("clientID")))
 
 	// The question a caller actually asks: did anything serious happen here?
 	worst, found := diags.Worst()
@@ -105,7 +105,7 @@ func ExampleAffordance() {
 	at := diagnostics.Field("lines").Index(7).Field("saleQty")
 
 	diags := diagnostics.NewCollector(16)
-	diags.Add(diagnostics.NewDiagnostic(diagnostics.Error, "Sales.Order.InvalidQty", at).
+	diags.Add(diagnostics.NewDiagnostic(diagnostics.SeverityError, "Sales.Order.InvalidQty", at).
 		WithMessage("QtyMustBeOverZero", nil).
 		WithOrigin(diagnostics.OriginBusinessRule))
 

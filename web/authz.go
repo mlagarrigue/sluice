@@ -176,7 +176,7 @@ func Authorize(p Principal, a Authorizer) (Grant, diagnostics.Diagnostic, error)
 }
 
 func forbidden() diagnostics.Diagnostic {
-	return diagnostics.NewDiagnostic(diagnostics.Error, CodeForbidden, diagnostics.Path{}).
+	return diagnostics.NewDiagnostic(diagnostics.SeverityError, CodeForbidden, diagnostics.Path{}).
 		WithMessage("RequestForbidden", nil).
 		WithOrigin(diagnostics.OriginBusinessRule)
 }

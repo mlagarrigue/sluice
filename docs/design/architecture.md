@@ -471,7 +471,7 @@ from it.**
 ### The model adopted
 
 ```go
-type Severity uint8   // Info, Warning, Error, Critical
+type Severity uint8   // SeverityInfo, SeverityWarning, SeverityError, SeverityCritical
 
 type Diagnostic struct {
     Severity  Severity

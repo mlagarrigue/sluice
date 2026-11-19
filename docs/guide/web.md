@@ -29,7 +29,7 @@ through which action, with which fields:
 
 ```go
 at := diagnostics.Field("lines").Index(i).Field("saleQty") // where, in the business object
-refused := diagnostics.NewDiagnostic(diagnostics.Error, "Sales.Line.InvalidQty", at).
+refused := diagnostics.NewDiagnostic(diagnostics.SeverityError, "Sales.Line.InvalidQty", at).
     WithMessage("QtyMustBeOverZero", map[string]any{"min": 1}). // a message key, and its named arguments
     WithOrigin(diagnostics.OriginBusinessRule)
 correct := diagnostics.Affordance{

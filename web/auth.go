@@ -676,7 +676,7 @@ func escapeQuoted(s string) string {
 }
 
 func unauthenticated(messageID string, args map[string]any) diagnostics.Diagnostic {
-	return diagnostics.NewDiagnostic(diagnostics.Error, CodeUnauthenticated, diagnostics.Path{}).
+	return diagnostics.NewDiagnostic(diagnostics.SeverityError, CodeUnauthenticated, diagnostics.Path{}).
 		WithMessage(messageID, args).
 		WithOrigin(diagnostics.OriginProtocol)
 }

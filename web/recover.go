@@ -171,7 +171,7 @@ func TryHandler(observe func(error), answer func(http.ResponseWriter, *http.Requ
 // InternalReport is the body [Recover] writes, for a caller that wants to
 // answer a sentinel the same way.
 func InternalReport() Report {
-	return ReportOf(diagnostics.NewDiagnostic(diagnostics.Critical, CodeInternal, diagnostics.Path{}).
+	return ReportOf(diagnostics.NewDiagnostic(diagnostics.SeverityCritical, CodeInternal, diagnostics.Path{}).
 		WithMessage("RequestFailed", nil).
 		WithOrigin(diagnostics.OriginUnknown))
 }

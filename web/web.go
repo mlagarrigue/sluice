@@ -216,13 +216,13 @@ func QueryInt64(r *http.Request, name string) (int64, diagnostics.Diagnostic, bo
 }
 
 func missing(name string) diagnostics.Diagnostic {
-	return diagnostics.NewDiagnostic(diagnostics.Error, CodeMissingParam, diagnostics.Path{}.Field(name)).
+	return diagnostics.NewDiagnostic(diagnostics.SeverityError, CodeMissingParam, diagnostics.Path{}.Field(name)).
 		WithMessage("ParameterMissing", map[string]any{"name": name}).
 		WithOrigin(diagnostics.OriginProtocol)
 }
 
 func invalid(name, raw, kind string) diagnostics.Diagnostic {
-	return diagnostics.NewDiagnostic(diagnostics.Error, CodeInvalidParam, diagnostics.Path{}.Field(name)).
+	return diagnostics.NewDiagnostic(diagnostics.SeverityError, CodeInvalidParam, diagnostics.Path{}.Field(name)).
 		WithMessage("ParameterInvalid", map[string]any{"name": name, "got": raw, "want": kind}).
 		WithOrigin(diagnostics.OriginProtocol)
 }
@@ -252,7 +252,7 @@ func invalid(name, raw, kind string) diagnostics.Diagnostic {
 // (400, 413 or 415); [IsTransport] tells them apart.
 func Status(diags []diagnostics.Diagnostic) int {
 	for _, d := range diags {
-		if d.Severity >= diagnostics.Error {
+		if d.Severity >= diagnostics.SeverityError {
 			return http.StatusUnprocessableEntity
 		}
 	}

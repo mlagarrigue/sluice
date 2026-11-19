@@ -87,7 +87,7 @@ func Amend(current Line, want Amendment) (Line, []diagnostics.Diagnostic, []diag
 
 	switch {
 	case want.SaleQty <= 0:
-		refused := diagnostics.NewDiagnostic(diagnostics.Error, "Sales.Order.QtyMustBePositive", at).
+		refused := diagnostics.NewDiagnostic(diagnostics.SeverityError, "Sales.Order.QtyMustBePositive", at).
 			WithMessage("QtyMustBeOverZero", map[string]any{"got": want.SaleQty, "min": 1}).
 			WithOrigin(diagnostics.OriginBusinessRule)
 		correct := diagnostics.Affordance{
@@ -103,7 +103,7 @@ func Amend(current Line, want Amendment) (Line, []diagnostics.Diagnostic, []diag
 		was := current.SaleQty
 		current.SaleQty = want.SaleQty
 		return current, []diagnostics.Diagnostic{
-			diagnostics.NewDiagnostic(diagnostics.Warning, "Sales.Order.QtyFarAbovePrevious", at).
+			diagnostics.NewDiagnostic(diagnostics.SeverityWarning, "Sales.Order.QtyFarAbovePrevious", at).
 				WithMessage("QtyUnusuallyLarge", map[string]any{"was": was, "now": want.SaleQty}).
 				WithOrigin(diagnostics.OriginBusinessRule),
 		}, nil
@@ -333,7 +333,7 @@ func lineKeys(group []*gateway.Call[request, Result]) (orderIDs []int64, indexes
 func notFound(want Amendment) Result {
 	at := diagnostics.Path{}.Field("orderId")
 	return Result{Diagnostics: []diagnostics.Diagnostic{
-		diagnostics.NewDiagnostic(diagnostics.Critical, "Sales.Order.LineNotFound", at).
+		diagnostics.NewDiagnostic(diagnostics.SeverityCritical, "Sales.Order.LineNotFound", at).
 			WithMessage("LineNotFound", map[string]any{
 				"orderId": want.OrderID, "lineIndex": want.Index,
 			}).
@@ -343,7 +343,7 @@ func notFound(want Amendment) Result {
 
 func hasError(ds []diagnostics.Diagnostic) bool {
 	for _, d := range ds {
-		if d.Severity >= diagnostics.Error {
+		if d.Severity >= diagnostics.SeverityError {
 			return true
 		}
 	}

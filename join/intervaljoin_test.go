@@ -270,8 +270,8 @@ func TestIntervalJoinOverflowDropNewest(t *testing.T) {
 	if diags.Len() != 1 {
 		t.Errorf("%d diagnostics, want exactly 1 — reported once, not per drop", diags.Len())
 	}
-	if sev, ok := diags.Worst(); !ok || sev != diagnostics.Critical {
-		t.Errorf("worst severity %v, want diagnostics.Critical", sev)
+	if sev, ok := diags.Worst(); !ok || sev != diagnostics.SeverityCritical {
+		t.Errorf("worst severity %v, want diagnostics.SeverityCritical", sev)
 	}
 }
 

@@ -105,7 +105,7 @@ func bearer(raw []byte) (token, messageID string) {
 // no refusal can forget the header (RFC 9110 §11.6.1). The field name is
 // lowercase, as every response header this package writes.
 func refuseUnauthenticated(e *Exchange, realm, messageID string) {
-	d := diagnostics.NewDiagnostic(diagnostics.Error, web.CodeUnauthenticated, diagnostics.Path{}).
+	d := diagnostics.NewDiagnostic(diagnostics.SeverityError, web.CodeUnauthenticated, diagnostics.Path{}).
 		WithMessage(messageID, nil).
 		WithOrigin(diagnostics.OriginProtocol)
 	e.Headers = append(e.Headers, httpstream.Header{

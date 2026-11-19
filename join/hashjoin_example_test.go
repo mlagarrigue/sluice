@@ -53,7 +53,7 @@ func ExampleHashJoin_overflow() {
 		func(c customer) int { return c.ID },
 		func(o order, c customer) string { return c.Name },
 		join.BuildLimit{MaxEntries: 1, OnOverflow: sluice.DropNewest, Report: func(limit, held int) {
-			diags.Add(diagnostics.NewDiagnostic(diagnostics.Critical, "Sluice.Join.BuildTableOverflow", diagnostics.Path{}).
+			diags.Add(diagnostics.NewDiagnostic(diagnostics.SeverityCritical, "Sluice.Join.BuildTableOverflow", diagnostics.Path{}).
 				WithMessage("BuildTableOverflow", map[string]any{"limit": limit, "held": held}))
 		}})
 

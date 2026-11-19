@@ -172,7 +172,7 @@ func NewWithStoreTimeout(store Store, batch int, within, storeTimeout time.Durat
 				key := LineKey{OrderID: c.In.OrderID, Index: c.In.Index}
 				line, ok := found[key]
 				if !ok {
-					st.reject(diagnostics.Critical, "Sales.Line.NotFound", "LineDoesNotExist",
+					st.reject(diagnostics.SeverityCritical, "Sales.Line.NotFound", "LineDoesNotExist",
 						pathOf(c.In), diagnostics.OriginSQL, diagnostics.Affordance{})
 					continue
 				}
@@ -254,19 +254,19 @@ func validate(a Amendment, st *state) bool {
 	at := pathOf(a)
 
 	if a.Index < 0 {
-		st.reject(diagnostics.Error, "Sales.Line.BadIndex", "IndexMustNotBeNegative",
+		st.reject(diagnostics.SeverityError, "Sales.Line.BadIndex", "IndexMustNotBeNegative",
 			diagnostics.Field("lines").Index(a.Index), diagnostics.OriginBusinessRule,
 			diagnostics.Affordance{})
 	}
 	// The store keeps the index as an int4 (pgstore.go): one past its range
 	// would wrap into another line's index rather than fail.
 	if a.Index > math.MaxInt32 {
-		st.reject(diagnostics.Error, "Sales.Line.BadIndex", "IndexTooLarge",
+		st.reject(diagnostics.SeverityError, "Sales.Line.BadIndex", "IndexTooLarge",
 			diagnostics.Field("lines").Index(a.Index), diagnostics.OriginBusinessRule,
 			diagnostics.Affordance{})
 	}
 	if a.SaleQty <= 0 {
-		st.reject(diagnostics.Error, "Sales.Line.InvalidQty", "QtyMustBeOverZero",
+		st.reject(diagnostics.SeverityError, "Sales.Line.InvalidQty", "QtyMustBeOverZero",
 			at, diagnostics.OriginBusinessRule,
 			diagnostics.Affordance{
 				Path:   at,
@@ -279,7 +279,7 @@ func validate(a Amendment, st *state) bool {
 			}))
 	}
 	if a.SaleQty > maxQty {
-		st.reject(diagnostics.Warning, "Sales.Line.QtyAboveLimit", "QtyNeedsApproval",
+		st.reject(diagnostics.SeverityWarning, "Sales.Line.QtyAboveLimit", "QtyNeedsApproval",
 			at, diagnostics.OriginBusinessRule,
 			diagnostics.Affordance{
 				Path:   at,

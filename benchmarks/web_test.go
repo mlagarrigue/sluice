@@ -69,7 +69,7 @@ func answer(order int64, line int, qty int64) (int, any) {
 	at := diagnostics.Path{}.Field("saleQty")
 	return http.StatusUnprocessableEntity, web.Report{
 		Problems: web.Problems([]diagnostics.Diagnostic{
-			diagnostics.NewDiagnostic(diagnostics.Error, "Sales.Order.InvalidQty", at).
+			diagnostics.NewDiagnostic(diagnostics.SeverityError, "Sales.Order.InvalidQty", at).
 				WithMessage("QtyMustBeOverZero", map[string]any{"min": 1}),
 		}),
 		Remedies: web.Remedies([]diagnostics.Affordance{{

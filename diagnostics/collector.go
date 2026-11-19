@@ -133,7 +133,7 @@ func (d *Collector) Truncated() int { return d.truncated }
 // non-zero [Collector.Truncated] may hide something worse.
 func (d *Collector) Worst() (Severity, bool) {
 	if len(d.items) == 0 {
-		return Info, false
+		return SeverityInfo, false
 	}
 	worst := d.items[0].Severity
 	for _, it := range d.items[1:] {

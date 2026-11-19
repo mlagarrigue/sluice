@@ -71,7 +71,7 @@ func ExampleWriteJSON() {
 
 // One or more diagnostics, in the envelope a rejection travels in.
 func ExampleReportOf() {
-	d := diagnostics.NewDiagnostic(diagnostics.Error, "Sales.Order.InvalidQty", diagnostics.Field("qty"))
+	d := diagnostics.NewDiagnostic(diagnostics.SeverityError, "Sales.Order.InvalidQty", diagnostics.Field("qty"))
 	rep := web.ReportOf(d)
 	fmt.Println(len(rep.Problems), rep.Problems[0].Code, rep.Problems[0].Path)
 	// Output: 1 Sales.Order.InvalidQty /qty
@@ -81,7 +81,7 @@ func ExampleReportOf() {
 // path as a JSON pointer (RFC 6901).
 func ExampleProblems() {
 	ps := web.Problems([]diagnostics.Diagnostic{
-		diagnostics.NewDiagnostic(diagnostics.Warning, "Sales.Order.UnusualQty", diagnostics.Field("lines").Index(2).Field("qty")),
+		diagnostics.NewDiagnostic(diagnostics.SeverityWarning, "Sales.Order.UnusualQty", diagnostics.Field("lines").Index(2).Field("qty")),
 	})
 	fmt.Println(ps[0].Severity, ps[0].Code, ps[0].Path)
 	// Output: Warning Sales.Order.UnusualQty /lines/2/qty

@@ -158,7 +158,7 @@ func TestWarningAlsoCarriesARemedy(t *testing.T) {
 	if n := len(got.Affordances[0].Inputs); n != 2 {
 		t.Errorf("the approval action takes %d inputs, want 2", n)
 	}
-	if got.Diagnostics[0].Severity != diagnostics.Warning {
+	if got.Diagnostics[0].Severity != diagnostics.SeverityWarning {
 		t.Errorf("severity = %v, want Warning", got.Diagnostics[0].Severity)
 	}
 }
@@ -181,7 +181,7 @@ func TestMissingLineIsCriticalFromSQL(t *testing.T) {
 		t.Fatal("an amendment to a missing line was applied")
 	}
 	d := got.Diagnostics[0]
-	if d.Severity != diagnostics.Critical || d.Origin != diagnostics.OriginSQL {
+	if d.Severity != diagnostics.SeverityCritical || d.Origin != diagnostics.OriginSQL {
 		t.Errorf("diagnostic = %v/%v, want Critical/OriginSQL", d.Severity, d.Origin)
 	}
 }

@@ -217,7 +217,7 @@ func (d *ptrDiagnostic) setOrigin(o diagnostics.Origin) { d.Origin = o }
 var diagSink diagnostics.Diagnostic
 
 func BenchmarkDiagnosticReceiver(b *testing.B) {
-	tmpl := diagnostics.NewDiagnostic(diagnostics.Error, "Sales.Order.InvalidQty",
+	tmpl := diagnostics.NewDiagnostic(diagnostics.SeverityError, "Sales.Order.InvalidQty",
 		diagnostics.Field("lines").Index(7).Field("saleQty"))
 	args := map[string]any{"min": 1}
 

@@ -27,10 +27,10 @@ func TestAmend(t *testing.T) {
 		remedy   bool
 	}{
 		{"an ordinary change is applied", current, 8, 8, "", 0, false},
-		{"zero is refused", current, 0, 5, "Sales.Order.QtyMustBePositive", diagnostics.Error, true},
-		{"a negative is refused", current, -3, 5, "Sales.Order.QtyMustBePositive", diagnostics.Error, true},
+		{"zero is refused", current, 0, 5, "Sales.Order.QtyMustBePositive", diagnostics.SeverityError, true},
+		{"a negative is refused", current, -3, 5, "Sales.Order.QtyMustBePositive", diagnostics.SeverityError, true},
 		{"ten times is still ordinary", current, 50, 50, "", 0, false},
-		{"over ten times is applied and flagged", current, 51, 51, "Sales.Order.QtyFarAbovePrevious", diagnostics.Warning, false},
+		{"over ten times is applied and flagged", current, 51, 51, "Sales.Order.QtyFarAbovePrevious", diagnostics.SeverityWarning, false},
 		{"from zero nothing is far above", Line{OrderID: 7, Index: 2}, 1000, 1000, "", 0, false},
 	}
 	for _, tc := range tests {
@@ -216,7 +216,7 @@ func TestStreamHandler(t *testing.T) {
 			return Result{}, errors.New("backend down")
 		}
 		line, diags, remedies := Amend(Line{OrderID: r.want.OrderID, Index: r.want.Index, SaleQty: 5}, r.want)
-		return Result{Line: line, Accepted: len(diags) == 0 || diags[0].Severity < diagnostics.Error, Diagnostics: diags, Affordances: remedies}, nil
+		return Result{Line: line, Accepted: len(diags) == 0 || diags[0].Severity < diagnostics.SeverityError, Diagnostics: diags, Affordances: remedies}, nil
 	})
 	v := tokens{"acme": {Subject: "u", Tenant: "acme"}, "nobody": {Subject: "u"}}
 	h := StreamHandler(s, v, "orders", web.ClaimAuthorizer{}, 5*time.Second)

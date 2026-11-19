@@ -243,19 +243,19 @@ func (rt *Router) Route(exchanges []Exchange) {
 			// §15.6.2);
 			// a standard one the table lacks is known and refused per path,
 			// 405 or 404, as §15.5.6 words it.
-			e.Refuse(501, diagnostics.NewDiagnostic(diagnostics.Error, CodeMethodNotImplemented, diagnostics.Path{}).
+			e.Refuse(501, diagnostics.NewDiagnostic(diagnostics.SeverityError, CodeMethodNotImplemented, diagnostics.Path{}).
 				WithMessage("MethodNotImplemented", map[string]any{"method": method}).
 				WithOrigin(diagnostics.OriginProtocol))
 		case allowed != nil:
 			allow := allowField(allowed)
 			e.Headers = append(e.Headers, allow)
-			e.Refuse(405, diagnostics.NewDiagnostic(diagnostics.Error, CodeMethodNotAllowed, diagnostics.Path{}).
+			e.Refuse(405, diagnostics.NewDiagnostic(diagnostics.SeverityError, CodeMethodNotAllowed, diagnostics.Path{}).
 				WithMessage("MethodNotAllowed", map[string]any{
 					"method": method, "allow": string(allow.Value),
 				}).
 				WithOrigin(diagnostics.OriginProtocol))
 		default:
-			e.Refuse(404, diagnostics.NewDiagnostic(diagnostics.Error, CodeNoRoute, diagnostics.Path{}).
+			e.Refuse(404, diagnostics.NewDiagnostic(diagnostics.SeverityError, CodeNoRoute, diagnostics.Path{}).
 				WithMessage("NoRoute", map[string]any{"target": string(path)}).
 				WithOrigin(diagnostics.OriginProtocol))
 		}
@@ -368,7 +368,7 @@ func PathInt64(e *Exchange, i int, name string) (int64, bool) {
 
 // refuseInteger refuses e for wildcard i not reading as an integer.
 func refuseInteger(e *Exchange, i int, name string) {
-	e.Refuse(400, diagnostics.NewDiagnostic(diagnostics.Error, web.CodeInvalidParam, diagnostics.Path{}.Field(name)).
+	e.Refuse(400, diagnostics.NewDiagnostic(diagnostics.SeverityError, web.CodeInvalidParam, diagnostics.Path{}.Field(name)).
 		WithMessage("ParameterInvalid", map[string]any{
 			"name": name, "got": string(e.Params[i]), "want": "integer",
 		}).

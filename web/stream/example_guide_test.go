@@ -57,7 +57,7 @@ func ExampleRender() {
 		{Method: []byte("GET"), Target: []byte("/a")},
 		{Method: []byte("GET"), Target: []byte("/b")},
 	}})
-	ex[1].Refuse(409, diagnostics.NewDiagnostic(diagnostics.Error, "Sales.Order.Locked", diagnostics.Path{}))
+	ex[1].Refuse(409, diagnostics.NewDiagnostic(diagnostics.SeverityError, "Sales.Order.Locked", diagnostics.Path{}))
 	out := stream.Render(ex, func(i int) (int, any) { return 200, map[string]int{"i": i} })
 	for _, r := range out.Items {
 		fmt.Println(r.Status)

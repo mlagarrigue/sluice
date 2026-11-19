@@ -69,7 +69,7 @@ func BenchmarkPathHasPrefix(b *testing.B) {
 func BenchmarkDiagnosticsFirstAdd(b *testing.B) {
 	const huge = 1 << 20
 
-	d := diagnostics.NewDiagnostic(diagnostics.Error, "Sales.Order.InvalidQty",
+	d := diagnostics.NewDiagnostic(diagnostics.SeverityError, "Sales.Order.InvalidQty",
 		diagnostics.Field("lines").Index(7).Field("saleQty"))
 
 	b.ReportAllocs()
@@ -85,7 +85,7 @@ func BenchmarkDiagnosticsFirstAdd(b *testing.B) {
 func BenchmarkDiagnosticsFill(b *testing.B) {
 	const limit = 1000
 
-	d := diagnostics.NewDiagnostic(diagnostics.Warning, "Sales.Order.OddPrice",
+	d := diagnostics.NewDiagnostic(diagnostics.SeverityWarning, "Sales.Order.OddPrice",
 		diagnostics.Field("lines").Index(3).Field("unitPrice"))
 
 	b.ReportAllocs()
@@ -106,7 +106,7 @@ func BenchmarkDiagnosticsReuse(b *testing.B) {
 		perBatch = 20
 	)
 
-	d := diagnostics.NewDiagnostic(diagnostics.Warning, "Sales.Order.OddPrice", diagnostics.Field("price"))
+	d := diagnostics.NewDiagnostic(diagnostics.SeverityWarning, "Sales.Order.OddPrice", diagnostics.Field("price"))
 	diags := diagnostics.NewCollector(limit)
 
 	b.ReportAllocs()
@@ -125,7 +125,7 @@ func BenchmarkDiagnosticsReuse(b *testing.B) {
 func BenchmarkDiagnosticsOverCeiling(b *testing.B) {
 	const limit = 10
 
-	d := diagnostics.NewDiagnostic(diagnostics.Error, "Sales.Order.InvalidQty", diagnostics.Field("qty"))
+	d := diagnostics.NewDiagnostic(diagnostics.SeverityError, "Sales.Order.InvalidQty", diagnostics.Field("qty"))
 	diags := diagnostics.NewCollector(limit)
 	for range limit {
 		diags.Add(d) // fill it first: the loop below is the truncating path

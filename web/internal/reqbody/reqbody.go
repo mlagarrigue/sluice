@@ -28,7 +28,7 @@ func IntoStruct(dst any) bool {
 // the request the endpoint reads — with a message of its own so the client
 // is told what was wrong with JSON that parsed.
 func Null(code string) diagnostics.Diagnostic {
-	return diagnostics.NewDiagnostic(diagnostics.Error, code, diagnostics.Path{}).
+	return diagnostics.NewDiagnostic(diagnostics.SeverityError, code, diagnostics.Path{}).
 		WithMessage("RequestBodyNull", nil).
 		WithOrigin(diagnostics.OriginProtocol)
 }
@@ -115,7 +115,7 @@ func foldEqual[T string | []byte](v T, start, end int, want string) bool {
 // user's cookies; a JSON label is what forces the preflight. The client is
 // told what is accepted, not what it sent: the value is its own.
 func MediaType(code string) diagnostics.Diagnostic {
-	return diagnostics.NewDiagnostic(diagnostics.Error, code, diagnostics.Path{}).
+	return diagnostics.NewDiagnostic(diagnostics.SeverityError, code, diagnostics.Path{}).
 		WithMessage("RequestBodyMediaType", map[string]any{"accepted": "application/json"}).
 		WithOrigin(diagnostics.OriginProtocol)
 }
@@ -125,7 +125,7 @@ func MediaType(code string) diagnostics.Diagnostic {
 // coding accepted, identity — none — as the Accept-Encoding field of the
 // answer tells it (RFC 9110 §12.5.3).
 func ContentEncoding(code string) diagnostics.Diagnostic {
-	return diagnostics.NewDiagnostic(diagnostics.Error, code, diagnostics.Path{}).
+	return diagnostics.NewDiagnostic(diagnostics.SeverityError, code, diagnostics.Path{}).
 		WithMessage("RequestBodyContentEncoding", map[string]any{"accepted": "identity"}).
 		WithOrigin(diagnostics.OriginProtocol)
 }
@@ -205,7 +205,7 @@ func Decode(r io.Reader, limit int64, dst any, code, tooLarge string) (diagnosti
 		if d, read := readFailure(err, limit, code, tooLarge); read {
 			return d, false
 		}
-		return diagnostics.NewDiagnostic(diagnostics.Error, code, diagnostics.Path{}).
+		return diagnostics.NewDiagnostic(diagnostics.SeverityError, code, diagnostics.Path{}).
 			WithMessage("RequestBodyMalformed", MalformedArgs(err)).
 			WithOrigin(diagnostics.OriginProtocol).
 			WithCause(err), false
@@ -231,7 +231,7 @@ func Decode(r io.Reader, limit int64, dst any, code, tooLarge string) (diagnosti
 		if d, read := readFailure(err, limit, code, tooLarge); read {
 			return d, false
 		}
-		return diagnostics.NewDiagnostic(diagnostics.Error, code, diagnostics.Path{}).
+		return diagnostics.NewDiagnostic(diagnostics.SeverityError, code, diagnostics.Path{}).
 			WithMessage("RequestBodyTrailingContent", nil).
 			WithOrigin(diagnostics.OriginProtocol), false
 	}
@@ -248,7 +248,7 @@ func readFailure(err error, limit int64, code, tooLarge string) (diagnostics.Dia
 		return TooLarge(tooLarge, limit), true
 	}
 	if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
-		return diagnostics.NewDiagnostic(diagnostics.Error, code, diagnostics.Path{}).
+		return diagnostics.NewDiagnostic(diagnostics.SeverityError, code, diagnostics.Path{}).
 			WithMessage("RequestBodyTimeout", nil).
 			WithOrigin(diagnostics.OriginProtocol).
 			WithCause(err), true
@@ -258,7 +258,7 @@ func readFailure(err error, limit int64, code, tooLarge string) (diagnostics.Dia
 
 // TooLarge is the refusal of a body past limit bytes, under code.
 func TooLarge(code string, limit int64) diagnostics.Diagnostic {
-	return diagnostics.NewDiagnostic(diagnostics.Error, code, diagnostics.Path{}).
+	return diagnostics.NewDiagnostic(diagnostics.SeverityError, code, diagnostics.Path{}).
 		WithMessage("RequestBodyTooLarge", map[string]any{"limit": limit}).
 		WithOrigin(diagnostics.OriginProtocol)
 }
@@ -269,7 +269,7 @@ func TooLarge(code string, limit int64) diagnostics.Diagnostic {
 // JSON but its connection, and the server never saw enough bytes to say
 // anything about the document itself.
 func Truncated(code string) diagnostics.Diagnostic {
-	return diagnostics.NewDiagnostic(diagnostics.Error, code, diagnostics.Path{}).
+	return diagnostics.NewDiagnostic(diagnostics.SeverityError, code, diagnostics.Path{}).
 		WithMessage("RequestBodyTruncated", nil).
 		WithOrigin(diagnostics.OriginProtocol)
 }

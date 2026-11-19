@@ -74,7 +74,7 @@ func amend(order, qty int64) ([]diagnostics.Diagnostic, []diagnostics.Affordance
 	if qty > 0 {
 		return nil, nil
 	}
-	refused := diagnostics.NewDiagnostic(diagnostics.Error, "Sales.Order.InvalidQty", at).
+	refused := diagnostics.NewDiagnostic(diagnostics.SeverityError, "Sales.Order.InvalidQty", at).
 		WithMessage("QtyMustBeOverZero", map[string]any{"min": 1})
 	correct := diagnostics.Affordance{
 		Path: at, Action: "Sales.Order.CorrectQty", Method: "PATCH",
@@ -88,7 +88,7 @@ func amend(order, qty int64) ([]diagnostics.Diagnostic, []diagnostics.Affordance
 // the status stays 200 and the warning travels in the body.
 func ExampleStatus_warning() {
 	diags := []diagnostics.Diagnostic{
-		diagnostics.NewDiagnostic(diagnostics.Warning, "Sales.Order.UnusualQty", diagnostics.Path{}.Field("saleQty")).
+		diagnostics.NewDiagnostic(diagnostics.SeverityWarning, "Sales.Order.UnusualQty", diagnostics.Path{}.Field("saleQty")).
 			WithMessage("QtyFarFromHistoricalRange", nil),
 	}
 	fmt.Println(web.Status(diags))

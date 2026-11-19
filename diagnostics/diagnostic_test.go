@@ -13,10 +13,10 @@ func TestSeverityString(t *testing.T) {
 		sev  Severity
 		want string
 	}{
-		{Info, "Info"},
-		{Warning, "Warning"},
-		{Error, "Error"},
-		{Critical, "Critical"},
+		{SeverityInfo, "Info"},
+		{SeverityWarning, "Warning"},
+		{SeverityError, "Error"},
+		{SeverityCritical, "Critical"},
 		{Severity(9), "Severity(9)"},
 	}
 	for _, tc := range tests {
@@ -32,7 +32,7 @@ func TestSeverityString(t *testing.T) {
 // without stating one does not read as Critical.
 func TestSeverityZeroIsInfo(t *testing.T) {
 	var s Severity
-	if s != Info {
+	if s != SeverityInfo {
 		t.Errorf("zero Severity = %v, want Info", s)
 	}
 }
@@ -66,12 +66,12 @@ func TestDiagnosticError(t *testing.T) {
 	}{
 		{
 			"with a path",
-			NewDiagnostic(Error, "Sales.Order.InvalidQty", Field("lines").Index(7).Field("saleQty")),
+			NewDiagnostic(SeverityError, "Sales.Order.InvalidQty", Field("lines").Index(7).Field("saleQty")),
 			"Error Sales.Order.InvalidQty at lines[7].saleQty",
 		},
 		{
 			"at the root",
-			NewDiagnostic(Critical, "Sales.Order.NotFound", Path{}),
+			NewDiagnostic(SeverityCritical, "Sales.Order.NotFound", Path{}),
 			"Critical Sales.Order.NotFound",
 		},
 	}
@@ -85,7 +85,7 @@ func TestDiagnosticError(t *testing.T) {
 }
 
 func TestDiagnosticWithers(t *testing.T) {
-	base := NewDiagnostic(Warning, "Sales.Order.OddPrice", Field("price"))
+	base := NewDiagnostic(SeverityWarning, "Sales.Order.OddPrice", Field("price"))
 	args := map[string]any{"expected": 10}
 
 	d := base.
@@ -120,7 +120,7 @@ func TestDiagnosticWithers(t *testing.T) {
 // exported, writes none of them.
 func TestDiagnosticCauseIsWrappedNotExported(t *testing.T) {
 	inner := &leakyError{Query: "insert into orders", Detail: "null value in column client_id"}
-	d := NewDiagnostic(Critical, "Sales.Order.ClientMustExist", Field("clientID")).
+	d := NewDiagnostic(SeverityCritical, "Sales.Order.ClientMustExist", Field("clientID")).
 		WithCause(inner)
 
 	if got := d.Unwrap(); !errors.Is(got, inner) {
@@ -158,7 +158,7 @@ type leakyError struct {
 func (e *leakyError) Error() string { return e.Detail }
 
 func TestDiagnosticNoCause(t *testing.T) {
-	d := NewDiagnostic(Info, "Sales.Order.Normalised", Path{})
+	d := NewDiagnostic(SeverityInfo, "Sales.Order.Normalised", Path{})
 	if err := d.Unwrap(); err != nil {
 		t.Errorf("Unwrap on a causeless diagnostic = %v, want nil", err)
 	}

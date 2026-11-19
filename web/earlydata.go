@@ -51,7 +51,7 @@ func EarlyData(allow func(*http.Request) bool, next http.Handler) http.Handler {
 // [CodeTooEarly], saying nothing about the request beyond that it came too
 // early.
 func TooEarlyReport() Report {
-	return ReportOf(diagnostics.NewDiagnostic(diagnostics.Error, CodeTooEarly, diagnostics.Path{}).
+	return ReportOf(diagnostics.NewDiagnostic(diagnostics.SeverityError, CodeTooEarly, diagnostics.Path{}).
 		WithMessage("RequestTooEarly", nil).
 		WithOrigin(diagnostics.OriginProtocol))
 }

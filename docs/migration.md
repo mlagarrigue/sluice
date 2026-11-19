@@ -18,6 +18,14 @@ behavior that keep the signatures — a value now refused — come last.
 
 ## Since v0.5.1
 
+### Diagnostics: `diagnostics`
+
+- **The severities carry their type's name** (feat(diagnostics)!: severities named after their type):
+  `Info`, `Warning`, `Error` and `Critical` are renamed `SeverityInfo`, `SeverityWarning`,
+  `SeverityError` and `SeverityCritical`, as `OriginSQL` names its `Origin`; a bare
+  `diagnostics.Error`, now gone, read as the `error` type. Rename the constants; their values, their order and what `String` prints are
+  unchanged.
+
 ### Joins: `join`
 
 - **`StreamTable` becomes `HashJoin`, `Interval` becomes `IntervalJoin`, `IntervalSpec.Merge` becomes
@@ -50,7 +58,7 @@ behavior that keep the signatures — a value now refused — come last.
 ### Long jobs: `phase`
 
 - **`Job.Logic` becomes `LogicVersion`, `Report.Restarted` becomes `RestartReason`,
-  `DirStore.Lease` becomes `LeaseTTL`** (refactor(phase)!: names that say what they hold, ADR 0027):
+  `DirStore.Lease` becomes `LeaseTTL`** (`333729d`):
   `Record.Logic` follows `Job`. Rename the fields; a record stored before keeps its JSON key `logic`
   and its fingerprint, so a job resumes where it was.
 - **`Lease` gains `Lost() <-chan struct{}`** (`8e23183`): a

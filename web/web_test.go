@@ -311,20 +311,20 @@ func TestStatus(t *testing.T) {
 	}{
 		{"none", nil, http.StatusOK},
 		{"info only", []diagnostics.Diagnostic{
-			diagnostics.NewDiagnostic(diagnostics.Info, "X.Normalised", at),
+			diagnostics.NewDiagnostic(diagnostics.SeverityInfo, "X.Normalised", at),
 		}, http.StatusOK},
 		{"warning only", []diagnostics.Diagnostic{
-			diagnostics.NewDiagnostic(diagnostics.Warning, "X.Unusual", at),
+			diagnostics.NewDiagnostic(diagnostics.SeverityWarning, "X.Unusual", at),
 		}, http.StatusOK},
 		{"error", []diagnostics.Diagnostic{
-			diagnostics.NewDiagnostic(diagnostics.Error, "X.Invalid", at),
+			diagnostics.NewDiagnostic(diagnostics.SeverityError, "X.Invalid", at),
 		}, http.StatusUnprocessableEntity},
 		{"critical", []diagnostics.Diagnostic{
-			diagnostics.NewDiagnostic(diagnostics.Critical, "X.Gone", at),
+			diagnostics.NewDiagnostic(diagnostics.SeverityCritical, "X.Gone", at),
 		}, http.StatusUnprocessableEntity},
 		{"warning beside an error", []diagnostics.Diagnostic{
-			diagnostics.NewDiagnostic(diagnostics.Warning, "X.Unusual", at),
-			diagnostics.NewDiagnostic(diagnostics.Error, "X.Invalid", at),
+			diagnostics.NewDiagnostic(diagnostics.SeverityWarning, "X.Unusual", at),
+			diagnostics.NewDiagnostic(diagnostics.SeverityError, "X.Invalid", at),
 		}, http.StatusUnprocessableEntity},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -337,8 +337,8 @@ func TestStatus(t *testing.T) {
 
 func TestIsTransport(t *testing.T) {
 	at := diagnostics.Path{}
-	transport := diagnostics.NewDiagnostic(diagnostics.Error, web.CodeMalformedBody, at)
-	business := diagnostics.NewDiagnostic(diagnostics.Error, "Sales.Order.InvalidQty", at)
+	transport := diagnostics.NewDiagnostic(diagnostics.SeverityError, web.CodeMalformedBody, at)
+	business := diagnostics.NewDiagnostic(diagnostics.SeverityError, "Sales.Order.InvalidQty", at)
 
 	if !web.IsTransport(transport) {
 		t.Error("a malformed-body diagnostic was not recognised as transport")
@@ -365,7 +365,7 @@ func TestTransportStatus(t *testing.T) {
 		{web.CodeInvalidParam, http.StatusBadRequest},
 		{"Sales.Order.InvalidQty", http.StatusUnprocessableEntity},
 	} {
-		if got := web.TransportStatus(diagnostics.NewDiagnostic(diagnostics.Error, tc.code, at)); got != tc.want {
+		if got := web.TransportStatus(diagnostics.NewDiagnostic(diagnostics.SeverityError, tc.code, at)); got != tc.want {
 			t.Errorf("TransportStatus(%s) = %d, want %d", tc.code, got, tc.want)
 		}
 	}
@@ -377,7 +377,7 @@ func TestProblemsAndRemediesSharePaths(t *testing.T) {
 	at := diagnostics.Path{}.Field("lines").Index(2).Field("saleQty")
 
 	problems := web.Problems([]diagnostics.Diagnostic{
-		diagnostics.NewDiagnostic(diagnostics.Error, "Sales.Order.InvalidQty", at).
+		diagnostics.NewDiagnostic(diagnostics.SeverityError, "Sales.Order.InvalidQty", at).
 			WithMessage("QtyMustBeOverZero", map[string]any{"min": 1}),
 	})
 	remedies := web.Remedies([]diagnostics.Affordance{{
@@ -559,8 +559,8 @@ func TestDecodeJSONRefusesNullIntoAStruct(t *testing.T) {
 // ReportOf is the early-return refusal in one call: the diagnostics rendered
 // as problems, in order, and no remedies.
 func TestReportOf(t *testing.T) {
-	a := diagnostics.NewDiagnostic(diagnostics.Error, web.CodeMissingParam, diagnostics.Path{}.Field("order"))
-	b := diagnostics.NewDiagnostic(diagnostics.Warning, "Rule.Soft", diagnostics.Path{})
+	a := diagnostics.NewDiagnostic(diagnostics.SeverityError, web.CodeMissingParam, diagnostics.Path{}.Field("order"))
+	b := diagnostics.NewDiagnostic(diagnostics.SeverityWarning, "Rule.Soft", diagnostics.Path{})
 	r := web.ReportOf(a, b)
 	if len(r.Problems) != 2 || r.Problems[0].Code != web.CodeMissingParam || r.Problems[1].Code != "Rule.Soft" {
 		t.Errorf("problems = %+v", r.Problems)

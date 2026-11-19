@@ -16,7 +16,7 @@ func TestRenderAnswersPositionally(t *testing.T) {
 		exchangeFor("GET", "/b"),
 		exchangeFor("GET", "/c"),
 	}
-	ex[1].Refuse(404, diagnostics.NewDiagnostic(diagnostics.Error, CodeNoRoute, diagnostics.Path{}).
+	ex[1].Refuse(404, diagnostics.NewDiagnostic(diagnostics.SeverityError, CodeNoRoute, diagnostics.Path{}).
 		WithMessage("NoRoute", nil))
 
 	served := 0
@@ -177,7 +177,7 @@ func TestRenderOpenRanksTheServedExchanges(t *testing.T) {
 		exchangeFor("GET", "/d"),
 	}
 	refuse := func(e *Exchange) {
-		e.Refuse(404, diagnostics.NewDiagnostic(diagnostics.Error, CodeNoRoute, diagnostics.Path{}).
+		e.Refuse(404, diagnostics.NewDiagnostic(diagnostics.SeverityError, CodeNoRoute, diagnostics.Path{}).
 			WithMessage("NoRoute", nil))
 	}
 	refuse(&ex[0])
@@ -204,7 +204,7 @@ func TestRenderOpenRanksTheServedExchanges(t *testing.T) {
 // refusal and on a served error alike.
 func TestRenderSendsTheDefensiveHeaders(t *testing.T) {
 	refused := exchangeFor("GET", "/a")
-	refused.Refuse(401, diagnostics.NewDiagnostic(diagnostics.Error, "X.Unauthenticated", diagnostics.Path{}))
+	refused.Refuse(401, diagnostics.NewDiagnostic(diagnostics.SeverityError, "X.Unauthenticated", diagnostics.Path{}))
 	cached := exchangeFor("GET", "/b")
 	cached.Headers = append(cached.Headers, httpstream.Header{Name: []byte("Cache-Control"), Value: []byte("max-age=60")})
 	ex := []Exchange{refused, exchangeFor("GET", "/c"), cached, exchangeFor("GET", "/d"), exchangeFor("GET", "/e")}
@@ -309,7 +309,7 @@ func TestRendererAnswersARefusalInTheCallersDocument(t *testing.T) {
 func TestTheZeroRendererIsRender(t *testing.T) {
 	batch := func() []Exchange {
 		ex := []Exchange{exchangeFor("GET", "/a"), exchangeFor("GET", "/b")}
-		ex[1].Refuse(404, diagnostics.NewDiagnostic(diagnostics.Error, CodeNoRoute, diagnostics.Path{}).
+		ex[1].Refuse(404, diagnostics.NewDiagnostic(diagnostics.SeverityError, CodeNoRoute, diagnostics.Path{}).
 			WithMessage("NoRoute", nil))
 		return ex
 	}
