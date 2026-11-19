@@ -2261,3 +2261,42 @@ func TestConfigZeroValuesAreNamed(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestADR0002NamesEveryNestedModule: ADR 0002 lists the nested modules and
+// says how many there are, and both drifted once — comparison/go-nethttp was
+// the sixth go.mod under the root while the record still counted five. The
+// section names every directory with a go.mod below the root, and its count
+// in words, so a module added without its paragraph is red the day it lands.
+func TestADR0002NamesEveryNestedModule(t *testing.T) {
+	out, err := exec.Command("git", "ls-files", "--", "*go.mod").Output()
+	if err != nil {
+		t.Skipf("git ls-files: %v", err)
+	}
+	var mods []string
+	for line := range strings.Lines(string(out)) {
+		if dir := filepath.Dir(strings.TrimSpace(line)); dir != "." {
+			mods = append(mods, filepath.ToSlash(dir))
+		}
+	}
+	src, err := os.ReadFile("docs/design/adr/0002-dependency-graph.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, section, ok := strings.Cut(string(src), "### The nested modules")
+	if !ok {
+		t.Fatal("ADR 0002: no section \"The nested modules\"")
+	}
+	section, _, _ = strings.Cut(section, "\n## ")
+	words := []string{"No", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten", "Eleven", "Twelve"}
+	if len(mods) >= len(words) {
+		t.Fatalf("%d nested modules; extend the words of this test", len(mods))
+	}
+	if want := words[len(mods)] + " such modules exist"; !strings.Contains(section, want) {
+		t.Errorf("ADR 0002 does not say %q: %d go.mod below the root (%s)", want, len(mods), strings.Join(mods, ", "))
+	}
+	for _, m := range mods {
+		if !strings.Contains(section, "`"+m+"`") && !strings.Contains(section, "`"+m+"/`") {
+			t.Errorf("ADR 0002, The nested modules: %s has a go.mod and is not named", m)
+		}
+	}
+}

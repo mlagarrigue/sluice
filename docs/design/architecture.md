@@ -1843,11 +1843,11 @@ inject, no global registry, no implicit runtime (but a stratified context, see
 
 ### A stage is not a phase
 
-The README names three domains, and the third needs a word this library does
-not have. Web and database work is served by **stages** — the dataflow
-operators everything above is about. An ETL job that runs for hours needs
-something else on top of them, and conflating the two is how a pipeline ends
-up unable to resume.
+The README names three domains, and the third needs a second word. Web and
+database work is served by **stages** — the dataflow operators everything
+above is about. An ETL job that runs for hours needs something else on top of
+them, a **phase**, and conflating the two is how a pipeline ends up unable to
+resume.
 
 | | Stage | Phase |
 |---|---|---|
@@ -1858,11 +1858,11 @@ up unable to resume.
 | Failure | unwinds the pipeline | marked failed; the rest is resumable |
 | Provided here | `Stream[T]` | `phase` ([ADR 0027](adr/0027-phase-runner.md)), its state in a store the application chooses |
 
-sluice has an excellent model of the left column and none of the right. For a
-request/response cycle that is correct — there is nothing to resume. For an
-eight-hour ingest it is the difference between a job you can run overnight and
-one you cannot. The distinction is named here so that the two are not
-conflated. A phase runner needs somewhere to persist its state, and that
+sluice models both columns: the stages are its core, and `phase` runs phases
+on top of them. For a request/response cycle the left column is enough —
+there is nothing to resume. For an eight-hour ingest the right one is the
+difference between a job you can run overnight and one you cannot. The
+distinction is named here so that the two are not conflated. A phase runner needs somewhere to persist its state, and that
 somewhere is the application's schema, not the library's — which is why the
 machinery was left out at first, and why [ADR 0027](adr/0027-phase-runner.md)
 gives it a store the application chooses instead: the library brings the

@@ -1,7 +1,7 @@
 # ADR 0002 — The dependency graph is a decision, never a default
 
 - **Created:** 2026-10-07
-- **Revised:** 2026-11-03 (what runs on every push named without a count; subheadings); 4 earlier, from 2026-10-10, in its `git log`
+- **Revised:** 2026-11-19 (six nested modules; what Dependabot moves in each), 2026-11-03 (what runs on every push named without a count; subheadings); 4 earlier, from 2026-10-10, in its `git log`
 - **Theme:** ci
 
 ## Problem
@@ -53,7 +53,7 @@ import in the root module would still put the library in `go.mod` and in
 every consumer's module graph; a nested module (a `go.mod` in a
 subdirectory) is excluded from the root's `./...`, so nothing it requires
 reaches a user's binary or `go.mod`, and CI's `deps` job keeps it that way.
-Five such modules exist, all on `main`:
+Six such modules exist, all on `main`:
 
 - `benchmarks/`, where `pgx`, `gin` or `echo` are compared — and
   `TestPGContendersAgree` asserts that the connector reads the same rows as
@@ -61,12 +61,16 @@ Five such modules exist, all on `main`:
 - `interop/`, where `net/quic` is confronted with `quic-go` on every push;
 - `comparison/sluice` and `comparison/loadgen`, the server and the load
   generator of the comparison study;
+- `comparison/go-nethttp`, the study's first contender: the standard
+  library's HTTP server and `pgx`, written as their documentation teaches,
+  and their `gin` variants — it does not require the root, since a
+  contender owes this library nothing;
 - `audit/`, a program that reads a machine, an image and a binary and says
   what their settings cost — the standard library alone, and no `replace`
   of the root, since it must not depend on what it audits.
 
 `benchmarks/`, `comparison/sluice` and `interop/` replace the root with the
-working tree. The root's `go test ./...` does not see any of the five;
+working tree. The root's `go test ./...` does not see any of the six;
 `scripts/check.sh` runs `go vet`, golangci-lint (the root's linters, with
 its configuration) and the tests CI runs in each of them — those that want
 PostgreSQL or a calibrated machine skip there, as they do on CI's runner.
@@ -76,7 +80,7 @@ branch of its own it falls behind, and a measurement of code that is no
 longer the code proves nothing about it. The measurements are still taken on
 purpose, not on every push; what runs on every push is `go vet` and one pass
 of every benchmark in the `benchmarks-module` job, `go vet` and `go mod tidy
--diff` of the study's two modules in the same job, golangci-lint in every
+-diff` of the study's three modules in the same job, golangci-lint in every
 nested module in the `lint` job, and `TestPGContendersAgree` against every
 PostgreSQL major of the `postgres` job's matrix, so an API change that
 breaks a module, a benchmark that hangs, or a connector that reads other
@@ -87,9 +91,18 @@ project's machines and pin `quic-go`, `pgx`, `gin` and the `x/` modules
 they bring. `govulncheck` (the Go team's tool, which reports a
 vulnerability only when the code reaches it) runs in each of them daily and
 on every push, as it does for the root. Dependabot opens a security update
-in any of them; its version updates target only the root and `interop/`: in
-`benchmarks/` and `comparison/`, a version bump would move what the study
-measures, and the compared versions change only by decision.
+in any of them.
+
+Its version updates move only what must stay equal from
+one module to the next — `golang.org/x/crypto`, `x/sys` and `x/text`, the
+library's own, and `quic-go`, which `interop/` confronts and the study's
+three modules take from it — in the root, `interop/` and the three
+`comparison/` modules, one pull request per dependency raising them
+together (`TestSharedDependenciesAgreeAcrossModules` fails a bump that
+moves one `go.mod` and not the others). The contenders — `pgx`, `gin` and
+the rest, in `benchmarks/` and `comparison/` — get no version update: a
+bump would move what the study measures, and the compared versions change
+only by decision.
 
 ## Rationale
 

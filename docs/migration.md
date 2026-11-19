@@ -57,13 +57,12 @@ behavior that keep the signatures — a value now refused — come last.
 
 ### Web: `web`, `web/stream` and `gateway`
 
-- **`web.Server` becomes `web.Drainer`, and the closers are `Drainer`s**
-  (feat(web)!: closers drain, Close is the forced stop, ADR 0017): the closers of `web.Shutdown`,
-  `web.Serve`, `web.ServeTLS` and `stream.ServeH3` are stopped by `Shutdown(ctx)` under the grace. A
-  gateway goes in as it is; a resource with `Close` alone is wrapped, `web.CloseFunc(pool.Close)`.
-- **`gateway.Gateway` has no `Close`**
-  (feat(web)!: closers drain, Close is the forced stop, ADR 0017): `Close` is the forced stop
-  elsewhere in the library, and a gateway has none. Write `gw.Shutdown(ctx)` with a deadline, or
+- **`web.Server` becomes `web.Drainer`, and the closers are `Drainer`s** (`c317c88`): the closers
+  of `web.Shutdown`, `web.Serve`, `web.ServeTLS` and `stream.ServeH3` are stopped by `Shutdown(ctx)`
+  under the grace. A gateway goes in as it is; a resource with `Close` alone is wrapped,
+  `web.CloseFunc(pool.Close)`.
+- **`gateway.Gateway` has no `Close`** (`c317c88`): `Close` is the forced stop elsewhere in the
+  library, and a gateway has none. Write `gw.Shutdown(ctx)` with a deadline, or
   `gw.Shutdown(context.Background())` to wait without a bound as `Close` did.
 
 ## From v0.4.0 to v0.5.0
