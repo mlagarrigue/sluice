@@ -105,6 +105,12 @@ type Request struct {
 	// close-delimited rather than chunked. KeepAlive cannot stand in for it:
 	// a 1.0 request may ask for keep-alive.
 	http10 bool
+
+	// interim is what [Request.Interim] sends through, and sid the stream it
+	// sends on: set by the connection for the length of the batch, nil for
+	// a request that cannot have one.
+	interim *interimBatch
+	sid     uint64
 }
 
 // Get returns the value of the first header with this name, matched

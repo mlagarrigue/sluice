@@ -824,6 +824,8 @@ var textPlain = []byte("text/plain; charset=utf-8")
 // acts on anyway.
 func reason(status int) string {
 	switch status {
+	case 103:
+		return "Early Hints"
 	case 200:
 		return "OK"
 	case 201:
@@ -861,8 +863,11 @@ func reason(status int) string {
 	case 505:
 		return "HTTP Version Not Supported"
 	}
-	// checkStatus has already refused anything outside 200..599.
+	// checkStatus has already refused anything outside 200..599, and
+	// Request.Interim anything outside 102..199.
 	switch status / 100 {
+	case 1:
+		return "Informational"
 	case 2:
 		return "Success"
 	case 3:

@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -514,7 +515,16 @@ func serveConn(ctx context.Context, c *prefixConn, st *connState, cfg Config, ha
 			call.bodyPending = true
 			body.onDone = call.bodyEnded
 		}
+		// Only the first request of a batch can have an interim response:
+		// the ones after it wait for the responses before them, written
+		// once the batch returns. Never to an HTTP/1.0 client (RFC 9110
+		// §15.2).
+		var interim *interimBatch
+		if len(b.Items) > 0 && !b.Items[0].http10 {
+			interim = stampInterim(b.Items[:1], func(int) uint64 { return 0 }, h1Interim{c: c, timeout: cfg.WriteTimeout})
+		}
 		res, err := apply(call, handle, b, cfg.EarlyData)
+		interim.close()
 		call.returned()
 		if body != nil {
 			body.closed.Store(true)
@@ -1668,4 +1678,32 @@ func writeStreamedBatch(c *prefixConn, st *connState, cfg Config, requests []Req
 		}
 	}
 	return buf, false, nil
+}
+
+// h1Interim is [Request.Interim] over HTTP/1.1: the status line and the
+// fields, written on the connection before the batch's responses, which
+// nothing else writes while the batch runs but a 100 (Continue) the body
+// owes — a separate write, whole as each write on a [net.Conn] is.
+type h1Interim struct {
+	c       net.Conn
+	timeout time.Duration
+}
+
+func (h h1Interim) sendInterim(_ uint64, status int, fields []Header) error {
+	head := append([]byte("HTTP/1.1 "), strconv.Itoa(status)...)
+	head = append(head, ' ')
+	head = append(head, reason(status)...)
+	head = append(head, '\r', '\n')
+	for _, f := range fields {
+		head = append(head, f.Name...)
+		head = append(head, ':', ' ')
+		head = append(head, f.Value...)
+		head = append(head, '\r', '\n')
+	}
+	head = append(head, '\r', '\n')
+	if err := h.c.SetWriteDeadline(time.Now().Add(h.timeout)); err != nil {
+		return err
+	}
+	_, err := h.c.Write(head)
+	return err
 }

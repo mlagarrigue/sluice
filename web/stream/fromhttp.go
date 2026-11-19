@@ -69,7 +69,10 @@ import (
 // Transfer-Encoding, Upgrade), the fields only a request carries (Host, TE,
 // Expect), a field whose name is not a token or whose value still holds a
 // control byte once CR and LF have become spaces, and a Date that is not an
-// IMF-fixdate. A 1xx is not sent. A deadline set through
+// IMF-fixdate. A 1xx other than 100 and 101 leaves at once through
+// [httpstream.Request.Interim], with the header as it stands, except where
+// the transport cannot send one: a pipelined HTTP/1.1 request behind
+// another, an HTTP/1.0 client. A deadline set through
 // [http.ResponseController] holds as under net/http, beside the
 // transport's [httpstream.Config] bounds: a write past it fails and cuts the
 // answer, a read begun past it fails (see SetWriteDeadline and
@@ -374,8 +377,21 @@ func (c *httpCall) WriteHeader(code int) {
 	if code < 100 || code > 999 {
 		panic(fmt.Sprintf("invalid WriteHeader code %v", code)) // net/http's check, worded as it
 	}
-	if c.wroteHeader || code < 200 {
-		return // superfluous, or a 1xx the transport does not send
+	if c.wroteHeader {
+		return // superfluous
+	}
+	if code < 200 {
+		// An interim response leaves at once with the header as it stands,
+		// as under net/http; the final one keeps the header's later state.
+		// A 100 is the transport's (Expect: 100-continue) and a 101 changes
+		// protocols, which the transport does not do. One it cannot send —
+		// a pipelined HTTP/1.1 request behind another, an HTTP/1.0 client —
+		// is dropped, as net/http drops what it cannot write.
+		if code > 101 {
+			fields, _, _, _ := responseFields(c.head)
+			_ = c.body.src.Interim(code, fields)
+		}
+		return
 	}
 	c.wroteHeader, c.status = true, code
 	c.fields, c.declared, c.length, c.sniff = responseFields(c.head)

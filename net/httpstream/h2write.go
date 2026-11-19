@@ -1045,7 +1045,11 @@ func (w *h2Writer) refuse(id uint32, status int, head bool, code uint32) error {
 // the same stream; §8.8.5), :status alone — a 1xx owes no date (§6.6.1 of
 // RFC 9110). Queued as control, so that it leaves ahead of the final head
 // the responder builds once the body is in, and built like refuse's head.
-func (w *h2Writer) interim(id uint32, status int) error {
+// fields are a handler's interim fields ([Request.Interim]), checked and
+// lowercase already; a block past the peer's frame size is refused rather
+// than split into CONTINUATION frames, which the control queue does not
+// carry.
+func (w *h2Writer) interim(id uint32, status int, fields []Header) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if err := w.waitCtrlLocked(); err != nil {
@@ -1060,6 +1064,12 @@ func (w *h2Writer) interim(id uint32, status int) error {
 	}
 	var buf [16]byte // a size update and :status fit without the heap
 	block := w.bareHeadLocked(buf[:0], status)
+	for _, f := range fields {
+		block = appendHPACK(block, f.Name, f.Value)
+	}
+	if len(block) > w.maxFrame {
+		return fmt.Errorf("%w: the interim head takes %d bytes, past the peer's frame size %d", ErrH2Protocol, len(block), w.maxFrame)
+	}
 	if err := w.appendCtrl(h2Frame{Type: frameHeaders, Flags: flagEndHeaders, StreamID: id, Payload: block}); err != nil {
 		return err
 	}

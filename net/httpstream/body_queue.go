@@ -127,7 +127,7 @@ func (s *h2Conn) newH2Body(st *h2Stream) *bodyQueue {
 	b.h2 = s
 	b.initial = int32(s.cfg.InitialWindowSize) //nolint:gosec // G115: capped by resolve
 	b.window, b.grace = st.recvWind, st.windowGrace
-	b.interim = func() error { return s.w.interim(st.id, 100) }
+	b.interim = func() error { return s.w.interim(st.id, 100, nil) }
 	id := st.id
 	b.onClose = func() {
 		s.closedMu.Lock()

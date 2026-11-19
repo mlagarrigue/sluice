@@ -6,6 +6,7 @@
 //	server.go        Server: the three protocols behind one value
 //	conn.go          HTTP/1.1: requests read off a connection, keep-alive
 //	request.go       Request: the head as the handler sees it, its checks
+//	interim.go       Request.Interim: a 1xx ahead of the final response
 //	body.go          a streamed request body; body_queue.go its HTTP/2 queue
 //	response.go      Response: fields, trailers, checks; date.go the Date field
 //	failure.go       a handler's panic or error reported, a connection's end

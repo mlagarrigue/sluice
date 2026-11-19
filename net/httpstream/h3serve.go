@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1187,9 +1188,35 @@ func answerH3(ctx context.Context, c *quic.Conn, state *tls.ConnectionState, b h
 			finish(nil, errors.New("httpstream: the handler exited its goroutine without answering"))
 		}
 	}()
+	interim := stampInterim(b.reqs, func(i int) uint64 { return uint64(b.ids[i]) }, h3Interim{c: c, fieldSection: b.fieldSection, wb: wb})
 	res, err := apply(ctx, handle, sluice.Batch[Request]{Items: b.reqs}, b.early)
+	interim.close()
 	answered = true
 	finish(res, err)
+}
+
+// h3Interim is [Request.Interim] over HTTP/3: a HEADERS frame on the
+// request's stream, without its FIN, ahead of the final response the batch
+// writes once it has returned (RFC 9114 §4.1).
+type h3Interim struct {
+	c            *quic.Conn
+	fieldSection uint64
+	wb           writeBound
+}
+
+func (h h3Interim) sendInterim(sid uint64, status int, fields []Header) error {
+	section := append([]Header{{Name: h3StatusName, Value: strconv.AppendInt(nil, int64(status), 10)}}, fields...)
+	if err := checkH3FieldSection(section, h.fieldSection); err != nil {
+		return err
+	}
+	s, err := h.c.OpenStreamsTo(quic.StreamID(sid))
+	if err != nil {
+		return err
+	}
+	if !writeH3Bounded(s, appendH3Frame(nil, h3Headers, appendQPACK(nil, section)), false, h.wb) {
+		return fmt.Errorf("%w: the interim response did not leave", ErrH3Protocol)
+	}
+	return nil
 }
 
 // h3Interim100 is the HEADERS frame of an interim 100 (Continue): :status

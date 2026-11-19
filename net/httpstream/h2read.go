@@ -761,7 +761,7 @@ func (s *h2Conn) headers(f h2Frame) (*h2Stream, error) {
 		// omitted when DATA is already behind the HEADERS in the same read
 		// (the MAY of §10.1.1): that is not known here, and a 100 the client
 		// did not wait for costs it a few bytes.
-		if err := s.w.interim(st.id, 100); err != nil {
+		if err := s.w.interim(st.id, 100, nil); err != nil {
 			return nil, err
 		}
 	}

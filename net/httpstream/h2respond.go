@@ -49,7 +49,9 @@ func (s *h2Conn) call(b h2Batch, out chan<- *h2Applied) {
 		}
 	}()
 	s.peer.stamp(b.reqs)
+	interim := stampInterim(b.reqs, func(i int) uint64 { return uint64(b.ids[i]) }, s)
 	res, err := apply(b.ctx, s.handler, sluice.Batch[Request]{Items: b.reqs}, s.cfg.EarlyData)
+	interim.close()
 	closeBodies(b.reqs)
 	if err != nil {
 		reportFailure(s.cfg.logger(), err)
@@ -733,4 +735,10 @@ func addWindow(cur, delta int32) (int32, error) {
 			ErrH2Protocol, errFlowControl, next, maxWindow)
 	}
 	return int32(next), nil
+}
+
+// sendInterim is [Request.Interim] over HTTP/2: a HEADERS without
+// END_STREAM on the request's stream, queued ahead of its final head.
+func (s *h2Conn) sendInterim(sid uint64, status int, fields []Header) error {
+	return s.w.interim(uint32(sid), status, fields) //nolint:gosec // G115: an HTTP/2 stream id, stamped from a uint32
 }

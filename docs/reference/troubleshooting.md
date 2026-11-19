@@ -151,6 +151,7 @@ question for a CPU profile: no counter can answer it.
 | `httpstream.ErrHPACK` | An HTTP/2 header block this package will not decode. The connection ends. | Fix the client's HTTP/2 encoder. |
 | `httpstream.ErrH2Protocol` | An HTTP/2 frame sequence this package will not accept. The connection ends. | Fix the client's HTTP/2 framing. |
 | `httpstream.ErrH3Protocol` | An HTTP/3 frame or request this package will not accept. | Fix the client's HTTP/3 framing. |
+| `httpstream.ErrNoInterim` | `Request.Interim` cannot send on this request: its batch has returned, it is an HTTP/1.1 request behind another in the same batch, the client speaks HTTP/1.0, or the request was built by hand. | Send the interim response before the batch returns; over HTTP/1.1 only the first request of a batch can have one. A net/http handler under `stream.FromHTTP` loses the 1xx silently, as net/http drops what it cannot write. |
 | `httpstream.ErrShutdownForced` | `Config.ShutdownGrace` passed before the requests in flight were answered; returned by `Serve`, `ServeH2Conn`, `ServeH3Conn`. | Raise `ShutdownGrace`, or make handlers honour their context. |
 
 ## QUIC: `net/quic` (experimental)

@@ -294,7 +294,7 @@ func TestH2WriterRefusalAtTheWindowsEdge(t *testing.T) {
 		t.Errorf("%d DATA frames with a window of exactly the body, want 1", len(streams))
 	}
 	w = testWriter(1)
-	if !wakes(t, w, func() error { return w.interim(1, 100) }) {
+	if !wakes(t, w, func() error { return w.interim(1, 100, nil) }) {
 		t.Error("the interim head did not wake the write goroutine")
 	}
 }
