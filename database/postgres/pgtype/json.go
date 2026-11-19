@@ -32,12 +32,12 @@ func AppendJSONB(dst, text []byte) []byte {
 	return append(append(dst, JSONBVersion), text...)
 }
 
-// DecodeJSONB returns the JSON text of a jsonb value, checking its version
+// BorrowJSONB returns the JSON text of a jsonb value, checking its version
 // byte.
 //
 // The slice borrows the batch's storage, like every other value here: it is
 // valid until the next read. Copy it to keep it.
-func DecodeJSONB(b []byte) ([]byte, error) {
+func BorrowJSONB(b []byte) ([]byte, error) {
 	if len(b) == 0 {
 		return nil, fmt.Errorf("%w: jsonb value is empty, with not even a version byte", ErrCodec)
 	}
@@ -57,6 +57,6 @@ func DecodeJSONB(b []byte) ([]byte, error) {
 // "append some JSON" and finding one function would pick wrong half the time.
 func AppendJSON(dst, text []byte) []byte { return append(valued(dst), text...) }
 
-// DecodeJSON returns the text of a json value, which has no version byte.
+// BorrowJSON returns the text of a json value, which has no version byte.
 // The slice borrows the batch's storage.
-func DecodeJSON(b []byte) []byte { return b }
+func BorrowJSON(b []byte) []byte { return b }

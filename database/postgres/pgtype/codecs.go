@@ -30,8 +30,8 @@ import (
 // # What Decode may return
 //
 // The Decode of every Codec here returns a value that owns its memory: the
-// codecs of bytea, json and jsonb copy what [DecodeBytea], [DecodeJSON] and
-// [DecodeJSONB] borrow. A container decodes many values out of one wire
+// codecs of bytea, json and jsonb copy what [BorrowBytea], [BorrowJSON] and
+// [BorrowJSONB] borrow. A container decodes many values out of one wire
 // buffer that the next batch overwrites, and a value kept from it must not
 // change under its owner. A Codec written outside this package should keep
 // the same rule.
@@ -64,12 +64,12 @@ type Codec[T any] struct {
 func decodeTextValue(b []byte) (string, error) { return DecodeText(b), nil }
 
 // copyJSON is the codec decoder for json: the text, copied.
-func copyJSON(b []byte) ([]byte, error) { return cloneBytes(DecodeJSON(b)) }
+func copyJSON(b []byte) ([]byte, error) { return cloneBytes(BorrowJSON(b)) }
 
 // copyJSONB is the codec decoder for jsonb: the text after the version byte,
 // copied.
 func copyJSONB(b []byte) ([]byte, error) {
-	v, err := DecodeJSONB(b)
+	v, err := BorrowJSONB(b)
 	if err != nil {
 		return nil, err
 	}

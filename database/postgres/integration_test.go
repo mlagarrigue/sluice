@@ -734,7 +734,7 @@ func TestIntegrationCodecsDecodeWhatTheServerSends(t *testing.T) {
 			}
 
 			v, _ := row.Value(0)
-			if j, err := pgtype.DecodeJSONB(v); err != nil || string(j) != `{"a": 1}` {
+			if j, err := pgtype.BorrowJSONB(v); err != nil || string(j) != `{"a": 1}` {
 				t.Errorf("jsonb = %q, %v", j, err)
 			}
 			v, _ = row.Value(1)
@@ -1482,7 +1482,7 @@ func TestIntegrationCopyVariableWidthTypes(t *testing.T) {
 				t.Errorf("row %d at = %v (%v), want %v", i, gotAt, err, at)
 			}
 			v, _ = row.Value(3)
-			doc, err := pgtype.DecodeJSONB(v)
+			doc, err := pgtype.BorrowJSONB(v)
 			if err != nil || string(doc) != `{"i": 1}` {
 				t.Errorf("row %d doc = %q (%v)", i, doc, err)
 			}

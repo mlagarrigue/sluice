@@ -201,7 +201,10 @@ them apart.
 The codec lives in its own package, `database/postgres/pgtype`, which needs
 no connection. Its `Decode*` functions turn bytes into a Go value:
 `DecodeInt8` for a `bigint`, `DecodeText` for a `text`, `DecodeTimestampTZ`
-for a date with a time zone, `DecodeNumeric` for an exact amount. The `Scan*` functions of
+for a date with a time zone, `DecodeNumeric` for an exact amount. Three
+only lend, and say so: `BorrowBytea`, `BorrowJSON` and `BorrowJSONB`
+return the batch's own bytes, valid until the next batch, where their
+codecs (`ByteaCodec()` and its siblings) copy. The `Scan*` functions of
 `postgres` do the same for **a whole column** of a batch in one pass
 (`ScanInt8(dst, rows, col)`) — the shape that produces the next array of
 keys to send as `= ANY`.

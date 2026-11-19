@@ -81,14 +81,14 @@ func FuzzDecodeInterval(f *testing.F) {
 	})
 }
 
-func FuzzDecodeJSONB(f *testing.F) {
+func FuzzBorrowJSONB(f *testing.F) {
 	f.Add([]byte{1, '{', '}'})
 	f.Add([]byte{1})
 	f.Add([]byte{2, '{', '}'})
 	f.Add([]byte{})
 
 	f.Fuzz(func(t *testing.T, b []byte) {
-		j, err := DecodeJSONB(b)
+		j, err := BorrowJSONB(b)
 		if err != nil {
 			if !errors.Is(err, ErrCodec) {
 				t.Fatalf("unclassified error %v for %x", err, b)
@@ -96,7 +96,7 @@ func FuzzDecodeJSONB(f *testing.F) {
 			return
 		}
 		if got := AppendJSONB(nil, j); !bytes.Equal(got, b) {
-			t.Fatalf("DecodeJSONB(%x) -> %q -> %x: the value did not survive", b, j, got)
+			t.Fatalf("BorrowJSONB(%x) -> %q -> %x: the value did not survive", b, j, got)
 		}
 	})
 }

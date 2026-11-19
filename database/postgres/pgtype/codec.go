@@ -406,6 +406,6 @@ func arrayElementError(body []byte, i, width int) error {
 	return fmt.Errorf("%w: array element %d declares %d bytes, %d remain", ErrCodec, i, size, len(body)-4)
 }
 
-// DecodeBytea returns the bytes of a bytea value, which the binary format
+// BorrowBytea returns the bytes of a bytea value, which the binary format
 // carries verbatim. The slice borrows the batch's storage.
-func DecodeBytea(b []byte) []byte { return b }
+func BorrowBytea(b []byte) []byte { return b }

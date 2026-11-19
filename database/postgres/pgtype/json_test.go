@@ -52,12 +52,12 @@ func TestJSONBAgainstServerVectors(t *testing.T) {
 			if got := AppendJSONB(nil, []byte(tc.json)); !bytes.Equal(got, want) {
 				t.Errorf("AppendJSONB = %x, want %x", got, want)
 			}
-			back, err := DecodeJSONB(want)
+			back, err := BorrowJSONB(want)
 			if err != nil {
-				t.Fatalf("DecodeJSONB: %v", err)
+				t.Fatalf("BorrowJSONB: %v", err)
 			}
 			if string(back) != tc.json {
-				t.Errorf("DecodeJSONB = %q, want %q", back, tc.json)
+				t.Errorf("BorrowJSONB = %q, want %q", back, tc.json)
 			}
 		})
 	}
@@ -79,19 +79,19 @@ func TestJSONAndJSONBDifferByTheVersionByte(t *testing.T) {
 	// Reading a jsonb as a json is the quiet failure: it returns valid-looking
 	// text with a stray byte in front, which travels a long way before
 	// anything notices.
-	if got := DecodeJSON(jsonbVector); got[0] == '{' {
-		t.Error("DecodeJSON stripped something; it must return the bytes untouched")
+	if got := BorrowJSON(jsonbVector); got[0] == '{' {
+		t.Error("BorrowJSON stripped something; it must return the bytes untouched")
 	}
 }
 
 func TestDecodeJSONBRefusals(t *testing.T) {
-	if _, err := DecodeJSONB(nil); err == nil {
-		t.Error("DecodeJSONB accepted an empty value")
+	if _, err := BorrowJSONB(nil); err == nil {
+		t.Error("BorrowJSONB accepted an empty value")
 	}
 	// A version this package has not seen changes what follows it. Reading it
 	// as version 1 would return text that is plausible and wrong.
-	_, err := DecodeJSONB([]byte{2, '{', '}'})
+	_, err := BorrowJSONB([]byte{2, '{', '}'})
 	if err == nil || !strings.Contains(err.Error(), "version byte is 2") {
-		t.Errorf("DecodeJSONB(version 2) = %v, want a refusal naming the version", err)
+		t.Errorf("BorrowJSONB(version 2) = %v, want a refusal naming the version", err)
 	}
 }

@@ -44,9 +44,13 @@ behavior that keep the signatures — a value now refused — come last.
 ### Database: `postgres`
 
 - **`Rows` is renamed `RowBlock`, and `Row.Rows` becomes `Row.Block`**
-  (feat(postgres)!: RowBlock and ParamOf, ADR 0022): `Rows` read as the cursor of `database/sql`.
+  (`4490fc0`): `Rows` read as the cursor of `database/sql`.
   Rename the type and the calls; regenerate the hydration functions with `sluicegen`, or replace `*postgres.Rows` with
   `*postgres.RowBlock` and `.Rows()` with `.Block()` in the generated files.
+- **`pgtype.DecodeBytea`, `DecodeJSON` and `DecodeJSONB` are renamed `BorrowBytea`, `BorrowJSON`
+  and `BorrowJSONB`** (feat(postgres)!: the decoders that borrow say so):
+  they borrow the batch's storage, where `ByteaCodec`, `JSONCodec` and `JSONBCodec` copy. Rename the
+  calls; a slice kept past its batch is copied, as before.
 - **The codecs of created types take a `pgtype.TypeOIDs`** (feat(postgres)!: created types take their OIDs as one TypeOIDs): `Conn.LookupType` returns
   `(pgtype.TypeOIDs, error)` instead of two `uint32`, and `CitextCodec`, `HstoreCodec`, `LtreeCodec`,
   `LqueryCodec`, `LtxtqueryCodec`, `VectorCodec`, `RangeCodec` and `MultirangeCodec` take it where they
