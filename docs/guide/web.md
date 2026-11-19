@@ -269,16 +269,23 @@ When the token comes from an identity provider — an OpenID Connect
 service, anything that is not your own — it is signed with a **private
 key** only the issuer holds, and you have the **public key**, which
 verifies a signature and cannot make one. `web.NewPublicKeyVerifier` takes
-those keys by their ID, the `kid` a token's header names, and the
-algorithms you accept; the claim checks are the HMAC verifier's:
+those keys by their ID, the `kid` a token's header names, each with the
+one algorithm it signs with; the claim checks are the HMAC verifier's:
 
 ```go
 verifier, err := web.NewPublicKeyVerifier(web.PublicKeyConfig{
-    Keys:       map[string]crypto.PublicKey{"2026-11": providerKey}, // *rsa.PublicKey, *ecdsa.PublicKey or ed25519.PublicKey
-    Algorithms: []string{"RS256"},                                    // what the provider signs with, nothing more
-    Audience:   "orders", Issuer: "https://idp.example", Leeway: 30 * time.Second,
+    Keys: map[string]web.PublicKey{
+        // *rsa.PublicKey, *ecdsa.PublicKey or ed25519.PublicKey, and what it signs with, nothing more
+        "2026-11": {Key: providerKey, Algorithm: "RS256"},
+    },
+    Audience: "orders", Issuer: "https://idp.example", Leeway: 30 * time.Second,
 })
 ```
+
+A key verifies one algorithm, the one you bind it to: a token that names
+another is refused even when its signature is right, so a key is never
+used under an algorithm it was not meant for (RFC 8725 §3.1). A provider's
+key document gives both: the key, and its `alg` member.
 
 > **In plain words: a public key verifies, it does not sign.** That is
 > why a provider publishes its keys, often as a JSON document called a

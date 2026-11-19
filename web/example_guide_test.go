@@ -2,7 +2,6 @@ package web_test
 
 import (
 	"context"
-	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -184,9 +183,9 @@ func ExampleNewPublicKeyVerifier() {
 	// one generated for the example.
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	v, err := web.NewPublicKeyVerifier(web.PublicKeyConfig{
-		Keys:       map[string]crypto.PublicKey{"2026-11": pub},
-		Algorithms: []string{"EdDSA"},
-		Issuer:     "https://idp.example",
+		// Each key is bound to the one algorithm it signs with.
+		Keys:   map[string]web.PublicKey{"2026-11": {Key: pub, Algorithm: "Ed25519"}},
+		Issuer: "https://idp.example",
 	})
 	if err != nil {
 		fmt.Println(err)
@@ -194,7 +193,7 @@ func ExampleNewPublicKeyVerifier() {
 	}
 	// What the provider does: sign the header and claims with its private key.
 	enc := base64.RawURLEncoding
-	signed := enc.EncodeToString([]byte(`{"alg":"EdDSA","kid":"2026-11"}`)) + "." +
+	signed := enc.EncodeToString([]byte(`{"alg":"Ed25519","kid":"2026-11"}`)) + "." +
 		enc.EncodeToString([]byte(`{"sub":"ada","iss":"https://idp.example","exp":4102444800}`))
 	token := signed + "." + enc.EncodeToString(ed25519.Sign(priv, []byte(signed)))
 

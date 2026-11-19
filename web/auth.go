@@ -41,8 +41,9 @@ import (
 // # Two verifiers, and what neither does
 //
 // [HMACVerifier] verifies HS256, for two services that share a secret.
-// [PublicKeyVerifier] verifies RS, PS, ES and EdDSA tokens — what identity
-// providers issue — against public keys the configuration holds. Neither
+// [PublicKeyVerifier] verifies RS, PS, ES and EdDSA (Ed25519) tokens — what
+// identity providers issue — against public keys the configuration holds,
+// each bound to the one algorithm it signs with. Neither
 // fetches a provider's key set over the network: that is a component with
 // a lifecycle — a cache, a refresh, a failure mode — and the keys are copied
 // into [PublicKeyConfig.Keys] instead, a rotation being a configuration

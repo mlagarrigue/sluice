@@ -112,6 +112,13 @@ behavior that keep the signatures — a value now refused — come last.
   `serve func(i, open int)` becomes `serve func(o stream.Open)`, whose `Index` is the exchange's
   position in the batch and `Rank` its position among the open ones. Write `o.Index` for `i` and
   `o.Rank` for `open`; `Renderer.RenderOpen` changes the same way.
+- **`web.PublicKeyConfig` binds each key to its algorithm** (`fix(web)!: bind each public key to one algorithm`):
+  the public-key verifier, new since v0.5.1 (`dc55289`), took its keys and the algorithms it accepts
+  apart; each key now carries the one algorithm it signs with, `Keys` being a
+  `map[string]web.PublicKey`, and the separate list is gone. Write
+  `Keys: map[string]web.PublicKey{"2026-11": {Key: pub, Algorithm: "RS256"}}`; an RSA key that
+  verified both RS256 and PS256 is bound to the one its issuer signs with (RFC 8725 §3.1). Code
+  written against v0.5.1 has nothing to change.
 
 ### QUIC: `net/quic`
 

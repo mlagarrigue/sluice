@@ -12,6 +12,7 @@ import (
 	"errors"
 	"math/big"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -55,7 +56,7 @@ func TestPublicKeyVerifierAcceptsTheRFC7515Examples(t *testing.T) {
 		{"ES256", rfc7515ES256, ecKey},
 	} {
 		v, err := NewPublicKeyVerifier(PublicKeyConfig{
-			Keys: map[string]crypto.PublicKey{"only": tc.key}, Algorithms: []string{tc.alg},
+			Keys:   map[string]PublicKey{"only": {Key: tc.key, Algorithm: tc.alg}},
 			Issuer: "joe", Now: beforeRFCExpiry,
 		})
 		if err != nil {
@@ -79,57 +80,92 @@ func TestPublicKeyVerifierAcceptsTheRFC7515Examples(t *testing.T) {
 
 // The RFC 8037 example's signature verifies, and its payload, a sentence
 // rather than a claims set, is then refused as not JSON: the refusal that
-// comes after the signature, which proves the signature passed.
+// comes after the signature, which proves the signature passed. Its alg is
+// EdDSA, and a key bound to RFC 9864's Ed25519 verifies it as well.
 func TestPublicKeyVerifierVerifiesTheRFC8037Signature(t *testing.T) {
 	x, err := base64.RawURLEncoding.DecodeString(rfc8037X)
 	if err != nil {
 		t.Fatal(err)
 	}
-	v, err := NewPublicKeyVerifier(PublicKeyConfig{Keys: map[string]crypto.PublicKey{"k": ed25519.PublicKey(x)}, Algorithms: []string{"EdDSA"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := v.Verify(rfc8037EdDSA); !errors.Is(err, ErrTokenMalformed) || !strings.Contains(err.Error(), "not JSON") {
-		t.Errorf("the RFC 8037 example: %v, want its payload refused as not JSON", err)
-	}
-	forged := strings.Replace(rfc8037EdDSA, ".hgyY", ".hgyZ", 1)
-	if _, err := v.Verify(forged); !errors.Is(err, ErrTokenSignature) {
-		t.Errorf("a changed Ed25519 signature: %v", err)
-	}
-}
-
-// testKeys are one key of each kind, generated once: RSA generation is slow.
-type testKeys struct {
-	rsa  *rsa.PrivateKey
-	ec   map[string]*ecdsa.PrivateKey
-	ed   ed25519.PrivateKey
-	keys map[string]crypto.PublicKey
-}
-
-func newTestKeys(t *testing.T) testKeys {
-	t.Helper()
-	k := testKeys{ec: map[string]*ecdsa.PrivateKey{}}
-	var err error
-	if k.rsa, err = rsa.GenerateKey(rand.Reader, 2048); err != nil {
-		t.Fatal(err)
-	}
-	for alg, c := range map[string]elliptic.Curve{"ES256": elliptic.P256(), "ES384": elliptic.P384(), "ES512": elliptic.P521()} {
-		if k.ec[alg], err = ecdsa.GenerateKey(c, rand.Reader); err != nil {
+	for _, bound := range []string{"EdDSA", "Ed25519"} {
+		v, err := NewPublicKeyVerifier(PublicKeyConfig{Keys: map[string]PublicKey{"k": {Key: ed25519.PublicKey(x), Algorithm: bound}}})
+		if err != nil {
 			t.Fatal(err)
 		}
+		if _, err := v.Verify(rfc8037EdDSA); !errors.Is(err, ErrTokenMalformed) || !strings.Contains(err.Error(), "not JSON") {
+			t.Errorf("the RFC 8037 example, key bound to %s: %v, want its payload refused as not JSON", bound, err)
+		}
+		forged := strings.Replace(rfc8037EdDSA, ".hgyY", ".hgyZ", 1)
+		if _, err := v.Verify(forged); !errors.Is(err, ErrTokenSignature) {
+			t.Errorf("a changed Ed25519 signature, key bound to %s: %v", bound, err)
+		}
 	}
-	if _, k.ed, err = ed25519.GenerateKey(rand.Reader); err != nil {
-		t.Fatal(err)
-	}
-	k.keys = map[string]crypto.PublicKey{
-		"rsa": &k.rsa.PublicKey, "ed": k.ed.Public(),
-		"ES256": &k.ec["ES256"].PublicKey, "ES384": &k.ec["ES384"].PublicKey, "ES512": &k.ec["ES512"].PublicKey,
-	}
-	return k
 }
 
-// sign builds a token the way an issuer does, with the key kid names.
+// testKeys are one private key per algorithm — an RSA key verifies one
+// algorithm only, so each RS and PS has its own — generated once for the
+// package's tests: RSA generation is slow.
+type testKeys struct {
+	rsa map[string]*rsa.PrivateKey
+	ec  map[string]*ecdsa.PrivateKey
+	ed  ed25519.PrivateKey
+}
+
+var sharedTestKeys = sync.OnceValue(func() testKeys {
+	k := testKeys{rsa: map[string]*rsa.PrivateKey{}, ec: map[string]*ecdsa.PrivateKey{}}
+	for _, alg := range []string{"RS256", "RS384", "RS512", "PS256", "PS384", "PS512"} {
+		priv, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			panic(err)
+		}
+		k.rsa[alg] = priv
+	}
+	for alg, c := range map[string]elliptic.Curve{"ES256": elliptic.P256(), "ES384": elliptic.P384(), "ES512": elliptic.P521()} {
+		priv, err := ecdsa.GenerateKey(c, rand.Reader)
+		if err != nil {
+			panic(err)
+		}
+		k.ec[alg] = priv
+	}
+	_, ed, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		panic(err)
+	}
+	k.ed = ed
+	return k
+})
+
+// public is the configuration entry for the key that signs alg, under the
+// key ID alg names.
+func (k testKeys) public(alg string) PublicKey {
+	switch {
+	case alg == "EdDSA" || alg == "Ed25519":
+		return PublicKey{Key: k.ed.Public(), Algorithm: alg}
+	case alg[:2] == "ES":
+		return PublicKey{Key: &k.ec[alg].PublicKey, Algorithm: alg}
+	}
+	return PublicKey{Key: &k.rsa[alg].PublicKey, Algorithm: alg}
+}
+
+// keys is the configuration for the algorithms given, each key under its
+// algorithm's name as kid.
+func (k testKeys) keys(algs ...string) map[string]PublicKey {
+	m := make(map[string]PublicKey, len(algs))
+	for _, alg := range algs {
+		m[alg] = k.public(alg)
+	}
+	return m
+}
+
+// sign builds a token the way an issuer does, with alg's own key.
 func (k testKeys) sign(t *testing.T, alg, kid string, claims map[string]any) string {
+	t.Helper()
+	return k.signBy(t, alg, alg, kid, claims)
+}
+
+// signBy signs an alg token with the key that belongs to signer's
+// algorithm: the way to make a token whose key and alg disagree.
+func (k testKeys) signBy(t *testing.T, alg, signer, kid string, claims map[string]any) string {
 	t.Helper()
 	hdr := map[string]string{"alg": alg, "typ": "JWT"}
 	if kid != "" {
@@ -141,14 +177,14 @@ func (k testKeys) sign(t *testing.T, alg, kid string, claims map[string]any) str
 	var sig []byte
 	var err error
 	switch {
-	case alg == "EdDSA":
+	case alg == "EdDSA" || alg == "Ed25519":
 		sig = ed25519.Sign(k.ed, []byte(signed))
 	case alg[:2] == "RS":
-		sig, err = rsa.SignPKCS1v15(rand.Reader, k.rsa, hashOf(alg), digestOf(hashOf(alg), signed))
+		sig, err = rsa.SignPKCS1v15(rand.Reader, k.rsa[signer], hashOf(alg), digestOf(hashOf(alg), signed))
 	case alg[:2] == "PS":
-		sig, err = rsa.SignPSS(rand.Reader, k.rsa, hashOf(alg), digestOf(hashOf(alg), signed), &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash})
+		sig, err = rsa.SignPSS(rand.Reader, k.rsa[signer], hashOf(alg), digestOf(hashOf(alg), signed), &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash})
 	case alg[:2] == "ES":
-		priv := k.ec[alg]
+		priv := k.ec[signer]
 		r, s, serr := ecdsa.Sign(rand.Reader, priv, digestOf(hashOf(alg), signed))
 		err = serr
 		size := (priv.Curve.Params().BitSize + 7) / 8
@@ -162,24 +198,13 @@ func (k testKeys) sign(t *testing.T, alg, kid string, claims map[string]any) str
 	return signed + "." + base64.RawURLEncoding.EncodeToString(sig)
 }
 
-var allPublicKeyAlgs = []string{"RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512", "EdDSA"}
-
-// kidFor is the key each algorithm signs with in these tests.
-func kidFor(alg string) string {
-	switch {
-	case alg == "EdDSA":
-		return "ed"
-	case alg[:2] == "ES":
-		return alg
-	}
-	return "rsa"
-}
+var allPublicKeyAlgs = []string{"RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512", "EdDSA", "Ed25519"}
 
 func TestPublicKeyVerifierAcceptsEveryAlgorithm(t *testing.T) {
-	k := newTestKeys(t)
+	k := sharedTestKeys()
 	now := time.Unix(1_800_000_000, 0)
 	v, err := NewPublicKeyVerifier(PublicKeyConfig{
-		Keys: k.keys, Algorithms: allPublicKeyAlgs, Audience: "api", Issuer: "idp",
+		Keys: k.keys(allPublicKeyAlgs...), Audience: "api", Issuer: "idp",
 		Now: func() time.Time { return now },
 	})
 	if err != nil {
@@ -187,7 +212,7 @@ func TestPublicKeyVerifierAcceptsEveryAlgorithm(t *testing.T) {
 	}
 	claims := map[string]any{"sub": "u1", "iss": "idp", "aud": "api", "exp": now.Unix() + 60}
 	for _, alg := range allPublicKeyAlgs {
-		p, err := v.Verify(k.sign(t, alg, kidFor(alg), claims))
+		p, err := v.Verify(k.sign(t, alg, alg, claims))
 		if err != nil || p.Subject != "u1" {
 			t.Errorf("%s: %+v, %v", alg, p, err)
 		}
@@ -199,11 +224,70 @@ func TestPublicKeyVerifierAcceptsEveryAlgorithm(t *testing.T) {
 	}
 }
 
-func TestPublicKeyVerifierRefusals(t *testing.T) {
-	k := newTestKeys(t)
+// RFC 8725 §3.1: each key is used with exactly one algorithm, checked when
+// the signature is verified. A verifier that accepts RS256 and PS256 still
+// refuses a PS256 token under the RS256 key — a valid PS256 signature by
+// that very key — and refuses at construction one key bound to both.
+func TestPublicKeyVerifierBindsEachKeyToOneAlgorithm(t *testing.T) {
+	k := sharedTestKeys()
+	now := time.Unix(1_800_000_000, 0)
+	v, err := NewPublicKeyVerifier(PublicKeyConfig{Keys: k.keys("RS256", "PS256"), Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := map[string]any{"sub": "u1", "exp": now.Unix() + 60}
+	for _, alg := range []string{"RS256", "PS256"} {
+		if _, err := v.Verify(k.sign(t, alg, alg, claims)); err != nil {
+			t.Errorf("%s under its own key: %v", alg, err)
+		}
+	}
+	if _, err := v.Verify(k.signBy(t, "PS256", "RS256", "RS256", claims)); !errors.Is(err, ErrTokenSignature) {
+		t.Errorf("a PS256 token under the RS256 key: %v, want ErrTokenSignature", err)
+	}
+	if _, err := v.Verify(k.signBy(t, "RS256", "PS256", "PS256", claims)); !errors.Is(err, ErrTokenSignature) {
+		t.Errorf("an RS256 token under the PS256 key: %v, want ErrTokenSignature", err)
+	}
+	one := &k.rsa["RS256"].PublicKey
+	if _, err := NewPublicKeyVerifier(PublicKeyConfig{Keys: map[string]PublicKey{
+		"a": {Key: one, Algorithm: "RS256"}, "b": {Key: one, Algorithm: "PS256"},
+	}}); err == nil {
+		t.Error("one key under two IDs with two algorithms: accepted")
+	}
+	// Two IDs for one key and one algorithm are an alias, not a second use.
+	if _, err := NewPublicKeyVerifier(PublicKeyConfig{Keys: map[string]PublicKey{
+		"a": {Key: one, Algorithm: "RS256"}, "b": {Key: one, Algorithm: "RS256"},
+	}}); err != nil {
+		t.Errorf("one key under two IDs with one algorithm: %v", err)
+	}
+}
+
+// RFC 9864 deprecates EdDSA for Ed25519, the same verification under a
+// fully-specified name: a key bound to either accepts a token naming either.
+func TestPublicKeyVerifierAcceptsTheFullySpecifiedEd25519(t *testing.T) {
+	k := sharedTestKeys()
 	now := time.Unix(1_800_000_000, 0)
 	claims := map[string]any{"sub": "u1", "exp": now.Unix() + 60}
-	v, err := NewPublicKeyVerifier(PublicKeyConfig{Keys: k.keys, Algorithms: []string{"RS256", "ES256"}, Now: func() time.Time { return now }})
+	for _, bound := range []string{"Ed25519", "EdDSA"} {
+		v, err := NewPublicKeyVerifier(PublicKeyConfig{
+			Keys: map[string]PublicKey{"ed": {Key: k.ed.Public(), Algorithm: bound}},
+			Now:  func() time.Time { return now },
+		})
+		if err != nil {
+			t.Fatalf("a key bound to %s: %v", bound, err)
+		}
+		for _, alg := range []string{"Ed25519", "EdDSA"} {
+			if _, err := v.Verify(k.sign(t, alg, "ed", claims)); err != nil {
+				t.Errorf("key bound to %s, token %s: %v", bound, alg, err)
+			}
+		}
+	}
+}
+
+func TestPublicKeyVerifierRefusals(t *testing.T) {
+	k := sharedTestKeys()
+	now := time.Unix(1_800_000_000, 0)
+	claims := map[string]any{"sub": "u1", "exp": now.Unix() + 60}
+	v, err := NewPublicKeyVerifier(PublicKeyConfig{Keys: k.keys("RS256", "ES256"), Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,8 +304,8 @@ func TestPublicKeyVerifierRefusals(t *testing.T) {
 		want        error
 	}{
 		{"alg none", unsigned, ErrTokenMalformed},
-		{"an algorithm not in the set", k.sign(t, "PS256", "rsa", claims), ErrTokenAlgorithm},
-		{"an ES256 alg on the RSA key", reKid(t, k.sign(t, "ES256", "ES256", claims), "rsa"), ErrTokenSignature},
+		{"an algorithm no key signs with", k.sign(t, "PS256", "PS256", claims), ErrTokenAlgorithm},
+		{"an ES256 alg on the RSA key", reKid(t, k.sign(t, "ES256", "ES256", claims), "RS256"), ErrTokenSignature},
 		{"an unknown kid", k.sign(t, "RS256", "gone", claims), ErrTokenSignature},
 		{"no kid among several keys", k.sign(t, "RS256", "", claims), ErrTokenSignature},
 		{"an ASN.1 ECDSA signature", es[:strings.LastIndexByte(es, '.')+1] + base64.RawURLEncoding.EncodeToString(asn1Sig), ErrTokenSignature},
@@ -256,22 +340,22 @@ func TestNewPublicKeyVerifierRefusesWhatCannotBeSafe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ed, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ok := map[string]crypto.PublicKey{"ed": ed}
+	k := sharedTestKeys()
+	ed := k.ed.Public()
 	for _, tc := range []struct {
 		name string
 		cfg  PublicKeyConfig
 	}{
-		{"no key", PublicKeyConfig{Algorithms: []string{"EdDSA"}}},
-		{"no algorithm", PublicKeyConfig{Keys: ok}},
-		{"HS256, which needs a secret", PublicKeyConfig{Keys: ok, Algorithms: []string{"HS256"}}},
-		{"none", PublicKeyConfig{Keys: ok, Algorithms: []string{"none"}}},
-		{"an RSA key of 1024 bits", PublicKeyConfig{Keys: map[string]crypto.PublicKey{"r": &small.PublicKey}, Algorithms: []string{"RS256"}}},
-		{"a key of no known type", PublicKeyConfig{Keys: map[string]crypto.PublicKey{"x": []byte("secret")}, Algorithms: []string{"RS256"}}},
-		{"a negative leeway", PublicKeyConfig{Keys: ok, Algorithms: []string{"EdDSA"}, Leeway: -time.Second}},
+		{"no key", PublicKeyConfig{}},
+		{"no algorithm", PublicKeyConfig{Keys: map[string]PublicKey{"ed": {Key: ed}}}},
+		{"HS256, which needs a secret", PublicKeyConfig{Keys: map[string]PublicKey{"ed": {Key: ed, Algorithm: "HS256"}}}},
+		{"none", PublicKeyConfig{Keys: map[string]PublicKey{"ed": {Key: ed, Algorithm: "none"}}}},
+		{"RS256 on an Ed25519 key", PublicKeyConfig{Keys: map[string]PublicKey{"ed": {Key: ed, Algorithm: "RS256"}}}},
+		{"ES384 on a P-256 key", PublicKeyConfig{Keys: map[string]PublicKey{"ec": {Key: &k.ec["ES256"].PublicKey, Algorithm: "ES384"}}}},
+		{"EdDSA on an RSA key", PublicKeyConfig{Keys: map[string]PublicKey{"r": {Key: &k.rsa["RS256"].PublicKey, Algorithm: "EdDSA"}}}},
+		{"an RSA key of 1024 bits", PublicKeyConfig{Keys: map[string]PublicKey{"r": {Key: &small.PublicKey, Algorithm: "RS256"}}}},
+		{"a key of no known type", PublicKeyConfig{Keys: map[string]PublicKey{"x": {Key: []byte("secret"), Algorithm: "RS256"}}}},
+		{"a negative leeway", PublicKeyConfig{Keys: map[string]PublicKey{"ed": {Key: ed, Algorithm: "EdDSA"}}, Leeway: -time.Second}},
 	} {
 		if _, err := NewPublicKeyVerifier(tc.cfg); err == nil {
 			t.Errorf("%s: accepted", tc.name)

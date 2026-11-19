@@ -28,8 +28,8 @@ signature before it reads a claim.
 
 | Field | Zero | Bounds | What it sets |
 |---|---|---|---|
-| `Keys` | — (required) | RSA ≥ 2048 bits, ECDSA on P-256, P-384 or P-521, Ed25519 | the issuer's public keys by `kid`; without `kid`, the only key |
-| `Algorithms` | — (required) | among RS256/384/512, PS256/384/512, ES256/384/512, EdDSA | the `alg` values accepted; each must fit the key its token names |
+| `Keys` | — (required) | RSA ≥ 2048 bits, ECDSA on P-256, P-384 or P-521, Ed25519 | the issuer's public keys by `kid`, each a `PublicKey` (key and algorithm); without `kid`, the only key |
+| `PublicKey.Algorithm` | — (required) | RS256/384/512 or PS256/384/512 on RSA, the ES of the key's curve on ECDSA, Ed25519 or EdDSA on Ed25519 (one algorithm under its two names, RFC 9864) | the one `alg` the key verifies: a token naming another is refused, and one key under two IDs with two algorithms is refused at construction |
 
 `Audience`, `Issuer`, `TenantClaim`, `Leeway`, `MaxTokenBytes` and `Now`
 are the HMAC verifier's, in the table above.
