@@ -2,9 +2,10 @@
 
 > A Go library for streaming data in batches: two core types, Stream[T] and
 > Batch[T], operators placed by what they retain between two batches, and a
-> periphery by external system — a PostgreSQL connector, native HTTP/1.1, 2
-> and 3, a QUIC transport, and a web layer that groups handler calls into
-> batches. The batch is the unit of transport, never the element. Go 1.26 or
+> periphery by external system — connectors to PostgreSQL, Redis, NATS
+> JetStream and CSV or JSON Lines files, native HTTP/1.1, 2 and 3, an
+> experimental QUIC transport, a web layer that groups handler calls into
+> batches, and long jobs resumed by phase. The batch is the unit of transport, never the element. Go 1.26 or
 > newer; the standard library plus golang.org/x/crypto and golang.org/x/text.
 
 Start with the index, which sorts every page by what the reader wants to do.
@@ -20,8 +21,11 @@ Start with the index, which sorts every page by what the reader wants to do.
 - [Files](docs/guide/files.md): CSV and JSON Lines in batches, each record bounded.
 - [Web](docs/guide/web.md): handlers, diagnostics, gateway, authentication, a clean stop.
 - [Native HTTP](docs/guide/httpstream.md): net/httpstream over HTTP/1.1, 2 and 3.
+- [Long jobs](docs/guide/long-jobs.md): a job of several hours resumed by phase where its process died.
+- [Experimental](docs/guide/experimental.md): what the label promises, and what net/quic does.
 - [Deployments](docs/guide/deployments.md): behind a proxy, TLS in front, what to watch.
 - [Limits](docs/guide/limits.md): what is not done, and why.
+- [Glossary](docs/glossary.md): every term the guides use, explained.
 
 ## Reference
 

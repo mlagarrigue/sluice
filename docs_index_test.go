@@ -49,6 +49,27 @@ func TestDocsIndexLinksEveryPage(t *testing.T) {
 	}
 }
 
+// llms.txt is what a code assistant reads when it has nothing else: every
+// guide and the glossary are linked from it, as docs/README.md links every
+// page. The guides to long jobs and to what "experimental" promises were
+// missing from it while every test passed.
+func TestLLMsTxtLinksEveryGuide(t *testing.T) {
+	index, err := os.ReadFile("llms.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guides, err := filepath.Glob("docs/guide/*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range append(guides, "docs/glossary.md") {
+		rel := filepath.ToSlash(p)
+		if !bytes.Contains(index, []byte("("+rel+")")) && !bytes.Contains(index, []byte("("+rel+"#")) {
+			t.Errorf("llms.txt does not link %s", rel)
+		}
+	}
+}
+
 // The index of decisions (docs/design/adr/README.md) is how a reader finds the
 // record that answers their question: one line per record, under the section
 // of its theme, linked by its exact title. A record added without its line,
