@@ -251,7 +251,10 @@ the HTTP/3 transport and a database round trip, but not nothing. `ServeH3` is ex
 `net/quic` under it, and serves HTTP/3 alone. `stream.ServeTLSAndH3`, with
 the same arguments, serves the three protocols from one call on one
 address, TCP and UDP: it announces HTTP/3 to TCP clients by `Alt-Svc`, and
-one drain stops everything.
+one drain stops everything. On a public UDP socket, `stream.H3` sets what
+the QUIC listener bounds — `MaxConns`, `MaxConnsPerIP`, unbounded at zero —
+and the HTTP/3 server's settings: `stream.H3{Listener: …}.ServeTLSAndH3(…)`,
+its zero value being the two functions.
 
 ```go
 srv := &http.Server{Addr: ":8443", Handler: mux, TLSConfig: tlsCfg}

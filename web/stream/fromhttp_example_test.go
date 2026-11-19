@@ -11,6 +11,7 @@ import (
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/net/httpstream"
+	"github.com/mlagarrigue/sluice/net/quic"
 	"github.com/mlagarrigue/sluice/web"
 	"github.com/mlagarrigue/sluice/web/stream"
 )
@@ -72,6 +73,19 @@ func ExampleServeTLSAndH3() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	err := stream.ServeTLSAndH3(ctx, srv, 10*time.Second, "cert.pem", "key.pem")
+	stop()
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+// On a public UDP socket the QUIC listener's bounds are set through H3:
+// every connection and every address held to a share.
+func ExampleH3() {
+	srv := &http.Server{Addr: ":8443", Handler: http.NotFoundHandler(), ReadHeaderTimeout: web.DefaultReadHeaderTimeout}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	h3 := stream.H3{Listener: quic.ListenerConfig{MaxConns: 10_000, MaxConnsPerIP: 64}}
+	err := h3.ServeTLSAndH3(ctx, srv, 10*time.Second, "cert.pem", "key.pem")
 	stop()
 	if err != nil {
 		log.Fatal(err)

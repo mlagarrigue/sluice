@@ -43,10 +43,35 @@ import (
 // the v1 promise the rest of the package makes (ADR 0020, ADR 0021): it may
 // change with net/quic, announced with a `!`.
 func ServeH3(ctx context.Context, srv *http.Server, grace time.Duration, certFile, keyFile string, closers ...web.Drainer) error {
+	return H3{}.ServeH3(ctx, srv, grace, certFile, keyFile, closers...)
+}
+
+// H3 is [ServeH3] and [ServeTLSAndH3] with the transport's settings within
+// reach: the QUIC listener's — MaxConns and MaxConnsPerIP, which are no
+// bound at zero and which a public UDP socket wants set, the keys, the
+// pending table — and the HTTP/3 server's. Its zero value is the package's
+// ServeH3 and ServeTLSAndH3.
+//
+//	err := stream.H3{Listener: quic.ListenerConfig{MaxConns: 10_000, MaxConnsPerIP: 64}}.
+//	    ServeTLSAndH3(ctx, srv, 10*time.Second, "", "", gw)
+//
+// srv's timeouts and MaxHeaderBytes fill the Transport fields left at zero,
+// as they fill the defaults under ServeH3; the session tickets follow
+// srv.TLSConfig, as over TCP, whatever Listener.SessionTickets says.
+//
+// Experimental: it runs on net/quic, as ServeH3 does, and stays outside the
+// v1 promise the rest of the package makes (ADR 0020, ADR 0021).
+type H3 struct {
+	Listener  quic.ListenerConfig
+	Transport httpstream.Config
+}
+
+// ServeH3 is the package's [ServeH3] with h's settings.
+func (h H3) ServeH3(ctx context.Context, srv *http.Server, grace time.Duration, certFile, keyFile string, closers ...web.Drainer) error {
 	if srv == nil {
 		return errors.New("stream: ServeH3 requires a server")
 	}
-	h3, ln, err := listenH3(srv, certFile, keyFile)
+	h3, ln, err := h.listen(srv, certFile, keyFile)
 	if err != nil {
 		return failedBefore(err, grace, h3, closers)
 	}
@@ -86,10 +111,16 @@ func ServeH3(ctx context.Context, srv *http.Server, grace time.Duration, certFil
 // Experimental: it runs on net/quic, as ServeH3 does, and stays outside the
 // v1 promise the rest of the package makes (ADR 0020, ADR 0021).
 func ServeTLSAndH3(ctx context.Context, srv *http.Server, grace time.Duration, certFile, keyFile string, closers ...web.Drainer) error {
+	return H3{}.ServeTLSAndH3(ctx, srv, grace, certFile, keyFile, closers...)
+}
+
+// ServeTLSAndH3 is the package's [ServeTLSAndH3] with h's settings for
+// HTTP/3; the TCP side is [web.ServeTLS]'s, as it is there.
+func (h H3) ServeTLSAndH3(ctx context.Context, srv *http.Server, grace time.Duration, certFile, keyFile string, closers ...web.Drainer) error {
 	if srv == nil {
 		return errors.New("stream: ServeTLSAndH3 requires a server")
 	}
-	h3, ln, err := listenH3(srv, certFile, keyFile)
+	h3, ln, err := h.listen(srv, certFile, keyFile)
 	if err != nil {
 		return failedBefore(err, grace, h3, closers)
 	}
@@ -144,11 +175,11 @@ func altSvc(h http.Handler, addr net.Addr) http.Handler {
 	})
 }
 
-// listenH3 builds the HTTP/3 server for srv and binds its QUIC listener on
-// srv.Addr in UDP. The server is returned even when the listener is not,
-// for the drain of a call that failed before serving.
-func listenH3(srv *http.Server, certFile, keyFile string) (*httpstream.Server, *quic.Listener, error) {
-	cfg := h3Config(srv)
+// listen builds the HTTP/3 server for srv and binds its QUIC listener on
+// srv.Addr in UDP, with h's settings. The server is returned even when the
+// listener is not, for the drain of a call that failed before serving.
+func (h H3) listen(srv *http.Server, certFile, keyFile string) (*httpstream.Server, *quic.Listener, error) {
+	cfg := h3Config(srv, h.Transport)
 	h3 := &httpstream.Server{Config: cfg, Handler: FromHTTP(srv.Handler)}
 	tlsCfg, err := h3TLS(srv.TLSConfig, certFile, keyFile)
 	if err != nil {
@@ -162,7 +193,9 @@ func listenH3(srv *http.Server, certFile, keyFile string) (*httpstream.Server, *
 	if err != nil {
 		return h3, nil, err
 	}
-	ln, err := quic.NewListener(pc, tlsCfg, params, quic.ListenerConfig{SessionTickets: !tlsCfg.SessionTicketsDisabled})
+	lcfg := h.Listener
+	lcfg.SessionTickets = !tlsCfg.SessionTicketsDisabled
+	ln, err := quic.NewListener(pc, tlsCfg, params, lcfg)
 	if err != nil {
 		_ = pc.Close()
 		return h3, nil, err
@@ -212,8 +245,8 @@ func h3TLS(base *tls.Config, certFile, keyFile string) (*tls.Config, error) {
 }
 
 // h3Config is srv's bounds in the native transport's terms, with
-// ServeTLS's defaults.
-func h3Config(srv *http.Server) httpstream.Config {
+// ServeTLS's defaults, over base: a field base sets is kept.
+func h3Config(srv *http.Server, base httpstream.Config) httpstream.Config {
 	read, write, idle := srv.ReadTimeout, srv.WriteTimeout, srv.IdleTimeout
 	if idle == 0 && read <= 0 {
 		idle = web.DefaultIdleTimeout
@@ -224,17 +257,17 @@ func h3Config(srv *http.Server) httpstream.Config {
 	if write == 0 {
 		write = web.DefaultWriteTimeout
 	}
-	var cfg httpstream.Config
-	if read > 0 {
+	cfg := base
+	if read > 0 && cfg.ReadTimeout == 0 {
 		cfg.ReadTimeout = read
 	}
-	if write > 0 {
+	if write > 0 && cfg.WriteTimeout == 0 {
 		cfg.WriteTimeout = write
 	}
-	if idle > 0 {
+	if idle > 0 && cfg.IdleTimeout == 0 {
 		cfg.IdleTimeout = idle
 	}
-	if srv.MaxHeaderBytes > 0 {
+	if srv.MaxHeaderBytes > 0 && cfg.MaxHeaderBytes == 0 {
 		cfg.MaxHeaderBytes = srv.MaxHeaderBytes
 	}
 	return cfg

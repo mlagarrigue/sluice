@@ -10,3 +10,4 @@ net/httpstream.Config.QUICConfig
 gateway.Partitions
 web/stream.ServeH3
 web/stream.ServeTLSAndH3
+web/stream.H3
