@@ -32,8 +32,8 @@ func TestAnOversizedBindLeavesTheConnectionUsable(t *testing.T) {
 			defer close(done)
 			// The first write the server sees is the second query's: the
 			// oversized one sent nothing.
-			if got := srv.read(); !strings.HasPrefix(got, "P") {
-				t.Errorf("the first write the server saw was %q, want the next query's Parse", got)
+			if got := srv.read(); got != "PBDEH" {
+				t.Errorf("the first write the server saw carried %q, want exactly the next query's PBDEH", got)
 			}
 			srv.answer()
 			srv.read() // its Sync
@@ -77,8 +77,8 @@ func TestAnOversizedPipelinePartLeavesTheConnectionUsable(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			if got := srv.read(); !strings.HasPrefix(got, "P") {
-				t.Errorf("the first write the server saw was %q, want the next query's Parse", got)
+			if got := srv.read(); got != "PBDEH" {
+				t.Errorf("the first write the server saw carried %q, want exactly the next query's PBDEH", got)
 			}
 			srv.answer()
 			srv.read() // its Sync
