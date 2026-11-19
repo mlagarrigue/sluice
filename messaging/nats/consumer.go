@@ -139,13 +139,13 @@ func (k *Consumer) Messages(ctx context.Context) sluice.Source[Msg] {
 			return
 		}
 		defer func() {
-			if err := k.round(ctx, sid, inbox, false, nil); err != nil && srcErr == nil {
+			if err := k.finish(ctx, sid); err != nil && srcErr == nil {
 				srcErr = err
 			}
 		}()
 		for ctx.Err() == nil {
-			var batch []Msg
-			if err := k.round(ctx, sid, inbox, true, &batch); err != nil {
+			batch, err := k.pull(ctx, sid, inbox)
+			if err != nil {
 				srcErr = err
 				return
 			}
@@ -178,13 +178,13 @@ func (k *Consumer) subscribe(ctx context.Context) (sid, inbox string, err error)
 	return sid, inbox, nil
 }
 
-// round sends the acknowledgements owed and, when pull is set, a pull
-// request, then reads its answer into batch. The last round, at the stream's
-// end, sends the acknowledgements and closes the inbox. Its I/O does not end
-// with ctx — ending the stream is noticed between pulls, and interrupting a
-// read would break the connection — but within Expires plus a margin, so a
-// server that stops answering still ends it.
-func (k *Consumer) round(ctx context.Context, sid, inbox string, pull bool, batch *[]Msg) error {
+// exchange holds the connection for one round of the consumer: it takes the
+// acknowledgements owed, writes them into the connection's buffer, and hands
+// over to then, which adds what the round sends and does the I/O. The I/O
+// does not end with ctx — ending the stream is noticed between pulls, and
+// interrupting a read would break the connection — but within Expires plus
+// a margin, so a server that stops answering still ends it.
+func (k *Consumer) exchange(ctx context.Context, then func(c *Conn, rctx context.Context) error) error {
 	k.mu.Lock()
 	acks := k.acks
 	k.acks = nil
@@ -202,52 +202,67 @@ func (k *Consumer) round(ctx context.Context, sid, inbox string, pull bool, batc
 	for _, a := range acks {
 		c.wb = appendPub(c.wb, a, "", []byte("+ACK"))
 	}
-	if !pull {
+	return then(c, rctx)
+}
+
+// pull sends the acknowledgements owed and a pull request, then reads its
+// answer: the messages, up to BatchMessages, until the server says the pull
+// is over.
+func (k *Consumer) pull(ctx context.Context, sid, inbox string) (batch []Msg, err error) {
+	err = k.exchange(ctx, func(c *Conn, rctx context.Context) error {
+		req, err := json.Marshal(struct {
+			Batch   int   `json:"batch"`
+			Expires int64 `json:"expires"`
+		}{k.cfg.BatchMessages, k.cfg.Expires.Nanoseconds()})
+		if err != nil {
+			return err
+		}
+		c.wb = appendPub(c.wb, "$JS.API.CONSUMER.MSG.NEXT."+k.cfg.Stream+"."+k.cfg.Consumer, inbox, req)
+		if _, err := c.nc.Write(c.wb); err != nil {
+			return c.fail(rctx, err)
+		}
+		for len(batch) < k.cfg.BatchMessages {
+			o, err := c.next()
+			if err != nil {
+				return c.fail(rctx, err)
+			}
+			if o.kind != opMsg || o.sid != sid {
+				continue
+			}
+			if code, desc, ok := o.statusOnly(); ok {
+				switch code {
+				case 100: // an idle heartbeat
+					continue
+				case 404, 408: // no messages, or the pull expired: it is over
+					return nil
+				case 409:
+					// A consumer gone or push based ends the stream, and so does
+					// a pull the server refuses on its own terms — "Exceeded
+					// MaxRequestBatch of N", MaxRequestExpires, MaxWaiting,
+					// "Message Size Exceeds MaxBytes" — which every next pull
+					// would draw again at once, delivering nothing.
+					if d := strings.ToLower(desc); strings.Contains(d, "consumer deleted") || strings.Contains(d, "push based") || strings.Contains(d, "exceed") {
+						return &StatusError{Code: code, Description: desc}
+					}
+					return nil // the pull ended for a reason of its own; the next one asks again
+				}
+				return &StatusError{Code: code, Description: desc}
+			}
+			batch = append(batch, Msg{Subject: o.subject, Reply: o.reply, Header: o.header, Data: o.data})
+		}
+		return nil
+	})
+	return batch, err
+}
+
+// finish, at the stream's end, sends the acknowledgements owed and closes
+// the inbox.
+func (k *Consumer) finish(ctx context.Context, sid string) error {
+	return k.exchange(ctx, func(c *Conn, rctx context.Context) error {
 		c.wb = append(c.wb, "UNSUB "+sid+"\r\n"...)
 		if _, err := c.nc.Write(c.wb); err != nil {
 			return c.fail(rctx, err)
 		}
 		return nil
-	}
-	req, err := json.Marshal(struct {
-		Batch   int   `json:"batch"`
-		Expires int64 `json:"expires"`
-	}{k.cfg.BatchMessages, k.cfg.Expires.Nanoseconds()})
-	if err != nil {
-		return err
-	}
-	c.wb = appendPub(c.wb, "$JS.API.CONSUMER.MSG.NEXT."+k.cfg.Stream+"."+k.cfg.Consumer, inbox, req)
-	if _, err := c.nc.Write(c.wb); err != nil {
-		return c.fail(rctx, err)
-	}
-	for len(*batch) < k.cfg.BatchMessages {
-		o, err := c.next()
-		if err != nil {
-			return c.fail(rctx, err)
-		}
-		if o.kind != opMsg || o.sid != sid {
-			continue
-		}
-		if code, desc := status(o.header); code != 0 && len(o.data) == 0 {
-			switch code {
-			case 100: // an idle heartbeat
-				continue
-			case 404, 408: // no messages, or the pull expired: it is over
-				return nil
-			case 409:
-				// A consumer gone or push based ends the stream, and so does
-				// a pull the server refuses on its own terms — "Exceeded
-				// MaxRequestBatch of N", MaxRequestExpires, MaxWaiting,
-				// "Message Size Exceeds MaxBytes" — which every next pull
-				// would draw again at once, delivering nothing.
-				if d := strings.ToLower(desc); strings.Contains(d, "consumer deleted") || strings.Contains(d, "push based") || strings.Contains(d, "exceed") {
-					return &StatusError{Code: code, Description: desc}
-				}
-				return nil // the pull ended for a reason of its own; the next one asks again
-			}
-			return &StatusError{Code: code, Description: desc}
-		}
-		*batch = append(*batch, Msg{Subject: o.subject, Reply: o.reply, Header: o.header, Data: o.data})
-	}
-	return nil
+	})
 }

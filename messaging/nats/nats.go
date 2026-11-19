@@ -406,7 +406,7 @@ func (c *Conn) Request(ctx context.Context, subject string, data []byte) (Msg, e
 		if o.kind != opMsg || o.sid != sid {
 			continue // what a stopped consumer left on its inbox
 		}
-		if code, desc := status(o.header); code != 0 && len(o.data) == 0 {
+		if code, desc, ok := o.statusOnly(); ok {
 			return Msg{}, &StatusError{Code: code, Description: desc}
 		}
 		return Msg{Subject: o.subject, Reply: o.reply, Header: o.header, Data: o.data}, nil

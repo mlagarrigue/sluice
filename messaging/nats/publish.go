@@ -113,7 +113,7 @@ func (c *Conn) PublishAcked(ctx context.Context, msgs []Outbound) ([]PubAck, err
 
 // pubAck reads one reply to a published message.
 func pubAck(o op) PubAck {
-	if code, desc := status(o.header); code != 0 && len(o.data) == 0 {
+	if code, desc, ok := o.statusOnly(); ok {
 		return PubAck{Err: &StatusError{Code: code, Description: desc}}
 	}
 	var r struct {

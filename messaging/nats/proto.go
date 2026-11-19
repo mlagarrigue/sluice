@@ -203,3 +203,12 @@ func status(header []byte) (code int, desc string) {
 	}
 	return n, string(bytes.TrimSpace(d))
 }
+
+// statusOnly reports a status message — a header with a status code and no
+// payload, which is how JetStream answers a pull or a request it has no
+// message for — with its code and description. A message that carries data
+// is a message, whatever its header says.
+func (o *op) statusOnly() (code int, desc string, ok bool) {
+	code, desc = status(o.header)
+	return code, desc, code != 0 && len(o.data) == 0
+}
