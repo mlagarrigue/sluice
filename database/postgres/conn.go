@@ -925,10 +925,9 @@ type QueryConfig struct {
 // Query runs sql with the given binary parameters and returns its rows as a
 // stream.
 //
-//	ids := pgtype.AppendArray(nil, pgtype.Array[int64]{Elems: keys},
-//	    pgtype.Int8Codec()) // one parameter, a thousand keys
+//	ids := ArrayParamOf(pgtype.Int8Codec(), keys) // one parameter, a thousand keys
 //	src := conn.Query(ctx, "SELECT id, total FROM orders WHERE id = ANY($1)",
-//	    [][]byte{ids}, QueryConfig{BatchRows: 1024})
+//	    []Param{ids}, QueryConfig{BatchRows: 1024})
 //	for b := range src.Stream() {
 //	    for _, row := range b.Items { ... }
 //	}

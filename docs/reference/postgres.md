@@ -9,6 +9,7 @@ what is refused, and the types its codec reads and writes. The
 - [Connection settings](#connection-settings)
 - [Query settings](#query-settings)
 - [Logical replication settings](#logical-replication-settings)
+- [Copy, transaction and listen settings](#copy-transaction-and-listen-settings)
 - [The codecs](#the-codecs)
 - [Ranges and multiranges](#ranges-and-multiranges)
 
@@ -62,6 +63,29 @@ Each field left at zero takes the value of the "Zero" column; what
 | `BatchBytes` | 64 MiB | 0 to 1 GiB | bytes of messages per batch |
 | `StatusInterval` | 10 s | ≥ 0 | how often, at most, the acknowledged position is reported |
 | `MaxRelations` | 16,384 | 0 to 1,048,576 | distinct relations the stream keeps described; the table's byte budget is 4 KiB each |
+
+## Copy, transaction and listen settings
+
+`CopyConfig`, the last argument of `Conn.CopyFrom`:
+
+| Field | Zero | Bounds | What it sets |
+|---|---|---|---|
+| `RowsPerTx` | — (required) | > 0 | the rows one transaction carries at least before it commits; a floor, never splitting a batch |
+
+`TxConfig`, the argument of `Conn.Begin`:
+
+| Field | Zero | Bounds | What it sets |
+|---|---|---|---|
+| `Isolation` | `IsolationDefault`: the server's | a named level | the isolation the transaction opens at |
+| `ReadOnly` | off | | READ ONLY: the server refuses a write |
+| `StatementTimeout` | the server's own `statement_timeout` | ≥ 0 | each statement's bound on the server, for the transaction's lifetime |
+
+`ListenConfig`, the last argument of `Listen`:
+
+| Field | Zero | Bounds | What it sets |
+|---|---|---|---|
+| `Channels` | — (required) | ≤ 63 bytes each, none empty | the channels to LISTEN on, case kept |
+| `BatchNotifications` | `sluice.DefaultBatchSize` | ≥ 0 | notifications per batch; a batch ends when the next is not already received |
 
 ## The codecs
 
