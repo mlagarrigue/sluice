@@ -427,7 +427,10 @@ func (d *hpackDecoder) literalBytes(block []byte, n uint8, arena *[]byte, budget
 	if ownName {
 		name = owned[:mid:mid]
 	}
-	return name, owned[mid:], rest, nil
+	// Capped at its length, as the name is: the value is a dynamic-table
+	// entry's, shared with every later block that names it, and an append
+	// by a handler would write into the room bytes.Clone left after it.
+	return name, capped(owned[mid:]), rest, nil
 }
 
 // strArena decodes a string literal onto the block's arena.

@@ -163,7 +163,7 @@ func appendCrumb(cookie []byte, owned bool, crumb []byte) []byte {
 
 // hostFieldName is shared rather than built per request: the name is a
 // constant, and it is the value that borrows the read buffer.
-var hostFieldName = []byte("host")
+var hostFieldName = capped([]byte("host"))
 
 // withAuthority delivers a request's authority under the one name a [Handler]
 // can ask for whichever protocol carried it.
@@ -197,7 +197,7 @@ func withAuthority(regular []Header, authority []byte, protocolErr error) ([]Hea
 		}
 		return regular, nil
 	}
-	return append(regular, Header{Name: hostFieldName, Value: authority}), nil
+	return append(regular, Header{Name: hostFieldName, Value: capped(authority)}), nil
 }
 
 // connectionSpecific reports whether name — lowercase, as HTTP/2 and HTTP/3
@@ -769,7 +769,7 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 	if err != nil {
 		return req, 0, out, err
 	}
-	req.Method, req.Target = method, target
+	req.Method, req.Target = capped(method), capped(target) // as a field is
 
 	// HTTP/1.1 keeps the connection open unless told otherwise; HTTP/1.0
 	// closes it unless told otherwise. Getting this backwards is a hang, not
@@ -1089,7 +1089,10 @@ func parseHeaderLine(line []byte) (Header, error) {
 	if colon < 0 {
 		return Header{}, fmt.Errorf("%w: a header field has no colon", ErrMalformed)
 	}
-	name := line[:colon]
+	// Every slice handed to the handler is capped at its length: an append
+	// to one copies instead of writing over the bytes behind it, which are
+	// the rest of the buffer — the next request of a pipelined batch.
+	name := line[:colon:colon]
 	// No space before the colon. RFC 9112 §5.1 requires the rejection, and
 	// tolerating it is exactly how one hop reads a header the next does not.
 	if !isToken(name) {
@@ -1106,7 +1109,7 @@ func parseHeaderLine(line []byte) (Header, error) {
 			return Header{}, fmt.Errorf("%w: a header value holds a control character", ErrMalformed)
 		}
 	}
-	return Header{Name: name, Value: value}, nil
+	return Header{Name: name, Value: capped(value)}, nil
 }
 
 // checkFraming settles how the body is framed before a byte of it is read.
