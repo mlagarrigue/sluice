@@ -84,6 +84,57 @@ func TestH2FramesReadWithEOFAreRead(t *testing.T) {
 	}
 }
 
+// eofConn returns its whole input together with io.EOF from one Read, then
+// io.EOF alone, and takes every write.
+type eofConn struct {
+	net.Conn
+	data []byte
+	done atomic.Bool
+}
+
+func (c *eofConn) Read(p []byte) (int, error) {
+	if c.done.Swap(true) {
+		return 0, io.EOF
+	}
+	return copy(p, c.data), io.EOF
+}
+
+func (c *eofConn) Write(p []byte) (int, error)      { return len(p), nil }
+func (c *eofConn) SetDeadline(time.Time) error      { return nil }
+func (c *eofConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *eofConn) SetWriteDeadline(time.Time) error { return nil }
+func (c *eofConn) Close() error                     { return nil }
+func (c *eofConn) RemoteAddr() net.Addr             { return &net.TCPAddr{} }
+func (c *eofConn) LocalAddr() net.Addr              { return &net.TCPAddr{} }
+
+// The connection level of the frame test above: a Read that returns the
+// preface, SETTINGS and a whole request together with io.EOF — what
+// crypto/tls returns at TLS 1.2 when the close_notify is already behind
+// them — hands the request to the handler. It ended the connection as a
+// protocol error, the request never handled.
+func TestH2ARequestReadWithEOFIsHandled(t *testing.T) {
+	in := []byte(Preface)
+	var err error
+	if in, err = appendH2Frame(in, h2Frame{Type: frameSettings}); err != nil {
+		t.Fatal(err)
+	}
+	if in, err = appendH2Frame(in, h2Frame{Type: frameHeaders, Flags: flagEndHeaders | flagEndStream, StreamID: 1, Payload: headBlock("GET", "/x")}); err != nil {
+		t.Fatal(err)
+	}
+	var handled atomic.Int64
+	serveErr := ServeH2Conn(t.Context(), &eofConn{data: in}, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		handled.Add(int64(b.Len()))
+		out := make([]Response, b.Len())
+		for i := range out {
+			out[i] = Response{Status: 200, Body: []byte("ok")}
+		}
+		return sluice.Batch[Response]{Items: out}
+	})
+	if handled.Load() != 1 {
+		t.Fatalf("a whole request read together with io.EOF: %d requests handled, ServeH2Conn returned %v", handled.Load(), serveErr)
+	}
+}
+
 // gatedTLSConn holds the server's first application Read until gate is
 // closed, so that the client's request and its close_notify are both in the
 // socket by then. Ordered by a channel, nothing timed.
