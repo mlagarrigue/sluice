@@ -126,3 +126,44 @@ func TestAGoexitInFDoesNotReturnNormally(t *testing.T) {
 		}
 	})
 }
+
+// Every worker leaves by runtime.Goexit just as the job queue is full: the
+// producer, about to hand over one more batch, has no worker left to take
+// it, and only the panics the workers sent can end that send. It waited on
+// the queue alone and hung (CI, Go 1.26, 2026-11-19). The gate opens as the
+// source yields the batch that finds the queue full, so the workers exit
+// while the producer stands at the hand-off.
+func TestUnorderedEndsWhenEveryWorkerLeavesByGoexitAtAFullQueue(t *testing.T) {
+	const workers = 4
+	gate := make(chan struct{})
+	src := func(yield func(sluice.Batch[int]) bool) {
+		for i := range 4 * workers {
+			if i == 2*workers { // workers in hand and a full queue: this one waits
+				close(gate)
+			}
+			if !yield(sluice.Batch[int]{Items: []int{i}}) {
+				return
+			}
+		}
+	}
+	f := func(sluice.Batch[int]) sluice.Batch[int] {
+		<-gate
+		runtime.Goexit()
+		return sluice.Batch[int]{}
+	}
+	done := make(chan bool, 1)
+	go func() {
+		panicked := false
+		defer func() { done <- panicked }()
+		defer func() { panicked = recover() != nil }()
+		parallel.Unordered(src, workers, f)(func(sluice.Batch[int]) bool { return true })
+	}()
+	select {
+	case panicked := <-done:
+		if !panicked {
+			t.Error("the call returned normally after every worker left by Goexit")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the call hung with every worker gone")
+	}
+}

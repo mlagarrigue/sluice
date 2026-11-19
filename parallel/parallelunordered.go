@@ -220,8 +220,19 @@ func runParallelUnordered[A, B any](s sluice.Stream[A], workers int, f func(slui
 		}
 		j.Items = batch.Grow(j.Items, len(b.Items))
 		copy(j.Items, b.Items)
-		jobs <- j
-		return true
+		// The queue may be full of jobs no worker will take: a worker whose
+		// f called runtime.Goexit is gone, and when every one is, only the
+		// panics they sent can end this send. Watched here as above.
+		for {
+			select {
+			case jobs <- j:
+				return true
+			case r := <-results:
+				if !emit(r) {
+					return false
+				}
+			}
+		}
 	})
 
 	finish()
