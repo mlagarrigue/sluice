@@ -32,12 +32,18 @@ func cut(r httpstream.Response) (chunks []string, stopped any) {
 // write that misses its deadline, so the client never takes a cut answer
 // for a whole one.
 func TestFromHTTPWriteDeadlineInThePast(t *testing.T) {
-	var set, wrote error
+	// The handler's goroutine outlives answer once the answer streams: what
+	// it saw comes back on a channel, not in variables read beside it.
+	type seen struct{ set, wrote error }
+	saw := make(chan seen, 1)
 	h := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		set = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(-time.Second))
-		_, wrote = io.WriteString(w, "late")
+		set := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(-time.Second))
+		_, wrote := io.WriteString(w, "late")
+		saw <- seen{set, wrote}
 	})
 	out := answer(t, h, get("/"))
+	got := <-saw
+	set, wrote := got.set, got.wrote
 	if set != nil {
 		t.Fatalf("SetWriteDeadline = %v, want nil", set)
 	}
