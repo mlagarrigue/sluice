@@ -119,6 +119,17 @@ func (c Config) GoString() string { return c.String() }
 // GoString, and marshals the exported fields.
 func (c Config) LogValue() slog.Value { return slog.StringValue(c.String()) }
 
+// Validate reports what [Connect] would refuse in c before dialling — a
+// negative Database or MaxReplyBytes — and nil when it would accept it. A
+// configuration read at deployment is checked with it before any connection
+// is opened; Connect runs the same check, so the two never disagree. What
+// only the server can refuse — the password, a database past its count —
+// stays for Connect.
+func (c Config) Validate() error {
+	_, err := c.resolve()
+	return err
+}
+
 func (c Config) resolve() (Config, error) {
 	var errs []error
 	if c.Database < 0 {
