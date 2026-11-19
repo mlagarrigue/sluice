@@ -92,6 +92,19 @@ type Config struct {
 	TLS *tls.Config
 }
 
+// Validate reports what [Connect] would refuse in c before dialling — a
+// negative MaxPayloadBytes — and nil when it would accept it. A
+// configuration read at deployment is checked with it before any connection
+// is opened; Connect runs the same check, so the two never disagree. What
+// only the server can refuse — the credentials, TLS it does not offer or
+// requires — stays for Connect.
+func (c Config) Validate() error {
+	if c.MaxPayloadBytes < 0 {
+		return fmt.Errorf("nats: MaxPayloadBytes %d is negative; zero means %d", c.MaxPayloadBytes, DefaultMaxPayloadBytes)
+	}
+	return nil
+}
+
 // String prints the configuration with the password hidden: %v and %+v on
 // a struct print every field, and a password that reaches a log is a
 // credential anyone reading the log holds.
@@ -137,8 +150,8 @@ type serverInfo struct {
 // CONNECT and a PING, and returns once the PONG comes back — or the
 // server's -ERR, as an [*Error], for credentials it refuses.
 func Connect(ctx context.Context, dial DialFunc, cfg Config) (*Conn, error) {
-	if cfg.MaxPayloadBytes < 0 {
-		return nil, fmt.Errorf("nats: MaxPayloadBytes %d is negative; zero means %d", cfg.MaxPayloadBytes, DefaultMaxPayloadBytes)
+	if err := cfg.Validate(); err != nil {
+		return nil, err
 	}
 	if cfg.MaxPayloadBytes == 0 {
 		cfg.MaxPayloadBytes = DefaultMaxPayloadBytes
