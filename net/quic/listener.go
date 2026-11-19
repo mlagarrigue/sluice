@@ -11,9 +11,11 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -333,6 +335,31 @@ type ListenerConfig struct {
 	// 16,384; a negative value is refused by [NewListener].
 	MaxEarlyDataTickets int
 }
+
+// String prints the configuration with StatelessResetKey and TokenKey
+// hidden when they are set: either one, in a log, ends connections or mints
+// tokens, as a password in a log is a credential. A zero key, which asks
+// for a random one per listener, prints as zero.
+func (c ListenerConfig) String() string {
+	type plain ListenerConfig // no methods: printing it does not come back here
+	s := fmt.Sprintf("quic.ListenerConfig%+v", plain(c))
+	for _, k := range []struct {
+		name string
+		key  [32]byte
+	}{{"StatelessResetKey:", c.StatelessResetKey}, {"TokenKey:", c.TokenKey}} {
+		if k.key != [32]byte{} {
+			s = strings.Replace(s, k.name+fmt.Sprint(k.key), k.name+"<redacted>", 1)
+		}
+	}
+	return s
+}
+
+// GoString hides the keys from %#v too.
+func (c ListenerConfig) GoString() string { return c.String() }
+
+// LogValue hides them from slog: the JSON handler calls neither String nor
+// GoString, and marshals the exported fields.
+func (c ListenerConfig) LogValue() slog.Value { return slog.StringValue(c.String()) }
 
 // Listener owns one [net.PacketConn] shared by the connections it serves, and
 // is how this package serves at all. It demultiplexes
