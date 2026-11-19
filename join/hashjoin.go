@@ -297,8 +297,7 @@ func HashJoin[A, B any, K comparable, R any](
 		panic("sluice: HashJoin requires MaxEntries <= 2^31-1, the table's " +
 			"int32 index range")
 	}
-	return probeTable(probe, build, keyProbe, keyBuild, combine, limit,
-		newMapTable[K, B](limit.MaxEntries))
+	return probeTable(probe, build, keyProbe, keyBuild, combine, limit)
 }
 
 // checkJoinArgs rejects a misconfigured join where it is wired rather than when
@@ -324,7 +323,8 @@ func checkJoinArgs[A, B any, K comparable, R any](
 // probeTable is the join's body. The build side is materialised lazily —
 // on the first pull, not at construction — so that a join that is never
 // consumed reads nothing, which is the contract every other operator here
-// keeps.
+// keeps. The table is made there too: a Stream consumed twice runs twice,
+// and each run builds its own, as two runs at once must.
 func probeTable[A, B any, K comparable, R any](
 	probe sluice.Stream[A],
 	build sluice.Stream[B],
@@ -332,9 +332,9 @@ func probeTable[A, B any, K comparable, R any](
 	keyBuild func(B) K,
 	combine func(A, B) R,
 	limit BuildLimit,
-	table *mapTable[K, B],
 ) sluice.Stream[R] {
 	return func(yield func(sluice.Batch[R]) bool) {
+		table := newMapTable[K, B](limit.MaxEntries)
 		fillTable(build, keyBuild, limit, table)
 
 		// Output goes through the shared emitter, as in every other join:
