@@ -248,6 +248,12 @@ func h3TLS(base *tls.Config, certFile, keyFile string) (*tls.Config, error) {
 // ServeTLS's defaults, over base: a field base sets is kept.
 func h3Config(srv *http.Server, base httpstream.Config) httpstream.Config {
 	read, write, idle := srv.ReadTimeout, srv.WriteTimeout, srv.IdleTimeout
+	// net/http waits between two requests for ReadTimeout when IdleTimeout
+	// is zero, and Serve gives the default only to a server with neither:
+	// the same server waits as long over TCP and over HTTP/3.
+	if idle == 0 && read > 0 {
+		idle = read
+	}
 	if idle == 0 && read <= 0 {
 		idle = web.DefaultIdleTimeout
 	}
