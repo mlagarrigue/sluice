@@ -113,13 +113,14 @@ func TestVector(t *testing.T) {
 // tells its array header from another's.
 func TestExtensionCodecsCarryTheirOIDs(t *testing.T) {
 	const oid, arr = 16400, 16401
+	oids := TypeOIDs{OID: oid, ArrayOID: arr}
 	for name, got := range map[string][2]uint32{
-		"citext":    {CitextCodec(oid, arr).OID, CitextCodec(oid, arr).ArrayOID},
-		"hstore":    {HstoreCodec(oid, arr).OID, HstoreCodec(oid, arr).ArrayOID},
-		"ltree":     {LtreeCodec(oid, arr).OID, LtreeCodec(oid, arr).ArrayOID},
-		"lquery":    {LqueryCodec(oid, arr).OID, LqueryCodec(oid, arr).ArrayOID},
-		"ltxtquery": {LtxtqueryCodec(oid, arr).OID, LtxtqueryCodec(oid, arr).ArrayOID},
-		"vector":    {VectorCodec(oid, arr).OID, VectorCodec(oid, arr).ArrayOID},
+		"citext":    {CitextCodec(oids).OID, CitextCodec(oids).ArrayOID},
+		"hstore":    {HstoreCodec(oids).OID, HstoreCodec(oids).ArrayOID},
+		"ltree":     {LtreeCodec(oids).OID, LtreeCodec(oids).ArrayOID},
+		"lquery":    {LqueryCodec(oids).OID, LqueryCodec(oids).ArrayOID},
+		"ltxtquery": {LtxtqueryCodec(oids).OID, LtxtqueryCodec(oids).ArrayOID},
+		"vector":    {VectorCodec(oids).OID, VectorCodec(oids).ArrayOID},
 	} {
 		if got != [2]uint32{oid, arr} {
 			t.Errorf("%s codec has OIDs %v", name, got)
@@ -130,16 +131,16 @@ func TestExtensionCodecsCarryTheirOIDs(t *testing.T) {
 			t.Errorf("%s codec does not round-trip", name)
 		}
 	}
-	c := CitextCodec(oid, arr)
+	c := CitextCodec(oids)
 	v, err := c.Decode(c.Append(nil, "Ab"))
 	check("citext", err == nil && v == "Ab")
-	l := LqueryCodec(oid, arr)
+	l := LqueryCodec(oids)
 	q, err := l.Decode(l.Append(nil, "*.a"))
 	check("lquery", err == nil && q == "*.a")
-	x := LtxtqueryCodec(oid, arr)
+	x := LtxtqueryCodec(oids)
 	q, err = x.Decode(x.Append(nil, "a & b"))
 	check("ltxtquery", err == nil && q == "a & b")
-	vc := VectorCodec(oid, arr)
+	vc := VectorCodec(oids)
 	vec, err := vc.Decode(vc.Append(nil, []float32{1}))
 	check("vector", err == nil && slices.Equal(vec, []float32{1}))
 }

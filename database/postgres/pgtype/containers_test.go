@@ -521,7 +521,7 @@ func roundTrip[T any](c Codec[T], v T) func(*testing.T) (uint32, uint32) {
 // codec, and its array is an Array over the result.
 func TestRangeCodecOfACreatedType(t *testing.T) {
 	const oid, arrayOID = 16500, 16499
-	floatrange := RangeCodec(Float8Codec(), oid, arrayOID)
+	floatrange := RangeCodec(Float8Codec(), TypeOIDs{OID: oid, ArrayOID: arrayOID})
 	in := Array[Range[float64]]{Elems: []Range[float64]{
 		{Lower: RangeBound[float64]{Value: -0.5, Inclusive: true}, Upper: RangeBound[float64]{Unbounded: true}},
 		{},

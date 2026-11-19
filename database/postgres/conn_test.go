@@ -1908,9 +1908,9 @@ func TestLookupTypeIsOneRoundTrip(t *testing.T) {
 
 	srv := &fakeServer{responses: [][]byte{script}}
 	conn := NewConn(srv, Config{})
-	oid, arrayOID, err := conn.LookupType(t.Context(), "hstore")
-	if err != nil || oid != 16385 || arrayOID != 16390 {
-		t.Fatalf("LookupType = %d, %d, %v; want 16385, 16390", oid, arrayOID, err)
+	oids, err := conn.LookupType(t.Context(), "hstore")
+	if err != nil || oids != (pgtype.TypeOIDs{OID: 16385, ArrayOID: 16390}) {
+		t.Fatalf("LookupType = %+v, %v; want 16385, 16390", oids, err)
 	}
 	sent := srv.clientMessages(t)
 	want := []byte{pgwire.FrontendParse, pgwire.FrontendBind, pgwire.FrontendDescribe, pgwire.FrontendExecute, pgwire.FrontendSync}

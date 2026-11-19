@@ -470,9 +470,9 @@ arrays included: [reference](../reference/postgres.md#ranges-and-multiranges).
 A range's codec puts a range in a container: an `int4range[]` is
 `DecodeArray` over `Int4RangeCodec()`. A range type a database created
 (`CREATE TYPE … AS RANGE`) is read the same way with
-`RangeCodec(Float8Codec(), oid, arrayOID)` — and `MultirangeCodec` for its
-multirange —, the OIDs returned by `conn.LookupType` (next section); build
-it once and keep it.
+`RangeCodec(Float8Codec(), oids)` — and `MultirangeCodec` for its
+multirange —, `oids` the `pgtype.TypeOIDs` returned by `conn.LookupType`
+(next section); build it once and keep it.
 
 Over the thirteen types of the table, `AppendArray` and `DecodeArray` run
 as fast as loops written for each type, or faster: the codec of each of
@@ -489,14 +489,15 @@ element, the price of code written once for every type.
 
 `hstore`, `citext`, `ltree` and pgvector's `vector` have no fixed OID: each
 database that runs `CREATE EXTENSION` gives them the next free one.
-`conn.LookupType(ctx, name)` returns the type's OID and its array's,
+`conn.LookupType(ctx, name)` returns the type's OID and its array's, as one
+`pgtype.TypeOIDs` — two numbers that cannot be swapped by mistake —,
 resolved as a cast would be (the search path, or `schema.type`), and
 `ErrUnknownType` when the database does not know it. The codec is built on
 those OIDs, once per database:
 
 ```go
-oid, arrayOID, err := conn.LookupType(ctx, "hstore")
-hstore := pgtype.HstoreCodec(oid, arrayOID)
+oids, err := conn.LookupType(ctx, "hstore")
+hstore := pgtype.HstoreCodec(oids)
 param := postgres.Param{OID: hstore.OID, Value: hstore.Append(nil, pgtype.Hstore{
 	"color": {Value: "red", Valid: true},
 })}

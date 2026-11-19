@@ -14,7 +14,7 @@ import (
 var ErrUnknownType = errors.New("postgres: the database has no type of that name")
 
 // LookupType returns the OID of the type the database knows by name, and the
-// OID of its array — zero when it has none. The name is resolved as a cast to
+// OID of its array — zero when it has none — as one [pgtype.TypeOIDs]. The name is resolved as a cast to
 // it would be: through the search path, or qualified by its schema
 // (`public.hstore`).
 //
@@ -22,12 +22,13 @@ var ErrUnknownType = errors.New("postgres: the database has no type of that name
 // by each database at CREATE EXTENSION, so it is looked up once per database
 // and handed to the type's Codec.
 //
-//	oid, arrayOID, err := conn.LookupType(ctx, "hstore")
-//	hstore := pgtype.HstoreCodec(oid, arrayOID)
+//	oids, err := conn.LookupType(ctx, "hstore")
+//	hstore := pgtype.HstoreCodec(oids)
 //
 // The OIDs stay valid until the type is dropped; an extension dropped and
 // created again has new ones.
-func (c *Conn) LookupType(ctx context.Context, name string) (oid, arrayOID uint32, err error) {
+func (c *Conn) LookupType(ctx context.Context, name string) (oids pgtype.TypeOIDs, err error) {
+	var oid, arrayOID uint32
 	src := c.Query(ctx, "SELECT t.oid, t.typarray FROM pg_catalog.pg_type t WHERE t.oid = pg_catalog.to_regtype($1)",
 		// One row at most, so the whole result in one round trip: a batch of
 		// one row asked for under FetchAuto costs a second Execute to learn
@@ -47,11 +48,11 @@ func (c *Conn) LookupType(ctx context.Context, name string) (oid, arrayOID uint3
 	})
 	switch {
 	case src.Err() != nil:
-		return 0, 0, src.Err()
+		return pgtype.TypeOIDs{}, src.Err()
 	case err != nil:
-		return 0, 0, err
+		return pgtype.TypeOIDs{}, err
 	case !found:
-		return 0, 0, fmt.Errorf("%w: %q", ErrUnknownType, name)
+		return pgtype.TypeOIDs{}, fmt.Errorf("%w: %q", ErrUnknownType, name)
 	}
-	return oid, arrayOID, nil
+	return pgtype.TypeOIDs{OID: oid, ArrayOID: arrayOID}, nil
 }

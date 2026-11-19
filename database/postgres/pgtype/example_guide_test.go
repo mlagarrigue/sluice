@@ -120,7 +120,7 @@ func ExampleDecodeRange() {
 // caller reads them from pg_type once and builds the codec with them.
 func ExampleHstoreCodec() {
 	const hstoreOID, hstoreArrayOID = 16385, 16390 // SELECT oid, typarray FROM pg_type WHERE typname = 'hstore'
-	c := pgtype.HstoreCodec(hstoreOID, hstoreArrayOID)
+	c := pgtype.HstoreCodec(pgtype.TypeOIDs{OID: hstoreOID, ArrayOID: hstoreArrayOID})
 	h, err := c.Decode(c.Append(nil, pgtype.Hstore{"color": {Value: "blue", Valid: true}, "size": {}}))
 	fmt.Println(h["color"].Value, h["size"].Valid, err)
 	// Output: blue false <nil>

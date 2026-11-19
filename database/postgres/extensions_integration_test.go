@@ -12,13 +12,13 @@ import (
 // lookup resolves a type the suite needs, failing the test when the database
 // lacks it: init.sql creates hstore, citext and ltree in every database the
 // suite runs against.
-func lookup(t *testing.T, conn *postgres.Conn, name string) (oid, arrayOID uint32) {
+func lookup(t *testing.T, conn *postgres.Conn, name string) pgtype.TypeOIDs {
 	t.Helper()
-	oid, arrayOID, err := conn.LookupType(t.Context(), name)
+	oids, err := conn.LookupType(t.Context(), name)
 	if err != nil {
 		t.Fatalf("LookupType(%q): %v — run .devcontainer/postgres/init.sql against the database", name, err)
 	}
-	return oid, arrayOID
+	return oids
 }
 
 func TestIntegrationLookupType(t *testing.T) {
@@ -32,22 +32,22 @@ func TestIntegrationLookupType(t *testing.T) {
 		{"double precision", pgtype.OIDFloat8, pgtype.OIDFloat8Array},
 		{"int4[]", pgtype.OIDInt4Array, 0}, // an array type has no array of its own
 	} {
-		oid, arrayOID, err := conn.LookupType(t.Context(), tc.name)
-		if err != nil || oid != tc.oid || arrayOID != tc.arrayOID {
-			t.Errorf("LookupType(%q) = %d, %d, %v; want %d, %d", tc.name, oid, arrayOID, err, tc.oid, tc.arrayOID)
+		oids, err := conn.LookupType(t.Context(), tc.name)
+		if err != nil || oids.OID != tc.oid || oids.ArrayOID != tc.arrayOID {
+			t.Errorf("LookupType(%q) = %+v, %v; want %d, %d", tc.name, oids, err, tc.oid, tc.arrayOID)
 		}
 	}
 	// An extension's type has an OID past the built-in range, which is the
 	// whole reason it is looked up.
-	if oid, arrayOID := lookup(t, conn, "hstore"); oid < 16384 || arrayOID < 16384 {
-		t.Errorf("hstore = %d, %d; want OIDs a database assigned", oid, arrayOID)
+	if oids := lookup(t, conn, "hstore"); oids.OID < 16384 || oids.ArrayOID < 16384 {
+		t.Errorf("hstore = %+v; want OIDs a database assigned", oids)
 	}
-	if _, _, err := conn.LookupType(t.Context(), "sluice_no_such_type"); !errors.Is(err, postgres.ErrUnknownType) {
+	if _, err := conn.LookupType(t.Context(), "sluice_no_such_type"); !errors.Is(err, postgres.ErrUnknownType) {
 		t.Errorf("an unknown type: err = %v, want ErrUnknownType", err)
 	}
 	// The connection is usable after a lookup that found nothing.
-	if oid, _ := lookup(t, conn, "bool"); oid != pgtype.OIDBool {
-		t.Errorf("bool = %d after an unknown type", oid)
+	if oids := lookup(t, conn, "bool"); oids.OID != pgtype.OIDBool {
+		t.Errorf("bool = %d after an unknown type", oids.OID)
 	}
 }
 
@@ -94,7 +94,7 @@ func TestIntegrationExtensionTypesMatchTheServer(t *testing.T) {
 // sets SLUICE_PG_VECTOR, which turns its absence into a failure there.
 func TestIntegrationVectorMatchesTheServer(t *testing.T) {
 	conn := dial(t)
-	oid, arrayOID, err := conn.LookupType(t.Context(), "vector")
+	oids, err := conn.LookupType(t.Context(), "vector")
 	if errors.Is(err, postgres.ErrUnknownType) {
 		if os.Getenv("SLUICE_PG_VECTOR") != "" {
 			t.Fatal("SLUICE_PG_VECTOR is set and the database has no vector type")
@@ -104,7 +104,7 @@ func TestIntegrationVectorMatchesTheServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	vector := pgtype.VectorCodec(oid, arrayOID)
+	vector := pgtype.VectorCodec(oids)
 	codecMatchesServer(t, conn, `'[1.5, -2, 0, 3.25]'::vector`, vector, []float32{1.5, -2, 0, 3.25})
 	codecMatchesServer(t, conn, `'[0.1]'::vector(1)`, vector, []float32{0.1})
 }

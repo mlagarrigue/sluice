@@ -42,13 +42,13 @@ const (
 // [Int4RangeCodec] — and how a range type a database created is read:
 //
 //	// CREATE TYPE floatrange AS RANGE (subtype = float8), OIDs looked up
-//	floatrange := pgtype.RangeCodec(pgtype.Float8Codec(), oid, arrayOID)
+//	floatrange := pgtype.RangeCodec(pgtype.Float8Codec(), oids)
 //
 // Each call builds the two functions anew; build it once and keep it.
-func RangeCodec[T any](elem Codec[T], oid, arrayOID uint32) Codec[Range[T]] {
+func RangeCodec[T any](elem Codec[T], oids TypeOIDs) Codec[Range[T]] {
 	return Codec[Range[T]]{
-		OID:      oid,
-		ArrayOID: arrayOID,
+		OID:      oids.OID,
+		ArrayOID: oids.ArrayOID,
 		Append:   func(dst []byte, r Range[T]) []byte { return AppendRange(dst, r, elem) },
 		Decode:   func(b []byte) (Range[T], error) { return DecodeRange(b, elem) },
 	}
@@ -57,10 +57,10 @@ func RangeCodec[T any](elem Codec[T], oid, arrayOID uint32) Codec[Range[T]] {
 // MultirangeCodec returns the Codec of a multirange type whose ranges are
 // over elem, as [RangeCodec] does for a range. Its Decode allocates the
 // Multirange it returns, which owns its memory as every Codec's value does.
-func MultirangeCodec[T any](elem Codec[T], oid, arrayOID uint32) Codec[Multirange[T]] {
+func MultirangeCodec[T any](elem Codec[T], oids TypeOIDs) Codec[Multirange[T]] {
 	return Codec[Multirange[T]]{
-		OID:      oid,
-		ArrayOID: arrayOID,
+		OID:      oids.OID,
+		ArrayOID: oids.ArrayOID,
 		Append:   func(dst []byte, m Multirange[T]) []byte { return AppendMultirange(dst, m, elem) },
 		Decode:   func(b []byte) (Multirange[T], error) { return DecodeMultirange(nil, b, elem) },
 	}
@@ -69,19 +69,19 @@ func MultirangeCodec[T any](elem Codec[T], oid, arrayOID uint32) Codec[Multirang
 // The built-in ones are built once: each function below returns a copy of a
 // Codec whose functions already exist.
 var (
-	int4Range = RangeCodec(Int4Codec(), OIDInt4Range, OIDInt4RangeArray)
-	int8Range = RangeCodec(Int8Codec(), OIDInt8Range, OIDInt8RangeArray)
-	numRange  = RangeCodec(NumericCodec(), OIDNumRange, OIDNumRangeArray)
-	tsRange   = RangeCodec(TimestampCodec(), OIDTSRange, OIDTSRangeArray)
-	tstzRange = RangeCodec(TimestampTZCodec(), OIDTSTZRange, OIDTSTZRangeArray)
-	dateRange = RangeCodec(DateCodec(), OIDDateRange, OIDDateRangeArray)
+	int4Range = RangeCodec(Int4Codec(), TypeOIDs{OIDInt4Range, OIDInt4RangeArray})
+	int8Range = RangeCodec(Int8Codec(), TypeOIDs{OIDInt8Range, OIDInt8RangeArray})
+	numRange  = RangeCodec(NumericCodec(), TypeOIDs{OIDNumRange, OIDNumRangeArray})
+	tsRange   = RangeCodec(TimestampCodec(), TypeOIDs{OIDTSRange, OIDTSRangeArray})
+	tstzRange = RangeCodec(TimestampTZCodec(), TypeOIDs{OIDTSTZRange, OIDTSTZRangeArray})
+	dateRange = RangeCodec(DateCodec(), TypeOIDs{OIDDateRange, OIDDateRangeArray})
 
-	int4Multirange = MultirangeCodec(Int4Codec(), OIDInt4Multirange, OIDInt4MultirangeArray)
-	int8Multirange = MultirangeCodec(Int8Codec(), OIDInt8Multirange, OIDInt8MultirangeArray)
-	numMultirange  = MultirangeCodec(NumericCodec(), OIDNumMultirange, OIDNumMultirangeArray)
-	tsMultirange   = MultirangeCodec(TimestampCodec(), OIDTSMultirange, OIDTSMultirangeArray)
-	tstzMultirange = MultirangeCodec(TimestampTZCodec(), OIDTSTZMultirange, OIDTSTZMultirangeArray)
-	dateMultirange = MultirangeCodec(DateCodec(), OIDDateMultirange, OIDDateMultirangeArray)
+	int4Multirange = MultirangeCodec(Int4Codec(), TypeOIDs{OIDInt4Multirange, OIDInt4MultirangeArray})
+	int8Multirange = MultirangeCodec(Int8Codec(), TypeOIDs{OIDInt8Multirange, OIDInt8MultirangeArray})
+	numMultirange  = MultirangeCodec(NumericCodec(), TypeOIDs{OIDNumMultirange, OIDNumMultirangeArray})
+	tsMultirange   = MultirangeCodec(TimestampCodec(), TypeOIDs{OIDTSMultirange, OIDTSMultirangeArray})
+	tstzMultirange = MultirangeCodec(TimestampTZCodec(), TypeOIDs{OIDTSTZMultirange, OIDTSTZMultirangeArray})
+	dateMultirange = MultirangeCodec(DateCodec(), TypeOIDs{OIDDateMultirange, OIDDateMultirangeArray})
 )
 
 // Int4RangeCodec returns the Codec of int4range.
