@@ -281,7 +281,9 @@ func (c *Conn) cancelBound() time.Duration {
 // under way is waited for — to the server's confirmation or to
 // CancelTimeout — so that the next statement is not sent before the server
 // has acted on this one's request. It reports how the cancellation went:
-// nil when none was sent or when the server confirmed it.
+// nil when none was sent, or when the server confirmed it and the statement
+// ended in time; errCancelNoEffect when the confirmed statement outlived
+// CancelTimeout.
 func (w *cancelWatch) end() error {
 	if w == nil || w.stop() {
 		return nil

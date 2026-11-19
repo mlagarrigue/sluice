@@ -140,7 +140,7 @@ func parseError(body []byte) (*Error, error) {
 		case 'd':
 			e.DataType = val
 		case 'P', 'p':
-			// pgtype.Numeric by the protocol's definition. A value that is not one
+			// A decimal integer by the protocol's definition. A value that is not one
 			// would otherwise surface as Position 0, which reads as "the
 			// server gave none" — a silent loss rather than a refusal.
 			n, err := strconv.Atoi(val)
@@ -439,7 +439,7 @@ func (r *RowBlock) appendRow(body []byte) error {
 	// batch on it. What is checked is the ceiling the int32 offsets in ends
 	// allow, and the nolint annotations below lean on it: past 2 GiB
 	// int32(len(r.buf)) wraps negative, which [Rows.Value] reads as NULL —
-	// silent corruption, not an error. A reader that polls Full never reaches
+	// silent corruption, not an error. A reader that polls RowBlock.full never reaches
 	// it; a caller that appends without polling does, and fails.
 	//
 	// What a well-formed row adds to buf is its values: the body less the

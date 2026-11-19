@@ -37,7 +37,8 @@ type PhaseStore struct {
 	Config Config
 
 	// Table is where the records live, "schema.table" or "table" (the
-	// search path's), each part letters, digits and '_'.
+	// search path's), each part a letter or '_' followed by letters, digits
+	// and '_'.
 	Table string
 }
 
@@ -55,7 +56,7 @@ func (s *PhaseStore) table() (string, error) {
 	}
 	for i, p := range parts {
 		if !phaseIdent.MatchString(p) {
-			return "", fmt.Errorf("postgres: PhaseStore.Table %q: %q is not letters, digits and '_'", s.Table, p)
+			return "", fmt.Errorf("postgres: PhaseStore.Table %q: %q is not a letter or '_' followed by letters, digits and '_'", s.Table, p)
 		}
 		parts[i] = `"` + p + `"`
 	}

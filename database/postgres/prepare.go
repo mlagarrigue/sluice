@@ -31,8 +31,10 @@ type stmtKey struct {
 //
 // It is a map plus an intrusive list rather than a container/list, because the
 // hot path is "hit, move to front" and that wants no allocation. The list is
-// two slices of indices into entries, which keeps the whole thing in three
-// allocations for the connection's lifetime rather than one per statement.
+// threaded through the entries themselves — each stmtEntry's prev and next
+// are indices into entries, head and tail its ends — and free holds the
+// indices an eviction left, so a statement reuses a slot rather than
+// allocating one; entries grows by append to the cache's bound and stays.
 type stmtCache struct {
 	max     int
 	byKey   map[stmtKey]int // key → index into entries

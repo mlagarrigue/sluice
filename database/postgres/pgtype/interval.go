@@ -59,7 +59,7 @@ type Interval struct {
 // the last day of the month reached: 31 January plus one month is 29 February
 // in a leap year and 28 February otherwise, 31 March plus one month is 30
 // April — the server's rule, not [time.Time.AddDate]'s, which carries the
-// surplus into the next month (2 March). The days then move the date on the
+// surplus into the next month (3 March, or 2 March in a leap year). The days then move the date on the
 // calendar, keeping the wall-clock time, so a daylight-saving change in t's
 // location is handled by the standard library rather than by a constant here.
 func (iv Interval) AddTo(t time.Time) time.Time {

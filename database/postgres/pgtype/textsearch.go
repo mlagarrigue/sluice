@@ -54,7 +54,7 @@ func DecodeTSVector(dst []Lexeme, b []byte) ([]Lexeme, error) {
 	}
 	n := binary.BigEndian.Uint32(b)
 	b = b[4:]
-	if uint64(n) > uint64(len(b))/3 { // a lexeme is at least a byte, a NUL and a count
+	if uint64(n) > uint64(len(b))/3 { // a lexeme is at least a NUL and a two-byte count, three bytes when its word is empty
 		return dst, fmt.Errorf("%w: tsvector declares %d lexemes in %d bytes", ErrCodec, n, len(b))
 	}
 	for i := range n {

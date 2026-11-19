@@ -6,7 +6,8 @@ import (
 )
 
 // Null carries a value that may be absent, without spending a pointer on
-// saying so: a nullable column of an entity, a nullable bound of a range.
+// saying so: a nullable column of an entity. (A range's bound that may be
+// absent is a [RangeBound] with Unbounded, not a Null.)
 //
 //	type Product struct {
 //	    Weight pgtype.Null[float64] `db:"weight"` // NULL when !Weight.Valid

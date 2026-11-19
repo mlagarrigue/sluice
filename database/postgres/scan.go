@@ -192,7 +192,8 @@ func ScanBool(dst []bool, rows *RowBlock, col int) ([]bool, error) {
 }
 
 // ScanText appends column col of every row as strings. It reads text,
-// varchar, bpchar, name, json, xml and refcursor columns — the built-ins
+// varchar, bpchar, name, json, unknown (an untyped literal such as
+// SELECT 'a'), xml and refcursor columns — the built-ins
 // whose binary form is the string's own bytes — and, like every scanner, a
 // column of a type the database created, such as an enum, whose binary form
 // is its label.
