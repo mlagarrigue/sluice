@@ -356,18 +356,47 @@ func TestH2EmptyTrailerSectionIsNoTrailers(t *testing.T) {
 	}
 }
 
-// The 400 answering a malformed HEAD request has no body: the method is read
-// back out of the fields buildRequest refused.
+// The 400 answering a malformed HEAD request has no body: buildRequest
+// returns the method it read beside its error. A regular field ahead of the
+// one refused is the case that mattered: buildRequest compacts the regular
+// fields into the start of the slice as it reads, so the method looked up
+// in it again afterwards had been overwritten, and the 400 went out with a
+// body.
 func TestH2MalformedHeadRequestIsAnsweredWithoutABody(t *testing.T) {
-	s := newBenchH2Server(Config{BodyDelivery: BodyWhole})
-	feed(t, s, headersFrame(1, endBoth, headBlock("HEAD", "/", [2]string{"connection", "close"})))
-	got := queued(t, s)
-	heads := framesOn(got, frameHeaders, 1)
-	if len(heads) != 1 || h2Status(heads[0].Payload) != 400 || heads[0].Flags&flagEndStream == 0 {
-		t.Fatalf("want one 400 head ending the stream, got %d heads", len(heads))
+	for name, extra := range map[string][][2]string{
+		"refused field first":       {{"connection", "close"}},
+		"a regular field before it": {{"accept", "*/*"}, {"connection", "close"}},
+	} {
+		s := newBenchH2Server(Config{BodyDelivery: BodyWhole})
+		feed(t, s, headersFrame(1, endBoth, headBlock("HEAD", "/", extra...)))
+		got := queued(t, s)
+		heads := framesOn(got, frameHeaders, 1)
+		if len(heads) != 1 || h2Status(heads[0].Payload) != 400 || heads[0].Flags&flagEndStream == 0 {
+			t.Fatalf("%s: want one 400 head ending the stream, got %d heads", name, len(heads))
+		}
+		if n := len(framesOn(got, frameData, 1)); n != 0 {
+			t.Errorf("%s: the 400 to a HEAD request carried %d DATA frames", name, n)
+		}
 	}
-	if n := len(framesOn(got, frameData, 1)); n != 0 {
-		t.Fatalf("the 400 to a HEAD request carried %d DATA frames", n)
+}
+
+// buildRequest returns the method it read with its error, whatever the
+// error and whatever it compacted over.
+func TestMethodSurvivesABuildRequestError(t *testing.T) {
+	fields := []Header{
+		{[]byte(":method"), []byte("HEAD")},
+		{[]byte(":path"), []byte("/")},
+		{[]byte(":scheme"), []byte("https")},
+		{[]byte(":authority"), []byte("x")},
+		{[]byte("accept"), []byte("*/*")},
+		{[]byte("connection"), []byte("close")},
+	}
+	req, _, err := buildRequest(fields, ErrH2Protocol)
+	if err == nil {
+		t.Fatal("a connection field was accepted")
+	}
+	if string(req.Method) != "HEAD" {
+		t.Errorf("the method returned with the error is %q, want HEAD", req.Method)
 	}
 }
 

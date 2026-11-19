@@ -285,8 +285,11 @@ func checkRequestTrailer(h Header, protocolErr error) error {
 //
 // Errors wrap protocolErr; the caller maps them to its own stream error. The
 // regular fields are returned in fields' own storage, the pseudo-headers
-// dropped; declared is the content-length the head stated, or -1.
-func buildRequest(fields []Header, protocolErr error) (req Request, declared int, err error) {
+// dropped; declared is the content-length the head stated, or -1. With an
+// error, the Request carries the method alone, when it was read: the answer
+// to a HEAD has no body, and fields, compacted as it is read, no longer
+// holds it.
+func buildRequest(fields []Header, protocolErr error) (_ Request, declared int, err error) {
 	var method, path, scheme, authority []byte
 	regular := fields[:0]
 	declared = -1
@@ -297,11 +300,11 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 		// variable allocates per field (verified with -gcflags=-m), while a
 		// conversion feeding only a switch or comparison does not.
 		if len(h.Name) == 0 {
-			return req, 0, fmt.Errorf("%w: an empty field name", protocolErr)
+			return Request{Method: method}, 0, fmt.Errorf("%w: an empty field name", protocolErr)
 		}
 		if h.Name[0] == ':' {
 			if seenRegular {
-				return req, 0, fmt.Errorf("%w: pseudo-header %s after a regular field", protocolErr, cite(h.Name))
+				return Request{Method: method}, 0, fmt.Errorf("%w: pseudo-header %s after a regular field", protocolErr, cite(h.Name))
 			}
 			var dst *[]byte
 			switch string(h.Name) {
@@ -314,17 +317,17 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 			case ":authority":
 				dst = &authority
 			default:
-				return req, 0, fmt.Errorf("%w: unknown pseudo-header %s", protocolErr, cite(h.Name))
+				return Request{Method: method}, 0, fmt.Errorf("%w: unknown pseudo-header %s", protocolErr, cite(h.Name))
 			}
 			if *dst != nil {
-				return req, 0, fmt.Errorf("%w: %s appears twice", protocolErr, h.Name)
+				return Request{Method: method}, 0, fmt.Errorf("%w: %s appears twice", protocolErr, h.Name)
 			}
 			*dst = h.Value
 			continue
 		}
 		seenRegular = true
 		if !lowerASCII(h.Name) {
-			return req, 0, fmt.Errorf("%w: %s is not lowercase", protocolErr, cite(h.Name))
+			return Request{Method: method}, 0, fmt.Errorf("%w: %s is not lowercase", protocolErr, cite(h.Name))
 		}
 		// The h1 parser's octet rules, applied to what HPACK or QPACK decoded
 		// (RFC 9113 §8.2.1, RFC 9114 §4.1.2). Either can carry any byte, so
@@ -332,15 +335,15 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 		// reaches the handler — and the first hop that re-serialises the
 		// request toward HTTP/1.1 turns that value into a second request.
 		if !isToken(h.Name) {
-			return req, 0, fmt.Errorf("%w: %s is not a header name", protocolErr, cite(h.Name))
+			return Request{Method: method}, 0, fmt.Errorf("%w: %s is not a header name", protocolErr, cite(h.Name))
 		}
 		if !validFieldValue(h.Value) {
-			return req, 0, fmt.Errorf("%w: the value of %s holds a control character", protocolErr, cite(h.Name))
+			return Request{Method: method}, 0, fmt.Errorf("%w: the value of %s holds a control character", protocolErr, cite(h.Name))
 		}
 		if connectionSpecific(h.Name) {
 			// Connection-specific fields have no meaning here and are how
 			// one request becomes two HTTP/1.1 requests at the next hop.
-			return req, 0, fmt.Errorf("%w: the connection-specific field %s", protocolErr, cite(h.Name))
+			return Request{Method: method}, 0, fmt.Errorf("%w: the connection-specific field %s", protocolErr, cite(h.Name))
 		}
 		switch string(h.Name) {
 		case "host":
@@ -351,31 +354,31 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 			// with :authority, and a hop reading the other would route on
 			// a host nothing checked (RFC 9113 §8.3.1, RFC 9114 §4.3.1).
 			if hostSeen {
-				return req, 0, fmt.Errorf("%w: host appears twice", protocolErr)
+				return Request{Method: method}, 0, fmt.Errorf("%w: host appears twice", protocolErr)
 			}
 			hostSeen = true
 			if !validAuthority(h.Value) {
-				return req, 0, fmt.Errorf("%w: host %s is not an authority", protocolErr, cite(h.Value))
+				return Request{Method: method}, 0, fmt.Errorf("%w: host %s is not an authority", protocolErr, cite(h.Value))
 			}
 		case "te":
 			// RFC 9113 §8.2.2: no value other than "trailers" — compared
 			// without case, as RFC 9110 §10.1.4's ABNF string is.
 			if !equalFold(h.Value, "trailers") {
-				return req, 0, fmt.Errorf("%w: TE may only be \"trailers\"", protocolErr)
+				return Request{Method: method}, 0, fmt.Errorf("%w: TE may only be \"trailers\"", protocolErr)
 			}
 		case "content-length":
 			// Remembered for the end of the stream, where the DATA sum is
 			// known. A repeat is refused as the h1 parser refuses it: two
 			// lengths on one request is the smuggling family's opening move.
 			if declared >= 0 {
-				return req, 0, fmt.Errorf("%w: content-length appears twice", protocolErr)
+				return Request{Method: method}, 0, fmt.Errorf("%w: content-length appears twice", protocolErr)
 			}
 			n, over, ok := decimalLength(h.Value, math.MaxInt) // the caller's bound decides the rest
 			switch {
 			case !ok:
-				return req, 0, fmt.Errorf("%w: content-length %s is not a length", protocolErr, cite(h.Value))
+				return Request{Method: method}, 0, fmt.Errorf("%w: content-length %s is not a length", protocolErr, cite(h.Value))
 			case over:
-				return req, 0, fmt.Errorf("%w: content-length %s", ErrTooLarge, cite(h.Value))
+				return Request{Method: method}, 0, fmt.Errorf("%w: content-length %s", ErrTooLarge, cite(h.Value))
 			}
 			declared = n
 		case "cookie":
@@ -403,31 +406,31 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 		// request without :path, and it keeps a CONNECT with :path and
 		// :scheme from reaching the handler.
 		if scheme != nil || path != nil {
-			return req, 0, fmt.Errorf("%w: a CONNECT with :scheme or :path", protocolErr)
+			return Request{Method: method}, 0, fmt.Errorf("%w: a CONNECT with :scheme or :path", protocolErr)
 		}
 		if authority == nil {
-			return req, 0, fmt.Errorf("%w: a CONNECT without :authority", protocolErr)
+			return Request{Method: method}, 0, fmt.Errorf("%w: a CONNECT without :authority", protocolErr)
 		}
-		return req, 0, fmt.Errorf("%w: a tunnel to %s", errConnect, cite(authority))
+		return Request{Method: method}, 0, fmt.Errorf("%w: a tunnel to %s", errConnect, cite(authority))
 	}
 	if method == nil || path == nil || scheme == nil {
-		return req, 0, fmt.Errorf("%w: a request without :method, :path and :scheme", protocolErr)
+		return Request{Method: method}, 0, fmt.Errorf("%w: a request without :method, :path and :scheme", protocolErr)
 	}
 	// Pseudo-header values compose the request line of any downstream
 	// HTTP/1.1 hop, which is why RFC 9113 §10.3 and RFC 9114 §10.3 ask for
 	// octet-level checks on them specifically: these are the same refusals
 	// the h1 request line makes.
 	if !isToken(method) {
-		return req, 0, fmt.Errorf("%w: :method is not a token", protocolErr)
+		return Request{Method: method}, 0, fmt.Errorf("%w: :method is not a token", protocolErr)
 	}
 	if !isScheme(scheme) {
-		return req, 0, fmt.Errorf("%w: :scheme is not a URI scheme", protocolErr)
+		return Request{Method: method}, 0, fmt.Errorf("%w: :scheme is not a URI scheme", protocolErr)
 	}
 	if err := checkTarget(method, path, protocolErr); err != nil {
-		return req, 0, err
+		return Request{Method: method}, 0, err
 	}
 	if authority != nil && !validAuthority(authority) {
-		return req, 0, fmt.Errorf("%w: :authority %s is not an authority", protocolErr, cite(authority))
+		return Request{Method: method}, 0, fmt.Errorf("%w: :authority %s is not an authority", protocolErr, cite(authority))
 	}
 	// RFC 9110 §4.2.1, RFC 9114 §4.3.1: a scheme with a mandatory authority
 	// component needs :authority or host, as HTTP/1.1 needs Host (400).
@@ -435,11 +438,11 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 	// three protocols only. Other schemes, which may have no authority at
 	// all, are delivered as they came.
 	if authority == nil && !hostSeen && (equalFold(scheme, "http") || equalFold(scheme, "https")) {
-		return req, 0, fmt.Errorf("%w: no :authority or host for scheme %s", protocolErr, cite(scheme))
+		return Request{Method: method}, 0, fmt.Errorf("%w: no :authority or host for scheme %s", protocolErr, cite(scheme))
 	}
 	regular, err = withAuthority(regular, authority, protocolErr)
 	if err != nil {
-		return req, 0, err
+		return Request{Method: method}, 0, err
 	}
 	return Request{Method: method, Target: path, Headers: regular, KeepAlive: true}, declared, nil
 }

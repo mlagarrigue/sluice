@@ -1522,12 +1522,12 @@ func (a *h3Assembler) requestFrame(st *h3Stream, f h3Frame) error {
 				// Well formed and not served: a status on the stream,
 				// as the bounds get one, where H3_MESSAGE_ERROR would
 				// call a conforming request malformed.
-				return h3StatusFail(501, nil, "%w", err)
+				return h3StatusFail(501, req.Method, "%w", err)
 			}
 			if errors.Is(err, ErrTooLarge) {
 				// A content-length past the machine word: well
 				// formed and too large, 413 as below.
-				return h3StatusFail(413, nil, "%w", err)
+				return h3StatusFail(413, req.Method, "%w", err)
 			}
 			return err
 		}

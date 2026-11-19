@@ -717,24 +717,17 @@ func (s *h2Conn) headers(f h2Frame) (*h2Stream, error) {
 			// Well formed and not served: a status on the stream, as the
 			// bounds get one, where a reset would call a conforming
 			// request malformed (RFC 9110 §15.6.2).
-			return nil, statusFail(st.id, 501, nil, "%w", err)
+			return nil, statusFail(st.id, 501, req.Method, "%w", err)
 		}
 		// §8.1.1: a malformed request is a stream error. It is the whole
 		// point of the per-stream path — one bad request among a hundred
-		// costs that one. The method is looked up again for the 400's
-		// shape: buildRequest returned nothing. A content-length past the
+		// costs that one. The 400 takes its shape from the method
+		// buildRequest returned with its error. A content-length past the
 		// machine word is well formed and too large: 413, as below.
-		var method []byte
-		for _, h := range fields {
-			if string(h.Name) == ":method" {
-				method = h.Value
-				break
-			}
-		}
 		if errors.Is(err, ErrTooLarge) {
-			return nil, statusFail(st.id, 413, method, "%w", err)
+			return nil, statusFail(st.id, 413, req.Method, "%w", err)
 		}
-		return nil, malformedFail(st.id, method, err)
+		return nil, malformedFail(st.id, req.Method, err)
 	}
 	st.headers, st.declared, st.req = req.Headers, declared, req
 	st.req.Headers = req.Headers[:len(req.Headers):len(req.Headers)]
