@@ -255,6 +255,10 @@ counters your program reads when it likes
   window, losses, retransmissions, the datagram size reached; and
   `Listener.DiscardedPackets` for what never reached a connection, and
   `Listener.ReadErrors` for a socket that fails its reads.
+- **Refusals at the bounds** (`httpstream.Server.RefusedConns`): the
+  connections closed unread at `MaxConns` and at `MaxConnsPerIP`. A count
+  that climbs means a bound too low for the traffic, or a peer opening
+  more than its share.
 - **A pipeline's flow** (`probe`): `s = probe.Count(s, &c)` counts the
   batches and elements that pass a point into a `probe.Counter`; the
   difference between two counters says where elements stop.

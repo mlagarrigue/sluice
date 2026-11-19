@@ -272,6 +272,10 @@ type connSet struct {
 	// goroutine parked for the life of every connection.
 	draining   context.Context
 	beginDrain context.CancelFunc
+
+	// refusedMax and refusedPerIP count the connections add turned away at
+	// MaxConns and at MaxConnsPerIP: what [Server.RefusedConns] reports.
+	refusedMax, refusedPerIP atomic.Uint64
 }
 
 // newConnSet takes the resolved Config: its two bounds, zero unbounded, and
@@ -368,8 +372,14 @@ func (s *connSet) add(c net.Conn) *connState {
 	ip, hasIP := s.remoteIP(c)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed || (s.max > 0 && len(s.conns) >= s.max) ||
-		(hasIP && s.maxPerIP > 0 && s.byIP[ip] >= s.maxPerIP) {
+	switch {
+	case s.closed:
+		return nil
+	case s.max > 0 && len(s.conns) >= s.max:
+		s.refusedMax.Add(1)
+		return nil
+	case hasIP && s.maxPerIP > 0 && s.byIP[ip] >= s.maxPerIP:
+		s.refusedPerIP.Add(1)
 		return nil
 	}
 	st := &connState{drain: s.draining}

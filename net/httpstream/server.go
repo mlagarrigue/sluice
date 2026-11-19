@@ -60,6 +60,20 @@ type Server struct {
 	h3Conns   map[*quic.Conn]struct{} // HTTP/3 connections being served
 }
 
+// RefusedConns reports how many connections Serve has closed unread since
+// the server started because they would have taken it past
+// [Config.MaxConns], and how many past [Config.MaxConnsPerIP]: what a bound
+// costs the peers it turns away, read when the program likes, as
+// [github.com/mlagarrigue/sluice/net/quic.Listener.DiscardedPackets] is
+// (ADR 0025). A connection over both bounds counts once, at MaxConns. The
+// package function [Serve] has no Server to ask; a program that wants the
+// counts serves through one. HTTP/3 connections are bounded by the QUIC
+// listener's own ListenerConfig and are not counted here.
+func (s *Server) RefusedConns() (maxConns, perIP uint64) {
+	_ = s.init() // a refused Config still builds the set, which then counts nothing
+	return s.live.refusedMax.Load(), s.live.refusedPerIP.Load()
+}
+
 // init resolves the configuration once, whichever method comes first; the
 // state Shutdown and Close need is built even when it is refused.
 func (s *Server) init() error {
