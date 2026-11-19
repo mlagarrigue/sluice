@@ -40,6 +40,17 @@ type Pane[T any] struct {
 
 	// Items holds the elements of the window, in arrival order.
 	Items []T
+
+	// Dropped counts the elements of this window refused once it held
+	// maxPerWindow, under [sluice.DropNewest]: a pane with Dropped above
+	// zero is short, where a pane without is whole. An overflow must be
+	// loud, as a hash join's BuildLimit.Report says of a truncated table.
+	Dropped int
+
+	// Late counts the elements stepped over under [LateDrop] while this
+	// window was open: they belonged to a window already emitted, which is
+	// short by that many and can no longer say so itself.
+	Late int
 }
 
 // Len reports how many elements the pane holds.
@@ -66,8 +77,8 @@ const (
 	// time that comes from elsewhere — several producers, unsynchronised
 	// clocks, a retry — where one client's clock must not be able to stop
 	// everyone's aggregation. The panes stay right; the one whose window had
-	// already closed is short by that element, and nothing says so, which is
-	// the price of the choice.
+	// already closed is short by that element, which [Pane.Late] of the
+	// window open when it arrived counts.
 	LateDrop
 )
 
@@ -197,6 +208,9 @@ func Tumbling[T any](s sluice.Stream[T], ts func(T) time.Time, size time.Duratio
 			start time.Time // its lower bound
 			end   time.Time // its exclusive upper bound, kept to avoid a divide
 			open  bool
+			// dropped and lateN are the open window's Pane.Dropped and
+			// Pane.Late.
+			dropped, lateN int
 		)
 		// One reused slot for the single-pane batch: the batch's Items is a
 		// normal reusable buffer, while the Pane's own Items is copied out and
@@ -206,7 +220,7 @@ func Tumbling[T any](s sluice.Stream[T], ts func(T) time.Time, size time.Duratio
 		emit := func() bool {
 			items := make([]T, len(buf))
 			copy(items, buf)
-			slot[0] = Pane[T]{Start: start, End: end, Items: items}
+			slot[0] = Pane[T]{Start: start, End: end, Items: items, Dropped: dropped, Late: lateN}
 			open = false
 			return yield(sluice.Batch[Pane[T]]{Items: slot})
 		}
@@ -221,6 +235,7 @@ func Tumbling[T any](s sluice.Stream[T], ts func(T) time.Time, size time.Duratio
 					if late == LateFail {
 						panic(sluice.ErrUnsorted)
 					}
+					lateN++
 					continue // LateDrop: the window it belonged to is gone
 				}
 
@@ -243,11 +258,13 @@ func Tumbling[T any](s sluice.Stream[T], ts func(T) time.Time, size time.Duratio
 					end = start.Add(size)
 					open = true
 					buf = buf[:0]
+					dropped, lateN = 0, 0
 				}
 				if len(buf) == maxPerWindow {
 					if policy == sluice.Fail {
 						panic(sluice.ErrOverflow)
 					}
+					dropped++
 					continue // sluice.DropNewest: the window keeps what it holds
 				}
 				buf = append(buf, v)

@@ -254,6 +254,12 @@ Pick `LateFail` when a missing element makes the result wrong (billing),
 `LateDrop` when one client's clock must not be able to stop everyone's
 aggregation (ingest).
 
+A pane says what it lost, so a short one is never mistaken for a whole
+one: `Pane.Dropped` counts the elements its window refused past
+`maxPerWindow` under `sluice.DropNewest`, and `Pane.Late` the late
+elements stepped over under `LateDrop` while it was open. Both are zero on
+a pane that lost nothing.
+
 ## `parallel` retains goroutines
 
 Everything above runs on a single thread of execution: when you read a
