@@ -45,7 +45,7 @@ func TestCryptoFrameReachingPastTheOffsetCeilingIsRefused(t *testing.T) {
 // whose final size was known. The frame is refused at the parse now, in
 // every state of the stream.
 func TestStreamFrameReachingPastTheOffsetCeilingIsRefused(t *testing.T) {
-	noLen := varint.Append(nil, FrameStream|streamOFF)
+	noLen := varint.Append(nil, frameStream|streamOFF)
 	noLen = varint.Append(noLen, 0)
 	noLen = varint.Append(noLen, varint.Max)
 	noLen = append(noLen, 'x')

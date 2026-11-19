@@ -16,7 +16,7 @@ const (
 	FrameStopSending        = 0x05
 	frameCrypto             = 0x06
 	frameNewToken           = 0x07
-	FrameStream             = 0x08 // 0x08..0x0f, the low bits being OFF/LEN/FIN
+	frameStream             = 0x08 // 0x08..0x0f, the low bits being OFF/LEN/FIN
 	frameMaxData            = 0x10
 	frameMaxStreamData      = 0x11
 	frameMaxStreams         = 0x12 // 0x12..0x13
@@ -44,9 +44,9 @@ const (
 //
 // A caller meets frames through [Conn.OnStreamFrames], which delivers the
 // stream frames of a packet together: Type is then one of the eight STREAM
-// types, [FrameStream] through FrameStream|0x07 — the low bits say which
-// fields the frame carried on the wire, so test it with [Frame.IsStream]
-// rather than against FrameStream — or [FrameResetStream] or
+// types, 0x08 through 0x0f — the low bits say which fields the frame
+// carried on the wire, so test it with [Frame.IsStream] rather than against
+// a value — or [FrameResetStream] or
 // [FrameStopSending], and StreamID, Data, Fin and [Frame.Code] are what it
 // carries. The transport's own frames are parsed into the same
 // type but never leave it, and their fields are not exported.
@@ -90,7 +90,7 @@ type Frame struct {
 }
 
 // Stream is the stream of a STREAM, RESET_STREAM or STOP_SENDING frame
-// handed to an [Conn.OnStreamFrames] callback — the one [Conn.Stream]
+// handed to an [Conn.OnStreamFrames] callback — the one [Conn.OpenStreamsTo]
 // returns for StreamID — and nil for any other frame. Holding it saves the
 // lookup, which takes the connection's lock: an HTTP/3 server answering
 // each request on its stream queued behind the connection's writers for it.
@@ -98,7 +98,7 @@ func (f Frame) Stream() *Stream { return f.stream }
 
 // IsStream reports whether the frame carries stream data: whether Type is
 // one of the eight STREAM types (RFC 9000 §19.8), 0x08 to 0x0f.
-func (f Frame) IsStream() bool { return f.Type&0xf8 == FrameStream }
+func (f Frame) IsStream() bool { return f.Type&0xf8 == frameStream }
 
 // Code is the application error code of a RESET_STREAM or STOP_SENDING
 // frame (RFC 9000 §19.4, §19.5), and zero for any other frame.
@@ -157,7 +157,7 @@ func parseFrame(b []byte) (Frame, []byte, error) {
 	case f.Type == framePadding, f.Type == framePing, f.Type == frameHandshakeDone:
 		return f, rest, nil
 
-	case f.Type&0xf8 == FrameStream:
+	case f.Type&0xf8 == frameStream:
 		return parseStream(f, rest)
 
 	case f.Type == frameCrypto:

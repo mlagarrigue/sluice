@@ -20,7 +20,7 @@ func TestListenerConfigHidesItsKeys(t *testing.T) {
 	for i := range k {
 		k[i] = byte(200 + i%50) //nolint:gosec // G115: under 250
 	}
-	cfg := quic.ListenerConfig{TokenKey: k, StatelessResetKey: k, MaxEarlyDataTickets: 77}
+	cfg := quic.ListenerConfig{RetryTokenKey: k, StatelessResetKey: k, MaxEarlyDataTickets: 77}
 	var js, text bytes.Buffer
 	slog.New(slog.NewJSONHandler(&js, nil)).Info("start", "listener", cfg)
 	slog.New(slog.NewTextHandler(&text, nil)).Info("start", "listener", cfg)

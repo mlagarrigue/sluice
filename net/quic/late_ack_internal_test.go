@@ -18,7 +18,7 @@ import (
 // resent anyway, the late acknowledgement finding nothing in the record.
 func TestALateAcknowledgementTakesThePayloadOffTheResendQueue(t *testing.T) {
 	c := newResetReplayConn(t)
-	s, err := c.Stream(0)
+	s, err := c.OpenStreamsTo(0)
 	if err != nil {
 		t.Fatal(err)
 	}

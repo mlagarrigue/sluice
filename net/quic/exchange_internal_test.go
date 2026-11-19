@@ -294,7 +294,7 @@ func TestHeldStreamSlotsAreGrantedWhenThePeerOpensToTheLimit(t *testing.T) {
 	}
 	for n := range StreamID(11) {
 		id := 4 * n
-		s, err := c.Stream(id)
+		s, err := c.OpenStreamsTo(id)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -12,7 +12,7 @@ import (
 // streamFrame encodes one STREAM frame with its offset and length fields,
 // and the FIN bit when asked.
 func streamFrame(dst []byte, id StreamID, off uint64, data string, fin bool) []byte {
-	typ := uint64(FrameStream | streamOFF | streamLEN)
+	typ := uint64(frameStream | streamOFF | streamLEN)
 	if fin {
 		typ |= streamFIN
 	}

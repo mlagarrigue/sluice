@@ -29,7 +29,7 @@ func TestStreamAndResetInOnePacketSettleFlowControlOnce(t *testing.T) {
 	c.OnStreamFrames(CreditOnDelivery, func([]Frame) error { return nil })
 
 	data := []byte("hello")
-	payload := varint.Append(nil, FrameStream|streamOFF|streamLEN)
+	payload := varint.Append(nil, frameStream|streamOFF|streamLEN)
 	payload = varint.Append(payload, 0) // the peer's first bidi stream
 	payload = varint.Append(payload, 0) // offset
 	payload = varint.Append(payload, uint64(len(data)))
@@ -406,7 +406,7 @@ func TestFinBelowReceivedBytesIsAFinalSizeError(t *testing.T) {
 	c.OnStreamFrames(CreditOnDelivery, func([]Frame) error { return nil })
 
 	stream := func(offset uint64, data []byte, fin bool) []byte {
-		typ := uint64(FrameStream | streamOFF | streamLEN)
+		typ := uint64(frameStream | streamOFF | streamLEN)
 		if fin {
 			typ |= streamFIN
 		}
@@ -626,7 +626,7 @@ func TestInvalidRetryTokenGetsAnImmediateClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	token := appendRetryTokenAt(nil, l.lcfg.TokenKey, time.Now().Add(-time.Second), clientPC.LocalAddr(), []byte("orig-dst"), dcid)
+	token := appendRetryTokenAt(nil, l.lcfg.RetryTokenKey, time.Now().Add(-time.Second), clientPC.LocalAddr(), []byte("orig-dst"), dcid)
 	const pnLen = 4
 	var header []byte
 	header = append(header, 0xc0|byte(packetInitial)<<4|byte(pnLen-1))
@@ -728,7 +728,7 @@ func TestAcceptEnforcesTheAmplificationLimit(t *testing.T) {
 
 // streamFrameBytes encodes one STREAM frame on stream id at offset.
 func streamFrameBytes(id StreamID, offset uint64, data []byte) []byte {
-	b := varint.Append(nil, FrameStream|streamOFF|streamLEN)
+	b := varint.Append(nil, frameStream|streamOFF|streamLEN)
 	b = appendStreamID(b, id)
 	b = varint.Append(b, offset)
 	b = varint.Append(b, uint64(len(data)))
@@ -763,7 +763,7 @@ func TestEveryDeltaBeforeRegistrationIsReplayed(t *testing.T) {
 	var got []byte
 	c.OnStreamFrames(CreditOnDelivery, func(fs []Frame) error {
 		for _, f := range fs {
-			if f.Type == FrameStream {
+			if f.Type == frameStream {
 				got = append(got, f.Data...)
 			}
 		}

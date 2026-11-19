@@ -24,6 +24,11 @@ import (
 	"github.com/mlagarrigue/sluice/net/quic"
 )
 
+// streamFrameType is the type of a STREAM frame without its OFF, LEN and FIN
+// bits (RFC 9000 §19.8): what a test feeding frames by hand writes, the
+// transport keeping its own constant unexported.
+const streamFrameType = 0x08
+
 // h3Request builds the bytes one request stream carries: an HTTP/3 HEADERS
 // frame holding a QPACK field section of literals.
 
@@ -57,7 +62,7 @@ func h3Request(method, path string, extra ...[2]string) []byte {
 
 // streamFrame wraps stream bytes as the QUIC frame that would carry them.
 func streamFrame(id quic.StreamID, data []byte, fin bool) quic.Frame {
-	return quic.Frame{Type: quic.FrameStream, StreamID: id, Data: data, Fin: fin}
+	return quic.Frame{Type: streamFrameType, StreamID: id, Data: data, Fin: fin}
 }
 
 // serveH3Datagram is the request path in one call, as these tests drive it:
@@ -1215,7 +1220,7 @@ func TestH3AssemblerManualCreditBalances(t *testing.T) {
 
 	// A unidirectional stream: the control stream's SETTINGS are consumed,
 	// not retained.
-	feed(quic.Frame{Type: quic.FrameStream, StreamID: 2, Data: appendH3Control(nil, 0)})
+	feed(quic.Frame{Type: streamFrameType, StreamID: 2, Data: appendH3Control(nil, 0)})
 	balance("control stream", handedOff)
 }
 
@@ -2135,7 +2140,7 @@ func TestQPACKListBoundIsAHeadersBound(t *testing.T) {
 // when the stream limits refuse it.
 func h3StreamOf(t *testing.T, c *quic.Conn, id quic.StreamID) *quic.Stream {
 	t.Helper()
-	s, err := c.Stream(id)
+	s, err := c.OpenStreamsTo(id)
 	if err != nil {
 		t.Fatalf("stream %d: %v", id, err)
 	}

@@ -57,7 +57,7 @@ import (
 // # Concurrency, stated rather than guarded
 //
 // The assembly of requests is not safe for concurrent use and runs on the read
-// goroutine only. Streams are taken from [quic.Conn.Stream], which is safe
+// goroutine only. Streams are taken from [quic.Conn.OpenStreamsTo], which is safe
 // for concurrent use, and each response stream is written by exactly one
 // writer goroutine — writes on different streams may interleave, which
 // [quic.Stream.Write]'s connection lock makes safe, while one goroutine per
@@ -151,7 +151,7 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 	// client that grants no unidirectional stream breaks §6.2's "MUST permit
 	// at least three": no control stream can open, and the connection is
 	// closed with the generic protocol error, §6.2 naming no specific one.
-	control, err := c.Stream(3)
+	control, err := c.OpenStreamsTo(3)
 	if err != nil {
 		_ = c.CloseWithError(h3GeneralProtocolError)
 		return fmt.Errorf("httpstream: the client grants no unidirectional stream for the control stream: %w", err)
@@ -270,7 +270,7 @@ func refuseH3Conn(c *quic.Conn, cfg Config) error {
 // the windows need only cover a request's head; streaming takes manual
 // credit, and on windows too small for that it is off and bodies arrive
 // whole.
-func h3Credit(c *quic.Conn, cfg Config, a *h3Assembler) quic.Credit {
+func h3Credit(c *quic.Conn, cfg Config, a *h3Assembler) quic.CreditPolicy {
 	streamWindow, connWindow := uint64(cfg.MaxBodyBytes+cfg.MaxHeaderBytes)+h3FrameSlack, uint64(4*cfg.MaxBodyBytes+cfg.MaxHeaderBytes)+h3FrameSlack //nolint:gosec // G115: positive config, set by Config.resolve
 	if cfg.BodyDelivery == BodyStreamed {
 		streamWindow = uint64(cfg.MaxHeaderBytes) + h3FrameSlack //nolint:gosec // G115: positive config, set by Config.resolve
@@ -614,7 +614,7 @@ func (s *h3Serving) sweep() {
 		// Reset on both halves, as a stream failure inside a delivery is
 		// (refuse); the connection may have ended meanwhile, which leaves
 		// nothing to reset.
-		if st, err := s.c.Stream(se.StreamID); err == nil {
+		if st, err := s.c.OpenStreamsTo(se.StreamID); err == nil {
 			_ = st.Reset(se.Code)
 			_ = st.StopSending(se.Code)
 		}
@@ -688,7 +688,7 @@ func (s *h3Serving) onFrames(frames []quic.Frame) error {
 		}
 	}
 	for _, se := range failed {
-		st, err := c.Stream(se.StreamID)
+		st, err := c.OpenStreamsTo(se.StreamID)
 		if err != nil {
 			continue // unreachable: the peer opened it, within the limit
 		}
@@ -1172,7 +1172,7 @@ func answerH3(ctx context.Context, c *quic.Conn, state *tls.ConnectionState, b h
 				}
 				if unread {
 					if st == nil {
-						st, _ = c.Stream(id)
+						st, _ = c.OpenStreamsTo(id)
 					}
 					if st != nil {
 						_ = st.StopSending(h3NoError)
@@ -1214,7 +1214,7 @@ func writeH3Interim(c *quic.Conn, id quic.StreamID, fieldSection uint64, wb writ
 	if checkH3FieldSection(h3Interim100Fields, fieldSection) != nil {
 		return
 	}
-	s, err := c.Stream(id)
+	s, err := c.OpenStreamsTo(id)
 	if err != nil {
 		return // unreachable: the head arrived on it, within the limit
 	}
@@ -1249,7 +1249,7 @@ func writeH3Response(c *quic.Conn, id quic.StreamID, s *quic.Stream, r Response,
 		// Not handed over with the request's frames (h3Batch.streams):
 		// looked up, under the connection's lock.
 		var err error
-		if s, err = c.Stream(id); err != nil {
+		if s, err = c.OpenStreamsTo(id); err != nil {
 			return false // unreachable: the request arrived on it, within the limit
 		}
 	}

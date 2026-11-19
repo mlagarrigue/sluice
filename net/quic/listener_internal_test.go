@@ -285,7 +285,7 @@ func TestForeignTokenIsAnsweredWithARetry(t *testing.T) {
 	// The witness: the same token under this listener's key but for another
 	// address is a Retry token this listener issued and cannot accept —
 	// INVALID_TOKEN (§8.1.2), as before.
-	elsewhere := appendRetryToken(nil, l.lcfg.TokenKey, fakeFuzzAddr("client:other"), []byte("orig-dst"), dcid)
+	elsewhere := appendRetryToken(nil, l.lcfg.RetryTokenKey, fakeFuzzAddr("client:other"), []byte("orig-dst"), dcid)
 	l.dispatch(sealedClientInitialWithToken(t, dcid, scid, elsewhere), from, l.pc, 0)
 	if codes := statelessCloseCodes(t, pc.taken(), dcid); len(codes) != 1 || codes[0] != transportInvalidToken {
 		t.Errorf("this listener's token for another address got %v, want one INVALID_TOKEN close", codes)
@@ -1517,7 +1517,7 @@ func TestListenerConfigTuningAndKeys(t *testing.T) {
 		{"ConnQueueLen", ListenerConfig{ConnQueueLen: -1}},
 		{"RetryTokenTTL", ListenerConfig{RetryTokenTTL: -time.Second}},
 		{"MaxSpentRetryTokens", ListenerConfig{MaxSpentRetryTokens: -1}},
-		{"TokenKey", ListenerConfig{TokenKey: [32]byte{1}, StatelessResetKey: [32]byte{1}}},
+		{"TokenKey", ListenerConfig{RetryTokenKey: [32]byte{1}, StatelessResetKey: [32]byte{1}}},
 	}
 	for _, r := range refused {
 		_, err := NewListener(nil, ServerTLSForTest(t), DefaultConfig(), r.lcfg)
@@ -1529,7 +1529,7 @@ func TestListenerConfigTuningAndKeys(t *testing.T) {
 	if a, b := (ListenerConfig{}), (ListenerConfig{}); a != b {
 		t.Error("two zero ListenerConfigs compare unequal")
 	}
-	given := ListenerConfig{StatelessResetKey: [32]byte{1}, TokenKey: [32]byte{2}}
+	given := ListenerConfig{StatelessResetKey: [32]byte{1}, RetryTokenKey: [32]byte{2}}
 	got, err := given.resolve()
 	if err != nil {
 		t.Fatal(err)
@@ -1538,13 +1538,13 @@ func TestListenerConfigTuningAndKeys(t *testing.T) {
 		t.Errorf("zero resolved to ConnQueueLen %d, RetryTokenTTL %v, MaxSpentRetryTokens %d; want 64, 10s, 16384",
 			got.ConnQueueLen, got.RetryTokenTTL, got.MaxSpentRetryTokens)
 	}
-	if got.StatelessResetKey != given.StatelessResetKey || got.TokenKey != given.TokenKey {
+	if got.StatelessResetKey != given.StatelessResetKey || got.RetryTokenKey != given.RetryTokenKey {
 		t.Error("a given key was replaced")
 	}
 	r1, _ := ListenerConfig{}.resolve()
 	r2, _ := ListenerConfig{}.resolve()
 	var zero [32]byte
-	if r1.StatelessResetKey == zero || r1.TokenKey == zero || r1.StatelessResetKey == r2.StatelessResetKey || r1.TokenKey == r2.TokenKey {
+	if r1.StatelessResetKey == zero || r1.RetryTokenKey == zero || r1.StatelessResetKey == r2.StatelessResetKey || r1.RetryTokenKey == r2.RetryTokenKey {
 		t.Error("a zero key did not resolve to a fresh random one per listener")
 	}
 

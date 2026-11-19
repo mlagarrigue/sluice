@@ -1288,7 +1288,7 @@ frames:
 			}
 			if len(delta) > 0 || finished {
 				batch = append(batch, Frame{
-					Type: FrameStream, StreamID: f.StreamID,
+					Type: frameStream, StreamID: f.StreamID,
 					offset: deltaStart, Data: delta, Fin: finished, stream: s,
 				})
 			}
@@ -1679,7 +1679,7 @@ func (c *Conn) dispatchDeltas(batch []Frame) error {
 		// The callback has seen the end; a Read on the same stream — which
 		// got no bytes, the callback did — may now report it too.
 		for _, f := range batch {
-			if (f.Type == FrameStream && f.Fin) || f.Type == FrameResetStream {
+			if (f.Type == frameStream && f.Fin) || f.Type == FrameResetStream {
 				if s := c.streamIfOpen(f.StreamID); s != nil {
 					s.endForRead()
 				}
@@ -1693,7 +1693,7 @@ func (c *Conn) dispatchDeltas(batch []Frame) error {
 			continue
 		}
 		switch f.Type {
-		case FrameStream:
+		case frameStream:
 			if n := s.keepForRead(f.Data, f.Fin); n > 0 {
 				// Dropped on a stream the application stopped reading:
 				// the connection window gets the bytes back now, with no
@@ -2100,7 +2100,7 @@ func (c *Conn) streamFor(id StreamID, space int, sendSide bool) (*Stream, bool, 
 	// rather than the closed-stream tolerance above. newStream closes the
 	// direction a unidirectional stream lacks.
 	//
-	// A stream the application already picked by identifier (Conn.Stream)
+	// A stream the application already picked by identifier (Conn.OpenStreamsTo)
 	// is the one opened, not replaced: a replacement would leave the caller
 	// holding a stream no frame would ever reach.
 	//
@@ -2132,7 +2132,7 @@ func (c *Conn) streamFor(id StreamID, space int, sendSide bool) (*Stream, bool, 
 	return last, false, nil
 }
 
-// pickedAheadLocked reports a stream of the peer's that Conn.Stream
+// pickedAheadLocked reports a stream of the peer's that Conn.OpenStreamsTo
 // registered before the peer opened it: its first frame from the peer still
 // opens it — and the lower-numbered streams with it — as any other. Callers
 // hold c.mu.
@@ -2189,7 +2189,7 @@ func (c *Conn) settleBatchConsumption(batch []Frame) {
 	c.mu.Lock()
 	for i := range batch {
 		f := &batch[i]
-		if f.Type != FrameStream || len(f.Data) == 0 {
+		if f.Type != frameStream || len(f.Data) == 0 {
 			continue
 		}
 		connBytes += uint64(len(f.Data))
@@ -2317,7 +2317,9 @@ func (c *Conn) ReleaseConnectionCredit(n uint64) {
 }
 
 // ReleaseStreamCredit is the stream-level half of [Conn.ReleaseStreamBytes];
-// see [Conn.ReleaseConnectionCredit].
+// see [Conn.ReleaseConnectionCredit]. The three are kept apart rather than
+// folded into one call taking two counts: the whole release is the common
+// case and names no level, and a split release names the level it moves.
 func (c *Conn) ReleaseStreamCredit(id StreamID, n uint64) {
 	c.release(id, n, 0)
 }

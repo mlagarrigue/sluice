@@ -155,7 +155,7 @@ func earlyTLSConfig(cfg *tls.Config) *tls.Config {
 }
 
 // DialEarly is [Dial] for a client that wants to send before the handshake
-// ends. When cfg's session cache holds a ticket the server marked for early
+// ends. When tlsCfg's session cache holds a ticket the server marked for early
 // data, DialEarly returns as soon as the ClientHello has left with it, and
 // what the caller writes on streams it opens then travels in 0-RTT packets
 // (RFC 9001 §4.6), under the transport parameters remembered with the
@@ -192,7 +192,7 @@ func earlyTLSConfig(cfg *tls.Config) *tls.Config {
 // dial again with Dial, which offers no 0-RTT and resumes through a
 // HelloRetryRequest unharmed. To keep that from happening, the ticket
 // records the key exchange group the server chose, and DialEarly offers
-// that group alone when it resumes with 0-RTT — on a copy of cfg, whose
+// that group alone when it resumes with 0-RTT — on a copy of tlsCfg, whose
 // CurvePreferences it narrows only when they list the group or are empty.
 // The retry is left to a server that changed its group since, or to a
 // ticket stored without one.
@@ -201,9 +201,9 @@ func earlyTLSConfig(cfg *tls.Config) *tls.Config {
 // DialEarly has returned early, the rest of the handshake runs under
 // [DefaultHandshakeTimeout], or under ctx's deadline when that is later; a
 // handshake that fails then closes the connection, which [Conn.Done]
-// reports. cfg follows Dial's rules.
-func DialEarly(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls.Config, qcfg Config) (*Conn, error) {
-	c, err := newClientConn(ctx, pc, addr, earlyTLSConfig(cfg), qcfg)
+// reports. tlsCfg follows Dial's rules.
+func DialEarly(ctx context.Context, pc net.PacketConn, addr net.Addr, tlsCfg *tls.Config, quicCfg Config) (*Conn, error) {
+	c, err := newClientConn(ctx, pc, addr, earlyTLSConfig(tlsCfg), quicCfg)
 	if err != nil {
 		return nil, err
 	}

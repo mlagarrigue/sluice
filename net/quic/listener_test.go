@@ -380,7 +380,7 @@ func TestListenerAnnouncesItsPreferredAddress(t *testing.T) {
 	if err != nil {
 		t.Skipf("no 127.0.0.2 on this host: %v", err)
 	}
-	l, addr := newUDPListener(t, quic.ListenerConfig{PreferredAddress: pref})
+	l, addr := newUDPListener(t, quic.ListenerConfig{PreferredSocket: pref})
 
 	accepted := make(chan *quic.Conn, 1)
 	go func() {

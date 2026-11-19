@@ -149,7 +149,7 @@ type ListenerConfig struct {
 	IPv4PrefixBits int
 	IPv6PrefixBits int
 
-	// PreferredAddress is a second socket, bound to the address clients
+	// PreferredSocket is a second socket, bound to the address clients
 	// should move to once their handshake confirms (RFC 9000 §9.6): a
 	// server reached through a shared or load-balanced address that would
 	// rather carry the connection directly, for instance. The listener
@@ -164,7 +164,7 @@ type ListenerConfig struct {
 	// this socket is for). A client that never validates it simply stays
 	// where it is. nil announces nothing. The listener owns the socket from
 	// here and closes it with [Listener.Close].
-	PreferredAddress net.PacketConn
+	PreferredSocket net.PacketConn
 
 	// PreferredIPv4 and PreferredIPv6 name the addresses announced for
 	// PreferredAddress's port when that socket is bound to the unspecified
@@ -257,7 +257,7 @@ type ListenerConfig struct {
 	// holding it can end any connection of the listeners that share it.
 	StatelessResetKey [32]byte
 
-	// TokenKey authenticates Retry tokens (HMAC-SHA256, RFC 9000 §8.1.4).
+	// RetryTokenKey authenticates Retry tokens (HMAC-SHA256, RFC 9000 §8.1.4).
 	// Zero draws a random key per listener, so a token issued before a
 	// restart, or by another instance, fails to verify and the client is
 	// treated as unvalidated, not refused (§8.1.3). Shared between
@@ -267,7 +267,7 @@ type ListenerConfig struct {
 	// connection — the TTL is then the whole bound. Keep it distinct from
 	// StatelessResetKey and secret: anyone holding it can mint tokens that
 	// pass address validation.
-	TokenKey [32]byte
+	RetryTokenKey [32]byte
 
 	// SessionTickets makes every connection send the client one session
 	// ticket once its handshake completes (RFC 9846 §4.7.1, carried in a
@@ -346,7 +346,7 @@ func (c ListenerConfig) String() string {
 	for _, k := range []struct {
 		name string
 		key  [32]byte
-	}{{"StatelessResetKey:", c.StatelessResetKey}, {"TokenKey:", c.TokenKey}} {
+	}{{"StatelessResetKey:", c.StatelessResetKey}, {"TokenKey:", c.RetryTokenKey}} {
 		if k.key != [32]byte{} {
 			s = strings.Replace(s, k.name+fmt.Sprint(k.key), k.name+"<redacted>", 1)
 		}
@@ -553,7 +553,7 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 	if c.MaxEarlyDataTickets < 0 {
 		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.MaxEarlyDataTickets %d is negative — zero means %d", c.MaxEarlyDataTickets, defaultMaxEarlyDataTickets))
 	}
-	if c.TokenKey != ([32]byte{}) && c.TokenKey == c.StatelessResetKey {
+	if c.RetryTokenKey != ([32]byte{}) && c.RetryTokenKey == c.StatelessResetKey {
 		err = errors.Join(err, errors.New("quic: ListenerConfig.TokenKey equals StatelessResetKey — one key, two uses; give each its own"))
 	}
 	if c.PreferredIPv4.IsValid() {
@@ -565,7 +565,7 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 	if c.PreferredIPv6.IsValid() && (!c.PreferredIPv6.Is6() || c.PreferredIPv6.Is4In6() || c.PreferredIPv6.IsUnspecified()) {
 		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.PreferredIPv6 %v is not an IPv6 address a client can send to", c.PreferredIPv6))
 	}
-	if c.PreferredAddress == nil && (c.PreferredIPv4.IsValid() || c.PreferredIPv6.IsValid()) {
+	if c.PreferredSocket == nil && (c.PreferredIPv4.IsValid() || c.PreferredIPv6.IsValid()) {
 		err = errors.Join(err, errors.New("quic: ListenerConfig.PreferredIPv4 or PreferredIPv6 is set without a PreferredAddress socket to announce"))
 	}
 	if err != nil {
@@ -600,7 +600,7 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 	}
 	// A random key per listener when none is given; both are drawn here so
 	// that what the listener runs with is all in its resolved config.
-	for _, k := range []*[32]byte{&c.StatelessResetKey, &c.TokenKey} {
+	for _, k := range []*[32]byte{&c.StatelessResetKey, &c.RetryTokenKey} {
 		if *k == ([32]byte{}) {
 			_, _ = rand.Read(k[:]) // never fails since Go 1.24
 		}
@@ -608,12 +608,12 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 	return c, nil
 }
 
-// NewListener starts demultiplexing pc. cfg and qcfg are what every
+// NewListener starts demultiplexing pc. tlsCfg and quicCfg are what every
 // accepted connection's handshake uses. pc is any [net.PacketConn]; a [net.UDPConn] is
 // given the socket options RFC 9000 asks for ("The socket is the caller's"
-// in the package documentation). cfg's callbacks run on each connection's
+// in the package documentation). tlsCfg's callbacks run on each connection's
 // receive goroutine, and a slow one stalls that connection alone ("The TLS
-// callbacks are the caller's", same place). cfg.Certificates is refused
+// callbacks are the caller's", same place). tlsCfg.Certificates is refused
 // when a leaf carries a Key Usage without digitalSignature or a chain
 // member is signed with SHA-1 (RFC 9846 §4.5.1.2, §4.3.3): a conformant
 // client would refuse the chain mid-handshake, where the cause is lost.
@@ -623,40 +623,40 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 // Config GetConfigForClient returns with a lower MinVersion is used on a
 // copy raised to it, so a client offering nothing newer is answered
 // protocol_version (RFC 9846 Appendix E.2). With a GetConfigForClient set,
-// the handshakes run on a copy of cfg taken here: session ticket keys
-// rotated on cfg afterwards ([tls.Config.SetSessionTicketKeys]) do not reach
+// the handshakes run on a copy of tlsCfg taken here: session ticket keys
+// rotated on tlsCfg afterwards ([tls.Config.SetSessionTicketKeys]) do not reach
 // them — rotate them on the Configs GetConfigForClient returns instead.
-// Without one, cfg itself is used, and a rotation takes effect.
-func NewListener(pc net.PacketConn, cfg *tls.Config, qcfg Config, lcfg ListenerConfig) (*Listener, error) {
+// Without one, tlsCfg itself is used, and a rotation takes effect.
+func NewListener(pc net.PacketConn, tlsCfg *tls.Config, quicCfg Config, lcfg ListenerConfig) (*Listener, error) {
 	if err := checkFIPSOnly(); err != nil {
 		return nil, err
 	}
-	if err := qcfg.check(); err != nil {
+	if err := quicCfg.check(); err != nil {
 		return nil, err
 	}
-	if err := checkTLSConfig(cfg); err != nil {
+	if err := checkTLSConfig(tlsCfg); err != nil {
 		return nil, err
 	}
-	if err := checkOwnCertificates(cfg); err != nil {
+	if err := checkOwnCertificates(tlsCfg); err != nil {
 		return nil, err
 	}
 	lcfg, err := lcfg.resolve()
 	if err != nil {
 		return nil, err
 	}
-	if (lcfg.SessionTickets || lcfg.EarlyData) && cfg.SessionTicketsDisabled {
+	if (lcfg.SessionTickets || lcfg.EarlyData) && tlsCfg.SessionTicketsDisabled {
 		return nil, fmt.Errorf("%w: ListenerConfig.SessionTickets or EarlyData is set and tls.Config.SessionTicketsDisabled too — "+
 			"crypto/tls would send no ticket", ErrQUIC)
 	}
 	if lcfg.EarlyData {
-		if err := qcfg.earlyCredit(); err != nil {
+		if err := quicCfg.earlyCredit(); err != nil {
 			return nil, err
 		}
 	}
 	var preferredV4, preferredV6 *net.UDPAddr
-	if lcfg.PreferredAddress != nil {
+	if lcfg.PreferredSocket != nil {
 		var err error
-		preferredV4, preferredV6, err = preferredAnnouncements(lcfg.PreferredAddress.LocalAddr(), lcfg.PreferredIPv4, lcfg.PreferredIPv6)
+		preferredV4, preferredV6, err = preferredAnnouncements(lcfg.PreferredSocket.LocalAddr(), lcfg.PreferredIPv4, lcfg.PreferredIPv6)
 		if err != nil {
 			return nil, err
 		}
@@ -666,8 +666,8 @@ func NewListener(pc net.PacketConn, cfg *tls.Config, qcfg Config, lcfg ListenerC
 		return nil, err
 	}
 	l := &Listener{
-		pc: pc, sourced: packetInfoSocket(pc), preferred: lcfg.PreferredAddress, preferredV4: preferredV4, preferredV6: preferredV6,
-		cfg: serverTLSConfig(cfg), params: qcfg, lcfg: lcfg,
+		pc: pc, sourced: packetInfoSocket(pc), preferred: lcfg.PreferredSocket, preferredV4: preferredV4, preferredV6: preferredV6,
+		cfg: serverTLSConfig(tlsCfg), params: quicCfg, lcfg: lcfg,
 		spent:           spentTokens{ttl: lcfg.RetryTokenTTL, max: lcfg.MaxSpentRetryTokens},
 		byDCID:          make(map[string]*Conn),
 		keysOf:          make(map[*Conn][]string),
@@ -1275,7 +1275,7 @@ func initialPacketDecrypts(h longHeader) (initialKeys, bool) {
 // dispatcher made for a tokenless one.
 func (l *Listener) handleRetryFlow(datagram []byte, from net.Addr, h longHeader, keys *initialKeys, via net.PacketConn, ecn uint8, retry bool) {
 	if len(h.Token) > 0 {
-		rt, err := verifyRetryToken(h.Token, l.lcfg.TokenKey, l.lcfg.RetryTokenTTL, from)
+		rt, err := verifyRetryToken(h.Token, l.lcfg.RetryTokenKey, l.lcfg.RetryTokenTTL, from)
 		switch {
 		case errors.Is(err, errForeignToken):
 			// RFC 9000 §8.1.3: a token the server cannot validate — here,
@@ -1324,7 +1324,7 @@ func (l *Listener) handleRetryFlow(datagram []byte, from net.Addr, h longHeader,
 	if err != nil {
 		return // nothing to send; the client's own retransmission tries again
 	}
-	token := appendRetryToken(nil, l.lcfg.TokenKey, from, h.DCID, newSCID)
+	token := appendRetryToken(nil, l.lcfg.RetryTokenKey, from, h.DCID, newSCID)
 	pkt := appendRetryPacket(nil, h.SCID, newSCID, h.DCID, token)
 	_, _ = via.WriteTo(pkt, from) // best effort; a lost Retry just looks like a lost Initial to the client
 }

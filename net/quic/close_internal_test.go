@@ -33,7 +33,7 @@ func TestProtocolViolationsCarryTheirNormativeCodes(t *testing.T) {
 		return spoil(&p.TransportParameters, raw)
 	}
 	stream := func(offset uint64, data []byte, fin bool) []byte {
-		typ := uint64(FrameStream | streamOFF | streamLEN)
+		typ := uint64(frameStream | streamOFF | streamLEN)
 		if fin {
 			typ |= streamFIN
 		}

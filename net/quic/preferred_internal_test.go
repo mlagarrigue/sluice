@@ -291,7 +291,7 @@ func TestListenerRefusesAnUnspecifiedPreferredAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unspecified.Close()
-	if l, err := NewListener(main, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{PreferredAddress: unspecified}); err == nil {
+	if l, err := NewListener(main, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{PreferredSocket: unspecified}); err == nil {
 		l.Close()
 		t.Fatal("a preferred socket on 0.0.0.0 was accepted")
 	}
@@ -313,7 +313,7 @@ func TestPreferredAddressEndToEnd(t *testing.T) {
 		main.Close()
 		t.Skipf("no 127.0.0.2 on this host: %v", err)
 	}
-	l, err := NewListener(main, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{PreferredAddress: pref})
+	l, err := NewListener(main, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{PreferredSocket: pref})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -688,7 +688,7 @@ func TestListenerAnnouncesOneAddressPerFamily(t *testing.T) {
 	port := dual.LocalAddr().(*net.UDPAddr).Port
 
 	l, err := NewListener(main, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{
-		PreferredAddress: dual, PreferredIPv4: netip.MustParseAddr("127.0.0.1"), PreferredIPv6: netip.IPv6Loopback(),
+		PreferredSocket: dual, PreferredIPv4: netip.MustParseAddr("127.0.0.1"), PreferredIPv6: netip.IPv6Loopback(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -722,7 +722,7 @@ func TestListenerAnnouncesOneAddressPerFamily(t *testing.T) {
 		{"unspecified", "PreferredIPv4", ListenerConfig{PreferredIPv4: netip.IPv4Unspecified()}},
 	}
 	for _, r := range refused {
-		r.lcfg.PreferredAddress = dual
+		r.lcfg.PreferredSocket = dual
 		l, err := NewListener(main, ServerTLSForTest(t), DefaultConfig(), r.lcfg)
 		if err == nil {
 			l.Close()
@@ -735,7 +735,7 @@ func TestListenerAnnouncesOneAddressPerFamily(t *testing.T) {
 		l.Close()
 		t.Error("PreferredIPv4 without a PreferredAddress socket was accepted")
 	}
-	mapped, err := ListenerConfig{PreferredAddress: dual, PreferredIPv4: netip.MustParseAddr("::ffff:127.0.0.1")}.resolve()
+	mapped, err := ListenerConfig{PreferredSocket: dual, PreferredIPv4: netip.MustParseAddr("::ffff:127.0.0.1")}.resolve()
 	if err != nil || mapped.PreferredIPv4 != netip.MustParseAddr("127.0.0.1") {
 		t.Errorf("a mapped IPv4 PreferredIPv4 resolved to %v, %v; want 127.0.0.1", mapped.PreferredIPv4, err)
 	}
@@ -745,7 +745,7 @@ func TestListenerAnnouncesOneAddressPerFamily(t *testing.T) {
 	}
 	defer concrete.Close()
 	if l, err := NewListener(main, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{
-		PreferredAddress: concrete, PreferredIPv4: netip.MustParseAddr("127.0.0.2"),
+		PreferredSocket: concrete, PreferredIPv4: netip.MustParseAddr("127.0.0.2"),
 	}); err == nil {
 		l.Close()
 		t.Error("an address the concretely bound socket does not answer at was accepted")

@@ -301,10 +301,10 @@ func TestStreamDirectionIsEnforced(t *testing.T) {
 	// Stream 2 is this client's own unidirectional stream: the peer never
 	// sends on it, so STREAM frames cannot name it either — even once the
 	// bookkeeping for it exists.
-	if _, err := c.Stream(2); err != nil {
+	if _, err := c.OpenStreamsTo(2); err != nil {
 		t.Fatal(err)
 	}
-	frame := varint.Append(nil, FrameStream|streamOFF|streamLEN)
+	frame := varint.Append(nil, frameStream|streamOFF|streamLEN)
 	frame = varint.Append(frame, 2)
 	frame = varint.Append(frame, 0)
 	frame = varint.Append(frame, 3)
@@ -722,7 +722,7 @@ func TestBlockedFramesResendPeriodicallyWhileParked(t *testing.T) {
 // ack-eliciting packet in flight the tick queues nothing and stays armed.
 func TestBlockedResendQueuesOneFramePerLimit(t *testing.T) {
 	c := newResetReplayConn(t)
-	s, err := c.Stream(0)
+	s, err := c.OpenStreamsTo(0)
 	if err != nil {
 		t.Fatal(err)
 	}

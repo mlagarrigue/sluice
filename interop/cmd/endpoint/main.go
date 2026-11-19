@@ -175,7 +175,7 @@ func runServer(testcase string) error {
 		if err != nil {
 			return err
 		}
-		lcfg.PreferredAddress, err = udp.Listen("udp", net.JoinHostPort("", preferredPort))
+		lcfg.PreferredSocket, err = udp.Listen("udp", net.JoinHostPort("", preferredPort))
 		if err != nil {
 			return err
 		}

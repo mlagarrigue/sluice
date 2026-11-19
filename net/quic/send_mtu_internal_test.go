@@ -48,7 +48,7 @@ func TestLongAckBesideFullChunkStaysUnderMaxDatagram(t *testing.T) {
 			c.peerMaxStreamsBidi = 1 // the grant the handshake would have brought
 			c.mu.Unlock()
 
-			s, err := c.Stream(0)
+			s, err := c.OpenStreamsTo(0)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -122,7 +122,7 @@ func TestAParkedWriterIsRefitToTheDatagramSizeItWakesTo(t *testing.T) {
 	c.peerMaxStreamsBidi = 1
 	nr.inFlight = nr.cwnd // the window full
 	c.mu.Unlock()
-	s, err := c.Stream(0)
+	s, err := c.OpenStreamsTo(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +368,7 @@ func TestResetDuringAwaitSealSendsNoStreamFrame(t *testing.T) {
 	c.earlyRejected = true
 	c.peerMaxStreamsBidi = 1
 	c.mu.Unlock()
-	s, err := c.Stream(0)
+	s, err := c.OpenStreamsTo(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -536,7 +536,7 @@ func TestDialCompletesPastALongRetryToken(t *testing.T) {
 	var key [32]byte
 	key[0] = 1
 	pc := &inflatingPC{PacketConn: serverPC, key: key, size: 900}
-	l, err := NewListener(pc, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{AlwaysRetry: true, TokenKey: key})
+	l, err := NewListener(pc, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{AlwaysRetry: true, RetryTokenKey: key})
 	if err != nil {
 		t.Fatal(err)
 	}

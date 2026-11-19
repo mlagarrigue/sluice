@@ -328,7 +328,7 @@ func TestPMTUBlackHoleCountsOnlyUnansweredFullSizeLosses(t *testing.T) {
 // the room: the same bytes at the same offsets, the FIN on the last part.
 func TestFitFramesCutsInsideDataFrames(t *testing.T) {
 	data := bytes.Repeat([]byte("0123456789"), 140)
-	stream := varint.Append(nil, FrameStream|streamOFF|streamLEN|streamFIN)
+	stream := varint.Append(nil, frameStream|streamOFF|streamLEN|streamFIN)
 	stream = varint.Append(stream, 4)
 	stream = varint.Append(stream, 1<<20)
 	stream = varint.Append(stream, uint64(len(data)))

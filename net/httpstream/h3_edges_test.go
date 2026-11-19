@@ -171,7 +171,7 @@ func openedStream(t *testing.T, server, client *quic.Conn) *quic.Stream {
 		t.Fatal(err)
 	}
 	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
-		if _, err := server.Stream(s.ID()); err == nil {
+		if _, err := server.OpenStreamsTo(s.ID()); err == nil {
 			return s
 		}
 		if time.Now().After(deadline) {
@@ -245,7 +245,7 @@ func TestH3CreditAtTheWindowsEdges(t *testing.T) {
 		name         string
 		cfg          Config
 		stream, data uint64
-		want         quic.Credit
+		want         quic.CreditPolicy
 	}{
 		{"whole, at the windows", whole, wholeStream, wholeConn, quic.CreditOnRelease},
 		{"whole, a stream window short", whole, wholeStream - 1, wholeConn, quic.CreditOnDelivery},

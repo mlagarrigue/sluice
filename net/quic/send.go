@@ -1702,7 +1702,7 @@ func splitDataFrame(f Frame, room int) (first, second []byte) {
 	}
 	encode := func(dst []byte, off uint64, data []byte, fin bool) []byte {
 		if stream {
-			dst = varint.Append(dst, FrameStream|streamOFF|streamLEN|boolBit(fin, streamFIN))
+			dst = varint.Append(dst, frameStream|streamOFF|streamLEN|boolBit(fin, streamFIN))
 			dst = appendStreamID(dst, f.StreamID)
 		} else {
 			dst = varint.Append(dst, frameCrypto)

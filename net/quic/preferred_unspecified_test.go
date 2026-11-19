@@ -38,7 +38,7 @@ func TestAPreferredSocketOnTheUnspecifiedAddressAnswersFromTheAnnouncedOne(t *te
 		t.Fatal(err)
 	}
 	announced := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.2"), uint16(pref.LocalAddr().(*net.UDPAddr).Port)) //nolint:gosec // G115: a port
-	l, err := NewListener(main, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{PreferredAddress: pref, PreferredIPv4: announced.Addr()})
+	l, err := NewListener(main, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{PreferredSocket: pref, PreferredIPv4: announced.Addr()})
 	if err != nil {
 		t.Fatal(err)
 	}

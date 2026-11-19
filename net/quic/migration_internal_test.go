@@ -1922,7 +1922,7 @@ func TestQueueRidingADataPacketIsCutToTheRoom(t *testing.T) {
 	for i := range 100 {
 		c.grants = appendFrame(c.grants, frameMaxStreamData, uint64(i)<<40, 1<<40)
 	}
-	chunk := []byte{FrameStream | 0x02} // length present, offset 0
+	chunk := []byte{frameStream | 0x02} // length present, offset 0
 	chunk = varint.Append(chunk, 4)
 	chunk = varint.Append(chunk, uint64(c.maxStreamChunk()-8))
 	chunk = append(chunk, make([]byte, c.maxStreamChunk()-len(chunk))...)

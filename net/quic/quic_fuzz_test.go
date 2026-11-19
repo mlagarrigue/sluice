@@ -12,7 +12,7 @@ import (
 // what it was given, and never panic.
 func FuzzParseFrames(f *testing.F) {
 	f.Add([]byte{framePing})
-	f.Add([]byte{FrameStream | streamLEN, 0x00, 0x04, 'a', 'b', 'c', 'd'})
+	f.Add([]byte{frameStream | streamLEN, 0x00, 0x04, 'a', 'b', 'c', 'd'})
 	f.Add([]byte{frameACK, 0x01, 0x00, 0x00, 0x00})
 	// Largest 1, a first range of one packet, then a range a gap of zero
 	// below it: packet -1. parseACK refuses it; a regression in its bounds

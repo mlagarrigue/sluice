@@ -38,7 +38,7 @@ func TestStopSendingAloneReachesTheCallback(t *testing.T) {
 		got = append(got, cloneFrames(frames))
 		return nil
 	})
-	s, err := c.Stream(0) // this client's first bidirectional stream
+	s, err := c.OpenStreamsTo(0) // this client's first bidirectional stream
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,9 +96,9 @@ func TestStopSendingBehindTheAnswerKeepsTheAnswer(t *testing.T) {
 	for i := range answer {
 		answer[i] = byte(i)
 	}
-	payload := appendStreamFrame(nil, FrameStream|streamOFF|streamLEN, cs.id, 0, uint64(len(answer)))
+	payload := appendStreamFrame(nil, frameStream|streamOFF|streamLEN, cs.id, 0, uint64(len(answer)))
 	payload = append(payload, answer...)
-	payload = appendStreamFrame(payload, FrameStream|streamOFF|streamLEN|streamFIN, cs.id, uint64(len(answer)), 0)
+	payload = appendStreamFrame(payload, frameStream|streamOFF|streamLEN|streamFIN, cs.id, uint64(len(answer)), 0)
 	payload = appendStreamFrame(payload, FrameStopSending, cs.id, 0)
 	if err := client.frames(spaceApplication, payload, time.Now()); err != nil {
 		t.Fatal(err)

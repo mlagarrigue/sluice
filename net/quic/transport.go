@@ -62,7 +62,7 @@ type TransportParameters struct {
 	// Announced, it also caps the size the peer probes the path for
 	// (RFC 9000 §14.3); what this endpoint sends is decided by its own
 	// probe of the path, never by the peer's announcement alone — see the
-	// package documentation. Zero means 1452, like MaxDatagramSize; below
+	// package documentation. In bytes; zero means 1452, like MaxDatagramSize; below
 	// 1200 or above 65527 (§18.2's bounds), [Dial], accept and
 	// [NewListener] refuse it.
 	MaxUDPPayloadSize uint64
@@ -489,13 +489,17 @@ type Config struct {
 	// MaxDatagramSize is the largest datagram this endpoint sends, once
 	// its probe of the path (DPLPMTUD, RFC 9000 §14.3) proves the path
 	// carries it — where MaxUDPPayloadSize, announced, is the largest it
-	// reads. Zero means 1452, an Ethernet MTU less the IPv6 and UDP headers; above
+	// reads. In bytes; zero means 1452, an Ethernet MTU less the IPv6 and UDP headers; above
 	// that, the search climbs towards it — 8952 for a 9000-byte jumbo
 	// path. What is probed is also bounded by the peer's announced
 	// MaxUDPPayloadSize, so a jumbo path needs both ends to announce one.
 	// Below 1200 (what every path must carry, §14.1) or above 65527 (the
 	// largest UDP payload), [Dial], accept and [NewListener] refuse it.
 	// The size reached is [Stats.DatagramSize].
+	//
+	// It is an int, as every local setting's size is, where
+	// MaxUDPPayloadSize is a uint64 like every transport parameter: those
+	// mirror the variable-length integers the wire carries, up to 2^62-1.
 	MaxDatagramSize int
 }
 

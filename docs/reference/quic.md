@@ -73,7 +73,7 @@ the wire:
 | `MaxConnsPerIP` | no bound | ≥ 0 | the same bound per source address |
 | `IPv4PrefixBits` | 32 | 1 to 32 | how much of an IPv4 source `MaxConnsPerIP` counts by |
 | `IPv6PrefixBits` | 64 | 1 to 128 | the same for IPv6 |
-| `PreferredAddress` | nil: none announced | | a second socket clients move to once the handshake confirms |
+| `PreferredSocket` | nil: none announced | | a second socket clients move to once the handshake confirms |
 | `PreferredIPv4` | the socket's own address | IPv4 | the address announced for that socket when it listens on the unspecified address |
 | `PreferredIPv6` | the socket's own address | IPv6 | the same for IPv6 |
 | `ConnQueueLen` | 64 | ≥ 0 | datagrams queued for one connection before they are dropped |
@@ -82,7 +82,7 @@ the wire:
 | `StatelessResetsPerSecond` | 16 | ≥ 0 | stateless resets sent per second |
 | `StatelessResetsPerAddress` | 4 | ≥ 0 | one source address's share of them |
 | `StatelessResetKey` | random per listener | | derives the reset tokens; set it to survive a restart |
-| `TokenKey` | random per listener | | authenticates Retry tokens; share it across instances |
+| `RetryTokenKey` | random per listener | | authenticates Retry tokens; share it across instances |
 | `SessionTickets` | off | | one session ticket per completed handshake, for resumption |
 | `EarlyData` | off | | 0-RTT on resumption ([Deployments](../guide/deployments.md)) |
 | `EarlyDataWindow` | 10 minutes | ≥ 0 | how long after its issue a ticket may carry 0-RTT |
@@ -150,7 +150,7 @@ A section number with no RFC named is RFC 9000's.
   a client offered a preferred address by its server probes it once the
   handshake confirms and moves there on its own when the path validates.
   Both reset congestion and round-trip state as §9.4 asks. The server side
-  is `ListenerConfig.PreferredAddress`: a second socket the listener reads
+  is `ListenerConfig.PreferredSocket`: a second socket the listener reads
   alongside its main one and announces in every handshake.
 - **Datagram coalescing** (§12.2): the ACK a datagram earns and the CRYPTO
   flight it provokes leave together, Initial and Handshake packets in one

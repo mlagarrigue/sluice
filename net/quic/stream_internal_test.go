@@ -153,7 +153,7 @@ func TestStopSendingWithNothingLeftToStopGivesBackTheWindow(t *testing.T) {
 			id := StreamID(i) * 4
 			b := streamFrameBytes(id, 0, data)
 			if ending == "FIN" {
-				b = varint.Append(nil, FrameStream|streamOFF|streamLEN|streamFIN)
+				b = varint.Append(nil, frameStream|streamOFF|streamLEN|streamFIN)
 				b = appendStreamID(b, id)
 				b = varint.Append(b, 0)
 				b = varint.Append(b, uint64(len(data)))
@@ -276,7 +276,7 @@ func TestBytesAfterStopSendingAreGivenBack(t *testing.T) {
 		if err := c.frames(spaceApplication, streamFrame(nil, id, 0, string(make([]byte, half)), false), time.Now()); err != nil {
 			t.Fatalf("stream %d first half: %v", id, err)
 		}
-		s, err := c.Stream(id)
+		s, err := c.OpenStreamsTo(id)
 		if err != nil {
 			t.Fatalf("stream %d: %v", id, err)
 		}

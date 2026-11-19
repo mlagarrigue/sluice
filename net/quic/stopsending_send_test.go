@@ -30,7 +30,7 @@ func TestAFailedResetAnswerDoesNotEndTheConnection(t *testing.T) {
 	c.mu.Lock()
 	c.peerMaxStreamsBidi = 1
 	c.mu.Unlock()
-	s, err := c.Stream(0)
+	s, err := c.OpenStreamsTo(0)
 	if err != nil {
 		t.Fatal(err)
 	}

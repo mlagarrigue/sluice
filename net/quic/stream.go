@@ -276,7 +276,7 @@ func (s *Stream) endForRead() {
 // [os.ErrDeadlineExceeded], as a [net.Conn] does.
 //
 // A unidirectional stream this end opened ([Conn.OpenUniStream], or
-// [Conn.Stream] with a local unidirectional identifier) has no receive side:
+// [Conn.OpenStreamsTo] with a local unidirectional identifier) has no receive side:
 // Read refuses it with an error at once rather than waiting for bytes the
 // peer may never send.
 //
@@ -535,7 +535,7 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 		// back for the next one (streamFrames). A type byte, three varints
 		// of at most eight bytes.
 		frame, spare := takeStreamFrame(1 + 3*8 + n)
-		frame = varint.Append(frame, FrameStream|streamOFF|streamLEN|boolBit(fin && last, streamFIN))
+		frame = varint.Append(frame, frameStream|streamOFF|streamLEN|boolBit(fin && last, streamFIN))
 		frame = appendStreamID(frame, s.id)
 		frame = varint.Append(frame, s.writeOff)
 		frame = varint.Append(frame, uint64(n))
@@ -916,7 +916,7 @@ func (c *Conn) AcceptStream(ctx context.Context) (*Stream, error) {
 				c.signalAccept() // another acceptor may be waiting
 			}
 			s.queued = false
-			// Read through Conn.Stream before it was accepted, the stream
+			// Read through Conn.OpenStreamsTo before it was accepted, the stream
 			// waited for this to retire.
 			c.maybeRemoveLocked(s)
 			if len(c.grants) > 0 {
@@ -982,7 +982,7 @@ func (c *Conn) OpenStream(ctx context.Context) (*Stream, error) {
 // The stream it returns refuses [Stream.Read] with an error rather than
 // blocking: the peer never writes on it, so nothing could ever arrive. For
 // a unidirectional stream whose number the application protocol fixes —
-// HTTP/3's control stream is stream 3 — use [Conn.Stream], which picks by
+// HTTP/3's control stream is stream 3 — use [Conn.OpenStreamsTo], which picks by
 // identifier and leaves conformance to the grant to the caller.
 func (c *Conn) OpenUniStream(ctx context.Context) (*Stream, error) {
 	return c.open(ctx, true)
@@ -1067,13 +1067,13 @@ func (c *Conn) waitStreamCreditLocked(ctx context.Context, uni bool) error {
 	return nil
 }
 
-// ErrStreamLimit is what [Conn.Stream] returns for an identifier past the
+// ErrStreamLimit is what [Conn.OpenStreamsTo] returns for an identifier past the
 // stream limit of its kind: for a stream this end would open, past the
 // MAX_STREAMS the peer granted; for a stream the peer would open, past the
 // limit this end announced. Nothing is registered for it.
 var ErrStreamLimit = errors.New("quic: stream identifier past the stream limit")
 
-// Stream returns the stream with this identifier, opening the bookkeeping
+// OpenStreamsTo returns the stream with this identifier, opening the bookkeeping
 // for it if nobody has yet. It is how a server answers on the stream a
 // request arrived on, and how it opens its own unidirectional streams (the
 // HTTP/3 control stream). A stream that already closed comes back non-nil
@@ -1083,12 +1083,12 @@ var ErrStreamLimit = errors.New("quic: stream identifier past the stream limit")
 // Picking a stream by identifier is for streams whose numbers the
 // application protocol already fixed — HTTP/3's control stream is stream 3
 // — and for answering on streams the peer itself opened. Unlike
-// [Conn.OpenStream], Stream does not wait for credit: an identifier this
+// [Conn.OpenStream], OpenStreamsTo does not wait for credit: an identifier this
 // end would open past the peer's MAX_STREAMS grant, or one the peer would
 // open past the limit this end announced, is refused with [ErrStreamLimit]
 // and allocates nothing. Within the grant, a local identifier used out of
 // order opens every lower-numbered stream of its kind (RFC 9000 §2.1).
-func (c *Conn) Stream(id StreamID) (*Stream, error) {
+func (c *Conn) OpenStreamsTo(id StreamID) (*Stream, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if s := c.streams[id]; s != nil {
@@ -1282,14 +1282,14 @@ func (c *Conn) grantHeldStreamSlotsLocked(uni bool) {
 	c.grants = appendFrame(c.grants, typ, *limit)
 }
 
-// Credit says when the bytes a batch consumer receives through
+// CreditPolicy says when the bytes a batch consumer receives through
 // [Conn.OnStreamFrames] earn the peer new flow-control credit.
-type Credit uint8
+type CreditPolicy uint8
 
 const (
 	// CreditOnDelivery credits bytes as the callback receives them: the
 	// transport settles flow control, and the consumer has nothing to do.
-	CreditOnDelivery Credit = iota
+	CreditOnDelivery CreditPolicy = iota
 
 	// CreditOnRelease moves crediting from the transport to the consumer:
 	// delivered bytes earn the peer no new credit until the consumer calls
@@ -1359,7 +1359,7 @@ const (
 //
 // It panics on a credit that is neither of the two: the choice is the
 // caller's code, not data.
-func (c *Conn) OnStreamFrames(credit Credit, f func([]Frame) error) {
+func (c *Conn) OnStreamFrames(credit CreditPolicy, f func([]Frame) error) {
 	if credit > CreditOnRelease {
 		panic(fmt.Sprintf("quic: OnStreamFrames credit %d is neither CreditOnDelivery nor CreditOnRelease", credit))
 	}
@@ -1390,7 +1390,7 @@ func (c *Conn) OnStreamFrames(credit Credit, f func([]Frame) error) {
 	for _, s := range streams {
 		s.mu.Lock()
 		if len(s.buf) > 0 {
-			leftovers = append(leftovers, Frame{Type: FrameStream, StreamID: s.id, Data: s.buf, Fin: s.recvDone})
+			leftovers = append(leftovers, Frame{Type: frameStream, StreamID: s.id, Data: s.buf, Fin: s.recvDone})
 		}
 		s.buf = nil
 		s.mu.Unlock()

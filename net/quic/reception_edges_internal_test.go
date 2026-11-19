@@ -435,7 +435,7 @@ func TestStreamCountsAtTheirEdges(t *testing.T) {
 	c.mu.Lock()
 	c.openedBidi, c.peerMaxStreamsBidi = 1, 10
 	c.mu.Unlock()
-	s, err := c.Stream(0)
+	s, err := c.OpenStreamsTo(0)
 	if err != nil || !s.sendClosed {
 		t.Errorf("Stream(0) after it closed: %v, closed %v", err, s != nil && s.sendClosed)
 	}

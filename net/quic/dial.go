@@ -14,12 +14,12 @@ import (
 // RFC 9000 asks for, as the package documentation says under "The socket
 // is the caller's".
 //
-// cfg's callbacks run on the connection's receive goroutine and a slow one
+// tlsCfg's callbacks run on the connection's receive goroutine and a slow one
 // stalls that connection's reading: "The TLS callbacks are the caller's",
 // in the package documentation, says what that means and where the slow
 // work goes instead.
 //
-// cfg must name at least one application protocol in NextProtos — ALPN is
+// tlsCfg must name at least one application protocol in NextProtos — ALPN is
 // mandatory in QUIC (RFC 9001 §8.1) — and set MinVersion to
 // [tls.VersionTLS13]: QUIC uses TLS 1.3 only (RFC 9001 §4.2), and a Config
 // built by hand defaults to a lower minimum that crypto/tls would refuse
@@ -29,11 +29,11 @@ import (
 // golang.org/x/crypto, the only module outside the standard library this
 // package imports.
 //
-// A cfg with a [tls.ClientSessionCache] resumes a session the server has
+// A tlsCfg with a [tls.ClientSessionCache] resumes a session the server has
 // issued a ticket for (PSK, RFC 9001 §4.6): the handshake still takes one
 // round trip and Dial does not even offer 0-RTT, which leaves the ticket's
 // 0-RTT unspent at the server; [DialEarly] is the one that sends in it.
-// A ticket is presented once: Dial wraps the cache, on a copy of cfg, so
+// A ticket is presented once: Dial wraps the cache, on a copy of tlsCfg, so
 // that a ticket taken out of it is removed — RFC 9001 §4.5 and RFC 9846
 // Appendix C.4, since a ticket reused lets anyone on the path tie the
 // connections together — and the ticket the server issues on the resumed
@@ -45,7 +45,7 @@ import (
 // nothing here. The ticket is never kept, so nothing is ever sent under it;
 // the check is the cache's, applied when there is one to keep it in.
 //
-// crypto/tls files tickets under cfg.ServerName alone — the empty string
+// crypto/tls files tickets under tlsCfg.ServerName alone — the empty string
 // when it is unset, since a QUIC handshake has no net.Conn whose address
 // could stand in — so every Dial with one cache and one ServerName draws
 // from the same tickets, whatever addr is. Whatever must not be linked to
@@ -54,11 +54,11 @@ import (
 //
 // crypto/tls refuses RSA keys under 1024 bits and no more. RFC 9846
 // Appendix C.2 asks applications to hold certification paths to at least
-// 2048-bit RSA or 224-bit ECDSA: a cfg that wants that enforces it in
+// 2048-bit RSA or 224-bit ECDSA: a tlsCfg that wants that enforces it in
 // VerifyConnection, on the public keys of [tls.ConnectionState.PeerCertificates]
 // (an *rsa.PublicKey's N.BitLen()); this package adds no bound of its own.
 //
-// A client certificate in cfg.Certificates is refused here when its leaf
+// A client certificate in tlsCfg.Certificates is refused here when its leaf
 // carries a Key Usage without digitalSignature or a chain member is signed
 // with SHA-1 (RFC 9846 §4.5.1.2, §4.3.3), as [NewListener] refuses a
 // server's; what
@@ -69,8 +69,8 @@ import (
 // ctx's deadline; a ctx without a deadline gives up after
 // [DefaultHandshakeTimeout]. Once Dial has returned, ctx no longer has any
 // hold on the connection.
-func Dial(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls.Config, qcfg Config) (*Conn, error) {
-	c, err := newClientConn(ctx, pc, addr, cfg, qcfg)
+func Dial(ctx context.Context, pc net.PacketConn, addr net.Addr, tlsCfg *tls.Config, quicCfg Config) (*Conn, error) {
+	c, err := newClientConn(ctx, pc, addr, tlsCfg, quicCfg)
 	if err != nil {
 		return nil, err
 	}

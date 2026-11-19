@@ -75,7 +75,7 @@ func TestVarintRefusesATruncatedBuffer(t *testing.T) {
 func TestOneDatagramCarriesSeveralStreams(t *testing.T) {
 	var payload []byte
 	for _, id := range []uint64{0, 4, 8, 12} {
-		payload = append(payload, FrameStream|streamLEN|streamOFF)
+		payload = append(payload, frameStream|streamLEN|streamOFF)
 		payload = varint.Append(payload, id)
 		payload = varint.Append(payload, 0) // offset
 		body := []byte("stream " + string(rune('0'+id/4)))
@@ -112,7 +112,7 @@ func TestParseFramesRefusals(t *testing.T) {
 		payload []byte
 	}{
 		{"an unknown frame type", []byte{0x40}},
-		{"a STREAM whose length runs past the packet", []byte{FrameStream | streamLEN, 0x00, 0x7f}},
+		{"a STREAM whose length runs past the packet", []byte{frameStream | streamLEN, 0x00, 0x7f}},
 		{"a CRYPTO with no length", []byte{frameCrypto, 0x00}},
 		{"an ACK declaring more ranges than bytes", []byte{frameACK, 0x01, 0x00, 0x3f, 0x00}},
 		{"a NEW_CONNECTION_ID retiring past itself", []byte{frameNewConnectionID, 0x01, 0x02, 0x01, 0xaa}},
@@ -131,7 +131,7 @@ func TestParseFramesRefusals(t *testing.T) {
 // A STREAM frame without the LEN bit runs to the end of the packet, which is
 // what lets a sender fill a datagram without measuring first.
 func TestStreamWithoutLengthRunsToTheEnd(t *testing.T) {
-	payload := []byte{FrameStream | streamFIN, 0x04}
+	payload := []byte{frameStream | streamFIN, 0x04}
 	payload = append(payload, "the rest of the packet"...)
 
 	frames, err := parseFrames(nil, payload)

@@ -84,7 +84,7 @@ func (c closeFails) Close() error { _ = c.PacketConn.Close(); return errCloseFai
 // Close reports the preferred-address socket's failure.
 func TestListenerCloseReportsThePreferredSocket(t *testing.T) {
 	pc, other := newLoopbackPair(t)
-	l, err := NewListener(pc, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{PreferredAddress: closeFails{other}})
+	l, err := NewListener(pc, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{PreferredSocket: closeFails{other}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -559,7 +559,7 @@ func TestRetryTokenVerifiedWithoutForcedRetry(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = l.Close() })
 	newSCID := []byte("newscid1")
-	token := appendRetryToken(nil, l.lcfg.TokenKey, cli.LocalAddr(), []byte("odcid000"), newSCID)
+	token := appendRetryToken(nil, l.lcfg.RetryTokenKey, cli.LocalAddr(), []byte("odcid000"), newSCID)
 	if _, err := cli.WriteTo(sealedClientInitialWithToken(t, newSCID, []byte("clientsc"), token), srv.LocalAddr()); err != nil {
 		t.Fatal(err)
 	}

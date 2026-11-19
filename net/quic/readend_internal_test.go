@@ -13,7 +13,7 @@ import (
 // two is where a Read may run.
 func deliverAs(t *testing.T, s *Stream, off uint64, data string, fin bool) (delta []byte, finished bool) {
 	t.Helper()
-	grown, finished, _, err := s.deliver(Frame{Type: FrameStream, StreamID: s.id, offset: off, Data: []byte(data), Fin: fin}, nil)
+	grown, finished, _, err := s.deliver(Frame{Type: frameStream, StreamID: s.id, offset: off, Data: []byte(data), Fin: fin}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,13 +130,13 @@ func TestResetFinalSizeIsHeldLikeAFin(t *testing.T) {
 	}
 	_, _, err := s.abandon(0x7, 12)
 	finalSizeErr(t, err, "a second reset to a larger final size")
-	_, _, _, err = s.deliver(Frame{Type: FrameStream, StreamID: s.id, offset: 10, Data: []byte("x")}, nil)
+	_, _, _, err = s.deliver(Frame{Type: frameStream, StreamID: s.id, offset: 10, Data: []byte("x")}, nil)
 	finalSizeErr(t, err, "data at the final size after a reset")
-	_, _, _, err = s.deliver(Frame{Type: FrameStream, StreamID: s.id, offset: 7, Data: []byte("abcd"), Fin: true}, nil)
+	_, _, _, err = s.deliver(Frame{Type: frameStream, StreamID: s.id, offset: 7, Data: []byte("abcd"), Fin: true}, nil)
 	finalSizeErr(t, err, "a FIN past the final size after a reset")
-	_, _, _, err = s.deliver(Frame{Type: FrameStream, StreamID: s.id, offset: 8, Fin: true}, nil)
+	_, _, _, err = s.deliver(Frame{Type: frameStream, StreamID: s.id, offset: 8, Fin: true}, nil)
 	finalSizeErr(t, err, "a FIN below the final size after a reset")
-	if _, _, _, err := s.deliver(Frame{Type: FrameStream, StreamID: s.id, offset: 7, Data: []byte("abc"), Fin: true}, nil); err != nil {
+	if _, _, _, err := s.deliver(Frame{Type: frameStream, StreamID: s.id, offset: 7, Data: []byte("abc"), Fin: true}, nil); err != nil {
 		t.Fatalf("a FIN at the reset's final size: %v, want it accepted", err)
 	}
 }

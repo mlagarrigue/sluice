@@ -656,7 +656,7 @@ func TestBatchModeReplenishesConnectionCredit(t *testing.T) {
 		done := false
 		conn.OnStreamFrames(quic.CreditOnDelivery, func(frames []quic.Frame) error {
 			for _, f := range frames {
-				if f.Type == quic.FrameStream {
+				if f.IsStream() {
 					received += len(f.Data)
 				}
 			}

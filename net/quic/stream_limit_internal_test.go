@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// Conn.Stream refuses an identifier past the stream limit of its kind and
+// Conn.OpenStreamsTo refuses an identifier past the stream limit of its kind and
 // registers nothing for it: Stream(4_000_001) on a server used to register
 // the million streams below it, whatever the peer had granted.
 func TestStreamRefusesAnIdentifierPastTheLimit(t *testing.T) {
@@ -30,7 +30,7 @@ func TestStreamRefusesAnIdentifierPastTheLimit(t *testing.T) {
 		before := len(c.streams)
 		c.mu.Unlock()
 		var err error
-		allocs := testing.AllocsPerRun(10, func() { _, err = c.Stream(tc.id) })
+		allocs := testing.AllocsPerRun(10, func() { _, err = c.OpenStreamsTo(tc.id) })
 		if !errors.Is(err, ErrStreamLimit) {
 			t.Errorf("%s: Stream(%d) returned %v, want ErrStreamLimit", tc.name, tc.id, err)
 		}
@@ -47,7 +47,7 @@ func TestStreamRefusesAnIdentifierPastTheLimit(t *testing.T) {
 
 	// The last identifier each limit covers still opens.
 	for _, id := range []StreamID{4*1 + 1, 3, 4 * 2, 2} {
-		s, err := c.Stream(id)
+		s, err := c.OpenStreamsTo(id)
 		if err != nil || s == nil || s.id != id {
 			t.Errorf("Stream(%d) = %v, %v; want the stream", id, s, err)
 		}

@@ -35,7 +35,7 @@ func TestUnacknowledgedSendsCloseAtTheRecordBound(t *testing.T) {
 		for opened := uint64(0); opened < 4*bound && err == nil; opened++ {
 			c.actOnDeadlines(now)
 			restartIdleAt(c, now)
-			payload := varint.Append(nil, FrameStream|streamLEN|streamFIN)
+			payload := varint.Append(nil, frameStream|streamLEN|streamFIN)
 			payload = varint.Append(payload, 2+4*opened) // client-initiated unidirectional
 			payload = varint.Append(payload, 0)
 			if err = c.frames(spaceApplication, payload, now); err != nil {

@@ -116,7 +116,7 @@ func unackedResetDrive(t *testing.T, c *Conn, after func(id uint64)) (opened uin
 			break // a peer that respects the limit stops here
 		}
 		id := 4 * i
-		payload := varint.Append(nil, FrameStream|streamLEN|streamFIN)
+		payload := varint.Append(nil, frameStream|streamLEN|streamFIN)
 		payload = varint.Append(payload, id)
 		payload = varint.Append(payload, 0)
 		payload = appendFrame(payload, FrameStopSending, id, 0x10c)

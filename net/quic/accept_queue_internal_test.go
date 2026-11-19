@@ -47,7 +47,7 @@ func TestAStreamPickedBeforeThePeerOpensItIsKept(t *testing.T) {
 		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultConfig())
 	defer c.Close()
 
-	picked, err := c.Stream(4)
+	picked, err := c.OpenStreamsTo(4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestAStreamPickedBeforeThePeerOpensItIsKept(t *testing.T) {
 			t.Fatalf("AcceptStream = %v, %v; want stream %d", s, err, want)
 		}
 		if want == 4 && s != picked {
-			t.Fatal("AcceptStream handed out a stream other than the one Conn.Stream returned")
+			t.Fatal("AcceptStream handed out a stream other than the one Conn.OpenStreamsTo returned")
 		}
 	}
 	buf := make([]byte, 8)

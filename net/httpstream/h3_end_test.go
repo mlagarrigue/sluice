@@ -25,7 +25,7 @@ func TestH3BatchHandedOverAfterTheEndIsCancelled(t *testing.T) {
 	for _, order := range []string{"witness: onFrames then end", "end's leaveAll during onFrames"} {
 		t.Run(order, func(t *testing.T) {
 			server, _ := connPair(t, quic.DefaultConfig())
-			control, err := server.Stream(3)
+			control, err := server.OpenStreamsTo(3)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -123,7 +123,7 @@ func TestH3CancelInTheDeliveryThatCompletesTheRequest(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server, _ := connPair(t, quic.DefaultConfig())
-			control, err := server.Stream(3)
+			control, err := server.OpenStreamsTo(3)
 			if err != nil {
 				t.Fatal(err)
 			}

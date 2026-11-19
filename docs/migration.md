@@ -89,10 +89,21 @@ behavior that keep the signatures — a value now refused — come last.
 - **`gateway.Gateway` has no `Close`** (`c317c88`): `Close` is the forced stop elsewhere in the
   library, and a gateway has none. Write `gw.Shutdown(ctx)` with a deadline, or
   `gw.Shutdown(context.Background())` to wait without a bound as `Close` did.
-- **`stream.RenderOpen` hands `serve` an `Open`** (feat(web)!: RenderOpen hands serve an Open):
+- **`stream.RenderOpen` hands `serve` an `Open`** (`faf7103`):
   `serve func(i, open int)` becomes `serve func(o stream.Open)`, whose `Index` is the exchange's
   position in the batch and `Rank` its position among the open ones. Write `o.Index` for `i` and
   `o.Rank` for `open`; `Renderer.RenderOpen` changes the same way.
+
+### QUIC: `net/quic`
+
+- **Names that read as what they hold** (feat(quic)!: names that read as what they hold, ADR 0015):
+  `Credit` is renamed `CreditPolicy` (a policy, not an amount; `CreditOnDelivery` and
+  `CreditOnRelease` keep theirs), `ListenerConfig.PreferredAddress` is renamed `PreferredSocket`
+  (it is a socket), `ListenerConfig.TokenKey` is renamed `RetryTokenKey`, and `Conn.Stream` becomes
+  `Conn.OpenStreamsTo`, since it opens every lower-numbered stream of its kind. Rename the uses.
+- **`FrameStream` is gone from the exported names**
+  (feat(quic)!: names that read as what they hold, ADR 0015): test a frame with `Frame.IsStream`, which also
+  covers the seven other STREAM types.
 
 ## From v0.4.0 to v0.5.0
 

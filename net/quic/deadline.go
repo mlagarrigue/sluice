@@ -75,7 +75,7 @@ func (c *Conn) setStreamDeadlineLocked(s *Stream, write bool, t time.Time) {
 		c.deadlines[i].at = t
 		heap.Fix(&c.deadlines, i)
 	case c.streams[s.id] != s:
-		// Out of the table — retired, or the stand-in Conn.Stream makes for
+		// Out of the table — retired, or the stand-in Conn.OpenStreamsTo makes for
 		// a closed identifier — nothing waits on it, and nothing would take
 		// the entry out before it matured (dropStreamDeadlinesLocked runs as
 		// a stream leaves): the heap would hold it, and s, until then.

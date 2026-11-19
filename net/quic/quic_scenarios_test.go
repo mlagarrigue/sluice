@@ -39,7 +39,7 @@ func TestPeerExceedingStreamLimitIsRefused(t *testing.T) {
 	streamFrame := func(id uint64) []byte {
 		// A zero-length, non-FIN STREAM frame: enough to name the stream,
 		// nothing for flow control or reassembly to do.
-		frame := varint.Append(nil, FrameStream|streamOFF|streamLEN)
+		frame := varint.Append(nil, frameStream|streamOFF|streamLEN)
 		frame = varint.Append(frame, id)
 		frame = varint.Append(frame, 0) // offset
 		frame = varint.Append(frame, 0) // length
@@ -84,7 +84,7 @@ func TestPeerExceedingUniStreamLimitIsRefused(t *testing.T) {
 
 	limit := DefaultConfig().InitialMaxStreamsUni
 	streamFrame := func(id uint64) []byte {
-		frame := varint.Append(nil, FrameStream|streamOFF|streamLEN)
+		frame := varint.Append(nil, frameStream|streamOFF|streamLEN)
 		frame = varint.Append(frame, id)
 		frame = varint.Append(frame, 0)
 		frame = varint.Append(frame, 0)
@@ -152,7 +152,7 @@ func TestStopSendingIsNotSentWhereItMeansNothing(t *testing.T) {
 	defer c.Close()
 	c.OnStreamFrames(CreditOnDelivery, func([]Frame) error { return nil })
 
-	s, err := c.Stream(0) // client-initiated bidirectional, picked ahead of its first frame
+	s, err := c.OpenStreamsTo(0) // client-initiated bidirectional, picked ahead of its first frame
 	if err != nil {
 		t.Fatal(err)
 	}

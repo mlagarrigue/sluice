@@ -11,7 +11,7 @@ import (
 // serves the queue first.
 func TestAWriteSendsTheLostDataBeforeItsOwn(t *testing.T) {
 	c := newResetReplayConn(t)
-	s, err := c.Stream(0)
+	s, err := c.OpenStreamsTo(0)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,7 +10,7 @@ import (
 // otherStreamPayload is one in-flight packet's payload: a STREAM frame of
 // stream id carrying n bytes.
 func otherStreamPayload(id uint64, n int) []byte {
-	p := varint.Append(nil, FrameStream|streamOFF|streamLEN)
+	p := varint.Append(nil, frameStream|streamOFF|streamLEN)
 	p = varint.Append(p, id)
 	p = varint.Append(p, 0)
 	p = varint.Append(p, uint64(n))

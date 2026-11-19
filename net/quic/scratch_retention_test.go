@@ -26,9 +26,9 @@ func TestTheReceiveScratchesDoNotKeepOnePacketsSize(t *testing.T) {
 	ids := []uint64{0, 4, 8, 12}
 	var behind, gaps []byte
 	for _, id := range ids {
-		behind = appendFrame(behind, FrameStream|streamOFF|streamLEN, id, 1, parked)
+		behind = appendFrame(behind, frameStream|streamOFF|streamLEN, id, 1, parked)
 		behind = append(behind, data...)
-		gaps = appendFrame(gaps, FrameStream|streamOFF|streamLEN, id, 0, 1)
+		gaps = appendFrame(gaps, frameStream|streamOFF|streamLEN, id, 0, 1)
 		gaps = append(gaps, 0)
 	}
 	now := time.Now()

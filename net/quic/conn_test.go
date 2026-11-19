@@ -269,7 +269,7 @@ func TestStreamFramesBeforeTheCallbackAreHeld(t *testing.T) {
 	}
 }
 
-// A frame handed to the callback carries its stream, the one Conn.Stream
+// A frame handed to the callback carries its stream, the one Conn.OpenStreamsTo
 // returns for its identifier: a server answering on it needs no lookup
 // under the connection's lock.
 func TestDeliveredFramesCarryTheirStream(t *testing.T) {
@@ -305,9 +305,9 @@ func TestDeliveredFramesCarryTheirStream(t *testing.T) {
 	seen := make(chan error, 1)
 	server.OnStreamFrames(quic.CreditOnDelivery, func(frames []quic.Frame) error {
 		for _, f := range frames {
-			want, err := server.Stream(f.StreamID)
+			want, err := server.OpenStreamsTo(f.StreamID)
 			if err == nil && f.Stream() != want {
-				err = fmt.Errorf("stream %d: the frame carries %p, Conn.Stream returns %p", f.StreamID, f.Stream(), want)
+				err = fmt.Errorf("stream %d: the frame carries %p, Conn.OpenStreamsTo returns %p", f.StreamID, f.Stream(), want)
 			}
 			select {
 			case seen <- err: // the first frame; the read loop never waits here

@@ -85,7 +85,7 @@ func TestStreamDeadlineHeapFollowsEverySet(t *testing.T) {
 }
 
 // A deadline set on a stream out of the table — retired, or the stand-in
-// Conn.Stream makes for a closed identifier — takes no place in the heap:
+// Conn.OpenStreamsTo makes for a closed identifier — takes no place in the heap:
 // nothing waits on such a stream, and only a stream leaving the table had
 // its entries taken out, so the entry, and the stream, stayed until the
 // deadline matured. The HTTP/3 server sets a write deadline before every

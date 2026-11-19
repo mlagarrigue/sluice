@@ -136,7 +136,7 @@ func TestH3StopSendingBeforeSettingsClosesTheConnection(t *testing.T) {
 		// Opened before ServeH3Conn runs, so the client's STOP_SENDING finds
 		// the stream — a STOP_SENDING for a stream this end never opened
 		// would be a transport error instead (RFC 9000 §19.5).
-		control, err := conn.Stream(3)
+		control, err := conn.OpenStreamsTo(3)
 		if err != nil {
 			serverUp <- err
 			return

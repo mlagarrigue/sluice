@@ -41,7 +41,7 @@ func fuzzFrameBatches(data []byte) [][]quic.Frame {
 		data = data[n:]
 
 		cur = append(cur, quic.Frame{
-			Type:     quic.FrameStream,
+			Type:     streamFrameType,
 			StreamID: id,
 			Data:     chunk,
 			Fin:      finByte&1 == 1,

@@ -77,7 +77,7 @@ func TestSupersededCreditLeavesTheResendQueue(t *testing.T) {
 				if next >= granted {
 					t.Fatalf("round %d: stream %d past the granted limit %d", r, next, granted)
 				}
-				payload := varint.Append(nil, FrameStream|streamLEN|streamFIN)
+				payload := varint.Append(nil, frameStream|streamLEN|streamFIN)
 				payload = varint.Append(payload, 2+4*next)
 				payload = varint.Append(payload, 0)
 				if err := c.frames(spaceApplication, payload, now); err != nil {

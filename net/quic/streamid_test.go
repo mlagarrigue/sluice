@@ -19,7 +19,7 @@ func TestStreamIdentifiersAreTyped(t *testing.T) {
 	}{
 		{"ReleaseStreamBytes", []reflect.Type{sid, u64}},
 		{"ReleaseStreamCredit", []reflect.Type{sid, u64}},
-		{"Stream", []reflect.Type{sid}},
+		{"OpenStreamsTo", []reflect.Type{sid}},
 	} {
 		m, ok := conn.MethodByName(tc.method)
 		if !ok {

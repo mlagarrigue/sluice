@@ -43,7 +43,7 @@ func TestPendingChargeCoversWhatTheCopyHolds(t *testing.T) {
 
 	oneByte := make([]Frame, n)
 	for i := range oneByte {
-		oneByte[i] = Frame{Type: FrameStream, StreamID: StreamID(4 * i), Data: []byte{'x'}}
+		oneByte[i] = Frame{Type: frameStream, StreamID: StreamID(4 * i), Data: []byte{'x'}}
 	}
 	allocs := testing.AllocsPerRun(10, func() { _ = cloneFrames(oneByte) })
 	if allocs > 2 {

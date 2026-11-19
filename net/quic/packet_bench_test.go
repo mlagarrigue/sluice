@@ -93,7 +93,7 @@ func benchSealStreamPacket(sealer *packetSealer, dcid []byte, pn uint64, offset 
 	var payload []byte
 	for i := range uint64(4) {
 		id := 4 * i // client-initiated bidi: 0, 4, 8, 12 — the peer’s streams, from a server’s seat
-		payload = varint.Append(payload, FrameStream|streamOFF|streamLEN)
+		payload = varint.Append(payload, frameStream|streamOFF|streamLEN)
 		payload = varint.Append(payload, id)
 		payload = varint.Append(payload, offset)
 		payload = varint.Append(payload, uint64(len(chunk)))

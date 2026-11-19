@@ -20,7 +20,7 @@ func refusingStreamConn(t *testing.T) (*Conn, *Stream) {
 	c.mu.Lock()
 	c.peerMaxStreamsBidi = 1
 	c.mu.Unlock()
-	s, err := c.Stream(0)
+	s, err := c.OpenStreamsTo(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestAStopSendingWhoseDatagramIsRefusedSucceeds(t *testing.T) {
 func TestARefusedResetFromTheBatchCallbackKeepsTheConnection(t *testing.T) {
 	c, _ := refusingStreamConn(t)
 	c.OnStreamFrames(CreditOnDelivery, func([]Frame) error {
-		st, err := c.Stream(0)
+		st, err := c.OpenStreamsTo(0)
 		if err != nil {
 			return err
 		}
@@ -73,7 +73,7 @@ func TestARefusedResetFromTheBatchCallbackKeepsTheConnection(t *testing.T) {
 		}
 		return st.StopSending(0x10c)
 	})
-	frame := varint.Append(nil, FrameStream|streamOFF|streamLEN)
+	frame := varint.Append(nil, frameStream|streamOFF|streamLEN)
 	frame = varint.Append(frame, 0)
 	frame = varint.Append(frame, 0)
 	frame = varint.Append(frame, 3)

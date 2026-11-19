@@ -82,7 +82,7 @@ func TestResetStreamReplaysNoStreamFrames(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := newResetReplayConn(t)
-			s, err := c.Stream(0)
+			s, err := c.OpenStreamsTo(0)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -122,7 +122,7 @@ func TestResetStreamReplaysNoStreamFrames(t *testing.T) {
 // drops the stream's data, not the frame that ends it.
 func TestResetStreamReplaysItsOwnReset(t *testing.T) {
 	c := newResetReplayConn(t)
-	s, err := c.Stream(0)
+	s, err := c.OpenStreamsTo(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestResetStreamReplaysItsOwnReset(t *testing.T) {
 // queue is empty: the record does not grow with the resets of a connection.
 func TestResetStreamRecordIsPrunedOnceNothingPredatesIt(t *testing.T) {
 	c := newResetReplayConn(t)
-	s, err := c.Stream(0)
+	s, err := c.OpenStreamsTo(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestResetStreamRecordIsPrunedOnceNothingPredatesIt(t *testing.T) {
 // limit and then reset re-announces no STREAM_DATA_BLOCKED.
 func TestResetStreamResendsNoBlockedFrame(t *testing.T) {
 	c := newResetReplayConn(t)
-	s, err := c.Stream(0)
+	s, err := c.OpenStreamsTo(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func TestResetStreamResendsNoBlockedFrame(t *testing.T) {
 // reopens, the queued frame of the reset stream does not follow.
 func TestNoStreamDataBlockedLeavesAfterTheReset(t *testing.T) {
 	c := newResetReplayConn(t)
-	s, err := c.Stream(0)
+	s, err := c.OpenStreamsTo(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func TestNoStreamDataBlockedLeavesAfterTheReset(t *testing.T) {
 // however long it stays in the table.
 func TestNoStreamDataBlockedIsResentForAClosedSendingPart(t *testing.T) {
 	c := newResetReplayConn(t)
-	s, err := c.Stream(0)
+	s, err := c.OpenStreamsTo(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +326,7 @@ func TestALostControlFrameGoesAgainOnlyWhileItHolds(t *testing.T) {
 		},
 	} {
 		c := newResetReplayConn(t)
-		s, err := c.Stream(0)
+		s, err := c.OpenStreamsTo(0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -401,7 +401,7 @@ func TestARepeatedResetStreamIsReportedOnce(t *testing.T) {
 	}
 }
 
-// Conn.Stream of an identifier opened and since retired returns a stream
+// Conn.OpenStreamsTo of an identifier opened and since retired returns a stream
 // that already closed: a Read on it ends with io.EOF at once, where it
 // waited for an end nothing would signal, until the connection closed.
 func TestReadOnARetiredStreamsTombstoneReturns(t *testing.T) {
@@ -409,7 +409,7 @@ func TestReadOnARetiredStreamsTombstoneReturns(t *testing.T) {
 	c.mu.Lock()
 	c.openedBidi = 1 // stream 0 was opened and has retired: absent from the table
 	c.mu.Unlock()
-	s, err := c.Stream(0)
+	s, err := c.OpenStreamsTo(0)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,7 +1,7 @@
 # ADR 0015 — The QUIC server: transport machinery, a real listener, a moving client
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-11-13 (`MaxPendingConns` refuses at the bound, twice it waits for `Accept` in all); 21 earlier, from 2026-10-03, in its `git log`
+- **Revised:** 2026-11-19 (`PreferredSocket`, `RetryTokenKey`); 22 earlier, from 2026-10-03, in its `git log`
 - **Theme:** quic
 
 ## Problem
@@ -96,7 +96,7 @@ listener key, rate-limited per source IP.
 ### Keys shared between instances
 
 That key, `StatelessResetKey`, and the one that authenticates Retry tokens,
-`TokenKey`, are drawn at random per listener when the caller gives none;
+`RetryTokenKey`, are drawn at random per listener when the caller gives none;
 given, they survive a restart and are shared by the instances behind one
 address (RFC 9000 §10.3.2): the client of a dead process receives a reset
 it recognises and stops at once instead of waiting out its idle timeout.
@@ -140,7 +140,7 @@ restored (§9.3.2); with none known, the connection closes silently.
 
 The client has `Conn.Rebind` (a new socket, a fatal probe), and moves to a
 server's preferred address on its own after the handshake. The server half
-is `ListenerConfig.PreferredAddress`, a second socket the listener reads
+is `ListenerConfig.PreferredSocket`, a second socket the listener reads
 and announces: it is public because the feature is otherwise unreachable,
 and the parameter's whole point (§9.6) is a server behind a shared address —
 a deployment, not a test. The preferred address is announced by
@@ -182,13 +182,13 @@ behind a NAT. Two cipher suites come from the standard library and the
 third, ChaCha20-Poly1305, from `golang.org/x/crypto` (ADR 0002).
 Costs: a timer goroutine per connection, a dispatch goroutine per listener,
 one copy per inbound datagram at the demux point, and one address
-comparison on the packet hot path. Sharing `TokenKey` between instances
+comparison on the packet hot path. Sharing `RetryTokenKey` between instances
 does not share the record of tokens already spent: a token replayed at a
 second instance within `RetryTokenTTL` opens a second connection there,
 and the TTL is then the whole bound (§8.1.4 says "prevented or limited").
 In plain words: a given key is a deployment secret; whoever holds it can
 end any connection (`StatelessResetKey`) or forge a token that validates
-an address (`TokenKey`).
+an address (`RetryTokenKey`).
 
 ### The handshake deadline
 

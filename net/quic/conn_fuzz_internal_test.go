@@ -35,7 +35,7 @@ func FuzzConnFramesBudget(f *testing.F) {
 	ncid = append(ncid, 1, 1, 8, 's', 'r', 'v', '-', 'c', 'i', 'd', '1')
 	ncid = append(ncid, make([]byte, 16)...)
 	retire := append(varint.Append(nil, frameRetireConnectionID), 0)
-	stream := append(varint.Append(nil, FrameStream|0x02), 0, 4, 'a', 'b', 'c', 'd')
+	stream := append(varint.Append(nil, frameStream|0x02), 0, 4, 'a', 'b', 'c', 'd')
 	for _, frames := range [][]byte{ping, challenge, ncid, retire, stream, append(challenge, challenge...)} {
 		f.Add(frames, false, uint8(1), uint16(0))
 		f.Add(frames, true, uint8(1), uint16(0))
