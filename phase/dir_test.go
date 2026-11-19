@@ -84,7 +84,7 @@ func TestALeaseLostStopsTheWrites(t *testing.T) {
 
 		l = lockDir(t, d)
 		thief := leaseFile{Token: "thief", Expires: time.Now().Add(time.Hour), PID: 2, Host: "other"}
-		if err := writeFile(l.path, thief); err != nil {
+		if err := writeFile(l.leasePath, thief); err != nil {
 			t.Fatal(err)
 		}
 		time.Sleep(2 * time.Second) // the renewal finds it
@@ -96,7 +96,7 @@ func TestALeaseLostStopsTheWrites(t *testing.T) {
 			t.Fatal(err)
 		}
 		var cur leaseFile
-		if err := readFile(l.path, &cur); err != nil || cur.Token != "thief" {
+		if err := readFile(l.leasePath, &cur); err != nil || cur.Token != "thief" {
 			t.Errorf("Release removed another's lease: %+v, %v", cur, err)
 		}
 	})
@@ -156,7 +156,7 @@ func TestADirectoryThatCannotHoldTheJobFails(t *testing.T) {
 
 	dir := t.TempDir()
 	l := lockDir(t, Dir(dir))
-	if err := os.Remove(l.path); err != nil {
+	if err := os.Remove(l.leasePath); err != nil {
 		t.Fatal(err)
 	}
 	if err := l.Save(t.Context(), Record{}); !errors.Is(err, ErrLeaseLost) {

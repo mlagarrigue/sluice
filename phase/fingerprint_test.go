@@ -22,7 +22,7 @@ func TestFingerprintIsStable(t *testing.T) {
 		},
 	}
 	const want = "3badb68555cb547f0b1d014549f438525587981d41c91a8603026dd2c1c9458a"
-	if got := j.fresh().Fingerprint; got != want {
+	if got := j.startRecord().Fingerprint; got != want {
 		t.Errorf("fingerprint %s, want %s", got, want)
 	}
 }

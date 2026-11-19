@@ -56,15 +56,15 @@ type leaseFile struct {
 
 // dirLease is a lease of a DirStore, held.
 type dirLease struct {
-	store     *DirStore
-	path, rec string
-	mu        sync.Mutex
-	mine      leaseFile
-	stop      chan struct{}
-	done      sync.WaitGroup
-	released  bool
-	lost      chan struct{} // closed by markLost (Lease.Lost)
-	lostOnce  sync.Once
+	store                 *DirStore
+	leasePath, recordPath string
+	mu                    sync.Mutex
+	mine                  leaseFile
+	stop                  chan struct{}
+	done                  sync.WaitGroup
+	released              bool
+	lost                  chan struct{} // closed by markLost (Lease.Lost)
+	lostOnce              sync.Once
 }
 
 // Lost is closed once renew or Save finds the lease lost.
@@ -83,15 +83,15 @@ func (d *DirStore) Lock(_ context.Context, job string) (Lease, error) {
 	}
 	host, _ := os.Hostname()
 	l := &dirLease{
-		store: d,
-		path:  filepath.Join(d.Path, job+".lease"),
-		rec:   filepath.Join(d.Path, job+".json"),
-		mine:  leaseFile{Token: rand.Text(), PID: os.Getpid(), Host: host},
-		stop:  make(chan struct{}),
-		lost:  make(chan struct{}),
+		store:      d,
+		leasePath:  filepath.Join(d.Path, job+".lease"),
+		recordPath: filepath.Join(d.Path, job+".json"),
+		mine:       leaseFile{Token: rand.Text(), PID: os.Getpid(), Host: host},
+		stop:       make(chan struct{}),
+		lost:       make(chan struct{}),
 	}
 	l.mine.Expires = time.Now().Add(d.lease())
-	f, err := os.OpenFile(l.path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	f, err := os.OpenFile(l.leasePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	switch {
 	case err == nil:
 		werr := json.NewEncoder(f).Encode(l.mine)
@@ -99,7 +99,7 @@ func (d *DirStore) Lock(_ context.Context, job string) (Lease, error) {
 			werr = cerr
 		}
 		if werr != nil {
-			return nil, errors.Join(werr, os.Remove(l.path))
+			return nil, errors.Join(werr, os.Remove(l.leasePath))
 		}
 	case errors.Is(err, fs.ErrExist):
 		if err := l.takeOver(); err != nil {
@@ -116,7 +116,7 @@ func (d *DirStore) Lock(_ context.Context, job string) (Lease, error) {
 // takeOver replaces an expired lease with this one. The lease is read
 // under the guard, so that of two takers the second finds the first's.
 func (l *dirLease) takeOver() error {
-	guard := l.path + ".takeover"
+	guard := l.leasePath + ".takeover"
 	g, err := os.OpenFile(guard, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // G304: a file of the store's own directory
 	if err != nil {
 		if errors.Is(err, fs.ErrExist) {
@@ -126,7 +126,7 @@ func (l *dirLease) takeOver() error {
 			if info, serr := os.Stat(guard); serr == nil && time.Since(info.ModTime()) > l.store.lease() {
 				_ = os.Remove(guard)
 			}
-			return fmt.Errorf("%w: another process is taking the expired lease of %s over", ErrBusy, l.path)
+			return fmt.Errorf("%w: another process is taking the expired lease of %s over", ErrBusy, l.leasePath)
 		}
 		return err
 	}
@@ -134,7 +134,7 @@ func (l *dirLease) takeOver() error {
 	if err := l.refuseLive(); err != nil {
 		return err
 	}
-	return writeFile(l.path, l.mine)
+	return writeFile(l.leasePath, l.mine)
 }
 
 // refuseLive fails with ErrBusy when the lease file holds a live lease. A
@@ -142,11 +142,11 @@ func (l *dirLease) takeOver() error {
 // process that died) holds none.
 func (l *dirLease) refuseLive() error {
 	var cur leaseFile
-	readable := readFile(l.path, &cur) == nil
+	readable := readFile(l.leasePath, &cur) == nil
 	if !readable || !time.Now().Before(cur.Expires) {
 		return nil
 	}
-	return fmt.Errorf("%w: pid %d on %s holds %s until %s", ErrBusy, cur.PID, cur.Host, l.path,
+	return fmt.Errorf("%w: pid %d on %s holds %s until %s", ErrBusy, cur.PID, cur.Host, l.leasePath,
 		cur.Expires.Format(time.RFC3339))
 }
 
@@ -171,7 +171,7 @@ func (l *dirLease) renew() {
 			}
 			next := l.mine
 			next.Expires = time.Now().Add(l.store.lease())
-			if writeFile(l.path, next) == nil {
+			if writeFile(l.leasePath, next) == nil {
 				l.mine = next
 			}
 			l.mu.Unlock()
@@ -187,21 +187,21 @@ func (l *dirLease) checkLocked() error {
 	if l.released {
 		return ErrLeaseLost
 	}
-	if err := readFile(l.path, &cur); err != nil {
-		return fmt.Errorf("%w: %s: %w", ErrLeaseLost, l.path, err)
+	if err := readFile(l.leasePath, &cur); err != nil {
+		return fmt.Errorf("%w: %s: %w", ErrLeaseLost, l.leasePath, err)
 	}
 	if cur.Token != l.mine.Token {
-		return fmt.Errorf("%w: %s is held by pid %d on %s", ErrLeaseLost, l.path, cur.PID, cur.Host)
+		return fmt.Errorf("%w: %s is held by pid %d on %s", ErrLeaseLost, l.leasePath, cur.PID, cur.Host)
 	}
 	if !time.Now().Before(l.mine.Expires) {
-		return fmt.Errorf("%w: %s expired at %s", ErrLeaseLost, l.path, l.mine.Expires.Format(time.RFC3339))
+		return fmt.Errorf("%w: %s expired at %s", ErrLeaseLost, l.leasePath, l.mine.Expires.Format(time.RFC3339))
 	}
 	return nil
 }
 
 func (l *dirLease) Load(context.Context) (Record, bool, error) {
 	var r Record
-	err := readFile(l.rec, &r)
+	err := readFile(l.recordPath, &r)
 	if errors.Is(err, fs.ErrNotExist) {
 		return Record{}, false, nil
 	}
@@ -220,7 +220,7 @@ func (l *dirLease) Save(_ context.Context, rec Record) error {
 		}
 		return err
 	}
-	return writeFile(l.rec, rec)
+	return writeFile(l.recordPath, rec)
 }
 
 // Release stops the renewal and removes the lease file when it is still
@@ -241,7 +241,7 @@ func (l *dirLease) Release(context.Context) error {
 	if !live {
 		return nil
 	}
-	return os.Remove(l.path)
+	return os.Remove(l.leasePath)
 }
 
 func readFile(path string, v any) error {

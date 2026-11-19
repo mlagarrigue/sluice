@@ -79,7 +79,7 @@ func (s *PhaseStore) Lock(ctx context.Context, job string) (phase.Lease, error) 
 	_, _ = h.Write([]byte(s.Table + "/" + job))
 	key := int64(h.Sum64()) //nolint:gosec // G115: a hash's bits, reinterpreted as the bigint the lock takes
 	got, _, err := queryOne(ctx, conn, `SELECT pg_try_advisory_lock($1)::text`,
-		[]Param{{OID: pgtype.OIDInt8, Value: pgtype.AppendInt8(nil, key)}})
+		[]Param{ParamOf(pgtype.Int8Codec(), key)})
 	if err == nil && got != "true" {
 		err = fmt.Errorf("%w: job %q of %s is locked by another session (advisory lock %d)", phase.ErrBusy, job, s.Table, key)
 	}
@@ -158,7 +158,7 @@ func (l *pgLease) watch(base context.Context, every time.Duration) {
 }
 
 func (l *pgLease) jobParam() Param {
-	return Param{OID: pgtype.OIDText, Value: pgtype.AppendText(nil, l.job)}
+	return ParamOf(pgtype.TextCodec(), l.job)
 }
 
 // lost wraps an error of the lease's connection in ErrLeaseLost when the
@@ -194,7 +194,7 @@ func (l *pgLease) Save(ctx context.Context, rec phase.Record) error {
 	defer l.mu.Unlock()
 	_, err = l.conn.ExecParams(ctx, `INSERT INTO `+l.table+` (job, record, updated) VALUES ($1, $2::jsonb, now())
 		ON CONFLICT (job) DO UPDATE SET record = EXCLUDED.record, updated = now()`,
-		[]Param{l.jobParam(), {OID: pgtype.OIDText, Value: pgtype.AppendText(nil, string(b))}})
+		[]Param{l.jobParam(), ParamOf(pgtype.TextCodec(), string(b))})
 	return l.lost(err)
 }
 
@@ -210,7 +210,7 @@ func (l *pgLease) Release(ctx context.Context) error {
 		return l.conn.Close()
 	}
 	_, _, err := queryOne(ctx, l.conn, `SELECT pg_advisory_unlock($1)::text`,
-		[]Param{{OID: pgtype.OIDInt8, Value: pgtype.AppendInt8(nil, l.key)}})
+		[]Param{ParamOf(pgtype.Int8Codec(), l.key)})
 	return errors.Join(err, l.conn.Close())
 }
 

@@ -150,8 +150,8 @@ func (j *Job) validate() error {
 	return nil
 }
 
-// fresh is the record of a run that starts from zero.
-func (j *Job) fresh() Record {
+// startRecord is the record of a run that starts from zero.
+func (j *Job) startRecord() Record {
 	// A nil Input and an empty one are the same input: one fingerprint.
 	r := Record{Input: Input{}, LogicVersion: j.LogicVersion}
 	maps.Copy(r.Input, j.Input)
@@ -273,14 +273,14 @@ func (j *Job) Run(ctx context.Context) (rep Report, err error) {
 	if err != nil {
 		return rep, err
 	}
-	fresh := j.fresh()
+	start := j.startRecord()
 	switch {
 	case !found:
-		rec = fresh
+		rec = start
 	case j.Fresh:
-		rep.RestartReason, rec = "Fresh was set", fresh
-	case rec.Fingerprint != fresh.Fingerprint:
-		rep.RestartReason, rec = changes(rec, fresh), fresh
+		rep.RestartReason, rec = "Fresh was set", start
+	case rec.Fingerprint != start.Fingerprint:
+		rep.RestartReason, rec = changes(rec, start), start
 	case len(rec.Phases) != len(j.Phases):
 		return rep, fmt.Errorf("phase: job %q: the record lists %d phases under this job's fingerprint, the job %d",
 			j.Name, len(rec.Phases), len(j.Phases))
