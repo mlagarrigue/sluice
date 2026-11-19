@@ -231,6 +231,10 @@ func afterEnd(ctx context.Context) (context.Context, context.CancelFunc) {
 // propagates; the lock is released and the phase stays recorded as
 // running, which counts as not done.
 //
+// A lock found lost while a phase runs ([Lease.Lost]) cancels the context
+// the phase runs under, its cause ErrLeaseLost; Run then returns an error
+// wrapping ErrLeaseLost, as the next Save fails with it.
+//
 // The failed phase's record and the lock's release are written even once
 // ctx has ended, so that its end neither loses the failure nor keeps the
 // lock: each under ctx's values, bounded by five seconds of its own rather
@@ -248,6 +252,19 @@ func (j *Job) Run(ctx context.Context) (rep Report, err error) {
 		defer cancel()
 		if rerr := lease.Release(actx); rerr != nil && err == nil {
 			err = rerr
+		}
+	}()
+	// A lock lost while a phase runs ends that phase's context, with
+	// ErrLeaseLost as its cause: the process that took the lock over is
+	// running the same phase, and the two must not fill the same working
+	// tables at once. Release, deferred above, runs after this cancel.
+	ctx, lost := context.WithCancelCause(ctx)
+	defer lost(nil)
+	go func() {
+		select {
+		case <-lease.Lost():
+			lost(ErrLeaseLost)
+		case <-ctx.Done():
 		}
 	}()
 	rec, found, err := lease.Load(ctx)

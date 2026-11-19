@@ -8,6 +8,8 @@ import (
 	"hash/fnv"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
@@ -98,7 +100,11 @@ func (s *PhaseStore) Lock(ctx context.Context, job string) (phase.Lease, error) 
 	if err != nil {
 		return nil, errors.Join(err, conn.Close())
 	}
-	return &pgLease{conn: conn, table: table, job: job, key: key}, nil
+	l := &pgLease{conn: conn, table: table, job: job, key: key, stop: make(chan struct{}), gone: make(chan struct{})}
+	l.watching.Add(1)
+	// The watch outlives Lock's call: ctx's values, not its end.
+	go l.watch(context.WithoutCancel(ctx), conn.cancelBound()/3)
+	return l, nil
 }
 
 // pgLease is a PhaseStore's lock, held on its connection.
@@ -107,6 +113,47 @@ type pgLease struct {
 	table string
 	job   string
 	key   int64
+
+	// mu orders the connection's statements: Load, Save, Release and the
+	// watch's look share it, and a Conn is not safe for concurrent use.
+	mu       sync.Mutex
+	stop     chan struct{} // closed by Release: the watch ends
+	watching sync.WaitGroup
+	gone     chan struct{} // closed once the session is found gone (Lost)
+	goneOnce sync.Once
+	stopOnce sync.Once
+}
+
+// Lost is closed once the lease's session is found gone: by the watch, or
+// by a Load or Save that failed on a broken connection.
+func (l *pgLease) Lost() <-chan struct{} { return l.gone }
+
+// watch looks at the session once per every: a phase writes its working
+// tables on connections of its own and the record only between phases, so
+// nothing else would notice the lock's session gone — a network cut, the
+// server restarted, pg_terminate_backend — before the phase ended. A
+// statement is the only way the protocol tells a connection alive; one
+// that fails on a broken connection is the lock gone with its session.
+func (l *pgLease) watch(base context.Context, every time.Duration) {
+	defer l.watching.Done()
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-l.stop:
+			return
+		case <-t.C:
+			l.mu.Lock()
+			ctx, cancel := context.WithTimeout(base, every)
+			_, _, err := queryOne(ctx, l.conn, `SELECT 1`, nil)
+			cancel()
+			err = l.lost(err)
+			l.mu.Unlock()
+			if errors.Is(err, phase.ErrLeaseLost) {
+				return
+			}
+		}
+	}
 }
 
 func (l *pgLease) jobParam() Param {
@@ -117,12 +164,15 @@ func (l *pgLease) jobParam() Param {
 // connection broke: its session, and the lock with it, are gone.
 func (l *pgLease) lost(err error) error {
 	if err != nil && l.conn.Err() != nil {
+		l.goneOnce.Do(func() { close(l.gone) })
 		return fmt.Errorf("%w: %w", phase.ErrLeaseLost, err)
 	}
 	return err
 }
 
 func (l *pgLease) Load(ctx context.Context) (phase.Record, bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	text, found, err := queryOne(ctx, l.conn, `SELECT record::text FROM `+l.table+` WHERE job = $1`, []Param{l.jobParam()})
 	if err != nil || !found {
 		return phase.Record{}, false, l.lost(err)
@@ -139,6 +189,8 @@ func (l *pgLease) Save(ctx context.Context, rec phase.Record) error {
 	if err != nil {
 		return err
 	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	_, err = l.conn.ExecParams(ctx, `INSERT INTO `+l.table+` (job, record, updated) VALUES ($1, $2::jsonb, now())
 		ON CONFLICT (job) DO UPDATE SET record = EXCLUDED.record, updated = now()`,
 		[]Param{l.jobParam(), {OID: pgtype.OIDText, Value: pgtype.AppendText(nil, string(b))}})
@@ -149,6 +201,10 @@ func (l *pgLease) Save(ctx context.Context, rec phase.Record) error {
 // would release it, the unlock says so to a server that keeps the
 // connection open behind a proxy.
 func (l *pgLease) Release(ctx context.Context) error {
+	l.stopOnce.Do(func() { close(l.stop) })
+	l.watching.Wait()
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if l.conn.Err() != nil {
 		return l.conn.Close()
 	}

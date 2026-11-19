@@ -284,6 +284,7 @@ func (f *failing) Load(context.Context) (phase.Record, bool, error) {
 	return phase.Record{}, false, nil
 }
 func (f *failing) Release(context.Context) error { return f.release }
+func (f *failing) Lost() <-chan struct{}         { return nil }
 
 func (f *failing) Save(context.Context, phase.Record) error {
 	f.saves++
@@ -414,6 +415,7 @@ func (s *boundStore) Save(ctx context.Context, _ phase.Record) error {
 	return nil
 }
 func (s *boundStore) Release(ctx context.Context) error { s.release = ctx; return nil }
+func (s *boundStore) Lost() <-chan struct{}             { return nil }
 
 // canEnd reports whether anything can end a call made under ctx.
 func canEnd(ctx context.Context) bool {

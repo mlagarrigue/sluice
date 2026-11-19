@@ -124,7 +124,7 @@ question for a CPU profile: no counter can answer it.
 | Error | When | What to do |
 |---|---|---|
 | `phase.ErrBusy` | Another process holds the job: its lease is live (`phase.Dir`; the message names the process, the host and when the lease runs out), or another session holds its advisory lock (`postgres.PhaseStore`). | Let the other run finish. If its process is dead, the next run takes the job over: after the lease expires (30 seconds by default) in a directory, at once in PostgreSQL. |
-| `phase.ErrLeaseLost` | The job's lease was lost while it ran: the process was frozen longer than the lease, another process took it over, the lease file was removed, or — in PostgreSQL — the job's connection broke, and its lock with it. Nothing more was written. | Run the job again: it resumes at the phase that was running. If it happens without a freeze, raise `DirStore.Lease`. |
+| `phase.ErrLeaseLost` | The job's lease was lost while it ran: the process was frozen longer than the lease, another process took it over, the lease file was removed, or — in PostgreSQL — the job's connection broke, and its lock with it. The running phase's context was cancelled when the loss was seen, and nothing more was written to the record. | Run the job again: it resumes at the phase that was running. If it happens without a freeze, raise `DirStore.Lease`. |
 
 ## Web and gateway: `web`, `gateway`
 

@@ -1,7 +1,7 @@
 # ADR 0027 — The phase runner: resuming a long job where it died
 
 - **Created:** 2026-11-16
-- **Revised:** 2026-11-16 (the lock's connection is the job's own: the connector has no pool; the lock's key), 2026-11-16 (the lock's connection is never one a pool lends)
+- **Revised:** 2026-11-16 (the lock's connection is the job's own: the connector has no pool; the lock's key), 2026-11-16 (the lock's connection is never one a pool lends), 2026-11-19 (a lock lost while a phase runs ends that phase's context: `Lease.Lost`)
 - **Theme:** core
 
 ## Problem
@@ -108,6 +108,18 @@ a write under a token that is no longer the lease's is refused: a process
 suspended for longer than its lease, then resumed, stops at its next write
 instead of writing beside its successor.
 
+A refused record is not enough: the record is written between phases, and
+the phase running when the lock goes keeps filling its working tables
+while the successor, which took the lock, empties and fills the same ones
+from the start. So a lease says when it is lost (`Lease.Lost`, a channel
+closed once): the file store when its renewal finds the lease expired or
+another's, PostgreSQL when a `SELECT 1` on the lock's connection, every
+third of `Config.CancelTimeout`, finds the session gone — nothing else is
+read on that connection while a phase runs. `Job.Run` cancels the running
+phase's context then, with `ErrLeaseLost` as its cause. A phase that
+honours its context stops within a renewal period of the loss, not at its
+end.
+
 ### The grain, failure, and the order of work
 
 The phase is the grain of resumption. Nothing resumes inside a phase: it
@@ -164,3 +176,10 @@ What this costs: one more package to maintain, and a public interface
 phase of several hours whose resumption inside the phase is measured
 necessary, an external orchestrator that already holds the lock, or the
 distribution decision.
+
+The lost lease is a method of `Lease` rather than an interface a store may
+implement: a store that cannot tell its lock lost cannot keep its phases
+from running beside a successor, and saying so is part of being a store.
+Polling the PostgreSQL session costs one round trip every third of
+`CancelTimeout` per running job, against a phase that writes for minutes;
+the session's own end is what the protocol tells only to a statement.

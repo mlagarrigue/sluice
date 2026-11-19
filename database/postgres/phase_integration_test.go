@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"slices"
 	"strings"
@@ -122,6 +123,60 @@ func TestIntegrationAPhaseStoreLockIsTheServers(t *testing.T) {
 	}
 	if err := again.Release(t.Context()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The lock's session ending while a phase runs closes Lost, within a third
+// of CancelTimeout: nothing else is read on that connection between two
+// phases, and the phase must not keep writing beside the run that takes the
+// job over. Release leaves Lost open.
+func TestIntegrationAPhaseStoreLeaseIsLostWithItsSession(t *testing.T) {
+	store, admin := phaseStore(t)
+	store.Config.CancelTimeout = 600 * time.Millisecond
+	held, err := store.Lock(t.Context(), "nightly")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := held.Save(t.Context(), phase.Record{Fingerprint: "f"}); err != nil {
+		t.Fatal(err)
+	}
+	other, err := store.Lock(t.Context(), "weekly")
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(500 * time.Millisecond) // a few looks at a live session
+	select {
+	case <-held.Lost():
+		t.Fatal("Lost closed on a live session")
+	default:
+	}
+	if err := other.Release(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-other.Lost():
+		t.Error("Release closed Lost")
+	default:
+	}
+
+	// The session holding the job's advisory lock, found by the lock's key
+	// (PhaseStore.Lock: FNV-64a of table and job; a bigint key shows as its
+	// high and low halves, objsubid 1): its last statement is the watch's,
+	// which names nothing of this test.
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(store.Table + "/nightly"))
+	key := h.Sum64()
+	if got := queryText(t, admin, fmt.Sprintf(`SELECT count(pg_terminate_backend(pid))::text FROM pg_locks
+		WHERE locktype = 'advisory' AND classid = %d AND objid = %d AND objsubid = 1`, key>>32, key&0xffffffff)); got != "1" {
+		t.Fatalf("terminated %s sessions, want the lease's alone", got)
+	}
+	select {
+	case <-held.Lost():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the lock's session ended and Lost stayed open")
+	}
+	if err := held.Release(t.Context()); err != nil {
+		t.Errorf("Release of a lost lease: %v", err)
 	}
 }
 

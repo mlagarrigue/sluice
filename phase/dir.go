@@ -63,7 +63,15 @@ type dirLease struct {
 	stop      chan struct{}
 	done      sync.WaitGroup
 	released  bool
+	lost      chan struct{} // closed by markLost (Lease.Lost)
+	lostOnce  sync.Once
 }
+
+// Lost is closed once renew or Save finds the lease lost.
+func (l *dirLease) Lost() <-chan struct{} { return l.lost }
+
+// markLost closes lost, once.
+func (l *dirLease) markLost() { l.lostOnce.Do(func() { close(l.lost) }) }
 
 // Lock takes the job's lease: by creating its file, or by taking over an
 // expired one. Taking over goes through a second file created exclusively,
@@ -80,6 +88,7 @@ func (d *DirStore) Lock(_ context.Context, job string) (Lease, error) {
 		rec:   filepath.Join(d.Path, job+".json"),
 		mine:  leaseFile{Token: rand.Text(), PID: os.Getpid(), Host: host},
 		stop:  make(chan struct{}),
+		lost:  make(chan struct{}),
 	}
 	l.mine.Expires = time.Now().Add(d.lease())
 	f, err := os.OpenFile(l.path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
@@ -154,6 +163,9 @@ func (l *dirLease) renew() {
 		case <-t.C:
 			l.mu.Lock()
 			if err := l.checkLocked(); err != nil {
+				if !l.released {
+					l.markLost() // expired or another's: the phase running is told
+				}
 				l.mu.Unlock()
 				return
 			}
@@ -203,6 +215,9 @@ func (l *dirLease) Save(_ context.Context, rec Record) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if err := l.checkLocked(); err != nil {
+		if !l.released {
+			l.markLost()
+		}
 		return err
 	}
 	return writeFile(l.rec, rec)

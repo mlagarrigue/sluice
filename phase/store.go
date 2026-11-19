@@ -27,6 +27,14 @@ type Lease interface {
 
 	// Release gives the lock up. The record stays.
 	Release(ctx context.Context) error
+
+	// Lost is closed once the lock is found lost while it is held — its
+	// expiry passed, another process took it, or the connection that held
+	// it is gone — and never by Release. [Job.Run] ends the context of
+	// the phase that is running then: the process that took the lock over
+	// starts that phase again, and the two would otherwise write the same
+	// working tables side by side until the first one's next Save.
+	Lost() <-chan struct{}
 }
 
 var (

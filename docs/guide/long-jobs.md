@@ -67,8 +67,11 @@ with `phase.ErrBusy`, naming the process that holds it. The store
 `phase.Dir` keeps a **lease** — a file the running process renews every
 ten seconds; if the process dies, the lease expires after thirty seconds
 (`DirStore.Lease`) and the next run takes it over. A process that lost its
-lease — frozen for longer than the lease — stops at its next write with
-`phase.ErrLeaseLost` instead of writing beside its successor.
+lease — frozen for longer than the lease — has the context of its running
+phase cancelled as soon as its renewal sees the loss, and `Run` returns
+`phase.ErrLeaseLost`: a phase that honours its context stops instead of
+writing beside its successor. With `postgres.PhaseStore`, the same happens
+when the lock's connection is found gone.
 
 ## Where the state lives
 

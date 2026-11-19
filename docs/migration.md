@@ -1,7 +1,7 @@
 # Migrating between versions
 
 In v0, a minor version may break what the previous one offered; `main`
-groups the breaking changes for the next one, in a "Since v0.5.0" section
+groups the breaking changes for the next one, in a "Since v0.5.1" section
 once there are any. The page goes from the newest version to the oldest.
 Code written against v0.4.0 reads the first section; code written against
 an older version starts at the section that leaves its own version and
@@ -15,6 +15,16 @@ written in the breaking commit itself, which cannot know its own hash,
 quotes the commit's subject until the hash replaces it. The packages come
 in the order a reader meets them; within a package, the changes of
 behavior that keep the signatures — a value now refused — come last.
+
+## Since v0.5.1
+
+### Long jobs: `phase`
+
+- **`Lease` gains `Lost() <-chan struct{}`** (feat(phase)!: a lost lease ends the phase (ADR 0027)): a
+  `Store` of your own returns a lease that closes the channel once it finds its lock lost — expired,
+  taken over, its connection gone — and never on `Release`. A store that cannot tell returns a nil
+  channel, which never closes, and keeps the old behavior. `Job.Run` now cancels the running phase's
+  context when the channel closes, its cause `phase.ErrLeaseLost`.
 
 ## From v0.4.0 to v0.5.0
 
