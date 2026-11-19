@@ -82,10 +82,10 @@ func TestPubAckReply(t *testing.T) {
 
 func TestPublishRefusesPastMaxPayload(t *testing.T) {
 	c := &Conn{maxPub: 4}
-	if err := c.Publish(t.Context(), []Message{{Subject: "a", Data: []byte("12345")}}); !errors.Is(err, ErrTooLarge) {
+	if err := c.Publish(t.Context(), []Outbound{{Subject: "a", Data: []byte("12345")}}); !errors.Is(err, ErrTooLarge) {
 		t.Errorf("Publish: %v", err)
 	}
-	if _, err := c.PublishAcked(t.Context(), []Message{{Subject: "a", Data: []byte("1234")}, {Subject: "a", Data: []byte("12345")}}); !errors.Is(err, ErrTooLarge) {
+	if _, err := c.PublishAcked(t.Context(), []Outbound{{Subject: "a", Data: []byte("1234")}, {Subject: "a", Data: []byte("12345")}}); !errors.Is(err, ErrTooLarge) {
 		t.Errorf("PublishAcked: %v", err)
 	}
 	if _, err := c.Request(t.Context(), "a", []byte("12345")); !errors.Is(err, ErrTooLarge) {

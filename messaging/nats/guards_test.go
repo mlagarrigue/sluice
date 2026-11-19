@@ -64,7 +64,7 @@ func TestAPublishReplyOutsideTheBatchIsRefused(t *testing.T) {
 	}
 	defer func() { _ = c.Close() }()
 
-	_, err = c.PublishAcked(ctx, []Message{{Subject: "orders.new", Data: []byte("x")}})
+	_, err = c.PublishAcked(ctx, []Outbound{{Subject: "orders.new", Data: []byte("x")}})
 	if !errors.Is(err, ErrProtocol) || !errors.Is(err, ErrConnBroken) {
 		t.Errorf("a reply on index 5 of a batch of one: %v, want ErrProtocol and ErrConnBroken", err)
 	}
@@ -106,7 +106,7 @@ func TestACallToASilentServerEndsWithItsContext(t *testing.T) {
 			return err
 		},
 		"PublishAcked": func(ctx context.Context, c *Conn) error {
-			_, err := c.PublishAcked(ctx, []Message{{Subject: "orders.new", Data: []byte("x")}})
+			_, err := c.PublishAcked(ctx, []Outbound{{Subject: "orders.new", Data: []byte("x")}})
 			return err
 		},
 	}

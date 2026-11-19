@@ -64,9 +64,9 @@ func jetstream(t *testing.T, n int, ackWait time.Duration) (*nats.Conn, nats.Con
 		"stream_name": name,
 		"config":      map[string]any{"durable_name": "work", "ack_policy": "explicit", "ack_wait": ackWait.Nanoseconds()},
 	})
-	msgs := make([]nats.Message, n)
+	msgs := make([]nats.Outbound, n)
 	for i := range msgs {
-		msgs[i] = nats.Message{Subject: name + ".orders", Data: []byte(strconv.Itoa(i))}
+		msgs[i] = nats.Outbound{Subject: name + ".orders", Data: []byte(strconv.Itoa(i))}
 	}
 	if _, err := c.PublishAcked(t.Context(), msgs); err != nil {
 		t.Fatal(err)
@@ -198,9 +198,9 @@ func stream(t *testing.T, c *nats.Conn, extra map[string]any) string {
 func TestPublishAckedBatch(t *testing.T) {
 	c := dial(t)
 	name := stream(t, c, nil)
-	msgs := make([]nats.Message, 1000)
+	msgs := make([]nats.Outbound, 1000)
 	for i := range msgs {
-		msgs[i] = nats.Message{Subject: name + ".orders", Data: []byte(strconv.Itoa(i))}
+		msgs[i] = nats.Outbound{Subject: name + ".orders", Data: []byte(strconv.Itoa(i))}
 	}
 	acks, err := c.PublishAcked(t.Context(), msgs)
 	if err != nil {
@@ -221,7 +221,7 @@ func TestPublishAckedBatch(t *testing.T) {
 func TestPublishAckedErrorsInTheirPlace(t *testing.T) {
 	c := dial(t)
 	name := stream(t, c, map[string]any{"max_msgs": 2, "discard": "new"})
-	acks, err := c.PublishAcked(t.Context(), []nats.Message{
+	acks, err := c.PublishAcked(t.Context(), []nats.Outbound{
 		{Subject: name + ".a", Data: []byte("0")},
 		{Subject: "nowhere." + name, Data: []byte("1")},
 		{Subject: name + ".a", Data: []byte("2")},

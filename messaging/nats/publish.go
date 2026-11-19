@@ -50,7 +50,7 @@ func (e *APIError) Error() string {
 // server's max_payload, are refused before anything is sent. The server
 // holds the acknowledgements, about a hundred bytes each, until the write
 // ends: a batch of a few thousand messages is the measure, not millions.
-func (c *Conn) PublishAcked(ctx context.Context, msgs []Message) ([]PubAck, error) {
+func (c *Conn) PublishAcked(ctx context.Context, msgs []Outbound) ([]PubAck, error) {
 	if err := c.check(msgs); err != nil {
 		return nil, err
 	}

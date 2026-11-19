@@ -330,8 +330,8 @@ func recoverable(msg string) bool {
 	return strings.HasPrefix(m, "invalid subject") || strings.HasPrefix(m, "permissions violation")
 }
 
-// Message is one message to publish.
-type Message struct {
+// Outbound is one message to publish; what is received is a [Msg].
+type Outbound struct {
 	Subject string
 	Data    []byte
 }
@@ -342,7 +342,7 @@ type Message struct {
 // feed whose loss the caller accepts; [Conn.PublishAcked] waits for it. A
 // subject that is empty or holds white space, and a payload past the
 // server's max_payload, are refused before anything is sent.
-func (c *Conn) Publish(ctx context.Context, msgs []Message) error {
+func (c *Conn) Publish(ctx context.Context, msgs []Outbound) error {
 	if err := c.check(msgs); err != nil {
 		return err
 	}
@@ -364,7 +364,7 @@ func (c *Conn) Publish(ctx context.Context, msgs []Message) error {
 
 // check refuses, before anything is sent, a message the server would
 // refuse by closing the connection, or whose subject would break the line.
-func (c *Conn) check(msgs []Message) error {
+func (c *Conn) check(msgs []Outbound) error {
 	for i, m := range msgs {
 		if !validSubject(m.Subject) {
 			return fmt.Errorf("nats: message %d has the subject %q", i, m.Subject)
@@ -381,7 +381,7 @@ func (c *Conn) check(msgs []Message) error {
 // the others). A subject no one answers on returns a [*StatusError] of
 // code 503 (no responders).
 func (c *Conn) Request(ctx context.Context, subject string, data []byte) (Msg, error) {
-	if err := c.check([]Message{{Subject: subject, Data: data}}); err != nil {
+	if err := c.check([]Outbound{{Subject: subject, Data: data}}); err != nil {
 		return Msg{}, err
 	}
 	if err := c.begin(ctx); err != nil {

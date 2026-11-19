@@ -51,7 +51,7 @@ func TestSubscribeSetsItsOwnDeadline(t *testing.T) {
 		cancel()
 		time.Sleep(50 * time.Millisecond)
 		if publishFirst {
-			if err := c.Publish(t.Context(), []Message{{Subject: "x", Data: []byte("x")}}); err != nil {
+			if err := c.Publish(t.Context(), []Outbound{{Subject: "x", Data: []byte("x")}}); err != nil {
 				t.Fatalf("Publish: %v", err)
 			}
 		}

@@ -20,10 +20,17 @@ behavior that keep the signatures — a value now refused — come last.
 
 ### Database: `postgres`
 
-- **`pgtype.TimeTZ.OffsetSeconds` becomes `SecondsWest`** (fix(postgres)!: TimeTZ names its offset SecondsWest):
+- **`pgtype.TimeTZ.OffsetSeconds` becomes `SecondsWest`** (`8ef447d`):
   the value and its sign are unchanged — seconds west of UTC, the wire's convention, so UTC+2 is
   -7200. Rename the field; a value filled as Go states offsets (+7200 for UTC+2) was four hours out,
   and `pgtype.TimeTZOf(t)` now builds one from a `time.Time` instead.
+
+### Messaging: `nats`
+
+- **`Message` becomes `Outbound`** (feat(nats)!: what is published is an Outbound): what `Publish`
+  and `PublishAcked` take and what is received (`Msg`) differed by one vowel. The fields are the same,
+  `Subject` and `Data`: replace `nats.Message{` with `nats.Outbound{` and `[]nats.Message` with
+  `[]nats.Outbound`.
 
 ### Long jobs: `phase`
 

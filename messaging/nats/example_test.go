@@ -80,7 +80,7 @@ func ExampleConn_Publish() {
 		fmt.Println(err)
 		return
 	}
-	err = conn.Publish(ctx, []nats.Message{
+	err = conn.Publish(ctx, []nats.Outbound{
 		{Subject: "ORDERS.created", Data: []byte(`{"id":1}`)},
 		{Subject: "ORDERS.created", Data: []byte(`{"id":2}`)},
 	})
@@ -112,7 +112,7 @@ func ExampleConn_PublishAcked() {
 		return
 	}
 	defer conn.Close()
-	acks, err := conn.PublishAcked(ctx, []nats.Message{
+	acks, err := conn.PublishAcked(ctx, []nats.Outbound{
 		{Subject: "ORDERS.created", Data: []byte(`{"id":1}`)},
 		{Subject: "ORDERS.created", Data: []byte(`{"id":2}`)},
 	})
