@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"os"
 	"runtime"
 	"runtime/debug"
 	"slices"
@@ -69,8 +70,10 @@ import (
 // Expect), a field whose name is not a token or whose value still holds a
 // control byte once CR and LF have become spaces, and a Date that is not an
 // IMF-fixdate. A 1xx is not sent. A deadline set through
-// [http.ResponseController] is not supported: the transport's
-// [httpstream.Config] bounds every read and write.
+// [http.ResponseController] holds as under net/http, beside the
+// transport's [httpstream.Config] bounds: a write past it fails and cuts the
+// answer, a read begun past it fails (see SetWriteDeadline and
+// SetReadDeadline on the writer).
 //
 // A panic other than [http.ErrAbortHandler] fails that response alone and
 // reaches the server's Logger with its value and the handler's stack — a
@@ -158,6 +161,68 @@ type httpCall struct {
 	gone     chan struct{}
 	goneOnce sync.Once
 	failure  *handlerPanic // a panic after the head left, re-raised by the stream
+
+	// writeDeadline is what SetWriteDeadline set, zero for none; timedOut
+	// is set once a write met it, and the answer is then cut.
+	writeDeadline time.Time
+	timedOut      bool
+}
+
+// SetWriteDeadline is what [http.ResponseController] calls: a write, a flush
+// or a hand-over still waiting for the transport past t fails with
+// [os.ErrDeadlineExceeded], and the answer then ends unterminated — net/http
+// closes the connection under a write that misses its deadline, so that a
+// client never takes a cut answer for a whole one. A zero t lifts it. The
+// transport's [httpstream.Config] bounds still hold beside it.
+func (c *httpCall) SetWriteDeadline(t time.Time) error {
+	c.writeDeadline = t
+	return nil
+}
+
+// SetReadDeadline is what [http.ResponseController] calls: a read of the
+// body begun past t fails with [os.ErrDeadlineExceeded]. A read already
+// waiting for the client when t passes returns at the next bytes or at the
+// transport's ReadTimeout, which bounds every wait for a body. A zero t
+// lifts it.
+func (c *httpCall) SetReadDeadline(t time.Time) error {
+	var n int64
+	if !t.IsZero() {
+		n = t.UnixNano()
+	}
+	c.body.deadline.Store(n)
+	return nil
+}
+
+// pastWrite reports whether a write now misses the write deadline, and cuts
+// the answer the first time it does.
+func (c *httpCall) pastWrite() bool {
+	if c.timedOut {
+		return true
+	}
+	if c.writeDeadline.IsZero() || time.Now().Before(c.writeDeadline) {
+		return false
+	}
+	c.timeOut()
+	return true
+}
+
+// timeOut cuts the answer a write deadline ended. One not yet decided is
+// answered as an abort — one byte promised and none sent — at once, so the
+// batch does not wait for the handler; a streamed one ends unterminated once
+// the handler returns, as one that aborts after a flush does.
+func (c *httpCall) timeOut() {
+	c.timedOut = true
+	switch c.state {
+	case buffering:
+		c.state, c.buf = discarding, nil
+		c.resp = httpstream.Response{Stream: func(func(sluice.Batch[[]byte]) bool) {}, ContentLength: 1}
+		c.decide()
+	case streaming:
+		c.buf = nil
+		if c.failure == nil {
+			c.failure = &handlerPanic{value: http.ErrAbortHandler}
+		}
+	}
 }
 
 // prepare builds the request; a target net/url cannot read is answered 400
@@ -320,6 +385,9 @@ func (c *httpCall) Write(p []byte) (int, error) {
 	if !c.wroteHeader {
 		c.WriteHeader(http.StatusOK)
 	}
+	if c.pastWrite() {
+		return 0, os.ErrDeadlineExceeded
+	}
 	switch c.state {
 	case buffering:
 		c.buf = append(c.buf, p...)
@@ -348,6 +416,9 @@ func (c *httpCall) Flush() { _ = c.FlushError() }
 func (c *httpCall) FlushError() error {
 	if !c.wroteHeader {
 		c.WriteHeader(http.StatusOK)
+	}
+	if c.pastWrite() {
+		return os.ErrDeadlineExceeded
 	}
 	switch c.state {
 	case buffering:
@@ -400,8 +471,17 @@ func (c *httpCall) send() error {
 	if len(c.buf) == 0 {
 		return nil
 	}
+	if c.pastWrite() {
+		return os.ErrDeadlineExceeded
+	}
 	chunk := c.buf
 	c.buf = nil // the chunk is the transport's until written
+	var expired <-chan time.Time
+	if !c.writeDeadline.IsZero() {
+		t := time.NewTimer(time.Until(c.writeDeadline))
+		defer t.Stop()
+		expired = t.C
+	}
 	select {
 	case c.chunks <- chunk:
 		return nil
@@ -409,6 +489,9 @@ func (c *httpCall) send() error {
 		return errClientGone
 	case <-c.batch.Done():
 		return c.batch.Err()
+	case <-expired:
+		c.timeOut()
+		return os.ErrDeadlineExceeded
 	}
 }
 
@@ -603,9 +686,15 @@ type requestBody struct {
 	// flushed is set when the answer is decided, before end can run: a
 	// read from then on fails without waiting for the client.
 	flushed atomic.Bool
+	// deadline is SetReadDeadline's, in Unix nanoseconds, zero for none:
+	// written by the handler while a read may hold mu.
+	deadline atomic.Int64
 }
 
 func (b *requestBody) Read(p []byte) (int, error) {
+	if d := b.deadline.Load(); d != 0 && time.Now().UnixNano() >= d {
+		return 0, os.ErrDeadlineExceeded
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	switch {
