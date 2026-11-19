@@ -24,9 +24,15 @@ services:
       SLUICE_PG_USER: sluice
       SLUICE_PG_DB: sluice
       SLUICE_PG_PASSWORD: sluicepass
+      SLUICE_REDIS: valkey:6379
+      SLUICE_NATS: nats:4222
     depends_on:
       postgres:
         condition: service_healthy
+      valkey:
+        condition: service_healthy
+      nats:
+        condition: service_started
 
   # The same server CI runs, initialised by the same file.
   postgres:
@@ -49,3 +55,25 @@ services:
       interval: 2s
       timeout: 5s
       retries: 30
+
+  # The Redis server the CI redis job runs, for database/redis. Nothing is
+  # written to disk: the data goes with the container.
+  valkey:
+    image: valkey/valkey:8.1@sha256:5032c4dd7abe08d6fd9382054608183e2bf1f7e3895ef619b8784698454325f7
+    container_name: sluice-valkey
+    command: ["valkey-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  # The NATS server the CI nats job runs, JetStream on, for messaging/nats.
+  # The image holds the server alone, no shell, so no health check: the
+  # server listens within a second of its start, long before the dev
+  # container opens. The TLS server the CI job also runs
+  # is not here (CONTRIBUTING.md, "Integration tests").
+  nats:
+    image: nats:2.12@sha256:0764f1952d72e92e35ad8b152da0f9652a49cb1186b6445fdd45131d81ad6d7e
+    container_name: sluice-nats
+    command: ["-js"]

@@ -117,6 +117,24 @@ to one, so a suite run as `postgres` passes without proving anything. A
 failed start is loud: a suite that skips its tests reads exactly like one
 that passes.
 
+The Redis and NATS integration tests follow the same rule: they run when
+`SLUICE_REDIS` or `SLUICE_NATS` is set and skip otherwise. The devcontainer
+carries the two servers CI runs (Valkey 8.1, and NATS 2.12 with JetStream on)
+and sets both variables: `go test ./database/redis/ ./messaging/nats/` runs
+them.
+
+What still skips in the devcontainer, and where it runs:
+
+| What skips | Why | Where it runs |
+|---|---|---|
+| Two NATS tests over TLS (`SLUICE_NATS_TLS`) | they need a second server and a certificate made for it | the CI `nats` job |
+| The PostgreSQL tests over TLS (`SLUICE_PG_TLS_CA`) and those of the `pg_hba.conf` methods (`SLUICE_PG_HBA`) | `scripts/pg-tls.sh` and `scripts/pg-hba.sh` reconfigure the server, which the devcontainer does not do | the CI `postgres` jobs |
+| `scripts/interop-http.sh` stops at `h2load` | the public image installs no package, and `h2load` comes from the `nghttp2-client` package | the CI `interop-http` job; locally, add the package to your own image ([the local overlay](#adding-your-tools-the-local-overlay)) |
+
+> **In plain words** — a test that skips does not say it passes: only CI
+> runs these three rows, on every push. Read its result before you take a
+> change in those areas as verified.
+
 CI additionally runs `go vet` for Windows and macOS (`net/quic/udp` has
 per-OS files a Linux build never compiles) and runs the integration tests
 against PostgreSQL 15 to 19 (19 from its release candidate) with the same
@@ -209,7 +227,8 @@ In review, comments follow
 VS Code (or the `devcontainer` CLI) builds in a Docker container and opens
 as if it were local. It holds what `scripts/check.sh` needs and nothing
 else: Go, gcc for the race detector, `gofumpt` and `golangci-lint` at the
-versions CI runs, and the PostgreSQL server of the integration tests. That
+versions CI runs, and the PostgreSQL, Redis (Valkey) and NATS servers of the
+integration tests. That
 is deliberate, for two reasons:
 
 - **A minimal surface.** No extra package, no third-party apt repository, no
