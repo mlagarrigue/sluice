@@ -170,6 +170,13 @@ func (b *bounded) Read(p []byte) (int, error) {
 // is not skipped: an element that could not be produced is an error, not a
 // diagnostic, and the records after it are not read. r is read only while the
 // stream is consumed, and never closed.
+//
+// What encoding/csv leaves as it is stays so. A UTF-8 byte order mark (BOM,
+// the bytes EF BB BF a spreadsheet often writes first) is not removed: it is
+// the start of the first field of the first record, so a header compared with
+// "id" reads "\ufeffid"; strip it from r first when the source writes one. And a
+// line break inside a quoted field arrives as "\n" even when the file wrote
+// "\r\n", as encoding/csv reads it.
 func Read(r io.Reader, cfg ReadConfig) sluice.Source[[]string] {
 	cfg, err := cfg.resolve()
 	if err != nil {
