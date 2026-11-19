@@ -1,7 +1,7 @@
 # ADR 0021 — `net/quic` stays in the module
 
 - **Created:** 2026-10-23
-- **Revised:** 2026-11-03 (`Config.QUICConfig` returns a `quic.Config`)
+- **Revised:** 2026-11-19 (`QPACKStatic` under `Config.Advanced`), 2026-11-03 (`Config.QUICConfig` returns a `quic.Config`)
 - **Theme:** quic
 
 ## Problem
@@ -34,7 +34,7 @@ HTTP/2, `Request`, `Response`, `Config` — keeps the promise.
 **The varints leave the surface.** They move to `internal/varint`, shared by
 `net/quic` and `httpstream`'s HTTP/3. `Preface` (`httpstream`) stays: a
 caller that demultiplexes clear-text HTTP/2 itself needs it.
-`Config.QPACKStatic` stays, by ADR 0013.
+`Config.Advanced.QPACKStatic` stays, by ADR 0013.
 
 ## Rationale
 

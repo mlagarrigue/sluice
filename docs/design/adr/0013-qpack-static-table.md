@@ -1,7 +1,7 @@
 # ADR 0013 — QPACK's static table ships, checked
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-07 (renumbered), 2026-10-28 (the foreign interop run named; the path no longer called experimental)
+- **Revised:** 2026-11-19 (`QPACKStatic` under `Config.Advanced`), 2026-10-07 (renumbered), 2026-10-28 (the foreign interop run named; the path no longer called experimental)
 - **Theme:** httpstream
 
 ## Problem
@@ -20,7 +20,7 @@ The table ships, with the checking a transcription needs: diffed cell
 by cell against the RFC's HTML rendering when written; shape tests (count,
 token syntax, lowercase names, control-free values); the RFC's own encoded
 example from Appendix B.1, byte for byte; and a hand-encoded client
-fixture resolving entries across the table's range. `Config.QPACKStatic`
+fixture resolving entries across the table's range. `Config.Advanced.QPACKStatic`
 remains as the override: nil means the shipped table, an empty non-nil
 table refuses indexed field lines outright.
 

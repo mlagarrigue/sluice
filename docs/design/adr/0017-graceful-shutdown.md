@@ -1,7 +1,7 @@
 # ADR 0017 — Shutdown drains, it does not cut
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-11-19 (the closers are `web.Drainer`s, the gateway has no `Close`), 2026-11-12 (Rationale under subheadings); 6 earlier, from 2026-10-15, in its `git log`
+- **Revised:** 2026-11-19 (the closers are `web.Drainer`s, the gateway has no `Close`; `LingerTimeout` under `Config.Advanced`), 2026-11-12 (Rationale under subheadings); 6 earlier, from 2026-10-15, in its `git log`
 - **Theme:** httpstream
 
 ## Problem
@@ -226,7 +226,7 @@ response.
 Every connection the shutdown ends is closed in the two stages RFC 9112
 §9.6 asks for against the TCP reset: the write side first, which is the
 client's EOF, then what it still sends read and dropped until it closes or
-`Config.LingerTimeout` passes (`tearDown`, `linger`). So a client that
+`Config.Advanced.LingerTimeout` passes (`tearDown`, `linger`). So a client that
 pipelined a request behind the one the shutdown closed on gets the last
 response before the reset can erase it. Revision expected if a conformant
 client loses responses at shutdown, or when the HTTP/2 and HTTP/3 slices
