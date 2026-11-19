@@ -258,6 +258,24 @@ func TestVerifyRefusesUnusableDateClaims(t *testing.T) {
 	}
 }
 
+// sub is a StringOrURI when present (RFC 7519 §4.1.2): another type is
+// refused as an unusable nbf is. It was accepted with an empty Subject, which
+// a caller reads as a token with no subject. Absent, it stays optional.
+func TestVerifyRefusesASubThatIsNotAString(t *testing.T) {
+	v := verifier(t, web.HMACConfig{})
+	for name, sub := range map[string]any{"number": 12345, "object": map[string]any{"id": 1}, "array": []string{"a"}, "bool": true} {
+		if p, err := v.Verify(hs256(t, map[string]any{"sub": sub, "exp": 1_700_000_600})); !errors.Is(err, web.ErrTokenClaims) {
+			t.Errorf("sub as %s: %+v, %v; want ErrTokenClaims", name, p, err)
+		}
+	}
+	if p, err := v.Verify(hs256(t, map[string]any{"sub": "u", "exp": 1_700_000_600})); err != nil || p.Subject != "u" {
+		t.Errorf("a string sub: %+v, %v", p, err)
+	}
+	if p, err := v.Verify(hs256(t, map[string]any{"exp": 1_700_000_600})); err != nil || p.Subject != "" {
+		t.Errorf("no sub: %+v, %v", p, err)
+	}
+}
+
 // The date bounds are inclusive, ±2^53 seconds, and a fractional date keeps
 // its fraction: an exp half a second past a clock at .4 has not passed.
 func TestVerifyReadsDatesAtTheirBoundsAndFractions(t *testing.T) {

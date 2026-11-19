@@ -523,7 +523,15 @@ func (r claimRules) principalFrom(claims map[string]any) (Principal, error) {
 	}
 
 	p := Principal{ExpiresAt: exp, Claims: claims}
-	p.Subject, _ = claims["sub"].(string)
+	// sub is optional, a StringOrURI when present (RFC 7519 §4.1.2): another
+	// type is refused as nbf's is, not read as a token with no subject.
+	if v, present := claims["sub"]; present {
+		sub, ok := v.(string)
+		if !ok {
+			return Principal{}, fmt.Errorf("%w: unusable sub claim", ErrTokenClaims)
+		}
+		p.Subject = sub
+	}
 	if s, ok := claims["scope"].(string); ok && s != "" {
 		p.Scopes = strings.Fields(s)
 	}
