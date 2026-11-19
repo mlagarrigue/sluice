@@ -372,6 +372,39 @@ func TestFromHTTPTrailers(t *testing.T) {
 	}
 }
 
+// A streamed answer asks the transport for trailers only when they can
+// come: announced, whatever the length, or set later under TrailerPrefix on
+// an answer whose length is unknown. Asked for on an answer whose handler
+// set a Content-Length, they would change its HTTP/1.1 framing to chunked.
+func TestFromHTTPStreamedTrailers(t *testing.T) {
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/framed":
+			w.Header().Set("Content-Length", "2")
+		case "/announced":
+			w.Header().Set("Content-Length", "2")
+			w.Header().Set("Trailer", "X-Sum")
+		case "/late":
+		}
+		_, _ = io.WriteString(w, "a")
+		w.(http.Flusher).Flush()
+		_, _ = io.WriteString(w, "b")
+		if r.URL.Path == "/late" {
+			w.Header().Set(http.TrailerPrefix+"X-Late", "yes")
+		}
+	})
+	out := answer(t, h, get("/framed"), get("/announced"), get("/late"))
+	for i, want := range []bool{false, true, true} {
+		if out[i].Stream == nil {
+			t.Fatalf("response %d is not streamed", i)
+		}
+		if got := out[i].Trailers != nil; got != want {
+			t.Errorf("response %d: Trailers asked for = %v, want %v", i, got, want)
+		}
+		pulled(out[i])
+	}
+}
+
 // A name announced in Trailer that is not a token is left out of the
 // Trailer field, as it is left out of the trailers that follow the body: the
 // transport refuses a field value with a control byte or a CR or LF, so the
