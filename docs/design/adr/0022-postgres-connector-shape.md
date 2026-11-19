@@ -1,7 +1,7 @@
 # ADR 0022 — The PostgreSQL connector's shape: one connection and a fixed pool, binary, the codec apart
 
 - **Created:** 2026-10-23
-- **Revised:** 2026-11-19 (the pool looks at an idle connection before lending it); 4 earlier, from 2026-10-28, in its `git log`
+- **Revised:** 2026-11-19 (the pool looks at an idle connection before lending it, and closes one left in a transaction block); 4 earlier, from 2026-10-28, in its `git log`
 - **Theme:** postgres
 
 ## Problem
@@ -32,7 +32,11 @@ process: it opens them when first needed, lends one per call (for `Query`,
 as long as its stream is read), closes a broken one when it comes back, so
 that the next call opens a new one, and looks at an idle one before lending
 it: one the server closed while it waited is replaced in the pool, not paid
-for by the call that finds it. No idle timeout, no lifetime, no setting.
+for by the call that finds it. A pool carries no transaction: a connection
+that comes back inside a transaction block, open or aborted — the server's
+word in its last ReadyForQuery — is closed, which rolls the block back,
+rather than lent to a caller whose writes would land in it. No idle
+timeout, no lifetime, no setting.
 
 **The transport is the caller's.** `Connect` takes a recipe (`DialTCP`,
 `DialTLS`, `DialTLSDirect` or the caller's own); the `tls.Config` is the

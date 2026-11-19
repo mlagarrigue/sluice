@@ -74,6 +74,10 @@ be bound to its certificate — is set further down, in
 > sixty-four for reads by key; for independent queries that must run at
 > the same time, `postgres.NewPool(n, connect)` lends one connection per
 > call and replaces a broken one. How many to open stays your decision.
+> A pool carries no transaction: a call that leaves one open (a `BEGIN`
+> sent as a statement) has its connection closed when it comes back, which
+> rolls the block back, rather than lent to the next caller; a transaction
+> is `Conn.Begin`'s, on a connection of its own.
 
 A wrong password arrives as a server error whose SQLSTATE — the
 standardised five-character code every server error carries — is `28P01`; an
