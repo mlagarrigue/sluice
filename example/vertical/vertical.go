@@ -469,8 +469,8 @@ func StreamHandler(s *Service, v web.Verifier, realm string, a web.Authorizer, t
 		defer cancel()
 		outcomes := s.gw.DoBatch(ctx, calls)
 
-		return stream.RenderOpen(ex, func(_, open int) (int, any) {
-			o := outcomes[open]
+		return stream.RenderOpen(ex, func(open stream.Open) (int, any) {
+			o := outcomes[open.Rank]
 			if o.Err != nil {
 				return 503, web.InternalReport()
 			}

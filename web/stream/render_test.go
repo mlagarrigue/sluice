@@ -185,9 +185,9 @@ func TestRenderOpenRanksTheServedExchanges(t *testing.T) {
 
 	outcomes := []string{"for b", "for d"} // one per open exchange, in order
 	got := map[int]int{}
-	out := RenderOpen(ex, func(i, open int) (int, any) {
-		got[i] = open
-		return 200, outcomes[open]
+	out := RenderOpen(ex, func(o Open) (int, any) {
+		got[o.Index] = o.Rank
+		return 200, outcomes[o.Rank]
 	})
 	if want := map[int]int{1: 0, 3: 1}; len(got) != len(want) || got[1] != 0 || got[3] != 1 {
 		t.Errorf("ranks = %v, want %v", got, want)

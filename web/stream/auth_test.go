@@ -266,7 +266,7 @@ func TestAuthenticateChallengesWithBearer(t *testing.T) {
 			e.Request.Headers = tc.headers
 			ex := []Exchange{e}
 			Authenticate(ex, acceptToken{}, "orders")
-			out := RenderOpen(ex, func(_, _ int) (int, any) { return 200, nil })
+			out := RenderOpen(ex, func(Open) (int, any) { return 200, nil })
 			r := out.Items[0]
 			if r.Status != 401 {
 				t.Fatalf("status = %d, want 401", r.Status)

@@ -48,7 +48,7 @@ behavior that keep the signatures — a value now refused — come last.
   Rename the type and the calls; regenerate the hydration functions with `sluicegen`, or replace `*postgres.Rows` with
   `*postgres.RowBlock` and `.Rows()` with `.Block()` in the generated files.
 - **`pgtype.DecodeBytea`, `DecodeJSON` and `DecodeJSONB` are renamed `BorrowBytea`, `BorrowJSON`
-  and `BorrowJSONB`** (feat(postgres)!: the decoders that borrow say so):
+  and `BorrowJSONB`** (`afb8849`):
   they borrow the batch's storage, where `ByteaCodec`, `JSONCodec` and `JSONBCodec` copy. Rename the
   calls; a slice kept past its batch is copied, as before.
 - **The codecs of created types take a `pgtype.TypeOIDs`** (feat(postgres)!: created types take their OIDs as one TypeOIDs): `Conn.LookupType` returns
@@ -89,6 +89,10 @@ behavior that keep the signatures — a value now refused — come last.
 - **`gateway.Gateway` has no `Close`** (`c317c88`): `Close` is the forced stop elsewhere in the
   library, and a gateway has none. Write `gw.Shutdown(ctx)` with a deadline, or
   `gw.Shutdown(context.Background())` to wait without a bound as `Close` did.
+- **`stream.RenderOpen` hands `serve` an `Open`** (feat(web)!: RenderOpen hands serve an Open):
+  `serve func(i, open int)` becomes `serve func(o stream.Open)`, whose `Index` is the exchange's
+  position in the batch and `Rank` its position among the open ones. Write `o.Index` for `i` and
+  `o.Rank` for `open`; `Renderer.RenderOpen` changes the same way.
 
 ## From v0.4.0 to v0.5.0
 

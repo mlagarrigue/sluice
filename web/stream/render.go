@@ -36,8 +36,9 @@ func Render(exchanges []Exchange, serve func(i int) (status int, body any)) slui
 }
 
 // RenderOpen is [Render] for the handler that submitted one call per open
-// exchange: serve also receives open, the exchange's rank among those not
-// refused — 0 for the first served exchange, 1 for the next, in batch order.
+// exchange: serve receives an [Open], which carries the exchange's index in
+// the batch and its rank among those not refused — 0 for the first served
+// exchange, 1 for the next, in batch order.
 //
 // That rank is the index into a slice built by appending once per exchange
 // still open after the last refusal, which is how a composed handler builds
@@ -47,8 +48,8 @@ func Render(exchanges []Exchange, serve func(i int) (status int, body any)) slui
 //	    // refuse, or append exactly one call for ex[i]
 //	}
 //	outcomes := gw.DoBatch(ctx, calls)
-//	return stream.RenderOpen(ex, func(_, open int) (int, any) {
-//	    o := outcomes[open]
+//	return stream.RenderOpen(ex, func(o stream.Open) (int, any) {
+//	    outcome := outcomes[o.Rank]
 //	    ...
 //	})
 //
@@ -56,8 +57,17 @@ func Render(exchanges []Exchange, serve func(i int) (status int, body any)) slui
 // hand — an index of call positions and its inverse — is not written at all.
 // The contract it rests on is that loop's: an exchange left open without a
 // call shifts every later rank, so anything skipped is refused.
-func RenderOpen(exchanges []Exchange, serve func(i, open int) (status int, body any)) sluice.Batch[httpstream.Response] {
+func RenderOpen(exchanges []Exchange, serve func(o Open) (status int, body any)) sluice.Batch[httpstream.Response] {
 	return Renderer{}.RenderOpen(exchanges, serve)
+}
+
+// An Open is an exchange [RenderOpen] serves: Index is its position in the
+// batch, Rank its position among the exchanges not refused. Two ints passed
+// side by side would swap without a word from the compiler; named fields do
+// not.
+type Open struct {
+	Index int
+	Rank  int
 }
 
 // A Renderer is [Render] and [RenderOpen] with the refusals answered in the
@@ -92,11 +102,11 @@ type Renderer struct {
 
 // Render is the package's [Render], refusals answered by r.Refused.
 func (r Renderer) Render(exchanges []Exchange, serve func(i int) (status int, body any)) sluice.Batch[httpstream.Response] {
-	return r.RenderOpen(exchanges, func(i, _ int) (int, any) { return serve(i) })
+	return r.RenderOpen(exchanges, func(o Open) (int, any) { return serve(o.Index) })
 }
 
 // RenderOpen is the package's [RenderOpen], refusals answered by r.Refused.
-func (r Renderer) RenderOpen(exchanges []Exchange, serve func(i, open int) (status int, body any)) sluice.Batch[httpstream.Response] {
+func (r Renderer) RenderOpen(exchanges []Exchange, serve func(o Open) (status int, body any)) sluice.Batch[httpstream.Response] {
 	out := make([]httpstream.Response, len(exchanges))
 	open := 0
 	for i := range exchanges {
@@ -109,7 +119,7 @@ func (r Renderer) RenderOpen(exchanges []Exchange, serve func(i, open int) (stat
 		case e.Refused():
 			status, body = e.Status, e.Report()
 		default:
-			status, body = serve(i, open)
+			status, body = serve(Open{Index: i, Rank: open})
 			open++
 		}
 
