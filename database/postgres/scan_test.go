@@ -163,7 +163,7 @@ func TestScanners(t *testing.T) {
 
 // described builds a one-column accumulator whose description says oid, with
 // one row holding value.
-func described(t *testing.T, oid uint32, value []byte) *Rows {
+func described(t *testing.T, oid uint32, value []byte) *RowBlock {
 	t.Helper()
 	rows := newRows(1, 4, 0)
 	rows.start([]Field{{Name: "c", TypeOID: oid}}, 4, 0)
@@ -305,14 +305,14 @@ func TestGenericScanners(t *testing.T) {
 		}
 	})
 
-	scanners := map[string]func(*Rows, int) error{
-		"ScanInt2":      func(r *Rows, c int) error { _, err := ScanInt2(nil, r, c); return err },
-		"ScanFloat4":    func(r *Rows, c int) error { _, err := ScanFloat4(nil, r, c); return err },
-		"ScanBytea":     func(r *Rows, c int) error { _, err := ScanBytea(nil, r, c); return err },
-		"ScanUUID":      func(r *Rows, c int) error { _, err := ScanUUID(nil, r, c); return err },
-		"ScanNumeric":   func(r *Rows, c int) error { _, err := ScanNumeric(nil, r, c); return err },
-		"ScanTimestamp": func(r *Rows, c int) error { _, err := ScanTimestamp(nil, r, c); return err },
-		"ScanDate":      func(r *Rows, c int) error { _, err := ScanDate(nil, r, c); return err },
+	scanners := map[string]func(*RowBlock, int) error{
+		"ScanInt2":      func(r *RowBlock, c int) error { _, err := ScanInt2(nil, r, c); return err },
+		"ScanFloat4":    func(r *RowBlock, c int) error { _, err := ScanFloat4(nil, r, c); return err },
+		"ScanBytea":     func(r *RowBlock, c int) error { _, err := ScanBytea(nil, r, c); return err },
+		"ScanUUID":      func(r *RowBlock, c int) error { _, err := ScanUUID(nil, r, c); return err },
+		"ScanNumeric":   func(r *RowBlock, c int) error { _, err := ScanNumeric(nil, r, c); return err },
+		"ScanTimestamp": func(r *RowBlock, c int) error { _, err := ScanTimestamp(nil, r, c); return err },
+		"ScanDate":      func(r *RowBlock, c int) error { _, err := ScanDate(nil, r, c); return err },
 	}
 	cols := map[string]int{
 		"ScanInt2": 0, "ScanFloat4": 1, "ScanBytea": 2, "ScanUUID": 3,

@@ -16,7 +16,7 @@ import (
 
 // replay is a backend that has already answered: it drops what the client
 // sends and hands back one scripted result. The tests below reach a
-// *postgres.Rows the way every caller does, through a query, so what they
+// *postgres.RowBlock the way every caller does, through a query, so what they
 // hydrate is the connection's own accumulator, reused from batch to batch.
 type replay struct{ *bytes.Reader }
 
@@ -28,12 +28,12 @@ func (replay) Close() error                { return nil }
 // with each batch's rows, valid only for the call. Every batch but the last
 // is as long as the first: the server cuts a result at the row limit the
 // client asks for, and the first batch's length is that limit.
-func eachBatch(tb testing.TB, fields []postgres.Field, batches [][][]byte, fn func(rows *postgres.Rows)) {
+func eachBatch(tb testing.TB, fields []postgres.Field, batches [][][]byte, fn func(rows *postgres.RowBlock)) {
 	tb.Helper()
 	src := scriptedQuery(tb, fields, batches, false)
 	for b := range src.Stream() {
 		if b.Len() > 0 {
-			fn(b.Items[0].Rows())
+			fn(b.Items[0].Block())
 		}
 	}
 	if err := src.Err(); err != nil {
@@ -153,7 +153,7 @@ func TestGeneratedHydrator(t *testing.T) {
 	eachBatch(t, orderFields(), [][][]byte{{
 		orderRow(1, 12.5, at, &note, true, "first"),
 		orderRow(2, 0, at, nil, false, "second"),
-	}}, func(rows *postgres.Rows) {
+	}}, func(rows *postgres.RowBlock) {
 		if orders, err = entity.HydrateOrder(orders, rows, plan); err != nil {
 			t.Fatalf("HydrateOrder returned %v", err)
 		}
@@ -254,7 +254,7 @@ func TestHydrateRejectsUnexpectedNull(t *testing.T) {
 		pgtype.AppendBool(nil, true),
 		[]byte("x"),
 	)
-	eachBatch(t, orderFields(), [][][]byte{{body}}, func(rows *postgres.Rows) {
+	eachBatch(t, orderFields(), [][][]byte{{body}}, func(rows *postgres.RowBlock) {
 		_, err = entity.HydrateOrder(nil, rows, plan)
 	})
 	if err == nil {
@@ -297,7 +297,7 @@ func TestHydrateKeepsTheCallersBufferWhenARowFails(t *testing.T) {
 	eachBatch(t, orderFields(), [][][]byte{
 		{orderRow(1, 10, at, nil, true, "a"), orderRow(2, 15, at, nil, true, "b")},
 		{orderRow(3, 20, at, nil, true, "c"), bad},
-	}, func(rows *postgres.Rows) {
+	}, func(rows *postgres.RowBlock) {
 		batch++
 		if batch == 1 {
 			if dst, err = entity.HydrateOrder(dst, rows, plan); err != nil {
@@ -347,7 +347,7 @@ func BenchmarkGeneratedHydrate(b *testing.B) {
 	}
 
 	dst := make([]entity.Order, 0, n)
-	eachBatch(b, orderFields(), [][][]byte{bodies}, func(rows *postgres.Rows) {
+	eachBatch(b, orderFields(), [][][]byte{bodies}, func(rows *postgres.RowBlock) {
 		b.ReportAllocs()
 		for b.Loop() {
 			dst, err = entity.HydrateOrder(dst[:0], rows, plan)
@@ -408,7 +408,7 @@ func TestGeneratedProductHydrator(t *testing.T) {
 	var got []entity.Product
 	var p entity.Product
 	batch := 0
-	eachBatch(t, productFields(pgtype.OIDDate), [][][]byte{first, second}, func(rows *postgres.Rows) {
+	eachBatch(t, productFields(pgtype.OIDDate), [][][]byte{first, second}, func(rows *postgres.RowBlock) {
 		batch++
 		if batch > 1 {
 			// The bytes are the field's own: the row buffer is reused for
@@ -470,7 +470,7 @@ func TestNullFieldDoesNotAllocate(t *testing.T) {
 		eachBatch(t, productFields(pgtype.OIDDate), [][][]byte{{dataRow(
 			[]byte("A"), []byte("o"), []byte{1}, nil,
 			pgtype.AppendNumeric(nil, price), pgtype.AppendDate(nil, day), weight,
-		)}}, func(rows *postgres.Rows) {
+		)}}, func(rows *postgres.RowBlock) {
 			n = testing.AllocsPerRun(100, func() {
 				if _, err := entity.HydrateProduct(dst[:0], rows, plan); err != nil {
 					t.Fatal(err)

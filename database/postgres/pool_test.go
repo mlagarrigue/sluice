@@ -35,7 +35,7 @@ func insertOne(t *testing.T, ctx context.Context, x interface {
 },
 ) error {
 	t.Helper()
-	_, err := x.ExecParams(ctx, "INSERT INTO t VALUES ($1)", []Param{Arg(pgtype.Int8Codec(), 1)})
+	_, err := x.ExecParams(ctx, "INSERT INTO t VALUES ($1)", []Param{ParamOf(pgtype.Int8Codec(), 1)})
 	return err
 }
 

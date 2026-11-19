@@ -1798,7 +1798,7 @@ func TestReplanLeavesTheCallersParameters(t *testing.T) {
 // emit honours a limit down to zero, and sizes the next batch to what the
 // limit still allows.
 func TestEmitHonoursTheLimit(t *testing.T) {
-	rowsOf := func(n int) *Rows {
+	rowsOf := func(n int) *RowBlock {
 		r := newRows(1, 10, 0)
 		for i := range n {
 			if err := r.appendRow(dataRow(int8Val(int64(i)))); err != nil {

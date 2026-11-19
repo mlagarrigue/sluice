@@ -38,7 +38,7 @@ type order struct {
 }
 
 // orderRows builds a batch of n rows matching order's five columns.
-func orderRows(n int) *Rows {
+func orderRows(n int) *RowBlock {
 	rows := newRows(5, n, 0)
 	for i := range n {
 		body := dataRow(
@@ -73,7 +73,7 @@ var orderKinds = func() []reflect.Kind {
 // left is the cost reflection itself adds — Value.Index, Value.Field and a
 // setter per field — against the same decoders and the same one string
 // allocation per row as the hand-written loop.
-func hydrateReflect(dst []order, rows *Rows) ([]order, error) {
+func hydrateReflect(dst []order, rows *RowBlock) ([]order, error) {
 	n := rows.Len()
 	dst = slices.Grow(dst[:0], n)[:n]
 	sv := reflect.ValueOf(dst) // once per batch: elements are addressable
@@ -124,7 +124,7 @@ func hydrateReflect(dst []order, rows *Rows) ([]order, error) {
 // difference stays visible: a type switch on f.Interface() per field, and a
 // reflect.ValueOf per time.Time. Both box a value per field, and the boxing —
 // not reflection — was most of the figure once quoted against generated code.
-func hydrateReflectBoxed(dst []order, rows *Rows) ([]order, error) {
+func hydrateReflectBoxed(dst []order, rows *RowBlock) ([]order, error) {
 	dst = dst[:0]
 	for i := range rows.Len() {
 		var o order
@@ -171,7 +171,7 @@ func hydrateReflectBoxed(dst []order, rows *Rows) ([]order, error) {
 
 // hydrateRowMajor is the same work without reflection: still one row at a
 // time, still a different decoder per field.
-func hydrateRowMajor(dst []order, rows *Rows) ([]order, error) {
+func hydrateRowMajor(dst []order, rows *RowBlock) ([]order, error) {
 	dst = dst[:0]
 	for i := range rows.Len() {
 		var o order
@@ -226,7 +226,7 @@ type columnarScratch struct {
 
 // hydrateColumnar is what a generator would emit: one monomorphic pass per
 // column, then one pass to assemble the structs.
-func hydrateColumnar(dst []order, rows *Rows, s *columnarScratch) ([]order, error) {
+func hydrateColumnar(dst []order, rows *RowBlock, s *columnarScratch) ([]order, error) {
 	var err error
 	if s.ids, err = ScanInt8(s.ids[:0], rows, 0); err != nil {
 		return nil, err
@@ -412,9 +412,9 @@ func BenchmarkHydrateRowMajorBatchOne(b *testing.B) {
 	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N), "ns/row")
 }
 
-// Row.Rows is the bridge from a Query's batch of Row views to the scanners and
-// generated hydration functions, which take the whole *Rows: every view of one
-// batch reaches the same Rows, and a view retained past its query panics the
+// Row.Block is the bridge from a Query's batch of Row views to the scanners and
+// generated hydration functions, which take the whole *RowBlock: every view of one
+// batch reaches the same RowBlock, and a view retained past its query panics the
 // same way Value does rather than reading the next result's bytes.
 func TestRowReachesItsRows(t *testing.T) {
 	rows := newRows(1, 4, 0)
@@ -424,22 +424,22 @@ func TestRowReachesItsRows(t *testing.T) {
 		}
 	}
 	c := &Conn{}
-	var got *Rows
+	var got *RowBlock
 	c.emitRows(t.Context(), rows, nil, func(b sluice.Batch[Row]) bool {
-		got = b.Items[0].Rows()
+		got = b.Items[0].Block()
 		for _, r := range b.Items {
-			if r.Rows() != got {
-				t.Fatal("two rows of one batch view different Rows")
+			if r.Block() != got {
+				t.Fatal("two rows of one batch view different RowBlocks")
 			}
 		}
 		dst, err := ScanInt8(nil, got, 0)
 		if err != nil || len(dst) != 3 || dst[2] != 2 {
-			t.Fatalf("ScanInt8 over Row.Rows(): %v %v", dst, err)
+			t.Fatalf("ScanInt8 over Row.Block(): %v %v", dst, err)
 		}
 		return true
 	})
 	if got != rows {
-		t.Fatal("Row.Rows() is not the batch's Rows")
+		t.Fatal("Row.Block() is not the batch's RowBlock")
 	}
 	// Retained past the query: the accumulator moved on.
 	stale := Row{rows: rows, idx: 0, gen: rows.gen - 1}
@@ -448,5 +448,5 @@ func TestRowReachesItsRows(t *testing.T) {
 			t.Fatalf("a retained Row's Rows() panicked with %v, want ErrRowRetained", r)
 		}
 	}()
-	_ = stale.Rows()
+	_ = stale.Block()
 }

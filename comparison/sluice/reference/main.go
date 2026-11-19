@@ -114,7 +114,7 @@ func (s *server) pipeline(conn *postgres.Conn) func(sluice.Stream[*gateway.Call[
 	var rows []order
 	return gateway.Lookup(errNotFound, func(ids []int64, found map[int64]order) error {
 		s.batches.Record(len(ids))
-		src := conn.Query(context.Background(), unitQuery, []postgres.Param{postgres.ArrayArg(pgtype.Int8Codec(), ids)},
+		src := conn.Query(context.Background(), unitQuery, []postgres.Param{postgres.ArrayParamOf(pgtype.Int8Codec(), ids)},
 			postgres.QueryConfig{BatchRows: batchSize + 1}) // one more than a batch can hold: one round trip
 		var err error
 		rows, err = collectOrder(rows[:0], src)
@@ -137,7 +137,7 @@ func unitAnswer(id int64, o order, err error) (status int, body any) {
 }
 
 func (s *server) list(ctx context.Context, from int64, limit int) (status int, body any) {
-	params := []postgres.Param{postgres.Arg(pgtype.Int8Codec(), from), postgres.Arg(pgtype.Int8Codec(), int64(limit))}
+	params := []postgres.Param{postgres.ParamOf(pgtype.Int8Codec(), from), postgres.ParamOf(pgtype.Int8Codec(), int64(limit))}
 	src := s.db.Query(ctx, listQuery, params, postgres.QueryConfig{BatchRows: 1024})
 	items, err := collectOrder(make([]order, 0, limit), src)
 	switch {
@@ -165,7 +165,7 @@ func listArgs(fromArg, limitArg string) (from int64, limit int, refused *errDoc)
 }
 
 func (s *server) write(ctx context.Context, req writeReq) (status int, body any) {
-	if _, err := s.db.ExecParams(ctx, writeQuery, []postgres.Param{postgres.Arg(pgtype.Int8Codec(), req.Key), postgres.Arg(pgtype.Int8Codec(), req.Total)}); err != nil {
+	if _, err := s.db.ExecParams(ctx, writeQuery, []postgres.Param{postgres.ParamOf(pgtype.Int8Codec(), req.Key), postgres.ParamOf(pgtype.Int8Codec(), req.Total)}); err != nil {
 		log.Printf("insert: %v", err)
 		return http.StatusServiceUnavailable, errDoc{Error: "unavailable", Key: &req.Key}
 	}

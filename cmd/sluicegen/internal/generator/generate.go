@@ -431,7 +431,7 @@ func {{.Bind}}(fields []postgres.Field) ({{.Plan}}, error) {
 // On an error dst is returned as it stood before this batch — capacity and
 // prior contents intact — so a caller that logs and moves on keeps its reuse
 // buffer rather than having it replaced by nil.
-func {{.Hydrate}}(dst []{{.Type}}, rows *postgres.Rows, p {{.Plan}}) ([]{{.Type}}, error) {
+func {{.Hydrate}}(dst []{{.Type}}, rows *postgres.RowBlock, p {{.Plan}}) ([]{{.Type}}, error) {
 	before := len(dst)
 	// Reserved up front with amortized growth: the batch's row count is
 	// known, and slices.Grow both skips append's per-batch reallocation on a
@@ -496,7 +496,7 @@ func {{.Collect}}(dst []{{.Type}}, src sluice.Source[postgres.Row]) ([]{{.Type}}
 			}
 			bound = true
 		}
-		if dst, err = {{.Hydrate}}(dst, b.Items[0].Rows(), p); err != nil {
+		if dst, err = {{.Hydrate}}(dst, b.Items[0].Block(), p); err != nil {
 			return dst[:before], err
 		}
 	}

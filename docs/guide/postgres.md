@@ -116,7 +116,7 @@ to consult afterwards (see [Getting started](getting-started.md) for
 keys := []int64{1, 2, 3 /* … a thousand */}
 src := conn.Query(ctx,
     "SELECT id, total FROM orders WHERE id = ANY($1)",
-    []postgres.Param{postgres.ArrayArg(pgtype.Int8Codec(), keys)}, // the parameter: a bigint[] array
+    []postgres.Param{postgres.ArrayParamOf(pgtype.Int8Codec(), keys)}, // the parameter: a bigint[] array
     postgres.QueryConfig{BatchRows: 1024},
 )
 for b := range src.Stream() {
@@ -139,10 +139,10 @@ query) impossible by construction, not by vigilance. Each parameter is a
 (the number PostgreSQL gives each type, here `OIDInt8Array` for
 `bigint[]`). An OID of zero lets the server infer the type from where the
 parameter appears; name it when the inference could guess wrong.
-`postgres.ArrayArg(pgtype.Int8Codec(), keys)` builds it from the type's
+`postgres.ArrayParamOf(pgtype.Int8Codec(), keys)` builds it from the type's
 **codec** (what knows how to write and read the type in binary): the
 array's OID and its encoding come from one place and cannot disagree;
-`postgres.Arg` does the same for a single value.
+`postgres.ParamOf` does the same for a single value.
 
 **`= ANY($1)` rather than `IN (…)`.** With `IN`, a thousand values make a
 thousand slots and a different query shape for every number of values,
@@ -247,7 +247,7 @@ for b := range src.Stream() {
         plan, err = entity.BindOrder(b.Items[0].Fields()) // once per result
         bound = true
     }
-    orders, err = entity.HydrateOrder(orders[:0], b.Items[0].Rows(), plan)
+    orders, err = entity.HydrateOrder(orders[:0], b.Items[0].Block(), plan)
     // …
 }
 ```
@@ -332,7 +332,7 @@ defer tx.Rollback() // a no-op if Commit succeeded: the safety net
 
 if err := tx.SetLocal(ctx, "app.tenant_id", tenant); err != nil { return err } // visible to row-level security
 tag, err := tx.ExecParams(ctx, "UPDATE orders SET shipped = true WHERE customer = $1",
-    []postgres.Param{postgres.Arg(pgtype.TextCodec(), customer)})
+    []postgres.Param{postgres.ParamOf(pgtype.TextCodec(), customer)})
 if err != nil { return err }
 n, _ := tag.RowsAffected() // how many rows changed, by the server's count
 return tx.Commit(ctx)

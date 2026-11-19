@@ -28,7 +28,7 @@ behavior that keep the signatures — a value now refused — come last.
 
 ### Instrumentation: `probe`
 
-- **`Probe` is renamed `Count`** (feat(diagnostics)!: probe.Count names what a probe does): `probe.Probe(s, &c)`
+- **`Probe` is renamed `Count`** (`64f24ac`): `probe.Probe(s, &c)`
   stuttered; write `probe.Count(s, &c)`. The `Counter`, its methods and the cost are unchanged.
 
 ### Joins: `join`
@@ -43,6 +43,10 @@ behavior that keep the signatures — a value now refused — come last.
 
 ### Database: `postgres`
 
+- **`Rows` is renamed `RowBlock`, and `Row.Rows` becomes `Row.Block`**
+  (feat(postgres)!: RowBlock and ParamOf, ADR 0022): `Rows` read as the cursor of `database/sql`.
+  Rename the type and the calls; regenerate the hydration functions with `sluicegen`, or replace `*postgres.Rows` with
+  `*postgres.RowBlock` and `.Rows()` with `.Block()` in the generated files.
 - **The codecs of created types take a `pgtype.TypeOIDs`** (feat(postgres)!: created types take their OIDs as one TypeOIDs): `Conn.LookupType` returns
   `(pgtype.TypeOIDs, error)` instead of two `uint32`, and `CitextCodec`, `HstoreCodec`, `LtreeCodec`,
   `LqueryCodec`, `LtxtqueryCodec`, `VectorCodec`, `RangeCodec` and `MultirangeCodec` take it where they

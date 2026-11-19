@@ -32,7 +32,7 @@ func backendPID(t *testing.T, src sluice.Source[postgres.Row]) int32 {
 // an idle-session timeout does, and waits until it is gone.
 func terminate(t *testing.T, admin *postgres.Conn, pid int32) {
 	t.Helper()
-	pidArg := []postgres.Param{postgres.Arg(pgtype.Int4Codec(), pid)}
+	pidArg := []postgres.Param{postgres.ParamOf(pgtype.Int4Codec(), pid)}
 	if _, err := admin.ExecParams(t.Context(), "SELECT pg_terminate_backend($1)", pidArg); err != nil {
 		t.Fatal(err)
 	}
@@ -89,6 +89,6 @@ func ExampleNewPool() {
 	defer func() { _ = pool.Close() }()
 
 	page := pool.Query(ctx, "SELECT id, total FROM orders WHERE id > $1 ORDER BY id LIMIT 100",
-		[]postgres.Param{postgres.Arg(pgtype.Int8Codec(), int64(1000))}, postgres.QueryConfig{})
+		[]postgres.Param{postgres.ParamOf(pgtype.Int8Codec(), int64(1000))}, postgres.QueryConfig{})
 	_ = page.Consume(func(sluice.Batch[postgres.Row]) bool { return true })
 }

@@ -98,7 +98,7 @@ func BenchmarkListDecode(b *testing.B) {
 		bodies[i] = dataRow(pgtype.AppendInt8(nil, r.ID), pgtype.AppendInt8(nil, r.Total), []byte(r.Label))
 	}
 	out := make([]orderRow, 0, listLimit)
-	decode := func(b *testing.B, acc *postgres.Rows) {
+	decode := func(b *testing.B, acc *postgres.RowBlock) {
 		b.Helper()
 		out = out[:0]
 		for i := range acc.Len() {
@@ -120,7 +120,7 @@ func BenchmarkListDecode(b *testing.B) {
 	src := conn.Query(b.Context(), "SELECT id, total, label FROM bench_orders", nil,
 		postgres.QueryConfig{BatchRows: listLimit + 1})
 	for batch := range src.Stream() {
-		acc := batch.Items[0].Rows()
+		acc := batch.Items[0].Block()
 		b.ReportAllocs()
 		for b.Loop() {
 			decode(b, acc)

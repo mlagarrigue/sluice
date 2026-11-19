@@ -158,7 +158,7 @@ func TestReplanNeverAsksForEveryRowWhenTheLimitFallsToZero(t *testing.T) {
 // enough ordinary batches have followed, as pgwire's Reader does for its
 // message buffer: kept, a 60 MB batch held 60 MB for the connection's life.
 func TestRowsGivesBackTheStorageOfALargeBatch(t *testing.T) {
-	var r Rows
+	var r RowBlock
 	r.start(nil, 1<<20, 1<<30)
 	r.buf = append(r.buf, make([]byte, 60<<20)...)
 	r.ends = append(r.ends, 0)

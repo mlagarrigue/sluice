@@ -1766,7 +1766,7 @@ func TestIntegrationTextTypesRoundTrip(t *testing.T) {
 	src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
 		if b.Len() > 0 {
 			var err error
-			if labels, err = postgres.ScanText(labels, b.Items[0].Rows(), 0); err != nil {
+			if labels, err = postgres.ScanText(labels, b.Items[0].Block(), 0); err != nil {
 				t.Errorf("ScanText over an enum column: %v", err)
 			}
 		}

@@ -274,7 +274,7 @@ func (c *Conn) readPipeline(ctx context.Context, parts []Part, batchRows, batchB
 	var (
 		part      int
 		inSetting = parts[0].Setting != ""
-		rows      *Rows
+		rows      *RowBlock
 		items     []Row
 		stopped   bool
 		failed    error

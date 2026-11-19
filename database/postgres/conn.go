@@ -4,8 +4,8 @@
 //	connect.go       Connect and its dialers: TCP, TLS, direct TLS
 //	auth.go          Config, the startup and authentication
 //	scram.go         SCRAM-SHA-256; saslprep*.go the password's SASLprep
-//	conn.go          Conn: queries, Rows, batches asked for ahead
-//	arg.go           Arg, ArrayArg: a parameter from a codec
+//	conn.go          Conn: queries, RowBlock, batches asked for ahead
+//	arg.go           ParamOf, ArrayParamOf: a parameter from a codec
 //	pool.go          Pool: a fixed number of connections, a broken one replaced
 //	messages.go      backend messages parsed, the server's Error
 //	scan.go          Scan*: a batch's column into Go values
@@ -45,7 +45,7 @@ import (
 // row. Like every batch in this library, a Row is valid only for the
 // duration of the call that received its batch.
 type Row struct {
-	rows *Rows
+	rows *RowBlock
 	idx  int
 
 	// gen is the accumulator's generation when this view was made. The
@@ -71,7 +71,7 @@ var ErrRowRetained = errors.New("postgres: Row read after its query — a batch 
 // DecodeText, DecodeTimestampTZ, one per type — and never by reading the
 // bytes by hand, which is how an endianness or an epoch ends up wrong in a
 // caller. A whole column of the batch at once is [ScanInt8] and its
-// siblings, reached through [Row.Rows]; that is the faster shape and the one
+// siblings, reached through [Row.Block]; that is the faster shape and the one
 // to prefer when every row is wanted.
 func (r Row) Value(col int) (b []byte, isNull bool) {
 	if r.gen != r.rows.gen {
@@ -80,13 +80,13 @@ func (r Row) Value(col int) (b []byte, isNull bool) {
 	return r.rows.Value(r.idx, col)
 }
 
-// Rows returns the batch this row is a view into, for the column scanners
+// Block returns the batch this row is a view into, for the column scanners
 // ([ScanInt8] and its siblings) and the hydration functions sluicegen
 // generates, which walk a whole batch at once rather than a row at a time.
-// Every Row of one [sluice.Batch] views the same Rows, so one call on any
+// Every Row of one [sluice.Batch] views the same RowBlock, so one call on any
 // item — the first, say — reaches the batch they all came from. Like
 // [Row.Value], it refuses a row retained past its query.
-func (r Row) Rows() *Rows {
+func (r Row) Block() *RowBlock {
 	if r.gen != r.rows.gen {
 		panic(ErrRowRetained)
 	}
@@ -248,7 +248,7 @@ type Conn struct {
 	// The reuse protocol lives in [Conn.beginResult] and [Conn.emitRows],
 	// which both query.run and readPipeline go through — it is
 	// aliasing-sensitive, and two hand-rolled copies of it would drift.
-	rowsScratch  Rows
+	rowsScratch  RowBlock
 	itemsScratch []Row
 	// oidsScratch and valuesScratch lay a query's parameters out the way the
 	// wire carries them, types in the Parse and values in the Bind, without
@@ -384,7 +384,7 @@ func (c *Conn) execBusy(sql string) error {
 // where a fresh one leaves it stale but stable. It is one small allocation
 // per query, against the accumulator's buffers — the expensive part — which
 // are reused.
-func (c *Conn) beginResult(desc []Field, batchRows, batchBytes int) (*Rows, []Row) {
+func (c *Conn) beginResult(desc []Field, batchRows, batchBytes int) (*RowBlock, []Row) {
 	c.rowsScratch.start(desc, batchRows, batchBytes)
 	c.cutLogged = false
 	return &c.rowsScratch, c.itemsScratch[:0]
@@ -400,7 +400,7 @@ func (c *Conn) beginResult(desc []Field, batchRows, batchBytes int) (*Rows, []Ro
 // result whose rows are so wide that BatchBytes closes batches before
 // BatchRows is a result the caller sized for something else. ctx is the
 // statement's, and serves the log alone.
-func (c *Conn) emitRows(ctx context.Context, rows *Rows, items []Row, deliver func(sluice.Batch[Row]) bool) ([]Row, bool) {
+func (c *Conn) emitRows(ctx context.Context, rows *RowBlock, items []Row, deliver func(sluice.Batch[Row]) bool) ([]Row, bool) {
 	if rows == nil || rows.Len() == 0 {
 		return items, true
 	}
@@ -642,7 +642,7 @@ const defaultBatchBytes = 64 << 20
 // maxBatchBytes is the largest byte bound a batch accepts. A batch closes
 // with the row that crossed its bound in it, and that row is at most
 // [maxMaxMessage], so a bound of 1 GiB keeps the batch under the 2 GiB its
-// int32 offsets allow: past it, Rows.appendRow would refuse a row the bound
+// int32 offsets allow: past it, RowBlock.appendRow would refuse a row the bound
 // was meant to cut, not fail on.
 const maxBatchBytes = 1 << 30
 
@@ -1085,7 +1085,7 @@ type query struct {
 	synced     bool // the Sync went out with the query, so resync must not send another
 	mayOwe     bool // read to its end, the query may leave its ReadyForQuery owed: see [query.oweReady]
 	stopped    bool // the consumer stopped before the end of the result
-	rows       *Rows
+	rows       *RowBlock
 	items      []Row // reused: one Row view per row of the current batch
 
 	// cancelOnStop says an early stop may cancel the rest of a result asked
@@ -1114,7 +1114,7 @@ type query struct {
 	// re-bind's BindComplete. held keeps the accumulator meanwhile, so the
 	// DataRow case tells them apart by its nil check alone. See [query.run].
 	stale bool
-	held  *Rows
+	held  *RowBlock
 
 	// moved says the bound moved at the last batch boundary: until it holds
 	// again, nothing is asked ahead before delivery, where the next move

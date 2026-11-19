@@ -222,7 +222,7 @@ func parseRowDescription(dst []Field, body []byte) ([]Field, error) {
 	return dst, nil
 }
 
-// Rows accumulates decoded DataRow messages for a whole batch.
+// RowBlock accumulates decoded DataRow messages for a whole batch.
 //
 // Values are packed end to end in one buffer with a table of offsets beside
 // them, rather than a slice per row or per field. That is the architecture's
@@ -232,12 +232,12 @@ func parseRowDescription(dst []Field, body []byte) ([]Field, error) {
 // costs a thousand and a half. A generated hydration function walks it row
 // by row, the order that section measured faster than column by column.
 //
-// A Rows is reset and refilled per batch, so the bytes it hands out are valid
+// A RowBlock is reset and refilled per batch, so the bytes it hands out are valid
 // only until the next batch — the same rule as everything else here.
 //
 // A caller does not build one: a query does, and every [Row] of a batch
-// reaches it through [Row.Rows].
-type Rows struct {
+// reaches it through [Row.Block].
+type RowBlock struct {
 	buf []byte // every field's bytes, concatenated
 
 	// ends[i] is where field i stops in buf, and a **negative** value means
@@ -271,7 +271,7 @@ type Rows struct {
 	keep retention
 }
 
-// What a [Rows] keeps for the life of its connection, and how many batches
+// What a [RowBlock] keeps for the life of its connection, and how many batches
 // in a row must fit it before larger storage is given back: the rule
 // pgwire's Reader keeps for its message buffer. A connection that once
 // carried a 60 MB batch kept 60 MB for good — a pool of a hundred that each
@@ -283,7 +283,7 @@ const (
 )
 
 // retention is that rule, shared by every batch store of this package that
-// outlives its batch: [Rows] and the replication arena.
+// outlives its batch: [RowBlock] and the replication arena.
 type retention struct {
 	small int // batches in a row that fitted the retained size while the storage was larger
 }
@@ -306,7 +306,7 @@ func (k *retention) giveBack(oversized, fitted bool) bool {
 }
 
 // maxRowBytes is how many bytes of values one batch may hold, bounded by the
-// int32 offsets in [Rows]. A variable rather than a constant so the guard can
+// int32 offsets in [RowBlock]. A variable rather than a constant so the guard can
 // be exercised without allocating two gigabytes; nothing outside the tests
 // changes it.
 var maxRowBytes = math.MaxInt32
@@ -322,9 +322,9 @@ var ErrTooManyRows = errors.New("postgres: result exceeds the batch row limit")
 // A maxBytes of zero means the 2 GiB the offsets allow, alone; a negative one,
 // or one above that ceiling, panics — the bound is the caller's code, not
 // data, so a wrong one is a programming error, as an out-of-range
-// [Rows.Value] is.
-func newRows(fields, maxRows, maxBytes int) *Rows {
-	return &Rows{fields: fields, maxRows: maxRows, maxBytes: rowBytes(maxBytes)}
+// [RowBlock.Value] is.
+func newRows(fields, maxRows, maxBytes int) *RowBlock {
+	return &RowBlock{fields: fields, maxRows: maxRows, maxBytes: rowBytes(maxBytes)}
 }
 
 // rowBytes resolves a byte bound on a batch, zero to the ceiling the int32
@@ -347,7 +347,7 @@ func rowBytes(n int) int {
 // It clears through Rows.reset rather than by hand, so a field reset learns
 // to clear cannot be missed here — the two staying in step is what keeps a
 // reused accumulator from carrying one query's state into the next.
-func (r *Rows) start(desc []Field, maxRows, maxBytes int) {
+func (r *RowBlock) start(desc []Field, maxRows, maxBytes int) {
 	r.reset()
 	r.desc = desc
 	r.fields = len(desc)
@@ -363,7 +363,7 @@ func (r *Rows) start(desc []Field, maxRows, maxBytes int) {
 // The byte buffer is not cleared: every byte it hands out is covered by an
 // offset written when it was filled, so a stale tail is unreachable rather
 // than merely unlikely.
-func (r *Rows) reset() {
+func (r *RowBlock) reset() {
 	if r.rows > 0 && r.keep.giveBack(cap(r.buf) > rowsRetainBytes || cap(r.ends) > rowsRetainEnds,
 		len(r.buf) <= rowsRetainBytes && len(r.ends) <= rowsRetainEnds) {
 		r.buf, r.ends = nil, nil
@@ -374,11 +374,11 @@ func (r *Rows) reset() {
 }
 
 // Len reports how many rows are held.
-func (r *Rows) Len() int { return r.rows }
+func (r *RowBlock) Len() int { return r.rows }
 
 // NumFields reports the number of columns per row; [Row.Fields] describes
 // them.
-func (r *Rows) NumFields() int { return r.fields }
+func (r *RowBlock) NumFields() int { return r.fields }
 
 // full reports whether the accumulator has reached its row limit or its byte
 // bound, which is what a caller polls after each Rows.appendRow to decide when
@@ -390,20 +390,20 @@ func (r *Rows) NumFields() int { return r.fields }
 // travels, in a batch of its own. What it counts is what the batch holds
 // (held): the values, and the offset every field takes in ends, a NULL's
 // included — on the values alone, rows of NULLs never reached the bound.
-func (r *Rows) full() bool { return r.rows >= r.maxRows || r.held() >= r.maxBytes }
+func (r *RowBlock) full() bool { return r.rows >= r.maxRows || r.held() >= r.maxBytes }
 
 // fullOnBytes reports whether the byte bound, not the row limit, is what
 // filled the batch: the cut a reader logs.
-func (r *Rows) fullOnBytes() bool { return r.rows < r.maxRows && r.held() >= r.maxBytes }
+func (r *RowBlock) fullOnBytes() bool { return r.rows < r.maxRows && r.held() >= r.maxBytes }
 
 // held is what the batch holds against its byte bound: the values' bytes
 // and four per field for its offset.
-func (r *Rows) held() int { return len(r.buf) + 4*len(r.ends) }
+func (r *RowBlock) held() int { return len(r.buf) + 4*len(r.ends) }
 
 // largestRow returns the size of the widest row held, in bytes of values.
 // Cold: it walks the offsets, and is called once per result, when the byte
 // bound first cuts a batch.
-func (r *Rows) largestRow() int {
+func (r *RowBlock) largestRow() int {
 	if r.fields == 0 {
 		return 0
 	}
@@ -420,7 +420,7 @@ func (r *Rows) largestRow() int {
 }
 
 // appendRow decodes one DataRow body into the accumulator.
-func (r *Rows) appendRow(body []byte) error {
+func (r *RowBlock) appendRow(body []byte) error {
 	if len(body) < 2 {
 		return fmt.Errorf("%w: DataRow shorter than its field count", ErrProtocol)
 	}
@@ -480,7 +480,7 @@ func (r *Rows) appendRow(body []byte) error {
 // truncate keeps the first n rows and drops the rest, as if they had never
 // been appended. Cold: a query under a demand calls it on the one batch that
 // crosses the consumer's limit.
-func (r *Rows) truncate(n int) {
+func (r *RowBlock) truncate(n int) {
 	if n >= r.rows {
 		return
 	}
@@ -502,7 +502,7 @@ func (r *Rows) truncate(n int) {
 //
 // It panics with [IndexError], which carries the indices rather than a
 // formatted sentence.
-func (r *Rows) Value(row, col int) (b []byte, isNull bool) {
+func (r *RowBlock) Value(row, col int) (b []byte, isNull bool) {
 	// The bounds check is what costs here, −4.2% on BenchmarkPGReadDecode
 	// when removed entirely, and it stays: a typo in a generated hydration
 	// function must not read as a legitimate NULL. A value rather than a
@@ -531,7 +531,7 @@ func (r *Rows) Value(row, col int) (b []byte, isNull bool) {
 	return r.buf[start:end], false
 }
 
-// IndexError is what [Rows.Value] panics with when asked for a field that
+// IndexError is what [RowBlock.Value] panics with when asked for a field that
 // does not exist: a programming error, like a slice index out of range.
 //
 // A value rather than a formatted string, for the same reason the rest of this

@@ -139,7 +139,7 @@ func BindOrder(fields []postgres.Field) (OrderPlan, error) {
 // On an error dst is returned as it stood before this batch — capacity and
 // prior contents intact — so a caller that logs and moves on keeps its reuse
 // buffer rather than having it replaced by nil.
-func HydrateOrder(dst []Order, rows *postgres.Rows, p OrderPlan) ([]Order, error) {
+func HydrateOrder(dst []Order, rows *postgres.RowBlock, p OrderPlan) ([]Order, error) {
 	before := len(dst)
 	// Reserved up front with amortized growth: the batch's row count is
 	// known, and slices.Grow both skips append's per-batch reallocation on a
@@ -233,7 +233,7 @@ func CollectOrder(dst []Order, src sluice.Source[postgres.Row]) ([]Order, error)
 			}
 			bound = true
 		}
-		if dst, err = HydrateOrder(dst, b.Items[0].Rows(), p); err != nil {
+		if dst, err = HydrateOrder(dst, b.Items[0].Block(), p); err != nil {
 			return dst[:before], err
 		}
 	}

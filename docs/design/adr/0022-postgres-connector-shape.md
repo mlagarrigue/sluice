@@ -1,7 +1,7 @@
 # ADR 0022 — The PostgreSQL connector's shape: one connection and a fixed pool, binary, the codec apart
 
 - **Created:** 2026-10-23
-- **Revised:** 2026-10-28 (written in the present tense; the statement cache sized once; `NewConn` takes `Config`), 2026-11-03 (the Problem told in the past tense), 2026-11-16 (a fixed pool beside the connection: its reversal condition met)
+- **Revised:** 2026-11-19 (`RowBlock` for the batch the scanners read); 3 earlier, from 2026-10-28, in its `git log`
 - **Theme:** postgres
 
 ## Problem
@@ -60,7 +60,7 @@ types (`Numeric`, `NumericSign`, `Interval`, `Bits`, `TimeOfDay`, `TimeTZ`,
 `Null`, `InfinityTime`, `NegInfinityTime`, `JSONBVersion`, `ParseNumeric`)
 and the `ErrCodec` error. `pgtype` does not import `postgres`; `postgres`
 imports it. What needs a connection or the COPY stream stays in `postgres`:
-the `Scan*` functions (they read `*Rows`), the framing of a COPY row
+the `Scan*` functions (they read `*RowBlock`), the framing of a COPY row
 (`AppendTupleHeader`, `BeginField`, `EndField`, `AppendField`,
 `AppendFieldNull`), and `ErrNullValue`, which wraps `pgtype.ErrCodec`. The
 move is a break (`feat(postgres)!`), in the one grouped breaking release;

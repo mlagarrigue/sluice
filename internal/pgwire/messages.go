@@ -183,7 +183,7 @@ func (wr *Writer) Describe(kind byte, name string) {
 }
 
 // Execute appends an Execute for a portal. maxRows of zero means every row,
-// which is what a batched read wants: the batch bound lives in postgres.Rows, where
+// which is what a batched read wants: the batch bound lives in postgres.RowBlock, where
 // it can be enforced without a round trip.
 func (wr *Writer) Execute(portal string, maxRows uint32) {
 	at := wr.Begin(FrontendExecute)

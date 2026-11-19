@@ -1281,7 +1281,7 @@ checked, and two types that ask for a decision.
 #### Results decoded flat
 
 > **The message layer above it decodes results flat, which is
-> [hydration](#hydration)'s layout arriving early.** `Rows` packs every field of a batch end to end in one buffer with a
+> [hydration](#hydration)'s layout arriving early.** `RowBlock` packs every field of a batch end to end in one buffer with a
 > table of offsets beside it, rather than a slice per row or per field: a
 > thousand-row batch costs a handful of allocations that the next batch reuses,
 > where the obvious `[][]byte`-per-row shape costs fifteen hundred. It is also

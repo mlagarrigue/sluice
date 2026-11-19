@@ -717,7 +717,7 @@ func TestRowsLargestRow(t *testing.T) {
 // truncate keeps whole rows of several fields, from none to all but one,
 // and a first row of empty values cuts at offset zero.
 func TestRowsTruncate(t *testing.T) {
-	fill := func() *Rows {
+	fill := func() *RowBlock {
 		r := newRows(2, 10, 0)
 		for _, row := range [][][]byte{
 			{[]byte{}, []byte{}},

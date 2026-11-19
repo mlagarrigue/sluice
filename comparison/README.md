@@ -626,7 +626,7 @@ were 440 that morning: the HTTP/3 path wrote every route a second time on
 as the Go contender hands it to quic-go's `http3`; the rows are hydrated
 by a function `sluicegen` generates rather than decoded column by column
 by hand; the gateway's pipeline is written by `gateway.Lookup`, the
-parameters by `postgres.Arg`, and the channel of connections is a
+parameters by `postgres.ParamOf`, and the channel of connections is a
 `postgres.Pool`, which replaces a broken one. The rest of the gap is the
 gateway itself, which the Go contender has none of: Sluice.go groups its
 unit reads. One

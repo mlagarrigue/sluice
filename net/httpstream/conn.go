@@ -142,7 +142,7 @@ type h1Conn struct {
 	// accumulator in this library. headers is one flat arena for the whole
 	// batch — the requests in a batch coexist, so each needs its own header
 	// storage, and a slice per request would allocate per request. It is
-	// [postgres.Rows] applied to a different wire protocol.
+	// [postgres.RowBlock] applied to a different wire protocol.
 	batch   []Request
 	headers []Header
 	bounds  [][3]int // each request's span in headers: its headers, then its trailers

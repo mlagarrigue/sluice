@@ -13,7 +13,7 @@ import (
 )
 
 // QueryConfig.BatchBytes bounds what a batch holds: the values, and the
-// offset each field takes in Rows.ends, NULL included. Counted on the values
+// offset each field takes in RowBlock.ends, NULL included. Counted on the values
 // alone, a batch of wide, mostly-NULL rows never closed on its byte bound —
 // only BatchRows ended it, at four bytes per field per row the bound did not
 // see. The control: values close the batch on the bound.
