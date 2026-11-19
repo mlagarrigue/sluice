@@ -319,8 +319,10 @@ func (r *frameReader) parseBuffered() (batch []h2Frame, used int, err error) {
 		r.batch = append(r.batch, f)
 		used += n
 	}
-	// The preface alone is progress worth reporting, so the caller's stream
-	// starts even before the first frame arrives.
+	// The preface alone is progress without a frame: its bytes are reported
+	// as used and no batch, so next consumes them and reads on rather than
+	// parse them again, and the caller is handed nothing until a frame
+	// arrives.
 	if len(r.batch) == 0 && used == 0 {
 		return nil, 0, nil
 	}

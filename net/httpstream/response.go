@@ -46,10 +46,11 @@ type Response struct {
 	// not a token, a value holding CR, LF or another control octet
 	// ([ErrHeaderInjection]), the framing and connection fields this
 	// package states itself (Content-Length, Transfer-Encoding,
-	// Connection, Keep-Alive, Proxy-Connection, Upgrade, a Trailer without
-	// Trailers), the fields only a request may carry (Host, TE, Expect:
-	// §2.2 forbids a sender the elements of another role), and a Date that
-	// is not an IMF-fixdate. The rest of RFC 9110's sender rules is the
+	// Connection — but for a Connection: close over HTTP/1.1, which ends
+	// the connection after the batch — Keep-Alive, Proxy-Connection,
+	// Upgrade, a Trailer without Trailers), the fields only a request may
+	// carry (Host, TE, Expect, Early-Data: §2.2 forbids a sender the
+	// elements of another role), and a Date that is not an IMF-fixdate. The rest of RFC 9110's sender rules is the
 	// handler's, because it turns on each field's definition, which the
 	// writer does not know: the grammar of a value (§2.2 — a Vary with an
 	// empty member, a Content-Type without a subtype, go out as given) and
@@ -353,8 +354,9 @@ var ErrHeaderInjection = fmt.Errorf("%w: a response header holds CR or LF", ErrM
 // the last response is told to say so too, since a client that gets no
 // Connection: close on its final answer keeps pipelining into a socket about
 // to close under it. requests may be shorter than responses or nil; the
-// responses past its end are written as if a body were always allowed and
-// the connection always continued.
+// responses past its end are written as if a body were always allowed, and
+// as if the connection continued unless the handler's own Connection: close
+// ends it after the last (see asksToClose).
 //
 // Every response that does not close says Connection: keep-alive and
 // Keep-Alive: timeout=<seconds>, from cfg's IdleTimeout, as [Serve] writes
@@ -517,8 +519,10 @@ func streamedFraming(res Response, http10, noLength, noBody bool) (chunked bool,
 }
 
 // appendStatusAndHeaders writes the status line and the caller's fields, and
-// refuses the two things a response must never carry from a caller: a header
-// that would split the response, and a framing header this package owns.
+// refuses what a response must never carry from a caller (see
+// checkResponseField): a name that is not a token, a value with a control
+// octet that would split the response, a framing or connection field this
+// package owns, and a field only a request may carry.
 // date is [dateFor]'s value for the batch, written when the caller set none.
 func appendStatusAndHeaders(dst []byte, res Response, date []byte) ([]byte, error) {
 	status := res.Status

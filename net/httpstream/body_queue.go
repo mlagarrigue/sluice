@@ -17,8 +17,9 @@ import (
 //
 // The two protocols differ in who keeps the window. HTTP/2's is this end's
 // arithmetic (h2 set): a grant never takes window plus held bytes past the
-// stream's initial window, and nothing is granted on arrival while bodies
-// stream (see h2Conn.data). HTTP/3's is the QUIC transport's, run on manual
+// stream's initial window, and what arrives is granted back only as far as
+// that leaves room: the padding and the bytes the handler already took, half
+// a window at a time (see receive and grantLocked). HTTP/3's is the QUIC transport's, run on manual
 // credit (release set): every byte delivered is released once at the stream
 // level, here, when the handler is done with it or it is dropped. Either way
 // the peer can send no more than the stream window allows, so the window

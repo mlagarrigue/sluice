@@ -48,7 +48,8 @@ func sensitiveField[N ~string | ~[]byte](name N) bool {
 }
 
 // appendHPACKStatus writes :status, which is the one field worth taking from
-// the static table by value: 200 and 204 are indexed entries on their own.
+// the static table by value: the seven statuses the table holds — 200, 204,
+// 206, 304, 400, 404 and 500 — are indexed entries on their own.
 func appendHPACKStatus(dst []byte, status int) []byte {
 	switch status {
 	case 200:

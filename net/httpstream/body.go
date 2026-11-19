@@ -35,7 +35,7 @@ type bodyStream struct {
 
 	chunked bool
 	left    int // a Content-Length body's bytes still to come
-	limit   int // MaxStreamedBodyBytes
+	limit   int // the larger of MaxBodyBytes and MaxStreamedBodyBytes
 	total   int // decoded bytes handed out
 
 	start, pos int // the body region in r.buf, and its first unread byte
