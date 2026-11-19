@@ -427,6 +427,11 @@ func (p TransportParameters) check() error {
 	if p.MaxIdleTimeout <= 0 {
 		return fmt.Errorf("quic: MaxIdleTimeout %v is not positive: zero would announce no idle timeout, and a connection whose peer vanished would be held until the application closes it — set a long duration instead", p.MaxIdleTimeout)
 	}
+	if p.MaxIdleTimeout < time.Millisecond {
+		// The parameter travels in milliseconds: anything under one is
+		// announced as zero, which says no idle timeout, as above.
+		return fmt.Errorf("quic: MaxIdleTimeout %v is under a millisecond, the parameter's unit: it would be announced as zero, no idle timeout", p.MaxIdleTimeout)
+	}
 	// Every identifier this end keeps or issues is a routing entry its
 	// Listener holds for the connection, so the figure is bounded here.
 	if p.ActiveConnIDLimit > maxActiveConnIDLimit {
