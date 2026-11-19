@@ -194,11 +194,11 @@ HTTP/2, HTTP/3 — are in [the benchmarks](../benchmarks.md). It is under
 the compatibility promise ([ADR 0020](../design/adr/0020-compatibility.md)):
 until v1 a break is
 announced with `!` as everywhere; from v1 `scripts/check-api.sh` refuses
-it, `!` or not. Three symbols stay outside the promise, each documented
-with a paragraph that opens on "Experimental:": the HTTP/3 entry points
-`ServeH3Conn` and `Server.ServeQUIC` (experimental, like the `net/quic`
-they run on; [ADR 0021](../design/adr/0021-net-quic-stays.md)), and
-`Config.QUICConfig`.
+it, `!` or not. The HTTP/3 entry points stay outside the promise, each
+documented with a paragraph that opens on "Experimental:": `ServeH3Conn`,
+`Server.ServeQUIC` and `Config.QUICConfig` here, `stream.ServeH3` and
+`stream.ServeTLSAndH3` in `web/stream` (experimental, like the `net/quic`
+they run on; [ADR 0021](../design/adr/0021-net-quic-stays.md)).
 
 ```go
 rt := stream.NewRouter(stream.Route{Method: "GET", Pattern: "/orders/{order}"})
@@ -248,12 +248,14 @@ request. Measured on one core on a unit read
 about 3.3 µs per request more through `FromHTTP` than through the batch
 stages, ×11 in a batch of one and ×8.7 in a batch of eight (2026-11-16); little beside
 the HTTP/3 transport and a database round trip, but not nothing. `ServeH3` is experimental, like the
-`net/quic` under it, and serves HTTP/3 alone: serving the three protocols
-from one call is the next step.
+`net/quic` under it, and serves HTTP/3 alone. `stream.ServeTLSAndH3`, with
+the same arguments, serves the three protocols from one call on one
+address, TCP and UDP: it announces HTTP/3 to TCP clients by `Alt-Svc`, and
+one drain stops everything.
 
 ```go
 srv := &http.Server{Addr: ":8443", Handler: mux, TLSConfig: tlsCfg}
-err := stream.ServeH3(ctx, srv, 10*time.Second, "", "", gw)
+err := stream.ServeTLSAndH3(ctx, srv, 10*time.Second, "", "", gw)
 ```
 
 ## `pushdown` — supported

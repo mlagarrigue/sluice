@@ -59,3 +59,21 @@ func ExampleServeH3() {
 		log.Fatal(err)
 	}
 }
+
+// One call serves the same routes over HTTP/1.1 and HTTP/2 in TCP and over
+// HTTP/3 in UDP, on one address; the TCP answers announce HTTP/3 by
+// Alt-Svc, and one Ctrl-C drains everything.
+func ExampleServeTLSAndH3() {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		_ = web.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	srv := &http.Server{Addr: ":8443", Handler: mux, ReadHeaderTimeout: web.DefaultReadHeaderTimeout}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	err := stream.ServeTLSAndH3(ctx, srv, 10*time.Second, "cert.pem", "key.pem")
+	stop()
+	if err != nil {
+		log.Fatal(err)
+	}
+}

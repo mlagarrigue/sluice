@@ -19,11 +19,11 @@ import (
 // cancelled, then the drain of at most grace and the closers stopped, in
 // [web.Shutdown]'s order.
 //
-// It serves HTTP/3 alone. Calling it beside ServeTLS on the same srv is not
-// the way to serve the three protocols together: each call stops the
-// closers when its own drain ends, a gateway among them under the other
-// server still using it, and ServeTLS fills the zero timeouts of srv while
-// this reads them.
+// It serves HTTP/3 alone; [ServeTLSAndH3] serves the three protocols from
+// one call. Calling ServeH3 beside ServeTLS on the same srv is not the way:
+// each call stops the closers when its own drain ends, a gateway among them
+// under the other server still using it, and ServeTLS fills the zero
+// timeouts of srv while this reads them.
 //
 // The TLS is srv.TLSConfig's, on a copy whose ALPN names "h3" and whose
 // minimum is TLS 1.3, QUIC's one version; certFile and keyFile load the
@@ -46,52 +46,149 @@ func ServeH3(ctx context.Context, srv *http.Server, grace time.Duration, certFil
 	if srv == nil {
 		return errors.New("stream: ServeH3 requires a server")
 	}
-	tlsCfg, err := h3TLS(srv.TLSConfig, certFile, keyFile)
+	h3, ln, err := listenH3(srv, certFile, keyFile)
 	if err != nil {
-		return err
-	}
-	cfg := h3Config(srv)
-	params, err := cfg.QUICConfig()
-	if err != nil {
-		return err
-	}
-	h3 := &httpstream.Server{Config: cfg, Handler: FromHTTP(srv.Handler)}
-	drain := func() (context.Context, context.CancelFunc) {
-		switch {
-		case grace == 0:
-			return context.WithTimeout(context.Background(), web.DefaultShutdownGrace)
-		case grace > 0:
-			return context.WithTimeout(context.Background(), grace)
-		}
-		return context.Background(), func() {}
-	}
-	// The listener failed before anything was served: the closers still
-	// run, since whatever was opened before is open now.
-	failed := func(err error) error {
-		dctx, cancel := drain()
-		defer cancel()
-		return errors.Join(err, web.Shutdown(dctx, h3, closers...))
-	}
-	pc, err := net.ListenPacket("udp", cmp.Or(srv.Addr, ":https"))
-	if err != nil {
-		return failed(err)
-	}
-	ln, err := quic.NewListener(pc, tlsCfg, params, quic.ListenerConfig{SessionTickets: !tlsCfg.SessionTicketsDisabled})
-	if err != nil {
-		_ = pc.Close()
-		return failed(err)
+		return failedBefore(err, grace, h3, closers)
 	}
 	served := make(chan error, 1)
 	go func() { served <- h3.ServeQUIC(ln) }()
 	select {
 	case err := <-served:
 		_ = ln.Close() // left open when ServeQUIC refused before reading it
-		return failed(err)
+		return failedBefore(err, grace, h3, closers)
 	case <-ctx.Done():
 	}
-	dctx, cancel := drain()
+	dctx, cancel := drainContext(grace)
 	defer cancel()
 	return errors.Join(web.Shutdown(dctx, h3, closers...), <-served)
+}
+
+// ServeTLSAndH3 serves srv over HTTP/1.1, HTTP/2 and HTTP/3 from one call:
+// [web.ServeTLS] on srv.Addr in TCP and [ServeH3] on the same address in
+// UDP, until ctx is cancelled, then both drained together within grace and
+// the closers stopped once, after the last of them, in [web.Shutdown]'s
+// order.
+//
+// Every response over TCP announces HTTP/3 on the UDP port, Alt-Svc
+// h3=":port" (RFC 7838 §3, RFC 9114 §3.1.1), unless the handler set an
+// Alt-Svc of its own: a browser then moves to HTTP/3 for the next requests.
+// Over HTTP/2, RFC 7838 §3 asks for an ALTSVC frame rather than the field,
+// which net/http does not send; the field MAY occur in any response, and
+// clients read it there. To do so srv.Handler is wrapped, as ServeTLS
+// already fills srv's zero timeouts: srv is this call's once it starts.
+//
+// The timeouts are read for HTTP/3 before ServeTLS fills them, so the two
+// listeners apply the same defaults without one reading what the other
+// writes. A listener that fails — a port taken, a certificate refused —
+// stops the other, and the closers still run. grace, certFile and keyFile
+// are ServeTLS's and ServeH3's.
+//
+// Experimental: it runs on net/quic, as ServeH3 does, and stays outside the
+// v1 promise the rest of the package makes (ADR 0020, ADR 0021).
+func ServeTLSAndH3(ctx context.Context, srv *http.Server, grace time.Duration, certFile, keyFile string, closers ...web.Drainer) error {
+	if srv == nil {
+		return errors.New("stream: ServeTLSAndH3 requires a server")
+	}
+	h3, ln, err := listenH3(srv, certFile, keyFile)
+	if err != nil {
+		return failedBefore(err, grace, h3, closers)
+	}
+	srv.Handler = altSvc(srv.Handler, ln.Addr())
+
+	tcpCtx, stopTCP := context.WithCancel(ctx)
+	defer stopTCP()
+	tcp := make(chan error, 1)
+	go func() { tcp <- web.ServeTLS(tcpCtx, srv, grace, certFile, keyFile) }()
+	served := make(chan error, 1)
+	go func() { served <- h3.ServeQUIC(ln) }()
+
+	var tcpErr, h3Err error
+	tcpDone, h3Done := false, false
+	select {
+	case tcpErr = <-tcp:
+		tcpDone = true
+	case h3Err = <-served:
+		h3Done = true
+		_ = ln.Close() // left open when ServeQUIC refused before reading it
+	case <-ctx.Done():
+	}
+	// One drain for both, from here: ServeTLS drains srv once its context
+	// ends, bounded by the same grace, while HTTP/3 drains beside it; the
+	// closers wait for both.
+	stopTCP()
+	dctx, cancel := drainContext(grace)
+	defer cancel()
+	errs := []error{tcpErr, h3Err, web.Shutdown(dctx, h3)}
+	if !h3Done {
+		errs = append(errs, <-served)
+	}
+	if !tcpDone {
+		errs = append(errs, <-tcp)
+	}
+	return errors.Join(append(errs, web.Shutdown(dctx, web.Servers(), closers...))...)
+}
+
+// altSvc adds the Alt-Svc that announces HTTP/3 on addr's port to every
+// response h writes, unless h sets its own.
+func altSvc(h http.Handler, addr net.Addr) http.Handler {
+	if h == nil {
+		h = http.DefaultServeMux
+	}
+	_, port, _ := net.SplitHostPort(addr.String())
+	value := `h3=":` + port + `"`
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if w.Header().Get("Alt-Svc") == "" {
+			w.Header().Set("Alt-Svc", value)
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
+// listenH3 builds the HTTP/3 server for srv and binds its QUIC listener on
+// srv.Addr in UDP. The server is returned even when the listener is not,
+// for the drain of a call that failed before serving.
+func listenH3(srv *http.Server, certFile, keyFile string) (*httpstream.Server, *quic.Listener, error) {
+	cfg := h3Config(srv)
+	h3 := &httpstream.Server{Config: cfg, Handler: FromHTTP(srv.Handler)}
+	tlsCfg, err := h3TLS(srv.TLSConfig, certFile, keyFile)
+	if err != nil {
+		return h3, nil, err
+	}
+	params, err := cfg.QUICConfig()
+	if err != nil {
+		return h3, nil, err
+	}
+	pc, err := net.ListenPacket("udp", cmp.Or(srv.Addr, ":https"))
+	if err != nil {
+		return h3, nil, err
+	}
+	ln, err := quic.NewListener(pc, tlsCfg, params, quic.ListenerConfig{SessionTickets: !tlsCfg.SessionTicketsDisabled})
+	if err != nil {
+		_ = pc.Close()
+		return h3, nil, err
+	}
+	return h3, ln, nil
+}
+
+// drainContext is grace as ServeTLS reads it: zero is
+// [web.DefaultShutdownGrace], a negative value no bound.
+func drainContext(grace time.Duration) (context.Context, context.CancelFunc) {
+	switch {
+	case grace == 0:
+		return context.WithTimeout(context.Background(), web.DefaultShutdownGrace)
+	case grace > 0:
+		return context.WithTimeout(context.Background(), grace)
+	}
+	return context.Background(), func() {}
+}
+
+// failedBefore answers a call whose listener failed before anything was
+// served: the closers still run, since whatever was opened before is open
+// now.
+func failedBefore(err error, grace time.Duration, h3 *httpstream.Server, closers []web.Drainer) error {
+	dctx, cancel := drainContext(grace)
+	defer cancel()
+	return errors.Join(err, web.Shutdown(dctx, h3, closers...))
 }
 
 // h3TLS is srv's TLS for QUIC: a copy, ALPN "h3", and the certificate
