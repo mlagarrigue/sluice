@@ -78,9 +78,9 @@ type Error struct {
 	Routine string
 }
 
-// Error renders the error for a log line. The SQLSTATE comes first because it
-// is the part a reader acts on, and the part that does not change with the
-// server's language.
+// Error renders the error for a log line. The SQLSTATE follows the severity,
+// ahead of the message, because it is the part a reader acts on, and the
+// part that does not change with the server's language.
 func (e *Error) Error() string {
 	if e.Detail == "" {
 		return fmt.Sprintf("postgres: %s %s: %s", e.Severity, e.Code, e.Message)

@@ -30,8 +30,8 @@ import (
 // # The zero value
 //
 // The zero Path is the root: empty, valid, and the base every other path is
-// built from. Appending to it costs one allocation per growth, not one per
-// segment.
+// built from. Each segment appended to it costs one allocation, the copy
+// that keeps the receiver intact (see extend).
 //
 // A Path is immutable once built. [Path.Field] and [Path.Index] return a new
 // Path and never modify the receiver, so a path held as a prefix can be

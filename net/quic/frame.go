@@ -11,7 +11,7 @@ import (
 const (
 	framePadding            = 0x00
 	framePing               = 0x01
-	frameACK                = 0x02 // 0x02..0x03, the high bit adding ECN counts
+	frameACK                = 0x02 // 0x02..0x03, the low bit adding ECN counts
 	FrameResetStream        = 0x04
 	FrameStopSending        = 0x05
 	frameCrypto             = 0x06

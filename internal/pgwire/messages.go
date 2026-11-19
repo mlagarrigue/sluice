@@ -245,9 +245,9 @@ func (wr *Writer) Terminate() { wr.Message(FrontendTerminate, nil) }
 // Cleartext means cleartext: the bytes on the wire are the credential. That is
 // the caller's transport decision, taken when it chose whether to hand this
 // package a *tls.Conn or a plain socket. It is reached only through
-// postgres.Config.AllowCleartextPassword's opt-in, which is why it is not
-// exported: nothing outside [Writer.Startup] should be able to put a credential on
-// the wire in the clear by accident.
+// postgres.Config.AllowCleartextPassword's opt-in, which is why it lives in
+// an internal package: nothing outside this module should be able to put a
+// credential on the wire in the clear by accident.
 func (wr *Writer) PasswordMessage(password string) {
 	at := wr.Begin(FrontendPassword)
 	wr.AppendString(password)

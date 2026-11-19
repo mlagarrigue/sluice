@@ -77,8 +77,8 @@ func Merge[T any](done Completion, streams ...Stream[T]) Stream[T] {
 	// No early return of Empty for zero streams, and no helper for the body:
 	// the rotation already yields nothing then, and one closure holding the
 	// whole loop keeps the call direct once Merge is inlined — measured, the
-	// caller's yield and the closure then stay off the heap. Merge
-	// delegates here, so this is the one rotation of both.
+	// caller's yield and the closure then stay off the heap. This closure
+	// is the one rotation, for WhenAll and WhenAny alike.
 	return func(yield func(Batch[T]) bool) {
 		type source struct {
 			next func() (Batch[T], bool)

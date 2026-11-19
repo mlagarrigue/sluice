@@ -62,8 +62,9 @@ import (
 // producer goroutine and unwinds the source promptly before Async returns: no
 // goroutine outlives the call (S6), and the source's deferred cleanup runs at
 // once (S10). A panic in the source is ferried and re-raised on the consumer's
-// goroutine after the producer has been shut down — one arrival, no race, at
-// the cost of the native trace, exactly as [Ordered] documents. A panic is
+// goroutine after the producer has been shut down — one arrival, no race —
+// as a [sluice.PanicError] that keeps the producer's stack, exactly as
+// [Ordered] documents. A panic is
 // never swallowed: one the source raises after an early stop, while it
 // unwinds, is re-raised all the same. Only a panic already unwinding through
 // the consumer takes precedence.

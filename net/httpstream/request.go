@@ -1208,7 +1208,7 @@ const maxChunkLineBytes = 1 << 10
 // body is moved until the whole framing has been accepted (see
 // decodeChunked), so the bytes behind r are exactly what they were when
 // they were validated. The reader keeps the offsets honest across its
-// buffer compactions — see reader.consume.
+// buffer compactions — see h1Conn.consume.
 type chunkProgress struct {
 	// at is the request's first byte in the reader's buffer; a progress
 	// whose at is not the request being parsed belongs to another one and

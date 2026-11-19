@@ -116,7 +116,7 @@ func h2Frames(c net.Conn, cfg Config) sluice.Source[h2Frame] {
 	return framesWith(c, cfg, nil, nil, nil)
 }
 
-// framesWith is Frames with the server's view of whether the connection is
+// framesWith is h2Frames with the server's view of whether the connection is
 // idle. busy reports that this end owes the peer answers, in which case a
 // silent round does not end the connection — see [Config.IdleTimeout]. A nil busy is a
 // connection with nothing above it, which is what h2Frames gives a caller

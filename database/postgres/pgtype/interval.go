@@ -49,8 +49,9 @@ type Interval struct {
 // server computes timestamp + interval.
 //
 // The order is the one PostgreSQL uses: months, then days, then the
-// microseconds. It matters — adding a month to 31 January and then a day is 1
-// March, while adding a day and then a month is 28 February. Anything doing
+// microseconds. It matters — in a year that is not a leap year, adding a
+// month to 30 January and then a day is 1 March, while adding a day and then
+// a month is 28 February. Anything doing
 // this arithmetic by hand has to pick an order too, and picking a different
 // one from the server is a difference that appears only on month ends.
 //

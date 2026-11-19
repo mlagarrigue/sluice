@@ -630,8 +630,10 @@ const (
 	FetchAll
 
 	// FetchBatches always asks for BatchRows rows at a time, whatever the
-	// statement returned before: an early stop always drains at most two
-	// batches, and a read that fits in one batch pays a second round trip.
+	// statement returned before: an early stop drains the batches asked
+	// for ahead — at least two, about one round trip of the server's work
+	// (see the prefetch depth in the query loop) — and a read that fits in
+	// one batch pays a second round trip.
 	FetchBatches
 )
 

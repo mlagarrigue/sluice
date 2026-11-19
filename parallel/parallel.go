@@ -98,8 +98,9 @@ import (
 // behind it.
 //
 // Because f runs on another goroutine, its stack is not the caller's: a panic
-// crossing back loses the native trace. Enrich the context in
-// f rather than relying on the trace to say where it came from.
+// crossing back is raised on the consumer's goroutine as a
+// [sluice.PanicError], which keeps the worker's stack and prints it, so the
+// crash still points at the faulty line in f.
 //
 // # Degenerate arguments
 //

@@ -243,7 +243,7 @@ func ScanTimestampTZ(dst []time.Time, rows *RowBlock, col int) ([]time.Time, err
 // hole in its Scan column — a uuid key is as common an `= ANY($1)` parameter
 // as an int8 one — and they are built on one generic loop rather than copied
 // seven more times. The hand-written six are deliberately not converted to
-// it, for the reason pgtype's array.go gives about its own hand-written four: a
+// it, for the reason pgtype's array_fast.go gives about its own loops: a
 // per-value indirect call on the measured path is the kind of change that
 // costs three percent and is noticed a month later.
 

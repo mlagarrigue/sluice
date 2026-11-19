@@ -604,7 +604,7 @@ func (s *h2Conn) headers(f h2Frame) (*h2Stream, error) {
 		block = block[5:]
 	}
 
-	// [Frames] has already refused an interleaved block, so appending here is
+	// [h2Frames] has already refused an interleaved block, so appending here is
 	// appending to this stream's own block. END_STREAM rides on the HEADERS
 	// frame and has to be remembered: the CONTINUATION that closes the block
 	// cannot carry it, so reading the flag off the closing frame loses it.

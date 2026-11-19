@@ -23,8 +23,9 @@
 //		// r.Kind is KindBulk with r.Str, or KindNil for a missing key
 //	}
 //
-// One connection, no pool, as the PostgreSQL connector (ADR 0022): holding
-// several is the caller's business, and gateway groups calls onto one. The
+// One connection, no pool — unlike the PostgreSQL connector, whose Pool
+// ADR 0022 adds beside its connection: holding several is the caller's
+// business here, and gateway groups calls onto one. The
 // transport is the caller's: [DialTCP], [DialTLS] with the caller's
 // tls.Config, or a recipe of its own. Commands are arrays of binary-safe
 // strings, never a command line assembled from text.
