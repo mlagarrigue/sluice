@@ -313,8 +313,9 @@ if err := web.Serve(ctx, srv, 10*time.Second, gw); err != nil {
 
 `Serve` blocks while the server runs and returns when it is properly
 stopped: on context cancellation, it gives in-flight requests ten seconds
-to finish, then closes what it was handed — the gateway, the database
-connection. A grace of zero means five seconds, as an `httpstream`
+to finish, then stops what it was handed, in order — the gateway under the
+same grace, then the database connection, passed as
+`web.CloseFunc(db.Close)` since it has a `Close` alone. A grace of zero means five seconds, as an `httpstream`
 `ShutdownGrace` left at zero does, and a negative grace means no bound.
 
 A server without `ReadHeaderTimeout` gets ten seconds by

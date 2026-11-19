@@ -119,7 +119,7 @@ func newApp(o options) (*app, error) {
 func (a *app) Close() error {
 	var errs []error
 	if a.gw != nil {
-		errs = append(errs, a.gw.Close())
+		errs = append(errs, a.gw.Shutdown(context.Background()))
 	}
 	if a.st != nil {
 		errs = append(errs, a.st.Close())

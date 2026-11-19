@@ -29,7 +29,7 @@
 //	            return true
 //	        })
 //	    })
-//	defer gw.Close()
+//	defer gw.Shutdown(context.Background())
 //
 //	order, err := gw.Do(ctx, id) // from any goroutine, as many as you like
 //
@@ -110,7 +110,7 @@ var ErrNoReply = errors.New("gateway: the pipeline consumed the call without rep
 // The gateway does not restart: its pipeline's state is whatever the panic
 // left, and a new pipeline would need the caller's code to build it. A
 // service that wants to keep serving builds a new gateway with [New] and
-// routes to it; [Gateway.Close] on the dead one returns this error.
+// routes to it; [Gateway.Shutdown] on the dead one returns this error.
 var ErrPipelinePanicked = errors.New("gateway: the pipeline panicked")
 
 // Config states how calls are grouped. Both bounds are the caller's: there is
@@ -250,7 +250,7 @@ func (c *Call[In, Out]) answer(r result[Out]) {
 // Gateway batches concurrent calls into one pipeline.
 //
 // The zero value is not usable; build one with [New] and release it with
-// [Gateway.Close].
+// [Gateway.Shutdown].
 type Gateway[In, Out any] struct {
 	in     chan *Call[In, Out]
 	size   int
@@ -282,7 +282,7 @@ type Gateway[In, Out any] struct {
 //
 // pipeline is a terminal consumer: it receives the stream of batched calls and
 // answers each one. It runs on its own goroutine, started here and released by
-// [Gateway.Close], so a gateway that is never closed leaks that goroutine —
+// [Gateway.Shutdown], so a gateway that is never shut down leaks that goroutine —
 // treat it as the long-lived object it is, one per route or per service, built
 // at startup rather than per request.
 //
@@ -591,6 +591,12 @@ func (g *Gateway[In, Out]) Do(ctx context.Context, in In) (Out, error) {
 // connection a blocked pipeline waits on — the close that unblocks it —
 // which web.Shutdown does with the closers after the gateway. Shutdown is
 // idempotent and safe to call from any goroutine.
+//
+// A gateway has no Close. In this library Close is the forced stop — of
+// [net/http.Server], of httpstream's Server, of a QUIC connection — and a
+// gateway has none to offer: its stop waits for its pipeline. A test or a
+// one-shot program that means to wait without a bound writes
+// gw.Shutdown(context.Background()), which reads as what it does.
 func (g *Gateway[In, Out]) Shutdown(ctx context.Context) error {
 	g.closeOnce.Do(func() {
 		g.closed.Store(true)
@@ -609,13 +615,4 @@ func (g *Gateway[In, Out]) Shutdown(ctx context.Context) error {
 		return nil // the ordinary end: the pipeline stopped because it was asked to
 	}
 	return g.fatal
-}
-
-// Close is [Gateway.Shutdown] without a deadline: it waits for the pipeline
-// however long that takes. A pipeline inside a call to a back end that never
-// answers keeps Close waiting with it, and the connection whose close would
-// release it is never reached; where that can happen, stop the gateway with
-// Shutdown and a deadline instead, as web.Shutdown does.
-func (g *Gateway[In, Out]) Close() error {
-	return g.Shutdown(context.Background())
 }

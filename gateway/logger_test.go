@@ -88,7 +88,7 @@ func TestGatewayPipelinePanicIsLogged(t *testing.T) {
 		if s := attr(r, "stack"); !strings.Contains(s, "gateway.panickingPipeline") {
 			t.Errorf("the stack does not show the pipeline's frame:\n%s", s)
 		}
-		if err := gw.Close(); !errors.Is(err, ErrPipelinePanicked) {
+		if err := gw.Shutdown(context.Background()); !errors.Is(err, ErrPipelinePanicked) {
 			t.Errorf("Close on the dead gateway = %v, want ErrPipelinePanicked", err)
 		}
 	})
@@ -110,7 +110,7 @@ func TestGatewayPipelinePanicDefaultLogger(t *testing.T) {
 	if _, err := gw.Do(ctx, 1); !errors.Is(err, ErrPipelinePanicked) {
 		t.Fatalf("err = %v, want ErrPipelinePanicked", err)
 	}
-	_ = gw.Close()
+	_ = gw.Shutdown(context.Background())
 	if !strings.Contains(buf.String(), "pipeline boom") {
 		t.Errorf("slog.Default received %q, want the panic value", buf.String())
 	}

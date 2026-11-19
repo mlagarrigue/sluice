@@ -1,7 +1,7 @@
 # ADR 0017 — Shutdown drains, it does not cut
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-11-12 (Rationale under subheadings); 6 earlier, from 2026-10-15, in its `git log`
+- **Revised:** 2026-11-19 (the closers are `web.Drainer`s, the gateway has no `Close`), 2026-11-12 (Rationale under subheadings); 6 earlier, from 2026-10-15, in its `git log`
 - **Theme:** httpstream
 
 ## Problem
@@ -147,8 +147,8 @@ sequenceDiagram
      connection is closed under its handler and `ServeH3Conn` returns
      without waiting for it, as `Serve` does (point 2).
 
-   - `web.Shutdown(ctx, srv web.Server, closers...)` stops every
-     `Serve(ctx)` in this order, not only a `*http.Server`: `web.Server` is
+   - `web.Shutdown(ctx, srv web.Drainer, closers...)` stops every
+     `Serve(ctx)` in this order, not only a `*http.Server`: `web.Drainer` is
      `Shutdown(context.Context) error`, which `*http.Server` already has;
      `web.Start(ctx, serve)` runs a `Serve(ctx)` on its own goroutine and
      returns the handle whose `Shutdown` cancels that context and waits for
@@ -160,14 +160,14 @@ sequenceDiagram
      `web.Shutdown` then returns `context.DeadlineExceeded`, and the closers
      still run.
 
-     A closer that also stops by draining — a `Shutdown(ctx)`
-     method, which `gateway.Gateway` has — is stopped under the same `ctx`
-     rather than closed. A gateway's `Close` waits for its pipeline without
-     a bound, and a pipeline blocked in a call to a back end that does not
-     answer would keep `web.Shutdown` from reaching the connection whose
-     close releases it. Stopped under `ctx`, the gateway stops waiting at
-     the deadline, the connection is closed, and the pipeline returns. A
-     closer with `Close` alone runs to its return.
+     The closers are `web.Drainer`s too, stopped under the same `ctx`,
+     and `gateway.Gateway` is one. A gateway waits for its pipeline, and a
+     pipeline blocked in a call to a back end that does not answer would
+     keep an unbounded stop from reaching the connection whose close
+     releases it. Stopped under `ctx`, the gateway stops waiting at the
+     deadline, the connection is closed, and the pipeline returns. The
+     gateway has no `Close`; a resource with `Close` alone enters the list
+     as `web.CloseFunc(conn.Close)` and runs to its return.
 
 ## Rationale
 
@@ -193,8 +193,12 @@ The order of point 1 makes the gateway the layer that waits on the next one:
 its pipeline calls the back end that the closers after it close. An
 unbounded wait there turns a silent back end into a stop that never ends,
 which is what point 2's grace refuses for a handler. The shape `Shutdown(ctx)`
-is `http.Server`'s and `web.Server`'s, so no interface is added, and
-`Close` is `Shutdown` without a deadline.
+is `http.Server`'s and `web.Drainer`'s, so no interface is added. `Close`
+stays the word for the forced stop across the library — `http.Server`,
+httpstream's `Server`, `quic.Conn`: a gateway with a `Close` that meant
+"wait without a bound" would give a caller two opposite contracts under one
+name. `postgres.Pool.Close` keeps the meaning of `database/sql.DB.Close`,
+the connector's stated departure.
 
 ### A forced stop says so
 

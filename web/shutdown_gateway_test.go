@@ -3,6 +3,7 @@ package web_test
 import (
 	"context"
 	"errors"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -58,7 +59,7 @@ func TestShutdownIsNotHeldByAGatewayBlockedOnItsBackEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- web.Shutdown(ctx, idleServer{}, gw, backend) }()
+	go func() { done <- web.Shutdown(ctx, idleServer{}, gw, web.CloseFunc(backend.Close)) }()
 	select {
 	case err := <-done:
 		if !errors.Is(err, context.DeadlineExceeded) {
@@ -81,11 +82,67 @@ func TestShutdownIsNotHeldByAGatewayBlockedOnItsBackEnd(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the call the pipeline held was never answered")
 	}
-	if err := gw.Close(); err != nil {
-		t.Errorf("Close after the pipeline returned: %v", err)
+	if err := gw.Shutdown(context.Background()); err != nil {
+		t.Errorf("Shutdown after the pipeline returned: %v", err)
 	}
 }
 
 type idleServer struct{}
 
 func (idleServer) Shutdown(context.Context) error { return nil }
+
+// A gateway handed to Serve as a closer is drained within grace, with
+// nothing to wrap: it is a web.Drainer. Its pipeline is blocked on a back end
+// that only a later closer releases, so the drain cannot finish by itself;
+// Serve stops waiting for it at grace, runs the back end's close through
+// web.CloseFunc, and returns. Before the closers were Drainers, a gateway
+// entered the list by its Close, which waited without a bound.
+func TestServeDrainsAGatewayWithinGrace(t *testing.T) {
+	backend := &releasingBackend{release: make(chan struct{})}
+	entered := make(chan struct{})
+	var once sync.Once
+	gw := gateway.New(gateway.Config{Size: 4, Within: time.Millisecond},
+		func(calls sluice.Stream[*gateway.Call[int, int]]) {
+			calls(func(b sluice.Batch[*gateway.Call[int, int]]) bool {
+				once.Do(func() { close(entered) })
+				<-backend.release
+				for _, c := range b.Items {
+					c.Reply(c.In)
+				}
+				return true
+			})
+		})
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, _ = gw.Do(ctx, 1)
+	}()
+	<-entered
+
+	srv := &http.Server{Addr: "127.0.0.1:0", Handler: http.NotFoundHandler(), ReadHeaderTimeout: time.Second}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	const grace = 100 * time.Millisecond
+	go func() { done <- web.Serve(ctx, srv, grace, gw, web.CloseFunc(backend.Close)) }()
+	cancel()
+	start := time.Now()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("Serve returned %v, want the gateway's drain cut at grace", err)
+		}
+		if took := time.Since(start); took > 5*time.Second {
+			t.Errorf("Serve took %v to return, for a grace of %v", took, grace)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve is still waiting on the gateway 5 s after a grace of 100 ms")
+	}
+	select {
+	case <-backend.release:
+	default:
+		t.Fatal("the back end after the gateway was not closed")
+	}
+	if _, err := gw.Do(context.Background(), 2); !errors.Is(err, gateway.ErrClosed) {
+		t.Errorf("a call after Serve returned: %v, want gateway.ErrClosed", err)
+	}
+}

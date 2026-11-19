@@ -47,7 +47,7 @@ func Example() {
 				return true
 			})
 		})
-	defer func() { _ = gw.Close() }()
+	defer func() { _ = gw.Shutdown(context.Background()) }()
 
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.Atoi(r.URL.Query().Get("id"))
@@ -102,7 +102,7 @@ func Example_batching() {
 				return true
 			})
 		})
-	defer func() { _ = gw.Close() }()
+	defer func() { _ = gw.Shutdown(context.Background()) }()
 
 	done := make(chan struct{})
 	for i := range 16 {
@@ -138,7 +138,7 @@ func ExampleGateway_DoBatch() {
 				return true
 			})
 		})
-	defer func() { _ = gw.Close() }()
+	defer func() { _ = gw.Shutdown(context.Background()) }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()

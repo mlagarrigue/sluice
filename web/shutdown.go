@@ -10,9 +10,10 @@ import (
 	"time"
 )
 
-// A Server is anything that stops by draining: [http.Server] is one, and so
-// is every Serve(ctx) once [Start] has run it. [Shutdown] takes one; several
-// become one through [Servers].
+// A Drainer is anything that stops by draining: [http.Server] is one,
+// [github.com/mlagarrigue/sluice/gateway.Gateway] too, and so is every
+// Serve(ctx) once [Start] has run it. [Shutdown] takes one as its server and
+// one per closer; several become one through [Servers].
 //
 // Shutdown stops admitting work and returns once the work already admitted
 // has finished, or once ctx is done, whichever comes first. Returning early
@@ -22,9 +23,22 @@ import (
 // A server that can also stop by force — a Close() error method, as
 // [http.Server] and httpstream's Server have — is closed by [Shutdown] when
 // ctx ends before its drain did.
-type Server interface {
+type Drainer interface {
 	Shutdown(context.Context) error
 }
+
+// CloseFunc makes a close — a pool, a connection, anything with Close alone —
+// a [Drainer], for the closers of [Shutdown]:
+//
+//	err := web.Serve(ctx, srv, 10*time.Second, gw, web.CloseFunc(pool.Close))
+//
+// Its Shutdown calls the function and waits for it to return; ctx does not
+// bound it, since a close abandoned halfway would let the next closer start
+// while the resource is still in use.
+type CloseFunc func() error
+
+// Shutdown calls f and returns its error.
+func (f CloseFunc) Shutdown(context.Context) error { return f() }
 
 // Shutdown stops a server and then the things it was serving from, in that
 // order.
@@ -38,11 +52,11 @@ type Server interface {
 // point of view, it is broken. Every one of them answers 500 during what was
 // supposed to be a clean stop.
 //
-// So: [Server.Shutdown] first, which stops accepting and waits for the
+// So: [Drainer.Shutdown] first, which stops accepting and waits for the
 // handlers already running. Only once they have all returned is there nothing
 // left that could call a gateway, and only then is it safe to close one.
 //
-//	err := web.Shutdown(ctx, srv, ordersGateway, conn)
+//	err := web.Shutdown(ctx, srv, ordersGateway, web.CloseFunc(conn.Close))
 //
 // This is three lines of code and it is here because the order is not
 // discoverable: both spellings compile, both look symmetrical, and the wrong
@@ -54,7 +68,7 @@ type Server interface {
 //
 //	h3 := &httpstream.Server{Config: cfg, Handler: handle}
 //	go h3.ServeQUIC(quicLn)
-//	err := web.Shutdown(ctx, web.Servers(srv, h3), ordersGateway, conn)
+//	err := web.Shutdown(ctx, web.Servers(srv, h3), ordersGateway, web.CloseFunc(conn.Close))
 //
 // # What ctx bounds
 //
@@ -69,19 +83,17 @@ type Server interface {
 // of the process, which is worse than closing under a request that was not
 // going to finish anyway.
 //
-// ctx also bounds every closer that stops the same way, by a
-// Shutdown(context.Context) error method, as
-// [github.com/mlagarrigue/sluice/gateway.Gateway] has: such a closer is shut
-// down under ctx rather than closed. A gateway whose pipeline sits in a call
-// to a back end that never answers would otherwise keep its Close waiting,
-// and the closer after it — the connection whose close is what releases
-// that pipeline — would never run. A closer with Close alone is run to its
-// return; ctx does not bound it.
+// ctx also bounds every closer: each is a [Drainer], shut down under ctx. A
+// gateway whose pipeline sits in a call to a back end that never answers
+// stops waiting at the deadline, and the closer after it — the connection
+// whose close is what releases that pipeline — runs. A closer with Close
+// alone goes through [CloseFunc] and is run to its return; ctx does not
+// bound it.
 //
 // The closers are **always** run, and their failures are joined with the
 // server's. A shutdown that abandons half its cleanup because the first step
 // timed out is the shape of bug this function exists to remove.
-func Shutdown(ctx context.Context, srv Server, closers ...io.Closer) error {
+func Shutdown(ctx context.Context, srv Drainer, closers ...Drainer) error {
 	if srv == nil {
 		return errors.New("web: Shutdown requires a server")
 	}
@@ -101,11 +113,7 @@ func Shutdown(ctx context.Context, srv Server, closers ...io.Closer) error {
 		if c == nil {
 			continue
 		}
-		stop := c.Close
-		if s, ok := c.(Server); ok {
-			stop = func() error { return s.Shutdown(ctx) }
-		}
-		if err := stop(); err != nil {
+		if err := c.Shutdown(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("closing %d: %w", i, err))
 		}
 	}
@@ -120,11 +128,11 @@ func Shutdown(ctx context.Context, srv Server, closers ...io.Closer) error {
 // Shutdown returns once every one of them has, with their failures joined;
 // a nil entry is skipped. Close closes every one of them that has a Close
 // method, which is what [Shutdown] calls when its ctx ends first.
-func Servers(srvs ...Server) Server {
+func Servers(srvs ...Drainer) Drainer {
 	return servers(srvs)
 }
 
-type servers []Server
+type servers []Drainer
 
 func (ss servers) Shutdown(ctx context.Context) error {
 	errs := make([]error, len(ss))
@@ -190,7 +198,7 @@ func Start(ctx context.Context, serve func(context.Context) error) *Started {
 	return s
 }
 
-// A Started is a Serve(ctx) that [Start] is running. It is a [Server].
+// A Started is a Serve(ctx) that [Start] is running. It is a [Drainer].
 type Started struct {
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -302,7 +310,7 @@ const DefaultShutdownGrace = 5 * time.Second
 // tooling — and is not the recommended shape for anything that crosses a
 // network boundary: prefer [ServeTLS], which is also how the supported path
 // speaks HTTP/2.
-func Serve(ctx context.Context, srv *http.Server, grace time.Duration, closers ...io.Closer) error {
+func Serve(ctx context.Context, srv *http.Server, grace time.Duration, closers ...Drainer) error {
 	if srv == nil {
 		return errors.New("web: Serve requires a server")
 	}
@@ -331,7 +339,7 @@ func Serve(ctx context.Context, srv *http.Server, grace time.Duration, closers .
 //
 // certFile and keyFile are as [http.Server.ListenAndServeTLS] takes them, and
 // may be empty when srv.TLSConfig already carries the certificates.
-func ServeTLS(ctx context.Context, srv *http.Server, grace time.Duration, certFile, keyFile string, closers ...io.Closer) error {
+func ServeTLS(ctx context.Context, srv *http.Server, grace time.Duration, certFile, keyFile string, closers ...Drainer) error {
 	if srv == nil {
 		return errors.New("web: ServeTLS requires a server")
 	}
@@ -340,7 +348,7 @@ func ServeTLS(ctx context.Context, srv *http.Server, grace time.Duration, certFi
 
 // serve is the lifecycle both share: listen on a goroutine, drain on ctx, and
 // join the two errors rather than let one hide the other.
-func serve(ctx context.Context, srv *http.Server, grace time.Duration, listen func() error, closers ...io.Closer) error {
+func serve(ctx context.Context, srv *http.Server, grace time.Duration, listen func() error, closers ...Drainer) error {
 	// net/http falls back to ReadTimeout when ReadHeaderTimeout is zero, so
 	// only a server bounding neither is unbounded.
 	if srv.ReadHeaderTimeout == 0 && srv.ReadTimeout <= 0 {

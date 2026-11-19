@@ -141,7 +141,7 @@ func build(t *testing.T) (*vertical.Service, string) {
 	fixture(t, conn)
 
 	svc := vertical.NewService(conn, 64, 2*time.Millisecond)
-	t.Cleanup(func() { _ = svc.Close() })
+	t.Cleanup(func() { _ = svc.Shutdown(context.Background()) })
 
 	v, err := web.NewHMACVerifier(web.HMACConfig{Secret: secret, TenantClaim: "tenant"})
 	if err != nil {
@@ -249,7 +249,7 @@ func patch(t *testing.T, addr, tenant string, order int64, line int, qty int64) 
 func buildOffline(t *testing.T) (*vertical.Service, string) {
 	t.Helper()
 	svc := vertical.NewService(nil, 64, 2*time.Millisecond)
-	t.Cleanup(func() { _ = svc.Close() })
+	t.Cleanup(func() { _ = svc.Shutdown(context.Background()) })
 
 	v, err := web.NewHMACVerifier(web.HMACConfig{Secret: secret, TenantClaim: "tenant"})
 	if err != nil {

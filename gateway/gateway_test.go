@@ -30,7 +30,7 @@ func echo(calls sluice.Stream[*Call[int, string]]) {
 
 func TestGatewayDo(t *testing.T) {
 	gw := New(Config{Size: 4, Within: 10 * time.Millisecond}, echo)
-	defer func() { _ = gw.Close() }()
+	defer func() { _ = gw.Shutdown(context.Background()) }()
 
 	got, err := gw.Do(context.Background(), 7)
 	if err != nil {
@@ -57,7 +57,7 @@ func TestGatewayBatchesConcurrentCalls(t *testing.T) {
 				return true
 			})
 		})
-	defer func() { _ = gw.Close() }()
+	defer func() { _ = gw.Shutdown(context.Background()) }()
 
 	var wg sync.WaitGroup
 	for i := range size {
@@ -87,7 +87,7 @@ func TestGatewayBatchesConcurrentCalls(t *testing.T) {
 func TestGatewayCorrelatesUnderConcurrency(t *testing.T) {
 	const callers = 200
 	gw := New(Config{Size: 16, Within: 2 * time.Millisecond}, echo)
-	defer func() { _ = gw.Close() }()
+	defer func() { _ = gw.Shutdown(context.Background()) }()
 
 	var wg sync.WaitGroup
 	errs := make(chan error, callers)
@@ -118,7 +118,7 @@ func TestGatewayFlushesOnDeadline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const within = 40 * time.Millisecond
 		gw := New(Config{Size: 1000, Within: within}, echo)
-		defer func() { _ = gw.Close() }()
+		defer func() { _ = gw.Shutdown(context.Background()) }()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -156,7 +156,7 @@ func TestGatewayDroppedCallWaitsForItsDeadline(t *testing.T) {
 					return true
 				})
 			})
-		defer func() { _ = gw.Close() }()
+		defer func() { _ = gw.Shutdown(context.Background()) }()
 
 		short, cancelShort := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		defer cancelShort()
@@ -210,7 +210,7 @@ func TestGatewayOutstandingCallReleasedWhenPipelineDies(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("the caller was left waiting for a pipeline that had returned")
 		}
-		_ = gw.Close()
+		_ = gw.Shutdown(context.Background())
 	})
 }
 
@@ -229,7 +229,7 @@ func TestGatewayWithAsyncPipeline(t *testing.T) {
 				})
 			served(func(sluice.Batch[*Call[int, string]]) bool { return true })
 		})
-	defer func() { _ = gw.Close() }()
+	defer func() { _ = gw.Shutdown(context.Background()) }()
 
 	const callers = 64
 	var wg sync.WaitGroup
@@ -287,7 +287,7 @@ func TestGatewayPipelinePanicFailsCallers(t *testing.T) {
 			t.Errorf("a call after the panic got %v, want ErrPipelinePanicked", err)
 		}
 
-		_ = gw.Close()
+		_ = gw.Shutdown(context.Background())
 	})
 }
 
@@ -303,10 +303,10 @@ func TestGatewayClose(t *testing.T) {
 			t.Fatalf("Do before Close returned %v", err)
 		}
 
-		if err := gw.Close(); err != nil {
+		if err := gw.Shutdown(context.Background()); err != nil {
 			t.Errorf("Close returned %v, want nil", err)
 		}
-		if err := gw.Close(); err != nil {
+		if err := gw.Shutdown(context.Background()); err != nil {
 			t.Errorf("second Close returned %v, want nil — Close is idempotent", err)
 		}
 
@@ -341,7 +341,7 @@ func TestGatewayContextCancellation(t *testing.T) {
 		}
 
 		close(release) // the pipeline answers a caller that is gone
-		_ = gw.Close()
+		_ = gw.Shutdown(context.Background())
 	})
 }
 
@@ -409,7 +409,7 @@ func TestSweepInDiscardsWhatTheRunLoopWillNeverTake(t *testing.T) {
 				return true
 			})
 		})
-	if err := g.Close(); err != nil {
+	if err := g.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -469,8 +469,8 @@ func TestNewPanicsAsDocumented(t *testing.T) {
 	drain := func(s sluice.Stream[*Call[int, int]]) {
 		s(func(sluice.Batch[*Call[int, int]]) bool { return true })
 	}
-	if err := New(usable, drain).Close(); err != nil {
-		t.Errorf("a usable configuration: Close = %v", err)
+	if err := New(usable, drain).Shutdown(context.Background()); err != nil {
+		t.Errorf("a usable configuration: Shutdown = %v", err)
 	}
 }
 
@@ -512,7 +512,7 @@ func TestShutdownStopsWaitingWhenItsContextEnds(t *testing.T) {
 		if err := <-held; err != nil {
 			t.Errorf("the call the pipeline held ended with %v, want its answer", err)
 		}
-		if err := gw.Close(); err != nil {
+		if err := gw.Shutdown(context.Background()); err != nil {
 			t.Errorf("Close once the pipeline returned: %v", err)
 		}
 	})

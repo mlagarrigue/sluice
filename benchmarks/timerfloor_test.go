@@ -56,7 +56,7 @@ func TestGatewayTimerFloor(t *testing.T) {
 			}
 		}
 		per := time.Since(start) / n
-		_ = gw.Close()
+		_ = gw.Shutdown(context.Background())
 
 		ratio := float64(per) / float64(within)
 		t.Logf("Within=%-8v  observed=%-12v  ratio=%.2f", within, per, ratio)

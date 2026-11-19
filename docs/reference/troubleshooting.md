@@ -137,7 +137,7 @@ question for a CPU profile: no counter can answer it.
 | `web.ErrTokenExpired` | The token is past its `exp`, or not yet valid by its `nbf`. Answered 401 with a challenge. | Renew the token and ask again; check the clocks. |
 | `web.ErrTokenClaims` | Required claims are missing or wrong: audience, issuer, expiry. Answered 401. | Issue tokens with the claims the verifier requires. |
 | `web.ErrForbidden` | The principal is known and has no grant for what it asked. Answered 403. | Grant it, or ask for something it is allowed; retrying with the same credentials changes nothing. |
-| `gateway.ErrClosed` | A call was submitted to a gateway that is closed or closing. | Answer as a service shutting down answers (503), and stop submitting. |
+| `gateway.ErrClosed` | A call was submitted to a gateway that is shut down or shutting down. | Answer as a service shutting down answers (503), and stop submitting. |
 | `gateway.ErrNoReply` | The pipeline consumed a call without answering — it was filtered out, or stopped mid-batch. A wiring mistake. | Never filter a call out of a gateway's pipeline; answer every one, refusals included. |
 | `gateway.ErrPipelinePanicked` | The pipeline panicked. Every caller of the batch gets this same error, without the panic value (callers may be different tenants). The value and the stack are in the log of `gateway.Config.Logger` (`slog.Default()` by default); the gateway does not restart, build a new one. | Find the panic in your logs; fix the stage that raised it. |
 

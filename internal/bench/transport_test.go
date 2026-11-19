@@ -69,7 +69,7 @@ func serveHTTPGateway(t *testing.T, be *backend, within time.Duration) string {
 				return true
 			})
 		})
-	t.Cleanup(func() { _ = gw.Close() })
+	t.Cleanup(func() { _ = gw.Shutdown(context.Background()) })
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /o/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -130,7 +130,7 @@ func serveStreamGateway(t *testing.T, be *backend, within time.Duration) string 
 				return true
 			})
 		})
-	t.Cleanup(func() { _ = gw.Close() })
+	t.Cleanup(func() { _ = gw.Shutdown(context.Background()) })
 
 	return startStream(t, func(_ context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 		// One submission for the connection's batch: the gateway sees it as

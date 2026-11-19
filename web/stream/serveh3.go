@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"io"
 	"net"
 	"net/http"
 	"time"
@@ -17,11 +16,11 @@ import (
 
 // ServeH3 is [web.ServeTLS] for HTTP/3: srv.Handler, through [FromHTTP],
 // over QUIC on srv.Addr in UDP (":https" when empty) until ctx is
-// cancelled, then the drain of at most grace and the closers closed, in
+// cancelled, then the drain of at most grace and the closers stopped, in
 // [web.Shutdown]'s order.
 //
 // It serves HTTP/3 alone. Calling it beside ServeTLS on the same srv is not
-// the way to serve the three protocols together: each call closes the
+// the way to serve the three protocols together: each call stops the
 // closers when its own drain ends, a gateway among them under the other
 // server still using it, and ServeTLS fills the zero timeouts of srv while
 // this reads them.
@@ -43,7 +42,7 @@ import (
 // Experimental: it runs on net/quic, which is experimental, and stays outside
 // the v1 promise the rest of the package makes (ADR 0020, ADR 0021): it may
 // change with net/quic, announced with a `!`.
-func ServeH3(ctx context.Context, srv *http.Server, grace time.Duration, certFile, keyFile string, closers ...io.Closer) error {
+func ServeH3(ctx context.Context, srv *http.Server, grace time.Duration, certFile, keyFile string, closers ...web.Drainer) error {
 	if srv == nil {
 		return errors.New("stream: ServeH3 requires a server")
 	}

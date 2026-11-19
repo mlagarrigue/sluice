@@ -309,7 +309,7 @@ func TestTryHandlerConvertsSentinelsAndNotBugs(t *testing.T) {
 	})
 }
 
-// closerFunc records when it was closed, so ordering can be asserted.
+// closerFunc records when it was shut down, so ordering can be asserted.
 type closerFunc struct {
 	mu     sync.Mutex
 	closed bool
@@ -317,7 +317,7 @@ type closerFunc struct {
 	err    error
 }
 
-func (c *closerFunc) Close() error {
+func (c *closerFunc) Shutdown(context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.closed, c.at = true, time.Now()

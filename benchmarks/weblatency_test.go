@@ -151,7 +151,7 @@ func gatewayHandler(tb testing.TB) http.Handler {
 				return true
 			})
 		})
-	tb.Cleanup(func() { _ = gw.Close() })
+	tb.Cleanup(func() { _ = gw.Shutdown(context.Background()) })
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("PATCH /orders/{order}/lines/{line}", func(w http.ResponseWriter, r *http.Request) {

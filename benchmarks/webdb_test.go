@@ -149,7 +149,7 @@ func dbGatewayHandler(tb testing.TB, fetch func(ids []int64, found map[int64]int
 				return true
 			})
 		})
-	tb.Cleanup(func() { _ = gw.Close() })
+	tb.Cleanup(func() { _ = gw.Shutdown(context.Background()) })
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /orders/{id}", func(w http.ResponseWriter, r *http.Request) {

@@ -33,7 +33,7 @@ func TestASilentServerHoldsABatchForTheServiceTimeoutOnly(t *testing.T) {
 	}
 	s := NewService(conn, 64, time.Millisecond)
 	s.timeout = 200 * time.Millisecond
-	t.Cleanup(func() { _ = s.Close() })
+	t.Cleanup(func() { _ = s.Shutdown(context.Background()) })
 	// Registered last, so run first: the silent server is released before
 	// Close waits on a pipeline it may hold, and before the backend's own
 	// cleanup waits on it.
@@ -80,7 +80,7 @@ func TestASilentServerOnBeginHoldsABatchForTheServiceTimeoutOnly(t *testing.T) {
 	}
 	s := NewService(conn, 64, time.Millisecond)
 	s.timeout = 200 * time.Millisecond
-	t.Cleanup(func() { _ = s.Close() })
+	t.Cleanup(func() { _ = s.Shutdown(context.Background()) })
 	// Registered last, so run first: the silent server is released before
 	// Close waits on a pipeline it may hold, and before the backend's own
 	// cleanup waits on it.

@@ -214,8 +214,9 @@ func (s *Service) Apply(ctx context.Context, a Amendment) (Result, error) {
 	return s.gw.Do(ctx, a)
 }
 
-// Close stops the service and releases its pipeline.
-func (s *Service) Close() error { return s.gw.Close() }
+// Shutdown stops the service and releases its pipeline, waiting for it until
+// ctx ends.
+func (s *Service) Shutdown(ctx context.Context) error { return s.gw.Shutdown(ctx) }
 
 // ErrClosed reports a service that is shutting down.
 var ErrClosed = gateway.ErrClosed

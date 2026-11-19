@@ -603,7 +603,7 @@ func TestServeH3Lifecycle(t *testing.T) {
 
 type closeCounter struct{ n int }
 
-func (c *closeCounter) Close() error { c.n++; return nil }
+func (c *closeCounter) Shutdown(context.Context) error { c.n++; return nil }
 
 func selfSignedH3(t *testing.T) tls.Certificate {
 	t.Helper()

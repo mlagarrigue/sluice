@@ -14,7 +14,7 @@ import (
 
 func TestDoBatchAnswersPositionally(t *testing.T) {
 	gw := New(Config{Size: 64, Within: 5 * time.Millisecond}, echo)
-	defer func() { _ = gw.Close() }()
+	defer func() { _ = gw.Shutdown(context.Background()) }()
 
 	ins := []int{3, 1, 4, 1, 5, 9, 2, 6}
 	out := gw.DoBatch(context.Background(), ins)
@@ -48,7 +48,7 @@ func TestDoBatchReachesThePipelineAsOneBatch(t *testing.T) {
 					return true
 				})
 			})
-		defer func() { _ = gw.Close() }()
+		defer func() { _ = gw.Shutdown(context.Background()) }()
 
 		ins := make([]int, 32)
 		for i := range ins {
@@ -86,7 +86,7 @@ func TestDoBatchLargerThanSizeSpills(t *testing.T) {
 					return true
 				})
 			})
-		defer func() { _ = gw.Close() }()
+		defer func() { _ = gw.Shutdown(context.Background()) }()
 
 		ins := make([]int, 20)
 		for i := range ins {
@@ -140,7 +140,7 @@ func TestDoBatchSharesTheWindowWithLoneCallers(t *testing.T) {
 				return true
 			})
 		})
-	defer func() { _ = gw.Close() }()
+	defer func() { _ = gw.Shutdown(context.Background()) }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -167,7 +167,7 @@ func TestDoBatchSharesTheWindowWithLoneCallers(t *testing.T) {
 
 func TestDoBatchEmpty(t *testing.T) {
 	gw := New(Config{Size: 4, Within: time.Millisecond}, echo)
-	defer func() { _ = gw.Close() }()
+	defer func() { _ = gw.Shutdown(context.Background()) }()
 	if out := gw.DoBatch(context.Background(), nil); len(out) != 0 {
 		t.Errorf("got %d outcomes for no inputs", len(out))
 	}
@@ -175,7 +175,7 @@ func TestDoBatchEmpty(t *testing.T) {
 
 func TestDoBatchAfterClose(t *testing.T) {
 	gw := New(Config{Size: 4, Within: time.Millisecond}, echo)
-	_ = gw.Close()
+	_ = gw.Shutdown(context.Background())
 
 	out := gw.DoBatch(context.Background(), []int{1, 2, 3})
 	if len(out) != 3 {
@@ -206,7 +206,7 @@ func TestDoBatchContextExpires(t *testing.T) {
 			})
 		defer func() {
 			close(release)
-			_ = gw.Close()
+			_ = gw.Shutdown(context.Background())
 		}()
 
 		// Eight inputs against a held batch of 2 and a queue of 2: the
@@ -234,7 +234,7 @@ func TestDoBatchWhenThePipelinePanics(t *testing.T) {
 				panic("the pipeline gave up")
 			})
 		})
-	defer func() { _ = gw.Close() }()
+	defer func() { _ = gw.Shutdown(context.Background()) }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -272,6 +272,6 @@ func TestDoBatchConcurrentWithDoAndClose(t *testing.T) {
 		})
 	}
 	time.Sleep(2 * time.Millisecond)
-	_ = gw.Close()
+	_ = gw.Shutdown(context.Background())
 	wg.Wait()
 }

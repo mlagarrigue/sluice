@@ -77,7 +77,7 @@ func fixtureRows() []fakeRow {
 func fakeService(t *testing.T, pg *fakePG) *Service {
 	t.Helper()
 	s := NewService(pg.conn(t), 64, time.Millisecond)
-	t.Cleanup(func() { _ = s.Close() })
+	t.Cleanup(func() { _ = s.Shutdown(context.Background()) })
 	return s
 }
 
@@ -194,7 +194,7 @@ func gatewayService(t *testing.T, run func(request) (Result, error)) *Service {
 				return true
 			})
 		})
-	t.Cleanup(func() { _ = s.gw.Close() })
+	t.Cleanup(func() { _ = s.gw.Shutdown(context.Background()) })
 	return s
 }
 

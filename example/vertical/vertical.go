@@ -395,8 +395,8 @@ func (s *Service) Stats() (batches, roundTrips int64) {
 	return s.batches.Load(), s.roundTrips.Load()
 }
 
-// Close drains the gateway.
-func (s *Service) Close() error { return s.gw.Close() }
+// Shutdown drains the gateway, waiting for it until ctx ends.
+func (s *Service) Shutdown(ctx context.Context) error { return s.gw.Shutdown(ctx) }
 
 // --- the transport -------------------------------------------------------------
 

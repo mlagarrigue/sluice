@@ -76,7 +76,7 @@ func ctx5(t *testing.T) (context.Context, context.CancelFunc) {
 func TestApplyAmendsALine(t *testing.T) {
 	store := newStore(orders.Line{OrderID: 42, Index: 7, SaleQty: 1, Price: 500})
 	svc := orders.New(store, 8, 2*time.Millisecond)
-	defer func() { _ = svc.Close() }()
+	defer func() { _ = svc.Shutdown(context.Background()) }()
 
 	ctx, cancel := ctx5(t)
 	defer cancel()
@@ -104,7 +104,7 @@ func TestApplyAmendsALine(t *testing.T) {
 func TestRejectionCarriesItsRemedy(t *testing.T) {
 	store := newStore(orders.Line{OrderID: 42, Index: 7, SaleQty: 1})
 	svc := orders.New(store, 8, 2*time.Millisecond)
-	defer func() { _ = svc.Close() }()
+	defer func() { _ = svc.Shutdown(context.Background()) }()
 
 	ctx, cancel := ctx5(t)
 	defer cancel()
@@ -146,7 +146,7 @@ func TestRejectionCarriesItsRemedy(t *testing.T) {
 func TestWarningAlsoCarriesARemedy(t *testing.T) {
 	store := newStore(orders.Line{OrderID: 42, Index: 7, SaleQty: 1})
 	svc := orders.New(store, 8, 2*time.Millisecond)
-	defer func() { _ = svc.Close() }()
+	defer func() { _ = svc.Shutdown(context.Background()) }()
 
 	ctx, cancel := ctx5(t)
 	defer cancel()
@@ -168,7 +168,7 @@ func TestWarningAlsoCarriesARemedy(t *testing.T) {
 // from the domain.
 func TestMissingLineIsCriticalFromSQL(t *testing.T) {
 	svc := orders.New(newStore(), 8, 2*time.Millisecond)
-	defer func() { _ = svc.Close() }()
+	defer func() { _ = svc.Shutdown(context.Background()) }()
 
 	ctx, cancel := ctx5(t)
 	defer cancel()
@@ -196,7 +196,7 @@ func TestConcurrentRequestsShareOneRoundTrip(t *testing.T) {
 		}
 		store := newStore(lines...)
 		svc := orders.New(store, n, 50*time.Millisecond)
-		defer func() { _ = svc.Close() }()
+		defer func() { _ = svc.Shutdown(context.Background()) }()
 
 		var wg sync.WaitGroup
 		errs := make(chan error, n)
@@ -238,7 +238,7 @@ func TestInvalidRequestsDoNotReachTheStore(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		store := newStore(orders.Line{OrderID: 1, Index: 0, SaleQty: 1})
 		svc := orders.New(store, 4, 30*time.Millisecond)
-		defer func() { _ = svc.Close() }()
+		defer func() { _ = svc.Shutdown(context.Background()) }()
 
 		var wg sync.WaitGroup
 		results := make([]orders.Result, 2)
@@ -272,7 +272,7 @@ func TestAnIndexPastInt32IsRefused(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		store := newStore(orders.Line{OrderID: 1, Index: 0, SaleQty: 1})
 		svc := orders.New(store, 4, 30*time.Millisecond)
-		defer func() { _ = svc.Close() }()
+		defer func() { _ = svc.Shutdown(context.Background()) }()
 
 		ctx, cancel := ctx5(t)
 		defer cancel()
@@ -295,7 +295,7 @@ func TestStoreFailureReachesEveryCaller(t *testing.T) {
 	store := newStore(orders.Line{OrderID: 1, Index: 0, SaleQty: 1})
 	store.failOn = errors.New("connection reset")
 	svc := orders.New(store, 4, 10*time.Millisecond)
-	defer func() { _ = svc.Close() }()
+	defer func() { _ = svc.Shutdown(context.Background()) }()
 
 	ctx, cancel := ctx5(t)
 	defer cancel()
@@ -315,7 +315,7 @@ func TestStoreFailureReachesEveryCaller(t *testing.T) {
 func TestOverHTTP(t *testing.T) {
 	store := newStore(orders.Line{OrderID: 42, Index: 7, SaleQty: 1, Price: 500})
 	svc := orders.New(store, 8, 2*time.Millisecond)
-	defer func() { _ = svc.Close() }()
+	defer func() { _ = svc.Shutdown(context.Background()) }()
 
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.ParseInt(r.URL.Query().Get("order"), 10, 64)
@@ -456,7 +456,7 @@ func (stuckStore) SaveLines(ctx context.Context, _ []orders.Line) error {
 func TestStoreTimeoutIsTheCallers(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		svc := orders.NewWithStoreTimeout(stuckStore{}, 1, time.Millisecond, 200*time.Millisecond)
-		defer func() { _ = svc.Close() }()
+		defer func() { _ = svc.Shutdown(context.Background()) }()
 
 		start := time.Now()
 		_, err := svc.Apply(context.Background(), orders.Amendment{OrderID: 1, Index: 0, SaleQty: 1})

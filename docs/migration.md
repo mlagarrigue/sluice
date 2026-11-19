@@ -21,7 +21,7 @@ behavior that keep the signatures — a value now refused — come last.
 ### Joins: `join`
 
 - **`StreamTable` becomes `HashJoin`, `Interval` becomes `IntervalJoin`, `IntervalSpec.Merge` becomes
-  `Combine`** (feat(join)!: one vocabulary for the three joins, ADR 0016): the three joins now
+  `Combine`** (`c3870c0`): the three joins now
   carry the word in their names, and "merge" is left to `sluice.Merge`, which interleaves streams, and to
   `MergeJoin`, which walks two sorted ones. Replace `join.StreamTable(` with `join.HashJoin(` and
   `join.Interval(` with `join.IntervalJoin(`, and the field `Merge:` of an `IntervalSpec` with
@@ -54,6 +54,17 @@ behavior that keep the signatures — a value now refused — come last.
   taken over, its connection gone — and never on `Release`. A store that cannot tell returns a nil
   channel, which never closes, and keeps the old behavior. `Job.Run` now cancels the running phase's
   context when the channel closes, its cause `phase.ErrLeaseLost`.
+
+### Web: `web`, `web/stream` and `gateway`
+
+- **`web.Server` becomes `web.Drainer`, and the closers are `Drainer`s**
+  (feat(web)!: closers drain, Close is the forced stop, ADR 0017): the closers of `web.Shutdown`,
+  `web.Serve`, `web.ServeTLS` and `stream.ServeH3` are stopped by `Shutdown(ctx)` under the grace. A
+  gateway goes in as it is; a resource with `Close` alone is wrapped, `web.CloseFunc(pool.Close)`.
+- **`gateway.Gateway` has no `Close`**
+  (feat(web)!: closers drain, Close is the forced stop, ADR 0017): `Close` is the forced stop
+  elsewhere in the library, and a gateway has none. Write `gw.Shutdown(ctx)` with a deadline, or
+  `gw.Shutdown(context.Background())` to wait without a bound as `Close` did.
 
 ## From v0.4.0 to v0.5.0
 

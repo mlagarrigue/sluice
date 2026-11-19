@@ -54,7 +54,7 @@ func TestIntegrationVerticalAgainstPostgres(t *testing.T) {
 
 	store := orders.NewPGStore(conn)
 	svc := orders.New(store, n, 50*time.Millisecond)
-	defer func() { _ = svc.Close() }()
+	defer func() { _ = svc.Shutdown(context.Background()) }()
 
 	// Every caller arrives on its own goroutine, which is the whole point: the
 	// gateway is what turns them into one batch, and the connector is what
@@ -127,7 +127,7 @@ func TestIntegrationMissingLineIsCriticalFromRealSQL(t *testing.T) {
 	}
 
 	svc := orders.New(orders.NewPGStore(conn), 8, 20*time.Millisecond)
-	defer func() { _ = svc.Close() }()
+	defer func() { _ = svc.Shutdown(context.Background()) }()
 
 	got, err := svc.Apply(t.Context(), orders.Amendment{OrderID: 99, Index: 0, SaleQty: 5})
 	if err != nil {

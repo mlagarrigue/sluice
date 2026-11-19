@@ -174,7 +174,7 @@ func TestPGStoreSaveLines(t *testing.T) {
 func TestVerticalOverPGStore(t *testing.T) {
 	m := newMemTable()
 	svc := orders.New(pgStore(t, m), 16, time.Millisecond)
-	defer func() { _ = svc.Close() }()
+	defer func() { _ = svc.Shutdown(context.Background()) }()
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()

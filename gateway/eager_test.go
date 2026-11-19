@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -24,7 +25,7 @@ func TestEagerAtLowTrafficWaitsForNothing(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				gw := New(tc.cfg, echo)
-				defer gw.Close()
+				defer func() { _ = gw.Shutdown(context.Background()) }()
 				start := time.Now()
 				out, err := gw.Do(t.Context(), 7)
 				if err != nil || out != "v7" {
@@ -61,7 +62,7 @@ func TestEagerUnderLoadBatchesWhileThePipelineWorks(t *testing.T) {
 		}
 		const size, callers = 16, 200
 		gw := New(Config{Size: size, Eager: true}, backend)
-		defer gw.Close()
+		defer func() { _ = gw.Shutdown(context.Background()) }()
 		var wg sync.WaitGroup
 		for i := range callers {
 			wg.Go(func() {

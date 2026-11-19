@@ -23,7 +23,7 @@ func ExampleLookup() {
 			}
 			return nil
 		}))
-	defer gw.Close()
+	defer func() { _ = gw.Shutdown(context.Background()) }()
 
 	for _, id := range []int64{7, 9} {
 		v, err := gw.Do(context.Background(), id)

@@ -93,7 +93,7 @@ func BenchmarkBatchedRoundTrip(b *testing.B) {
 				return true
 			})
 		})
-	defer func() { _ = gw.Close() }()
+	defer func() { _ = gw.Shutdown(context.Background()) }()
 
 	ctx := context.Background()
 	b.SetParallelism(clients)
@@ -130,7 +130,7 @@ func BenchmarkBatchedParallelRoundTrip(b *testing.B) {
 				})
 			served(func(sluice.Batch[*gateway.Call[int, int]]) bool { return true })
 		})
-	defer func() { _ = gw.Close() }()
+	defer func() { _ = gw.Shutdown(context.Background()) }()
 
 	ctx := context.Background()
 	b.SetParallelism(clients)
@@ -155,7 +155,7 @@ func BenchmarkBatchedParallelRoundTrip(b *testing.B) {
 // saves. Its per-call figure is the gateway's own price.
 func BenchmarkBatchedNothingBehind(b *testing.B) {
 	gw := echo()
-	defer func() { _ = gw.Close() }()
+	defer func() { _ = gw.Shutdown(context.Background()) }()
 
 	ctx := context.Background()
 	b.SetParallelism(clients)
@@ -178,7 +178,7 @@ func BenchmarkBatchedNothingBehind(b *testing.B) {
 // timer, which may round a short wait up.
 func BenchmarkLoneCall(b *testing.B) {
 	gw := echo()
-	defer func() { _ = gw.Close() }()
+	defer func() { _ = gw.Shutdown(context.Background()) }()
 
 	ctx := context.Background()
 	for i := 0; b.Loop(); i++ {

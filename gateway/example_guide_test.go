@@ -23,7 +23,7 @@ func ExampleNew() {
 				return true
 			})
 		})
-	defer func() { _ = gw.Close() }()
+	defer func() { _ = gw.Shutdown(context.Background()) }()
 
 	out, err := gw.Do(context.Background(), "hello")
 	fmt.Println(out, err)

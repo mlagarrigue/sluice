@@ -41,7 +41,7 @@ func TestDispatchAnswersAMixedBatchExactlyOnce(t *testing.T) {
 				return true
 			})
 		})
-	defer func() { _ = gw.Close() }()
+	defer func() { _ = gw.Shutdown(context.Background()) }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
