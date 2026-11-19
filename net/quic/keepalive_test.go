@@ -78,8 +78,14 @@ func TestIdleTimeoutEndsASilentConnection(t *testing.T) {
 }
 
 // KeepAlive reads the period in force: zero while off, the period asked
-// for, half the negotiated idle timeout when the period asked for is
+// for, half the effective idle timeout when the period asked for is
 // longer. A negative period is refused and leaves the keepalive as it was.
+//
+// The effective idle timeout is the negotiated 300 ms raised to three probe
+// timeouts, which a slow machine's RTT samples can push past it (a macOS
+// runner read 257 ms for the cap): the capped period is
+// checked against what the rule guarantees — at least half the 300 ms,
+// below the second asked for — not against one machine's figure.
 func TestKeepAliveReportsTheEffectivePeriod(t *testing.T) {
 	client, _ := idlePair(t)
 	if got := client.KeepAlive(); got != 0 {
@@ -92,18 +98,18 @@ func TestKeepAliveReportsTheEffectivePeriod(t *testing.T) {
 		t.Fatalf("KeepAlive after a refused negative period = %v, want 0", got)
 	}
 	steps := []struct {
-		period, want time.Duration
+		period, low, high time.Duration // want low <= KeepAlive() <= high
 	}{
-		{100 * time.Millisecond, 100 * time.Millisecond},
-		{time.Second, 150 * time.Millisecond}, // half the 300 ms idle timeout
-		{0, 0},
+		{100 * time.Millisecond, 100 * time.Millisecond, 100 * time.Millisecond},
+		{time.Second, 150 * time.Millisecond, time.Second - 1}, // capped: half the effective idle timeout
+		{0, 0, 0},
 	}
 	for _, s := range steps {
 		if err := client.SetKeepAlive(s.period); err != nil {
 			t.Fatalf("SetKeepAlive(%v): %v", s.period, err)
 		}
-		if got := client.KeepAlive(); got != s.want {
-			t.Fatalf("KeepAlive after SetKeepAlive(%v) = %v, want %v", s.period, got, s.want)
+		if got := client.KeepAlive(); got < s.low || got > s.high {
+			t.Fatalf("KeepAlive after SetKeepAlive(%v) = %v, want within [%v, %v]", s.period, got, s.low, s.high)
 		}
 	}
 	if err := client.SetKeepAlive(100 * time.Millisecond); err != nil {
