@@ -33,9 +33,15 @@ func dialH3(addr string) (*quic.Conn, error) {
 }
 
 // The QUIC listener's bounds are within reach of ServeH3 and ServeTLSAndH3
-// through H3: with MaxConnsPerIP at one, a second connection from the same
-// address is refused while the first holds its slot. The package function,
-// H3's zero value, leaves it unbounded.
+// through H3: with MaxConnsPerIP at one, two connections from the same
+// address are never both kept. The package function, H3's zero value, leaves
+// it unbounded and keeps both.
+//
+// Which of the two goes depends on timing, not on order: the listener counts
+// a connection once its handshake proves the address, so a second one that
+// arrives before the first is counted is admitted, and the first is refused
+// when it proves the address in turn (CI, 2026-11-19, saw the second dial
+// succeed). The test reads what is alive after both dials.
 func TestH3ListenerSettingsReachServeH3(t *testing.T) {
 	cert := selfSignedH3(t)
 	for _, tc := range []struct {
@@ -78,11 +84,22 @@ func TestH3ListenerSettingsReachServeH3(t *testing.T) {
 			defer func() { _ = first.Close() }()
 			second, err := dialH3(addr)
 			if err == nil {
-				_ = second.Close()
+				defer func() { _ = second.Close() }()
 			}
-			if refused := err != nil; refused != tc.refused {
-				t.Errorf("second connection from the same address: err %v, want refused %v", err, tc.refused)
+			both := err == nil && alive(t, first) && alive(t, second)
+			if refused := !both; refused != tc.refused {
+				t.Errorf("second connection from the same address: dial err %v, one refused %v, want %v", err, refused, tc.refused)
 			}
 		})
 	}
+}
+
+// alive reports whether c still answers a PING. A connection the listener
+// refused after its handshake is closed by then, and its Ping fails as soon
+// as the close arrives.
+func alive(t *testing.T, c *quic.Conn) bool {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	return c.Ping(ctx) == nil
 }
