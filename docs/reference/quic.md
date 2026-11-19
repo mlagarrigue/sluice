@@ -71,7 +71,26 @@ the wire:
 | `HandshakeTimeout` | `DefaultHandshakeTimeout`, 10 s | ≥ 0 | how long one handshake may hold a pending slot |
 | `MaxConns` | no bound | ≥ 0 | every connection the listener carries, closing ones included |
 | `MaxConnsPerIP` | no bound | ≥ 0 | the same bound per source address |
-| `IPv4PrefixBits` | 32 | 1 to 32 | how much of an IPv4 source `MaxConnsPerIP` counts by |
+| `SessionTickets` | off | | one session ticket per completed handshake, for resumption |
+| `EarlyData` | off | | 0-RTT on resumption ([Deployments](../guide/deployments.md)) |
+| `Advanced` | every default below | | the advanced listener settings, [below](#advanced-listener-settings) |
+
+### Advanced listener settings
+
+`ListenerConfig.Advanced`, of type `AdvancedListenerConfig`, holds the
+settings that ask for knowledge of QUIC or of the deployment to change, under
+the same rules; an error names them `ListenerConfig.Advanced.ConnQueueLen`.
+The preferred address, Retry tokens and stateless resets are
+[RFC 9000](https://www.rfc-editor.org/rfc/rfc9000)'s (§9.6, §8.1, §10.3); the
+0-RTT window and its record are RFC 9001 §4.6's and
+[RFC 8470](https://www.rfc-editor.org/rfc/rfc8470)'s; the two keys are what
+several listeners behind one address share, so that one accepts the tokens
+and resets another minted; the prefixes ask for the address plan in front.
+Left at zero, each is the default below.
+
+| Field | Zero | Bounds | What it sets |
+|---|---|---|---|
+| `IPv4PrefixBits` | 32 | 1 to 32 | how much of an IPv4 source `ListenerConfig.MaxConnsPerIP` counts by |
 | `IPv6PrefixBits` | 64 | 1 to 128 | the same for IPv6 |
 | `PreferredSocket` | nil: none announced | | a second socket clients move to once the handshake confirms |
 | `PreferredIPv4` | the socket's own address | IPv4 | the address announced for that socket when it listens on the unspecified address |
@@ -83,8 +102,6 @@ the wire:
 | `StatelessResetsPerAddress` | 4 | ≥ 0 | one source address's share of them |
 | `StatelessResetKey` | random per listener | | derives the reset tokens; set it to survive a restart |
 | `RetryTokenKey` | random per listener | | authenticates Retry tokens; share it across instances |
-| `SessionTickets` | off | | one session ticket per completed handshake, for resumption |
-| `EarlyData` | off | | 0-RTT on resumption ([Deployments](../guide/deployments.md)) |
 | `EarlyDataWindow` | 10 minutes | ≥ 0 | how long after its issue a ticket may carry 0-RTT |
 | `MaxEarlyDataTickets` | 16 384 | ≥ 0 | the record of tickets whose 0-RTT was accepted once |
 
@@ -150,7 +167,7 @@ A section number with no RFC named is RFC 9000's.
   a client offered a preferred address by its server probes it once the
   handshake confirms and moves there on its own when the path validates.
   Both reset congestion and round-trip state as §9.4 asks. The server side
-  is `ListenerConfig.PreferredSocket`: a second socket the listener reads
+  is `ListenerConfig.Advanced.PreferredSocket`: a second socket the listener reads
   alongside its main one and announces in every handshake.
 - **Datagram coalescing** (§12.2): the ACK a datagram earns and the CRYPTO
   flight it provokes leave together, Initial and Handshake packets in one
@@ -380,7 +397,7 @@ for as long as it runs: acknowledgements and Handshake packets arriving
 meanwhile wait in its queue, and only the timer loop keeps retransmitting.
 Other connections behind a Listener are untouched, since the Listener's
 loop never waits on a connection; what overflows the stalled connection's
-queue (`ListenerConfig.ConnQueueLen`) is dropped and resent by the peer.
+queue (`ListenerConfig.Advanced.ConnQueueLen`) is dropped and resent by the peer.
 
 RFC 9001 §4.1.4 asks an endpoint to keep answering what it can while TLS
 works asynchronously; this package buffers the packets whose keys are

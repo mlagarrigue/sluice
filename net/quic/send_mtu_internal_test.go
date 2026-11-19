@@ -536,7 +536,7 @@ func TestDialCompletesPastALongRetryToken(t *testing.T) {
 	var key [32]byte
 	key[0] = 1
 	pc := &inflatingPC{PacketConn: serverPC, key: key, size: 900}
-	l, err := NewListener(pc, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{AlwaysRetry: true, RetryTokenKey: key})
+	l, err := NewListener(pc, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{AlwaysRetry: true, Advanced: AdvancedListenerConfig{RetryTokenKey: key}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -244,7 +244,7 @@ func proveDuringTokenAdmission(t *testing.T, round int) int {
 
 	bFrom := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 2000}
 	bDCID := fmt.Appendf(nil, "dcid-b-%03d", round)
-	token := appendRetryToken(nil, l.lcfg.RetryTokenKey, bFrom, []byte("orig-dst"), bDCID)
+	token := appendRetryToken(nil, l.lcfg.Advanced.RetryTokenKey, bFrom, []byte("orig-dst"), bDCID)
 	bInitial := sealedClientInitialWithToken(t, bDCID, []byte("scid-b"), token)
 
 	start := make(chan struct{})

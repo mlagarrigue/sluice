@@ -58,6 +58,11 @@ const (
 
 // ListenerConfig governs how a [Listener] treats a new connection attempt
 // before it has any reason to trust it.
+//
+// The fields set here are the ones a deployment sets before production:
+// how many connections, how long a handshake, Retry under load, session
+// tickets and 0-RTT. Those that ask for knowledge of QUIC or of the
+// deployment's own traffic to change are in [ListenerConfig.Advanced].
 type ListenerConfig struct {
 	// AlwaysRetry makes every new attempt pay one extra round trip for a
 	// server-generated Retry (RFC 9000 §8.1.2) before its handshake
@@ -121,8 +126,8 @@ type ListenerConfig struct {
 
 	// MaxConnsPerIP is the same bound applied per source address, so that
 	// one peer cannot hold the whole MaxConns on its own. The port is
-	// ignored and an address is counted by its prefix, IPv4PrefixBits or
-	// IPv6PrefixBits long; an IPv4-mapped IPv6 address counts as IPv4. The
+	// ignored and an address is counted by its prefix, Advanced.IPv4PrefixBits or
+	// Advanced.IPv6PrefixBits long; an IPv4-mapped IPv6 address counts as IPv4. The
 	// address is the one the first Initial came from: a peer that later
 	// migrates to another address keeps its count on the first, since the
 	// bound is on admission. A handshake admitted without a Retry has not
@@ -138,6 +143,72 @@ type ListenerConfig struct {
 	// operator chooses. Negative is refused by [NewListener].
 	MaxConnsPerIP int
 
+	// SessionTickets makes every connection send the client one session
+	// ticket once its handshake completes (RFC 9846 §4.7.1, carried in a
+	// 1-RTT CRYPTO frame as RFC 9001 §4.5 says). A client that presents it
+	// on a later connection resumes the session: the server sends no
+	// certificate chain and the client verifies none, though the handshake
+	// still takes its round trip — no data travels in 0-RTT, and the
+	// ticket does not offer it. Off by default, no ticket is sent, which
+	// keeps the session state a ticket carries off the wire.
+	//
+	// The ticket is sealed with the [tls.Config]'s session ticket keys:
+	// random per Config unless set ([tls.Config.SetSessionTicketKeys]), so
+	// a restart, or another instance, cannot open the tickets of this one
+	// and the client simply falls back to a full handshake. A Config with
+	// SessionTicketsDisabled is refused by [NewListener] alongside this
+	// field: crypto/tls would send nothing, silently. One ticket per
+	// connection is all crypto/tls sends, and the client, which presents a
+	// ticket once (see [Dial]), gets the next one on the resumed connection
+	// — for seven days from the full handshake the chain started from:
+	// past that, the resumed connection issues no ticket and the client's
+	// next connection checks the certificate again (RFC 9846 §4.7.1
+	// recommends a bound on keying material tickets keep extending).
+	SessionTickets bool
+
+	// EarlyData lets clients send their first requests in 0-RTT packets on
+	// a resumed connection, which saves them a round trip (RFC 9001 §4.6;
+	// the whole design is ADR 0019). It issues tickets as SessionTickets
+	// does, marked for 0-RTT, and a Config with SessionTicketsDisabled is
+	// refused alongside it by [NewListener]. Off by default.
+	//
+	// Early data can be a replay: anyone who copies a client's first
+	// flight can send it again, and the server cannot tell until the
+	// client's Finished arrives. The listener accepts the 0-RTT of a
+	// ticket at most once (RFC 9846 §8), and only for a ticket it issued
+	// itself — another instance, or this one after a restart, resumes the
+	// connection in 1-RTT — less than Advanced.EarlyDataWindow ago. What remains is
+	// the application's to judge: a connection with 0-RTT accepted is
+	// handed to [Listener.Accept] before its handshake ends, and whatever
+	// it receives before [Conn.HandshakeComplete] is closed may be a
+	// replay whose handshake never completes.
+	//
+	// 0-RTT is sent under the parameters the client remembers from the
+	// connection that gave it the ticket (RFC 9000 §7.4.1), which are the
+	// listener's: [NewListener] refuses EarlyData with parameters that let
+	// a client send no stream byte in 0-RTT — InitialMaxData at zero, or no
+	// stream it may open with a window — since the ticket would then
+	// promise a round trip saved that no request could use.
+	EarlyData bool
+
+	// Advanced holds the settings that ask for knowledge of QUIC, or of
+	// the deployment's own traffic, to change. Its zero value is the default
+	// of every one of them, which is where a single listener leaves it.
+	Advanced AdvancedListenerConfig
+}
+
+// AdvancedListenerConfig holds the settings of a [ListenerConfig] that ask for
+// expertise to change: how source addresses are grouped for
+// [ListenerConfig.MaxConnsPerIP], the preferred address a client may move to
+// (RFC 9000 §9.6), the datagrams queued per connection, Retry tokens and
+// stateless resets (RFC 9000 §8.1, §10.3) and their keys, and the replay
+// window of 0-RTT (RFC 9001 §4.6, RFC 8470). The keys are the ones a
+// deployment of several listeners behind one address shares, so that one
+// instance accepts the tokens and resets another minted. Each is bounded
+// by default; zero is the default and a negative value is refused by
+// [NewListener]. A field name alone in these comments is one of
+// ListenerConfig's, or of this type's.
+type AdvancedListenerConfig struct {
 	// IPv4PrefixBits and IPv6PrefixBits are how much of a source address
 	// MaxConnsPerIP counts by: two addresses that share that many leading
 	// bits share one count. Zero means 32 and 64. Every IPv6 host has at
@@ -269,54 +340,6 @@ type ListenerConfig struct {
 	// pass address validation.
 	RetryTokenKey [32]byte
 
-	// SessionTickets makes every connection send the client one session
-	// ticket once its handshake completes (RFC 9846 §4.7.1, carried in a
-	// 1-RTT CRYPTO frame as RFC 9001 §4.5 says). A client that presents it
-	// on a later connection resumes the session: the server sends no
-	// certificate chain and the client verifies none, though the handshake
-	// still takes its round trip — no data travels in 0-RTT, and the
-	// ticket does not offer it. Off by default, no ticket is sent, which
-	// keeps the session state a ticket carries off the wire.
-	//
-	// The ticket is sealed with the [tls.Config]'s session ticket keys:
-	// random per Config unless set ([tls.Config.SetSessionTicketKeys]), so
-	// a restart, or another instance, cannot open the tickets of this one
-	// and the client simply falls back to a full handshake. A Config with
-	// SessionTicketsDisabled is refused by [NewListener] alongside this
-	// field: crypto/tls would send nothing, silently. One ticket per
-	// connection is all crypto/tls sends, and the client, which presents a
-	// ticket once (see [Dial]), gets the next one on the resumed connection
-	// — for seven days from the full handshake the chain started from:
-	// past that, the resumed connection issues no ticket and the client's
-	// next connection checks the certificate again (RFC 9846 §4.7.1
-	// recommends a bound on keying material tickets keep extending).
-	SessionTickets bool
-
-	// EarlyData lets clients send their first requests in 0-RTT packets on
-	// a resumed connection, which saves them a round trip (RFC 9001 §4.6;
-	// the whole design is ADR 0019). It issues tickets as SessionTickets
-	// does, marked for 0-RTT, and a Config with SessionTicketsDisabled is
-	// refused alongside it by [NewListener]. Off by default.
-	//
-	// Early data can be a replay: anyone who copies a client's first
-	// flight can send it again, and the server cannot tell until the
-	// client's Finished arrives. The listener accepts the 0-RTT of a
-	// ticket at most once (RFC 9846 §8), and only for a ticket it issued
-	// itself — another instance, or this one after a restart, resumes the
-	// connection in 1-RTT — less than EarlyDataWindow ago. What remains is
-	// the application's to judge: a connection with 0-RTT accepted is
-	// handed to [Listener.Accept] before its handshake ends, and whatever
-	// it receives before [Conn.HandshakeComplete] is closed may be a
-	// replay whose handshake never completes.
-	//
-	// 0-RTT is sent under the parameters the client remembers from the
-	// connection that gave it the ticket (RFC 9000 §7.4.1), which are the
-	// listener's: [NewListener] refuses EarlyData with parameters that let
-	// a client send no stream byte in 0-RTT — InitialMaxData at zero, or no
-	// stream it may open with a window — since the ticket would then
-	// promise a round trip saved that no request could use.
-	EarlyData bool
-
 	// EarlyDataWindow is how long after its issue a ticket may still carry
 	// 0-RTT; an older one resumes in 1-RTT. Zero means 10 minutes; a
 	// negative value is refused by [NewListener].
@@ -336,22 +359,11 @@ type ListenerConfig struct {
 	MaxEarlyDataTickets int
 }
 
-// String prints the configuration with StatelessResetKey and TokenKey
-// hidden when they are set: either one, in a log, ends connections or mints
-// tokens, as a password in a log is a credential. A zero key, which asks
-// for a random one per listener, prints as zero.
+// String prints the configuration; its Advanced field prints by
+// [AdvancedListenerConfig.String], which hides the keys.
 func (c ListenerConfig) String() string {
 	type plain ListenerConfig // no methods: printing it does not come back here
-	s := fmt.Sprintf("quic.ListenerConfig%+v", plain(c))
-	for _, k := range []struct {
-		name string
-		key  [32]byte
-	}{{"StatelessResetKey:", c.StatelessResetKey}, {"TokenKey:", c.RetryTokenKey}} {
-		if k.key != [32]byte{} {
-			s = strings.Replace(s, k.name+fmt.Sprint(k.key), k.name+"<redacted>", 1)
-		}
-	}
-	return s
+	return fmt.Sprintf("quic.ListenerConfig%+v", plain(c))
 }
 
 // GoString hides the keys from %#v too.
@@ -360,6 +372,30 @@ func (c ListenerConfig) GoString() string { return c.String() }
 // LogValue hides them from slog: the JSON handler calls neither String nor
 // GoString, and marshals the exported fields.
 func (c ListenerConfig) LogValue() slog.Value { return slog.StringValue(c.String()) }
+
+// String prints the advanced settings with StatelessResetKey and
+// RetryTokenKey hidden when they are set: either one, in a log, ends
+// connections or mints tokens, as a password in a log is a credential. A
+// zero key, which asks for a random one per listener, prints as zero.
+func (c AdvancedListenerConfig) String() string {
+	type plain AdvancedListenerConfig // no methods: printing it does not come back here
+	s := fmt.Sprintf("quic.AdvancedListenerConfig%+v", plain(c))
+	for _, k := range []struct {
+		name string
+		key  [32]byte
+	}{{"StatelessResetKey:", c.StatelessResetKey}, {"RetryTokenKey:", c.RetryTokenKey}} {
+		if k.key != [32]byte{} {
+			s = strings.Replace(s, k.name+fmt.Sprint(k.key), k.name+"<redacted>", 1)
+		}
+	}
+	return s
+}
+
+// GoString hides the keys from %#v too.
+func (c AdvancedListenerConfig) GoString() string { return c.String() }
+
+// LogValue hides them from slog, as [ListenerConfig.LogValue] does.
+func (c AdvancedListenerConfig) LogValue() slog.Value { return slog.StringValue(c.String()) }
 
 // Listener owns one [net.PacketConn] shared by the connections it serves, and
 // is how this package serves at all. It demultiplexes
@@ -515,9 +551,9 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 	if c.MaxConnsPerIP < 0 {
 		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.MaxConnsPerIP %d is negative — zero means no bound", c.MaxConnsPerIP))
 	}
-	err = errors.Join(err, ipkey.Check("quic: ListenerConfig.", &c.IPv4PrefixBits, &c.IPv6PrefixBits))
-	if c.ConnQueueLen < 0 {
-		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.ConnQueueLen %d is negative — zero means %d", c.ConnQueueLen, defaultConnQueueLen))
+	err = errors.Join(err, ipkey.Check("quic: ListenerConfig.Advanced.", &c.Advanced.IPv4PrefixBits, &c.Advanced.IPv6PrefixBits))
+	if c.Advanced.ConnQueueLen < 0 {
+		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.Advanced.ConnQueueLen %d is negative — zero means %d", c.Advanced.ConnQueueLen, defaultConnQueueLen))
 	}
 	// The three sizes allocated from these fields up front — the accept
 	// queue, each connection's datagram queue, the reset table's hint — are
@@ -528,45 +564,45 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 		v, limit int
 	}{
 		{"MaxPendingConns", c.MaxPendingConns, maxPendingConnsLimit},
-		{"ConnQueueLen", c.ConnQueueLen, maxConnQueueLen},
-		{"StatelessResetsPerSecond", c.StatelessResetsPerSecond, maxResetsPerSecond},
+		{"Advanced.ConnQueueLen", c.Advanced.ConnQueueLen, maxConnQueueLen},
+		{"Advanced.StatelessResetsPerSecond", c.Advanced.StatelessResetsPerSecond, maxResetsPerSecond},
 	} {
 		if f.v > f.limit {
 			err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.%s %d is past %d, the most the listener allocates for it", f.name, f.v, f.limit))
 		}
 	}
-	if c.RetryTokenTTL < 0 {
-		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.RetryTokenTTL %v is negative — zero means %v", c.RetryTokenTTL, defaultRetryTokenTTL))
+	if c.Advanced.RetryTokenTTL < 0 {
+		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.Advanced.RetryTokenTTL %v is negative — zero means %v", c.Advanced.RetryTokenTTL, defaultRetryTokenTTL))
 	}
-	if c.MaxSpentRetryTokens < 0 {
-		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.MaxSpentRetryTokens %d is negative — zero means %d", c.MaxSpentRetryTokens, defaultMaxSpentRetryTokens))
+	if c.Advanced.MaxSpentRetryTokens < 0 {
+		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.Advanced.MaxSpentRetryTokens %d is negative — zero means %d", c.Advanced.MaxSpentRetryTokens, defaultMaxSpentRetryTokens))
 	}
-	if c.StatelessResetsPerSecond < 0 {
-		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.StatelessResetsPerSecond %d is negative — zero means %d", c.StatelessResetsPerSecond, defaultResetsPerSecond))
+	if c.Advanced.StatelessResetsPerSecond < 0 {
+		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.Advanced.StatelessResetsPerSecond %d is negative — zero means %d", c.Advanced.StatelessResetsPerSecond, defaultResetsPerSecond))
 	}
-	if c.StatelessResetsPerAddress < 0 {
-		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.StatelessResetsPerAddress %d is negative — zero means %d", c.StatelessResetsPerAddress, defaultResetsPerAddress))
+	if c.Advanced.StatelessResetsPerAddress < 0 {
+		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.Advanced.StatelessResetsPerAddress %d is negative — zero means %d", c.Advanced.StatelessResetsPerAddress, defaultResetsPerAddress))
 	}
-	if c.EarlyDataWindow < 0 {
-		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.EarlyDataWindow %v is negative — zero means %v", c.EarlyDataWindow, defaultEarlyDataWindow))
+	if c.Advanced.EarlyDataWindow < 0 {
+		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.Advanced.EarlyDataWindow %v is negative — zero means %v", c.Advanced.EarlyDataWindow, defaultEarlyDataWindow))
 	}
-	if c.MaxEarlyDataTickets < 0 {
-		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.MaxEarlyDataTickets %d is negative — zero means %d", c.MaxEarlyDataTickets, defaultMaxEarlyDataTickets))
+	if c.Advanced.MaxEarlyDataTickets < 0 {
+		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.Advanced.MaxEarlyDataTickets %d is negative — zero means %d", c.Advanced.MaxEarlyDataTickets, defaultMaxEarlyDataTickets))
 	}
-	if c.RetryTokenKey != ([32]byte{}) && c.RetryTokenKey == c.StatelessResetKey {
-		err = errors.Join(err, errors.New("quic: ListenerConfig.TokenKey equals StatelessResetKey — one key, two uses; give each its own"))
+	if c.Advanced.RetryTokenKey != ([32]byte{}) && c.Advanced.RetryTokenKey == c.Advanced.StatelessResetKey {
+		err = errors.Join(err, errors.New("quic: ListenerConfig.Advanced.RetryTokenKey equals StatelessResetKey — one key, two uses; give each its own"))
 	}
-	if c.PreferredIPv4.IsValid() {
-		c.PreferredIPv4 = c.PreferredIPv4.Unmap()
-		if !c.PreferredIPv4.Is4() || c.PreferredIPv4.IsUnspecified() {
-			err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.PreferredIPv4 %v is not an IPv4 address a client can send to", c.PreferredIPv4))
+	if c.Advanced.PreferredIPv4.IsValid() {
+		c.Advanced.PreferredIPv4 = c.Advanced.PreferredIPv4.Unmap()
+		if !c.Advanced.PreferredIPv4.Is4() || c.Advanced.PreferredIPv4.IsUnspecified() {
+			err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.Advanced.PreferredIPv4 %v is not an IPv4 address a client can send to", c.Advanced.PreferredIPv4))
 		}
 	}
-	if c.PreferredIPv6.IsValid() && (!c.PreferredIPv6.Is6() || c.PreferredIPv6.Is4In6() || c.PreferredIPv6.IsUnspecified()) {
-		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.PreferredIPv6 %v is not an IPv6 address a client can send to", c.PreferredIPv6))
+	if c.Advanced.PreferredIPv6.IsValid() && (!c.Advanced.PreferredIPv6.Is6() || c.Advanced.PreferredIPv6.Is4In6() || c.Advanced.PreferredIPv6.IsUnspecified()) {
+		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.Advanced.PreferredIPv6 %v is not an IPv6 address a client can send to", c.Advanced.PreferredIPv6))
 	}
-	if c.PreferredSocket == nil && (c.PreferredIPv4.IsValid() || c.PreferredIPv6.IsValid()) {
-		err = errors.Join(err, errors.New("quic: ListenerConfig.PreferredIPv4 or PreferredIPv6 is set without a PreferredAddress socket to announce"))
+	if c.Advanced.PreferredSocket == nil && (c.Advanced.PreferredIPv4.IsValid() || c.Advanced.PreferredIPv6.IsValid()) {
+		err = errors.Join(err, errors.New("quic: ListenerConfig.Advanced.PreferredIPv4 or PreferredIPv6 is set without a PreferredSocket to announce"))
 	}
 	if err != nil {
 		return ListenerConfig{}, err
@@ -577,30 +613,30 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 	if c.HandshakeTimeout == 0 {
 		c.HandshakeTimeout = DefaultHandshakeTimeout
 	}
-	if c.ConnQueueLen == 0 {
-		c.ConnQueueLen = defaultConnQueueLen
+	if c.Advanced.ConnQueueLen == 0 {
+		c.Advanced.ConnQueueLen = defaultConnQueueLen
 	}
-	if c.RetryTokenTTL == 0 {
-		c.RetryTokenTTL = defaultRetryTokenTTL
+	if c.Advanced.RetryTokenTTL == 0 {
+		c.Advanced.RetryTokenTTL = defaultRetryTokenTTL
 	}
-	if c.EarlyDataWindow == 0 {
-		c.EarlyDataWindow = defaultEarlyDataWindow
+	if c.Advanced.EarlyDataWindow == 0 {
+		c.Advanced.EarlyDataWindow = defaultEarlyDataWindow
 	}
-	if c.MaxEarlyDataTickets == 0 {
-		c.MaxEarlyDataTickets = defaultMaxEarlyDataTickets
+	if c.Advanced.MaxEarlyDataTickets == 0 {
+		c.Advanced.MaxEarlyDataTickets = defaultMaxEarlyDataTickets
 	}
-	if c.MaxSpentRetryTokens == 0 {
-		c.MaxSpentRetryTokens = defaultMaxSpentRetryTokens
+	if c.Advanced.MaxSpentRetryTokens == 0 {
+		c.Advanced.MaxSpentRetryTokens = defaultMaxSpentRetryTokens
 	}
-	if c.StatelessResetsPerSecond == 0 {
-		c.StatelessResetsPerSecond = defaultResetsPerSecond
+	if c.Advanced.StatelessResetsPerSecond == 0 {
+		c.Advanced.StatelessResetsPerSecond = defaultResetsPerSecond
 	}
-	if c.StatelessResetsPerAddress == 0 {
-		c.StatelessResetsPerAddress = defaultResetsPerAddress
+	if c.Advanced.StatelessResetsPerAddress == 0 {
+		c.Advanced.StatelessResetsPerAddress = defaultResetsPerAddress
 	}
 	// A random key per listener when none is given; both are drawn here so
 	// that what the listener runs with is all in its resolved config.
-	for _, k := range []*[32]byte{&c.StatelessResetKey, &c.RetryTokenKey} {
+	for _, k := range []*[32]byte{&c.Advanced.StatelessResetKey, &c.Advanced.RetryTokenKey} {
 		if *k == ([32]byte{}) {
 			_, _ = rand.Read(k[:]) // never fails since Go 1.24
 		}
@@ -654,9 +690,9 @@ func NewListener(pc net.PacketConn, tlsCfg *tls.Config, quicCfg Config, lcfg Lis
 		}
 	}
 	var preferredV4, preferredV6 *net.UDPAddr
-	if lcfg.PreferredSocket != nil {
+	if lcfg.Advanced.PreferredSocket != nil {
 		var err error
-		preferredV4, preferredV6, err = preferredAnnouncements(lcfg.PreferredSocket.LocalAddr(), lcfg.PreferredIPv4, lcfg.PreferredIPv6)
+		preferredV4, preferredV6, err = preferredAnnouncements(lcfg.Advanced.PreferredSocket.LocalAddr(), lcfg.Advanced.PreferredIPv4, lcfg.Advanced.PreferredIPv6)
 		if err != nil {
 			return nil, err
 		}
@@ -666,9 +702,9 @@ func NewListener(pc net.PacketConn, tlsCfg *tls.Config, quicCfg Config, lcfg Lis
 		return nil, err
 	}
 	l := &Listener{
-		pc: pc, sourced: packetInfoSocket(pc), preferred: lcfg.PreferredSocket, preferredV4: preferredV4, preferredV6: preferredV6,
+		pc: pc, sourced: packetInfoSocket(pc), preferred: lcfg.Advanced.PreferredSocket, preferredV4: preferredV4, preferredV6: preferredV6,
 		cfg: serverTLSConfig(tlsCfg), params: quicCfg, lcfg: lcfg,
-		spent:           spentTokens{ttl: lcfg.RetryTokenTTL, max: lcfg.MaxSpentRetryTokens},
+		spent:           spentTokens{ttl: lcfg.Advanced.RetryTokenTTL, max: lcfg.Advanced.MaxSpentRetryTokens},
 		byDCID:          make(map[string]*Conn),
 		keysOf:          make(map[*Conn][]string),
 		pendingConns:    make(map[*Conn]struct{}),
@@ -684,7 +720,7 @@ func NewListener(pc net.PacketConn, tlsCfg *tls.Config, quicCfg Config, lcfg Lis
 		done:            make(chan struct{}),
 	}
 	if lcfg.EarlyData {
-		l.early = newEarlyGate(lcfg.EarlyDataWindow, lcfg.MaxEarlyDataTickets)
+		l.early = newEarlyGate(lcfg.Advanced.EarlyDataWindow, lcfg.Advanced.MaxEarlyDataTickets)
 	}
 	if l.preferred != nil {
 		l.preferredSourced = packetInfoSocket(l.preferred)
@@ -1275,7 +1311,7 @@ func initialPacketDecrypts(h longHeader) (initialKeys, bool) {
 // dispatcher made for a tokenless one.
 func (l *Listener) handleRetryFlow(datagram []byte, from net.Addr, h longHeader, keys *initialKeys, via net.PacketConn, ecn uint8, retry bool) {
 	if len(h.Token) > 0 {
-		rt, err := verifyRetryToken(h.Token, l.lcfg.RetryTokenKey, l.lcfg.RetryTokenTTL, from)
+		rt, err := verifyRetryToken(h.Token, l.lcfg.Advanced.RetryTokenKey, l.lcfg.Advanced.RetryTokenTTL, from)
 		switch {
 		case errors.Is(err, errForeignToken):
 			// RFC 9000 §8.1.3: a token the server cannot validate — here,
@@ -1324,7 +1360,7 @@ func (l *Listener) handleRetryFlow(datagram []byte, from net.Addr, h longHeader,
 	if err != nil {
 		return // nothing to send; the client's own retransmission tries again
 	}
-	token := appendRetryToken(nil, l.lcfg.RetryTokenKey, from, h.DCID, newSCID)
+	token := appendRetryToken(nil, l.lcfg.Advanced.RetryTokenKey, from, h.DCID, newSCID)
 	pkt := appendRetryPacket(nil, h.SCID, newSCID, h.DCID, token)
 	_, _ = via.WriteTo(pkt, from) // best effort; a lost Retry just looks like a lost Initial to the client
 }
@@ -1456,7 +1492,7 @@ func (l *Listener) bootstrapConn(datagram []byte, from net.Addr, h longHeader, r
 	go l.runHandshake(c, datagram, from, ecn)
 }
 
-// defaultConnQueueLen is what a zero [ListenerConfig.ConnQueueLen] means;
+// defaultConnQueueLen is what a zero [AdvancedListenerConfig.ConnQueueLen] means;
 // the field's comment has the measurement behind it.
 const defaultConnQueueLen = 64
 
@@ -1472,7 +1508,7 @@ func (l *Listener) prepareConn(c *Conn) error {
 	t := l.resetTokenFor(c.scid)
 	c.params.statelessResetToken = t[:]
 	c.registrar = l
-	c.incoming = make(chan rawDatagram, l.lcfg.ConnQueueLen)
+	c.incoming = make(chan rawDatagram, l.lcfg.Advanced.ConnQueueLen)
 	c.fedDone = make(chan struct{})
 	c.sendsTicket = l.lcfg.SessionTickets || l.lcfg.EarlyData
 	c.early = l.early
@@ -1495,7 +1531,7 @@ func (l *Listener) prepareConn(c *Conn) error {
 }
 
 // preferredAnnouncements resolves what a listener announces for its
-// preferred-address socket, bound at local, from [ListenerConfig.PreferredIPv4]
+// preferred-address socket, bound at local, from [AdvancedListenerConfig.PreferredIPv4]
 // and PreferredIPv6, already checked for their family by resolve: each on
 // the socket's port. With neither, the socket's own address is announced
 // and must be concrete; a socket on a concrete address accepts only that
@@ -1767,20 +1803,20 @@ func (l *Listener) removeLocalCID(cid []byte) {
 // makes the reset *stateless* — the token can be recomputed, and honoured,
 // after every trace of the connection is gone.
 func (l *Listener) resetTokenFor(cid []byte) [16]byte {
-	mac := hmac.New(sha256.New, l.lcfg.StatelessResetKey[:])
+	mac := hmac.New(sha256.New, l.lcfg.Advanced.StatelessResetKey[:])
 	mac.Write(cid)
 	var token [16]byte
 	copy(token[:], mac.Sum(nil))
 	return token
 }
 
-// defaultResetsPerSecond is ListenerConfig.StatelessResetsPerSecond when
+// defaultResetsPerSecond is ListenerConfig.Advanced.StatelessResetsPerSecond when
 // zero: each reset is an answer to unauthenticated bytes, and answering
 // every stray at line rate would make the listener a traffic generator
 // pointed wherever the source addresses claim (§10.3.3).
 const defaultResetsPerSecond = 16
 
-// defaultResetsPerAddress is ListenerConfig.StatelessResetsPerAddress when
+// defaultResetsPerAddress is ListenerConfig.Advanced.StatelessResetsPerAddress when
 // zero. Without a share per address, one sender spraying short headers at
 // random identifiers spends the whole budget, and every genuine client
 // whose connection this listener lost waits out its idle timeout instead.
@@ -1904,7 +1940,7 @@ func (l *Listener) resetBudgetLocked(now time.Time, src string) bool {
 		l.resetWindow, l.resetsSent = now, 0
 		clear(l.resetsTo)
 	}
-	return l.resetsSent < l.lcfg.StatelessResetsPerSecond && l.resetsTo[src] < l.lcfg.StatelessResetsPerAddress
+	return l.resetsSent < l.lcfg.Advanced.StatelessResetsPerSecond && l.resetsTo[src] < l.lcfg.Advanced.StatelessResetsPerAddress
 }
 
 // maybeSendStatelessReset answers one unroutable short-header datagram with
@@ -1932,7 +1968,7 @@ func (l *Listener) maybeSendStatelessReset(datagram, dcid []byte, from net.Addr,
 	}
 	l.resetsSent++
 	if l.resetsTo == nil {
-		l.resetsTo = make(map[string]int, l.lcfg.StatelessResetsPerSecond)
+		l.resetsTo = make(map[string]int, l.lcfg.Advanced.StatelessResetsPerSecond)
 	}
 	l.resetsTo[src]++
 	l.mu.Unlock()
@@ -1970,7 +2006,7 @@ func sourceIP(from net.Addr) string {
 func (l *Listener) connKey(from net.Addr) string {
 	if ua, ok := from.(*net.UDPAddr); ok {
 		if ip, ok := netip.AddrFromSlice(ua.IP); ok {
-			return string(ipkey.Of(ip, l.lcfg.IPv4PrefixBits, l.lcfg.IPv6PrefixBits).Addr().AsSlice())
+			return string(ipkey.Of(ip, l.lcfg.Advanced.IPv4PrefixBits, l.lcfg.Advanced.IPv6PrefixBits).Addr().AsSlice())
 		}
 	}
 	return from.String()

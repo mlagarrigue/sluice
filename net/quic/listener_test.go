@@ -380,7 +380,7 @@ func TestListenerAnnouncesItsPreferredAddress(t *testing.T) {
 	if err != nil {
 		t.Skipf("no 127.0.0.2 on this host: %v", err)
 	}
-	l, addr := newUDPListener(t, quic.ListenerConfig{PreferredSocket: pref})
+	l, addr := newUDPListener(t, quic.ListenerConfig{Advanced: quic.AdvancedListenerConfig{PreferredSocket: pref}})
 
 	accepted := make(chan *quic.Conn, 1)
 	go func() {
@@ -612,8 +612,8 @@ func TestValidateIsNewListenersCheck(t *testing.T) {
 		// Validate accepted these and NewListener, or the first
 		// connection, panicked in make.
 		{name: "MaxPendingConns past its bound", params: quic.DefaultConfig(), lcfg: quic.ListenerConfig{MaxPendingConns: math.MaxInt}, got: quic.ListenerConfig{MaxPendingConns: math.MaxInt}.Validate()},
-		{name: "ConnQueueLen past its bound", params: quic.DefaultConfig(), lcfg: quic.ListenerConfig{ConnQueueLen: 1<<16 + 1}, got: quic.ListenerConfig{ConnQueueLen: 1<<16 + 1}.Validate()},
-		{name: "StatelessResetsPerSecond past its bound", params: quic.DefaultConfig(), lcfg: quic.ListenerConfig{StatelessResetsPerSecond: math.MaxInt}, got: quic.ListenerConfig{StatelessResetsPerSecond: math.MaxInt}.Validate()},
+		{name: "ConnQueueLen past its bound", params: quic.DefaultConfig(), lcfg: quic.ListenerConfig{Advanced: quic.AdvancedListenerConfig{ConnQueueLen: 1<<16 + 1}}, got: quic.ListenerConfig{Advanced: quic.AdvancedListenerConfig{ConnQueueLen: 1<<16 + 1}}.Validate()},
+		{name: "StatelessResetsPerSecond past its bound", params: quic.DefaultConfig(), lcfg: quic.ListenerConfig{Advanced: quic.AdvancedListenerConfig{StatelessResetsPerSecond: math.MaxInt}}, got: quic.ListenerConfig{Advanced: quic.AdvancedListenerConfig{StatelessResetsPerSecond: math.MaxInt}}.Validate()},
 	} {
 		udp, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
 		if err != nil {

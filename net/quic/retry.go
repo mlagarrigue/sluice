@@ -29,7 +29,7 @@ import (
 // Retry scheme; a key kept across restarts or shared between instances
 // spares even that.
 
-// defaultRetryTokenTTL is what a zero [ListenerConfig.RetryTokenTTL] means.
+// defaultRetryTokenTTL is what a zero [AdvancedListenerConfig.RetryTokenTTL] means.
 const defaultRetryTokenTTL = 10 * time.Second
 
 // spentTokens remembers each Retry token that already admitted a connection,
@@ -60,7 +60,7 @@ type spentTokens struct {
 }
 
 // defaultMaxSpentRetryTokens is what a zero
-// [ListenerConfig.MaxSpentRetryTokens] means: an entry is a key of
+// [AdvancedListenerConfig.MaxSpentRetryTokens] means: an entry is a key of
 // listenerCIDLen bytes and a time, about 125 bytes with the map's and the
 // order slice's overhead, 2.04 MB measured at this figure — and reaching it
 // takes that many Retry tokens consumed by connections within one TTL.
@@ -199,7 +199,7 @@ var errForeignToken = fmt.Errorf("%w: a token this listener did not issue", ErrQ
 
 // verifyRetryToken checks a token a client echoed on its post-Retry Initial:
 // the HMAC must verify, the token must not have expired, and it must name
-// the peer address it is arriving from. ttl is [ListenerConfig.RetryTokenTTL]. On success it returns the original
+// the peer address it is arriving from. ttl is [AdvancedListenerConfig.RetryTokenTTL]. On success it returns the original
 // destination identifier and server-chosen identifier the token bound,
 // which is everything [newServerConn] needs beyond what the Initial itself
 // carries. A token the HMAC does not recognise is [errForeignToken]; any

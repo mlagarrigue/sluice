@@ -105,7 +105,8 @@ fifteen settings, their defaults and bounds:
 
 `ListenerConfig` holds the server side's own bounds and policies, none of
 them on the wire: pending and open connections, Retry, stateless resets,
-tickets and 0-RTT. Its twenty-one settings, their zero values and bounds:
+tickets and 0-RTT. Its seven settings, and the fourteen advanced ones under
+`ListenerConfig.Advanced`, with their zero values and bounds:
 [reference](../reference/quic.md#listener-settings).
 
 ### Choosing a congestion controller

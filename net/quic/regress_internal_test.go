@@ -609,7 +609,7 @@ func TestInvalidRetryTokenGetsAnImmediateClose(t *testing.T) {
 	// A TTL far below the default, so the token below — one second old,
 	// fresh by the default's measure — is refused only if RetryTokenTTL is
 	// what the listener reads.
-	l, err := NewListener(serverPC, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{AlwaysRetry: true, RetryTokenTTL: 100 * time.Millisecond})
+	l, err := NewListener(serverPC, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{AlwaysRetry: true, Advanced: AdvancedListenerConfig{RetryTokenTTL: 100 * time.Millisecond}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -626,7 +626,7 @@ func TestInvalidRetryTokenGetsAnImmediateClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	token := appendRetryTokenAt(nil, l.lcfg.RetryTokenKey, time.Now().Add(-time.Second), clientPC.LocalAddr(), []byte("orig-dst"), dcid)
+	token := appendRetryTokenAt(nil, l.lcfg.Advanced.RetryTokenKey, time.Now().Add(-time.Second), clientPC.LocalAddr(), []byte("orig-dst"), dcid)
 	const pnLen = 4
 	var header []byte
 	header = append(header, 0xc0|byte(packetInitial)<<4|byte(pnLen-1))

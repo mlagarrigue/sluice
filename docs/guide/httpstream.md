@@ -137,8 +137,9 @@ sender; the server does not know the other schemes).
 ### `net/httpstream` settings
 
 Each field of `Config` left at zero takes a default, and a negative value
-is refused, with the field's name, before anything is read. The thirty
-settings, their zero values, bounds and the protocols they act on:
+is refused, with the field's name, before anything is read. The seventeen
+settings, the thirteen advanced ones under `Config.Advanced`, their zero
+values, bounds and the protocols they act on:
 [reference](../reference/httpstream.md#nethttpstream-settings).
 
 Over HTTP/3 the windows are the transport's: `Config.QUICConfig()`

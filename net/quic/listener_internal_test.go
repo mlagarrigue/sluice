@@ -285,7 +285,7 @@ func TestForeignTokenIsAnsweredWithARetry(t *testing.T) {
 	// The witness: the same token under this listener's key but for another
 	// address is a Retry token this listener issued and cannot accept —
 	// INVALID_TOKEN (§8.1.2), as before.
-	elsewhere := appendRetryToken(nil, l.lcfg.RetryTokenKey, fakeFuzzAddr("client:other"), []byte("orig-dst"), dcid)
+	elsewhere := appendRetryToken(nil, l.lcfg.Advanced.RetryTokenKey, fakeFuzzAddr("client:other"), []byte("orig-dst"), dcid)
 	l.dispatch(sealedClientInitialWithToken(t, dcid, scid, elsewhere), from, l.pc, 0)
 	if codes := statelessCloseCodes(t, pc.taken(), dcid); len(codes) != 1 || codes[0] != transportInvalidToken {
 		t.Errorf("this listener's token for another address got %v, want one INVALID_TOKEN close", codes)
@@ -758,7 +758,7 @@ func TestStatelessResetBudgetIsPerSource(t *testing.T) {
 func TestStatelessResetBudgetIsConfigured(t *testing.T) {
 	pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
 	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultConfig(),
-		ListenerConfig{StatelessResetsPerSecond: 3, StatelessResetsPerAddress: 2})
+		ListenerConfig{Advanced: AdvancedListenerConfig{StatelessResetsPerSecond: 3, StatelessResetsPerAddress: 2}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -783,7 +783,7 @@ func TestStatelessResetBudgetIsConfigured(t *testing.T) {
 	}
 
 	if _, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13}, DefaultConfig(),
-		ListenerConfig{StatelessResetsPerSecond: -1}); err == nil {
+		ListenerConfig{Advanced: AdvancedListenerConfig{StatelessResetsPerSecond: -1}}); err == nil {
 		t.Error("a negative reset budget was accepted")
 	}
 }
@@ -1485,8 +1485,7 @@ func TestListenerConfigRefusesOutOfRangeValues(t *testing.T) {
 		HandshakeTimeout: -time.Second,
 		MaxConns:         -2,
 		MaxConnsPerIP:    -3,
-		IPv4PrefixBits:   33,
-		IPv6PrefixBits:   -1,
+		Advanced:         AdvancedListenerConfig{IPv4PrefixBits: 33, IPv6PrefixBits: -1},
 	})
 	if err == nil {
 		t.Fatal("NewListener accepted negative ListenerConfig values")
@@ -1496,8 +1495,8 @@ func TestListenerConfigRefusesOutOfRangeValues(t *testing.T) {
 		"ListenerConfig.HandshakeTimeout -1s is negative — zero means " + DefaultHandshakeTimeout.String(),
 		"ListenerConfig.MaxConns -2 is negative — zero means no bound",
 		"ListenerConfig.MaxConnsPerIP -3 is negative — zero means no bound",
-		"ListenerConfig.IPv4PrefixBits 33 is outside 1..32 — zero means 32",
-		"ListenerConfig.IPv6PrefixBits -1 is outside 1..128 — zero means 64",
+		"ListenerConfig.Advanced.IPv4PrefixBits 33 is outside 1..32 — zero means 32",
+		"ListenerConfig.Advanced.IPv6PrefixBits -1 is outside 1..128 — zero means 64",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not say %q", err, want)
@@ -1514,10 +1513,10 @@ func TestListenerConfigTuningAndKeys(t *testing.T) {
 		field string
 		lcfg  ListenerConfig
 	}{
-		{"ConnQueueLen", ListenerConfig{ConnQueueLen: -1}},
-		{"RetryTokenTTL", ListenerConfig{RetryTokenTTL: -time.Second}},
-		{"MaxSpentRetryTokens", ListenerConfig{MaxSpentRetryTokens: -1}},
-		{"TokenKey", ListenerConfig{RetryTokenKey: [32]byte{1}, StatelessResetKey: [32]byte{1}}},
+		{"Advanced.ConnQueueLen", ListenerConfig{Advanced: AdvancedListenerConfig{ConnQueueLen: -1}}},
+		{"Advanced.RetryTokenTTL", ListenerConfig{Advanced: AdvancedListenerConfig{RetryTokenTTL: -time.Second}}},
+		{"Advanced.MaxSpentRetryTokens", ListenerConfig{Advanced: AdvancedListenerConfig{MaxSpentRetryTokens: -1}}},
+		{"Advanced.RetryTokenKey", ListenerConfig{Advanced: AdvancedListenerConfig{RetryTokenKey: [32]byte{1}, StatelessResetKey: [32]byte{1}}}},
 	}
 	for _, r := range refused {
 		_, err := NewListener(nil, ServerTLSForTest(t), DefaultConfig(), r.lcfg)
@@ -1529,27 +1528,27 @@ func TestListenerConfigTuningAndKeys(t *testing.T) {
 	if a, b := (ListenerConfig{}), (ListenerConfig{}); a != b {
 		t.Error("two zero ListenerConfigs compare unequal")
 	}
-	given := ListenerConfig{StatelessResetKey: [32]byte{1}, RetryTokenKey: [32]byte{2}}
+	given := ListenerConfig{Advanced: AdvancedListenerConfig{StatelessResetKey: [32]byte{1}, RetryTokenKey: [32]byte{2}}}
 	got, err := given.resolve()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.ConnQueueLen != 64 || got.RetryTokenTTL != 10*time.Second || got.MaxSpentRetryTokens != 16384 {
+	if got.Advanced.ConnQueueLen != 64 || got.Advanced.RetryTokenTTL != 10*time.Second || got.Advanced.MaxSpentRetryTokens != 16384 {
 		t.Errorf("zero resolved to ConnQueueLen %d, RetryTokenTTL %v, MaxSpentRetryTokens %d; want 64, 10s, 16384",
-			got.ConnQueueLen, got.RetryTokenTTL, got.MaxSpentRetryTokens)
+			got.Advanced.ConnQueueLen, got.Advanced.RetryTokenTTL, got.Advanced.MaxSpentRetryTokens)
 	}
-	if got.StatelessResetKey != given.StatelessResetKey || got.RetryTokenKey != given.RetryTokenKey {
+	if got.Advanced.StatelessResetKey != given.Advanced.StatelessResetKey || got.Advanced.RetryTokenKey != given.Advanced.RetryTokenKey {
 		t.Error("a given key was replaced")
 	}
 	r1, _ := ListenerConfig{}.resolve()
 	r2, _ := ListenerConfig{}.resolve()
 	var zero [32]byte
-	if r1.StatelessResetKey == zero || r1.RetryTokenKey == zero || r1.StatelessResetKey == r2.StatelessResetKey || r1.RetryTokenKey == r2.RetryTokenKey {
+	if r1.Advanced.StatelessResetKey == zero || r1.Advanced.RetryTokenKey == zero || r1.Advanced.StatelessResetKey == r2.Advanced.StatelessResetKey || r1.Advanced.RetryTokenKey == r2.Advanced.RetryTokenKey {
 		t.Error("a zero key did not resolve to a fresh random one per listener")
 	}
 
 	pc := &capturePC{fuzzSink: fuzzSink{addr: "cfg:self"}, stopped: make(chan struct{})}
-	l, err := NewListener(pc, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{ConnQueueLen: 3})
+	l, err := NewListener(pc, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{Advanced: AdvancedListenerConfig{ConnQueueLen: 3}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1593,7 +1592,7 @@ func TestRestartedListenerResetsWithTheSameKey(t *testing.T) {
 		{"fresh key", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			first := ListenerConfig{StatelessResetKey: [32]byte{7}}
+			first := ListenerConfig{Advanced: AdvancedListenerConfig{StatelessResetKey: [32]byte{7}}}
 			raw, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
 			if err != nil {
 				t.Fatal(err)
@@ -1635,7 +1634,7 @@ func TestRestartedListenerResetsWithTheSameKey(t *testing.T) {
 			}
 			second := ListenerConfig{}
 			if tc.sameKey {
-				second.StatelessResetKey = first.StatelessResetKey
+				second.Advanced.StatelessResetKey = first.Advanced.StatelessResetKey
 			}
 			l2, err := NewListener(raw2, ServerTLSForTest(t), DefaultConfig(), second)
 			if err != nil {

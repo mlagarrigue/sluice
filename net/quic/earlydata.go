@@ -8,9 +8,9 @@ import (
 	"time"
 )
 
-// defaultEarlyDataWindow is what a zero [ListenerConfig.EarlyDataWindow]
+// defaultEarlyDataWindow is what a zero [AdvancedListenerConfig.EarlyDataWindow]
 // means, and defaultMaxEarlyDataTickets what a zero
-// [ListenerConfig.MaxEarlyDataTickets] means: as many entries as the record
+// [AdvancedListenerConfig.MaxEarlyDataTickets] means: as many entries as the record
 // of spent Retry tokens holds by default, and full at 27 0-RTT connections
 // a second sustained over the default window.
 const (

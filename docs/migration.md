@@ -90,7 +90,7 @@ behavior that keep the signatures — a value now refused — come last.
 
 ### HTTP: `net/httpstream`
 
-- **The expert settings move under `Config.Advanced`** (feat(httpstream)!: expert settings move under Config.Advanced):
+- **The expert settings move under `Config.Advanced`** (`5a3fc66`):
   `MaxRequestsPerBatch`, `ReadProgressBytes`, `WriteProgressBytes`, `IPv4PrefixBits`, `IPv6PrefixBits`,
   `LingerTimeout`, `MaxFrameSize`, `MaxFramesPerBatch`, `MaxContinuationFrames`, `InitialWindowSize`,
   `MaxPendingControlBytes`, `MaxWriteBufferBytes` and `QPACKStatic` are fields of the new
@@ -115,6 +115,15 @@ behavior that keep the signatures — a value now refused — come last.
 
 ### QUIC: `net/quic`
 
+- **The expert listener settings move under `ListenerConfig.Advanced`** (feat(quic)!: expert listener settings move under Advanced, ADR 0015):
+  `IPv4PrefixBits`, `IPv6PrefixBits`, `PreferredSocket`, `PreferredIPv4`, `PreferredIPv6`,
+  `ConnQueueLen`, `RetryTokenTTL`, `MaxSpentRetryTokens`, `StatelessResetsPerSecond`,
+  `StatelessResetsPerAddress`, `StatelessResetKey`, `RetryTokenKey`, `EarlyDataWindow` and
+  `MaxEarlyDataTickets` are fields of the new `AdvancedListenerConfig`, which `ListenerConfig` holds
+  as `Advanced`. Write `Advanced: quic.AdvancedListenerConfig{RetryTokenKey: key}` in a literal and
+  `lc.Advanced.RetryTokenKey` elsewhere; the defaults, the bounds and what each field does are
+  unchanged, the keys are still hidden when the configuration is printed, and an error now names
+  the field `ListenerConfig.Advanced.RetryTokenKey`.
 - **Names that read as what they hold** (`b5806e3`):
   `Credit` is renamed `CreditPolicy` (a policy, not an amount; `CreditOnDelivery` and
   `CreditOnRelease` keep theirs), `ListenerConfig.PreferredAddress` is renamed `PreferredSocket`

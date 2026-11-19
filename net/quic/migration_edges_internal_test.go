@@ -55,7 +55,7 @@ func TestParametersAtTheirEdges(t *testing.T) {
 
 // A listener takes its bounds themselves.
 func TestListenerConfigAtItsBounds(t *testing.T) {
-	c := ListenerConfig{MaxPendingConns: maxPendingConnsLimit, ConnQueueLen: maxConnQueueLen, StatelessResetsPerSecond: maxResetsPerSecond}
+	c := ListenerConfig{MaxPendingConns: maxPendingConnsLimit, Advanced: AdvancedListenerConfig{ConnQueueLen: maxConnQueueLen, StatelessResetsPerSecond: maxResetsPerSecond}}
 	if err := c.Validate(); err != nil {
 		t.Errorf("Validate at the bounds: %v", err)
 	}
@@ -84,7 +84,7 @@ func (c closeFails) Close() error { _ = c.PacketConn.Close(); return errCloseFai
 // Close reports the preferred-address socket's failure.
 func TestListenerCloseReportsThePreferredSocket(t *testing.T) {
 	pc, other := newLoopbackPair(t)
-	l, err := NewListener(pc, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{PreferredSocket: closeFails{other}})
+	l, err := NewListener(pc, ServerTLSForTest(t), DefaultConfig(), ListenerConfig{Advanced: AdvancedListenerConfig{PreferredSocket: closeFails{other}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestResetBudgetWindow(t *testing.T) {
 	now := time.Now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.resetWindow, l.resetsSent = now.Add(-time.Second), l.lcfg.StatelessResetsPerSecond
+	l.resetWindow, l.resetsSent = now.Add(-time.Second), l.lcfg.Advanced.StatelessResetsPerSecond
 	if !l.resetBudgetLocked(now, "a") {
 		t.Error("no budget a second after the window opened")
 	}
@@ -559,7 +559,7 @@ func TestRetryTokenVerifiedWithoutForcedRetry(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = l.Close() })
 	newSCID := []byte("newscid1")
-	token := appendRetryToken(nil, l.lcfg.RetryTokenKey, cli.LocalAddr(), []byte("odcid000"), newSCID)
+	token := appendRetryToken(nil, l.lcfg.Advanced.RetryTokenKey, cli.LocalAddr(), []byte("odcid000"), newSCID)
 	if _, err := cli.WriteTo(sealedClientInitialWithToken(t, newSCID, []byte("clientsc"), token), srv.LocalAddr()); err != nil {
 		t.Fatal(err)
 	}

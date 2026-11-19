@@ -1,7 +1,7 @@
 # ADR 0015 — The QUIC server: transport machinery, a real listener, a moving client
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-11-19 (`PreferredSocket`, `RetryTokenKey`); 22 earlier, from 2026-10-03, in its `git log`
+- **Revised:** 2026-11-19 (`PreferredSocket`, `RetryTokenKey`; the expert settings under `ListenerConfig.Advanced`); 22 earlier, from 2026-10-03, in its `git log`
 - **Theme:** quic
 
 ## Problem
@@ -140,7 +140,7 @@ restored (§9.3.2); with none known, the connection closes silently.
 
 The client has `Conn.Rebind` (a new socket, a fatal probe), and moves to a
 server's preferred address on its own after the handshake. The server half
-is `ListenerConfig.PreferredSocket`, a second socket the listener reads
+is `ListenerConfig.Advanced.PreferredSocket`, a second socket the listener reads
 and announces: it is public because the feature is otherwise unreachable,
 and the parameter's whole point (§9.6) is a server behind a shared address —
 a deployment, not a test. The preferred address is announced by

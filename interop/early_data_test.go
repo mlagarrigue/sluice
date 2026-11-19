@@ -580,7 +580,7 @@ func TestDialDoesNotSpendTheTicketsZeroRTT(t *testing.T) {
 func TestAFullTicketRegisterRefusesZeroRTTInTLS(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	addr, _ := earlyServer(t, serverTLS(t), quic.ListenerConfig{EarlyData: true, MaxEarlyDataTickets: 1})
+	addr, _ := earlyServer(t, serverTLS(t), quic.ListenerConfig{EarlyData: true, Advanced: quic.AdvancedListenerConfig{MaxEarlyDataTickets: 1}})
 
 	first := clientTLS()
 	first.ClientSessionCache = &stickyCache{cs: map[string]*tls.ClientSessionState{}}

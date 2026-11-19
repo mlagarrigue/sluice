@@ -175,11 +175,11 @@ func runServer(testcase string) error {
 		if err != nil {
 			return err
 		}
-		lcfg.PreferredSocket, err = udp.Listen("udp", net.JoinHostPort("", preferredPort))
+		lcfg.Advanced.PreferredSocket, err = udp.Listen("udp", net.JoinHostPort("", preferredPort))
 		if err != nil {
 			return err
 		}
-		lcfg.PreferredIPv4, lcfg.PreferredIPv6 = ips[0], ips[1]
+		lcfg.Advanced.PreferredIPv4, lcfg.Advanced.PreferredIPv6 = ips[0], ips[1]
 	}
 	l, err := quic.NewListener(pc, cfg, quic.DefaultConfig(), lcfg)
 	if err != nil {
