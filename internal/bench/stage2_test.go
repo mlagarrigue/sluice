@@ -22,7 +22,7 @@ func BenchmarkDistinctAllUnique(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		distinct.By(sluice.Of(src, 1024), 1024,
+		distinct.By(lend(src, 1024), 1024,
 			func(v int64) int64 { return v }, sluice.DropOldest)(
 			func(bt sluice.Batch[int64]) bool {
 				for _, v := range bt.Items {
@@ -43,7 +43,7 @@ func BenchmarkDistinctAllDuplicates(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var n int
-		distinct.By(sluice.Of(src, 1024), 1024,
+		distinct.By(lend(src, 1024), 1024,
 			func(v int64) int64 { return v }, sluice.DropOldest)(
 			func(bt sluice.Batch[int64]) bool {
 				n += bt.Len()
@@ -77,7 +77,7 @@ func BenchmarkParallelSerialBaseline(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		parallel.Ordered(sluice.Of(src, 1024), 1, func(bt sluice.Batch[int64]) sluice.Batch[int64] {
+		parallel.Ordered(lend(src, 1024), 1, func(bt sluice.Batch[int64]) sluice.Batch[int64] {
 			return parallelWork(bt, rounds)
 		})(func(bt sluice.Batch[int64]) bool {
 			for _, v := range bt.Items {
@@ -99,7 +99,7 @@ func BenchmarkParallelHeavyWork(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		parallel.Ordered(sluice.Of(src, 1024), 4, func(bt sluice.Batch[int64]) sluice.Batch[int64] {
+		parallel.Ordered(lend(src, 1024), 4, func(bt sluice.Batch[int64]) sluice.Batch[int64] {
 			return parallelWork(bt, rounds)
 		})(func(bt sluice.Batch[int64]) bool {
 			for _, v := range bt.Items {
@@ -119,7 +119,7 @@ func BenchmarkParallelTrivialWork(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		parallel.Ordered(sluice.Of(src, 1024), 4, func(bt sluice.Batch[int64]) sluice.Batch[int64] {
+		parallel.Ordered(lend(src, 1024), 4, func(bt sluice.Batch[int64]) sluice.Batch[int64] {
 			return bt
 		})(func(bt sluice.Batch[int64]) bool {
 			for _, v := range bt.Items {
@@ -138,7 +138,7 @@ func BenchmarkParallelTrivialSerial(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		parallel.Ordered(sluice.Of(src, 1024), 1, func(bt sluice.Batch[int64]) sluice.Batch[int64] {
+		parallel.Ordered(lend(src, 1024), 1, func(bt sluice.Batch[int64]) sluice.Batch[int64] {
 			return bt
 		})(func(bt sluice.Batch[int64]) bool {
 			for _, v := range bt.Items {
@@ -171,7 +171,7 @@ func BenchmarkParallelFreshScratch(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		parallel.Ordered(sluice.Of(src, 1024), 4, func(bt sluice.Batch[int64]) sluice.Batch[int64] {
+		parallel.Ordered(lend(src, 1024), 4, func(bt sluice.Batch[int64]) sluice.Batch[int64] {
 			_, out := scratchWork(nil, bt.Items)
 			return sluice.Batch[int64]{Items: out}
 		})(func(bt sluice.Batch[int64]) bool {
@@ -191,7 +191,7 @@ func BenchmarkParallelInitReusedScratch(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		parallel.OrderedWithState(sluice.Of(src, 1024), 4,
+		parallel.OrderedWithState(lend(src, 1024), 4,
 			func() (*[]int64, error) { s := make([]int64, 0, 1024); return &s, nil },
 			func(w *[]int64, bt sluice.Batch[int64]) sluice.Batch[int64] {
 				var out []int64
@@ -230,7 +230,7 @@ func runSkewed(wrap func(sluice.Stream[int64], func(sluice.Batch[int64]) sluice.
 		return parallelWork(bt, skewedRounds(idx))
 	}
 	var acc int64
-	wrap(sluice.Of(src, 1024), f)(func(bt sluice.Batch[int64]) bool {
+	wrap(lend(src, 1024), f)(func(bt sluice.Batch[int64]) bool {
 		for _, v := range bt.Items {
 			acc += v
 		}
@@ -281,7 +281,7 @@ func BenchmarkParallelUnorderedHeavyWork(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		parallel.Unordered(sluice.Of(src, 1024), 4, func(bt sluice.Batch[int64]) sluice.Batch[int64] {
+		parallel.Unordered(lend(src, 1024), 4, func(bt sluice.Batch[int64]) sluice.Batch[int64] {
 			return parallelWork(bt, rounds)
 		})(func(bt sluice.Batch[int64]) bool {
 			for _, v := range bt.Items {
@@ -320,7 +320,7 @@ func BenchmarkParallelWorkSize(b *testing.B) {
 				b.ReportAllocs()
 				for b.Loop() {
 					var acc int64
-					sh.run(sluice.Of(src, 1024), func(bt sluice.Batch[int64]) sluice.Batch[int64] {
+					sh.run(lend(src, 1024), func(bt sluice.Batch[int64]) sluice.Batch[int64] {
 						return parallelWork(bt, rounds)
 					})(func(bt sluice.Batch[int64]) bool {
 						for _, v := range bt.Items {

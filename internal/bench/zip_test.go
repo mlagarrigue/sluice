@@ -34,7 +34,7 @@ func BenchmarkZipLongest(b *testing.B) {
 	for b.Loop() {
 		var acc int64
 		join.ZipLongest(
-			sluice.Of(left, 1024), sluice.Of(right, 1024),
+			lend(left, 1024), lend(right, 1024),
 		)(func(bt sluice.Batch[join.EitherOrBoth[int64, int64]]) bool {
 			for _, e := range bt.Items {
 				acc += e.Left + e.Right
@@ -60,7 +60,7 @@ func BenchmarkZipLongestUneven(b *testing.B) {
 	for b.Loop() {
 		var acc int64
 		join.ZipLongest(
-			sluice.Of(left, 1024), sluice.Of(right, 1024),
+			lend(left, 1024), lend(right, 1024),
 		)(func(bt sluice.Batch[join.EitherOrBoth[int64, int64]]) bool {
 			for _, e := range bt.Items {
 				acc += e.Left

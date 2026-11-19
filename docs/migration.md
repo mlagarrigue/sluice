@@ -18,6 +18,14 @@ behavior that keep the signatures — a value now refused — come last.
 
 ## Since v0.5.1
 
+### The core: `sluice`
+
+- **`Of` copies, so `Map` leaves the caller's slice intact** (feat(core)!: Of copies, so Map leaves the input intact):
+  the batches of `Of` are no longer the caller's slice but a buffer of its own, reused from one batch
+  to the next. Code that read `xs` after `Map(Of(xs, n), f)` to find the transformed values takes them
+  from the pipeline's output (`Collect`) instead; code that kept a batch of `Of` past the call that
+  received it — which the rule of batches already forbids — copies it.
+
 ### Diagnostics: `diagnostics`
 
 - **The severities carry their type's name** (`4f077f8`):

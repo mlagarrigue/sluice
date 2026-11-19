@@ -74,6 +74,10 @@ func TestCoalesceClaimsBufferOnce(t *testing.T) {
 	allocs := testing.AllocsPerRun(10, func() {
 		Coalesce(Of(src, 64), size)(func(Batch[int64]) bool { return true })
 	})
+	// Of claims its own batch buffer, once per traversal: not Coalesce's.
+	allocs -= testing.AllocsPerRun(10, func() {
+		Of(src, 64)(func(Batch[int64]) bool { return true })
+	})
 
 	// One allocation for the buffer. Growing into the same capacity would take
 	// roughly log2(size) of them.

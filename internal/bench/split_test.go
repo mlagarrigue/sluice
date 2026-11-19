@@ -23,7 +23,7 @@ func BenchmarkSplitBaseline(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		sluice.Of(src, 1024)(func(bt sluice.Batch[int64]) bool {
+		lend(src, 1024)(func(bt sluice.Batch[int64]) bool {
 			for _, v := range bt.Items {
 				acc += v
 			}
@@ -42,7 +42,7 @@ func BenchmarkSplitPartition(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		n := 0
-		branches := sluice.Split(sluice.Of(src, 1024), 2, func(sluice.Batch[int64]) []int {
+		branches := sluice.Split(lend(src, 1024), 2, func(sluice.Batch[int64]) []int {
 			n++
 			return []int{n % 2}
 		})
@@ -67,7 +67,7 @@ func BenchmarkSplitBroadcast(b *testing.B) {
 	b.SetBytes(N * 8)
 	b.ReportAllocs()
 	for b.Loop() {
-		branches := sluice.Split(sluice.Of(src, 1024), 2, func(sluice.Batch[int64]) []int {
+		branches := sluice.Split(lend(src, 1024), 2, func(sluice.Batch[int64]) []int {
 			return []int{0, 1}
 		})
 		next0, stop0 := iter.Pull(iter.Seq[sluice.Batch[int64]](branches[0]))

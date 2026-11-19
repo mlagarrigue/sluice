@@ -27,6 +27,21 @@ func TestOf(t *testing.T) {
 	}
 }
 
+// Of hands out batches of its own: a Map downstream, which writes in place,
+// leaves the caller's slice as it was. Until 2026-11-19 the batches were the
+// caller's slice, and Collect(Map(Of(xs, 0), f)) rewrote xs — the one rule
+// that surprised, on the first operator a newcomer reads.
+func TestOfLeavesTheCallersSliceIntact(t *testing.T) {
+	xs := []int{1, 2, 3, 4, 5}
+	got := collect(Map(Of(xs, 2), func(v int) int { return v * 10 }))
+	if want := []int{1, 2, 3, 4, 5}; !slices.Equal(xs, want) {
+		t.Errorf("after Collect(Map(Of(xs))), xs = %v, want %v", xs, want)
+	}
+	if want := []int{10, 20, 30, 40, 50}; !slices.Equal(got, want) {
+		t.Errorf("Collect(Map(Of(xs))) = %v, want %v", got, want)
+	}
+}
+
 func TestOfDefaultSize(t *testing.T) {
 	src := make([]int, DefaultBatchSize+1)
 	var n int

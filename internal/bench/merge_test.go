@@ -19,7 +19,7 @@ func BenchmarkMergeOperatorBaseline(b *testing.B) {
 	for b.Loop() {
 		var acc int64
 		for _, src := range [][]int64{left, right} {
-			sluice.Of(src, 1024)(func(bt sluice.Batch[int64]) bool {
+			lend(src, 1024)(func(bt sluice.Batch[int64]) bool {
 				for _, v := range bt.Items {
 					acc += v
 				}
@@ -37,8 +37,8 @@ func BenchmarkMergeOperator(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		s := sluice.Merge(sluice.WhenAll,
-			sluice.Of(left, 1024),
-			sluice.Of(right, 1024),
+			lend(left, 1024),
+			lend(right, 1024),
 		)
 		var acc int64
 		s(func(bt sluice.Batch[int64]) bool {
@@ -65,7 +65,7 @@ func BenchmarkMergeOperatorEight(b *testing.B) {
 	for b.Loop() {
 		streams := make([]sluice.Stream[int64], sources)
 		for i, p := range parts {
-			streams[i] = sluice.Of(p, 1024)
+			streams[i] = lend(p, 1024)
 		}
 		var acc int64
 		sluice.Merge(sluice.WhenAll, streams...)(func(bt sluice.Batch[int64]) bool {

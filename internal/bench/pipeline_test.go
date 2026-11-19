@@ -54,7 +54,7 @@ func BenchmarkPipelineMixed(b *testing.B) {
 	b.SetBytes(N * 8)
 	b.ReportAllocs()
 	for b.Loop() {
-		s := sluice.Of(src, 1024)
+		s := lend(src, 1024)
 		s = sluice.Map(s, inc)
 		s = sluice.Filter(s, func(v int64) bool { return v&1 == 0 })
 		c := sluice.Convert(s, func(v int64) int64 { return v >> 1 })
@@ -71,8 +71,9 @@ func BenchmarkPipelineMixed(b *testing.B) {
 }
 
 // BenchmarkStreamEntry measures entering a Stream and doing nothing else: the
-// intercept of the depth curve above. Of yields batches that are slices of the
-// caller's array, so this is the floor for any sluice pipeline.
+// intercept of the depth curve above. Of copies the caller's array into its
+// own batches, a few hundredths of a nanosecond per element above lend, the
+// operator benchmarks' source, which lends the array and is the floor.
 func BenchmarkStreamEntry(b *testing.B) {
 	src := data(N)
 	b.SetBytes(N * 8)
@@ -99,7 +100,7 @@ func BenchmarkProbeBaseline(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		sluice.Map(sluice.Of(src, 1024), inc)(func(bt sluice.Batch[int64]) bool {
+		sluice.Map(lend(src, 1024), inc)(func(bt sluice.Batch[int64]) bool {
 			for _, v := range bt.Items {
 				acc += v
 			}
@@ -117,7 +118,7 @@ func BenchmarkProbe(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		probe.Count(sluice.Map(sluice.Of(src, 1024), inc), &c)(func(bt sluice.Batch[int64]) bool {
+		probe.Count(sluice.Map(lend(src, 1024), inc), &c)(func(bt sluice.Batch[int64]) bool {
 			for _, v := range bt.Items {
 				acc += v
 			}

@@ -54,7 +54,7 @@ func TestStageBudget(t *testing.T) {
 	}
 
 	runOver := func(src []int64) {
-		s := sluice.Of(src, 1024)
+		s := lend(src, 1024)
 		for range stages {
 			s = sluice.Map(s, inc)
 		}

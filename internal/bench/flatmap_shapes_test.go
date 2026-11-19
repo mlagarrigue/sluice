@@ -19,7 +19,7 @@ func BenchmarkFlatMapShapes(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
 				var acc int64
-				sluice.FlatMap(sluice.Of(src, 1024), func(dst []int64, v int64) []int64 {
+				sluice.FlatMap(lend(src, 1024), func(dst []int64, v int64) []int64 {
 					for range out {
 						dst = append(dst, v)
 					}

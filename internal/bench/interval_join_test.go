@@ -39,7 +39,7 @@ func benchIntervalJoin(b *testing.B, lower, upper time.Duration) {
 	for b.Loop() {
 		var acc int64
 		join.IntervalJoin(
-			sluice.Of(left, 1024), sluice.Of(right, 1024),
+			lend(left, 1024), lend(right, 1024),
 			join.IntervalSpec[int64, int64, int64, int64]{
 				KeyL: key, KeyR: key, TimeL: ts, TimeR: ts,
 				Lower: lower, Upper: upper,

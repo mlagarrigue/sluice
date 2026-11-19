@@ -60,7 +60,7 @@ func wProject(e wEntity) wResponse {
 // buildPipeline is what a handler would call per request: six operators over a
 // one-element source.
 func buildPipeline(src []int64) sluice.Stream[wResponse] {
-	s := sluice.Of(src, 1)
+	s := lend(src, 1)
 	params := sluice.Convert(s, wDecode)
 	allowed := sluice.Filter(params, wAuthz)
 	entities := sluice.Convert(allowed, wHydrate)

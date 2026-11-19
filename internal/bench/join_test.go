@@ -49,7 +49,7 @@ func BenchmarkJoinFullMatch(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		drainJoin(b, join.MergeJoin(
-			sluice.Of(left, 1024), sluice.Of(right, 1024),
+			lend(left, 1024), lend(right, 1024),
 			idInt64, idInt64, cmp.Compare[int64],
 		))
 	}
@@ -64,7 +64,7 @@ func BenchmarkJoinNoMatch(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		drainJoin(b, join.MergeJoin(
-			sluice.Of(left, 1024), sluice.Of(right, 1024),
+			lend(left, 1024), lend(right, 1024),
 			idInt64, idInt64, cmp.Compare[int64],
 		))
 	}
@@ -85,7 +85,7 @@ func BenchmarkJoinSortCheckBaseline(b *testing.B) {
 	for b.Loop() {
 		var acc int64
 		sluice.Merge(sluice.WhenAll,
-			sluice.Of(left, 1024), sluice.Of(right, 1024),
+			lend(left, 1024), lend(right, 1024),
 		)(func(bt sluice.Batch[int64]) bool {
 			for _, v := range bt.Items {
 				acc += v
@@ -113,7 +113,7 @@ func BenchmarkJoinCrossProduct(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		drainJoin(b, join.MergeJoin(
-			sluice.Of(left, 1024), sluice.Of(right, 1024),
+			lend(left, 1024), lend(right, 1024),
 			idInt64, idInt64, cmp.Compare[int64],
 		))
 	}
@@ -130,7 +130,7 @@ func BenchmarkJoinTail(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		drainJoin(b, join.MergeJoin(
-			sluice.Of(left, 1024), sluice.Empty[int64](),
+			lend(left, 1024), sluice.Empty[int64](),
 			idInt64, idInt64, cmp.Compare[int64],
 		))
 	}

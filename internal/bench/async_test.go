@@ -30,7 +30,7 @@ func BenchmarkAsyncBaseline(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		sluice.Of(src, 1024)(func(bt sluice.Batch[int64]) bool {
+		lend(src, 1024)(func(bt sluice.Batch[int64]) bool {
 			for _, v := range bt.Items {
 				acc += v
 			}
@@ -50,7 +50,7 @@ func BenchmarkAsyncPassThrough(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		parallel.Async(sluice.Of(src, 1024), 4)(func(bt sluice.Batch[int64]) bool {
+		parallel.Async(lend(src, 1024), 4)(func(bt sluice.Batch[int64]) bool {
 			for _, v := range bt.Items {
 				acc += v
 			}

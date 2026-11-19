@@ -36,7 +36,7 @@ func BenchmarkJoinHash(b *testing.B) {
 	for b.Loop() {
 		var acc int64
 		join.HashJoin(
-			sluice.Of(probe, 1024), sluice.Of(build, 1024),
+			lend(probe, 1024), lend(build, 1024),
 			func(v int64) int64 { return v },
 			func(v int64) int64 { return v },
 			func(a, bv int64) int64 { return a + bv },
@@ -63,7 +63,7 @@ func BenchmarkJoinMerge(b *testing.B) {
 	for b.Loop() {
 		var acc int64
 		join.MergeJoin(
-			sluice.Of(left, 1024), sluice.Of(right, 1024),
+			lend(left, 1024), lend(right, 1024),
 			func(v int64) int64 { return v },
 			func(v int64) int64 { return v },
 			cmp.Compare[int64],
@@ -91,7 +91,7 @@ func BenchmarkJoinHashBuildOnly(b *testing.B) {
 	for b.Loop() {
 		var acc int64
 		join.HashJoin(
-			sluice.Of(probe, 1024), sluice.Of(build, 1024),
+			lend(probe, 1024), lend(build, 1024),
 			func(v int64) int64 { return v },
 			func(v int64) int64 { return v },
 			func(a, bv int64) int64 { return a + bv },

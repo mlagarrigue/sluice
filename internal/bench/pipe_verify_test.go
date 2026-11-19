@@ -36,7 +36,7 @@ func BenchmarkPipeSinglePass(b *testing.B) {
 	b.SetBytes(N * 8)
 	b.ReportAllocs()
 	for b.Loop() {
-		s := pipe4Opaque(sluice.Of(src, 1024), o1, o2, o3, o4)
+		s := pipe4Opaque(lend(src, 1024), o1, o2, o3, o4)
 		var acc int64
 		s(func(bt sluice.Batch[int64]) bool {
 			for _, v := range bt.Items {
@@ -54,7 +54,7 @@ func BenchmarkPipeFourStages(b *testing.B) {
 	b.SetBytes(N * 8)
 	b.ReportAllocs()
 	for b.Loop() {
-		s := sluice.Of(src, 1024)
+		s := lend(src, 1024)
 		for _, f := range []func(int64) int64{o1, o2, o3, o4} {
 			s = sluice.Map(s, f)
 		}

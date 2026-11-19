@@ -29,7 +29,7 @@ func BenchmarkCoalesceBaseline(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		sluice.Of(src, 1024)(func(bt sluice.Batch[int64]) bool {
+		lend(src, 1024)(func(bt sluice.Batch[int64]) bool {
 			for _, v := range bt.Items {
 				acc += v
 			}
@@ -49,7 +49,7 @@ func BenchmarkCoalescePassThrough(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		sluice.Coalesce(sluice.Of(src, 1024), 1024)(func(bt sluice.Batch[int64]) bool {
+		sluice.Coalesce(lend(src, 1024), 1024)(func(bt sluice.Batch[int64]) bool {
 			for _, v := range bt.Items {
 				acc += v
 			}
@@ -69,7 +69,7 @@ func BenchmarkCoalesceFragmented(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		sluice.Coalesce(sluice.Of(src, 8), 1024)(func(bt sluice.Batch[int64]) bool {
+		sluice.Coalesce(lend(src, 8), 1024)(func(bt sluice.Batch[int64]) bool {
 			for _, v := range bt.Items {
 				acc += v
 			}
@@ -92,7 +92,7 @@ func BenchmarkCoalesceLargeSize(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		sluice.Coalesce(sluice.Of(src, 1024), size)(func(bt sluice.Batch[int64]) bool {
+		sluice.Coalesce(lend(src, 1024), size)(func(bt sluice.Batch[int64]) bool {
 			for _, v := range bt.Items {
 				acc += v
 			}
@@ -127,7 +127,7 @@ func BenchmarkCoalesceWithinPassThrough(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		window.CoalesceWithin(sluice.Of(src, 1024), 1024, time.Hour)(
+		window.CoalesceWithin(lend(src, 1024), 1024, time.Hour)(
 			func(bt sluice.Batch[int64]) bool {
 				for _, v := range bt.Items {
 					acc += v
@@ -147,7 +147,7 @@ func BenchmarkCoalesceWithinFragmented(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		window.CoalesceWithin(sluice.Of(src, 8), 1024, time.Hour)(
+		window.CoalesceWithin(lend(src, 8), 1024, time.Hour)(
 			func(bt sluice.Batch[int64]) bool {
 				for _, v := range bt.Items {
 					acc += v

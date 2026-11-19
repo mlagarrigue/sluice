@@ -26,7 +26,7 @@ func BenchmarkPeek(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		sluice.Peek(sluice.Of(src, 1024), func(v int64) { acc += v })(func(bt sluice.Batch[int64]) bool {
+		sluice.Peek(lend(src, 1024), func(v int64) { acc += v })(func(bt sluice.Batch[int64]) bool {
 			return true
 		})
 		sink = acc
@@ -42,7 +42,7 @@ func BenchmarkScan(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		sluice.Scan(sluice.Of(src, 1024), int64(0), func(a, v int64) int64 { return a + v })(
+		sluice.Scan(lend(src, 1024), int64(0), func(a, v int64) int64 { return a + v })(
 			func(bt sluice.Batch[int64]) bool {
 				for _, v := range bt.Items {
 					acc += v
@@ -68,7 +68,7 @@ func BenchmarkFlatMap(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		sluice.FlatMap(sluice.Of(src, 1024), func(dst []int64, v int64) []int64 {
+		sluice.FlatMap(lend(src, 1024), func(dst []int64, v int64) []int64 {
 			return append(dst, v)
 		})(func(bt sluice.Batch[int64]) bool {
 			for _, v := range bt.Items {
@@ -90,7 +90,7 @@ func BenchmarkDrop(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		sluice.Drop(sluice.Of(src, 1024), 0)(func(bt sluice.Batch[int64]) bool {
+		sluice.Drop(lend(src, 1024), 0)(func(bt sluice.Batch[int64]) bool {
 			for _, v := range bt.Items {
 				acc += v
 			}
@@ -110,7 +110,7 @@ func BenchmarkTake(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		sluice.Take(sluice.Of(src, 1024), N)(func(bt sluice.Batch[int64]) bool {
+		sluice.Take(lend(src, 1024), N)(func(bt sluice.Batch[int64]) bool {
 			for _, v := range bt.Items {
 				acc += v
 			}
@@ -130,7 +130,7 @@ func BenchmarkTakeWhile(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		sluice.TakeWhile(sluice.Of(src, 1024), func(int64) bool { return true })(
+		sluice.TakeWhile(lend(src, 1024), func(int64) bool { return true })(
 			func(bt sluice.Batch[int64]) bool {
 				for _, v := range bt.Items {
 					acc += v
@@ -151,7 +151,7 @@ func BenchmarkDropWhile(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		sluice.DropWhile(sluice.Of(src, 1024), func(v int64) bool { return v == 0 })(
+		sluice.DropWhile(lend(src, 1024), func(v int64) bool { return v == 0 })(
 			func(bt sluice.Batch[int64]) bool {
 				for _, v := range bt.Items {
 					acc += v
@@ -177,7 +177,7 @@ func BenchmarkInterleave2(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		sluice.Merge(sluice.WhenAll, sluice.Of(left, 1024), sluice.Of(right, 1024))(
+		sluice.Merge(sluice.WhenAll, lend(left, 1024), lend(right, 1024))(
 			func(bt sluice.Batch[int64]) bool {
 				for _, v := range bt.Items {
 					acc += v
@@ -209,7 +209,7 @@ func BenchmarkInterleave8(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		for i := range streams {
-			streams[i] = sluice.Of(parts[i], 1024)
+			streams[i] = lend(parts[i], 1024)
 		}
 		var acc int64
 		sluice.Merge(sluice.WhenAll, streams...)(func(bt sluice.Batch[int64]) bool {
@@ -234,8 +234,8 @@ func BenchmarkConcat(b *testing.B) {
 	for b.Loop() {
 		var acc int64
 		sluice.Concat(
-			sluice.Of(src[:q], 1024), sluice.Of(src[q:2*q], 1024),
-			sluice.Of(src[2*q:3*q], 1024), sluice.Of(src[3*q:], 1024),
+			lend(src[:q], 1024), lend(src[q:2*q], 1024),
+			lend(src[2*q:3*q], 1024), lend(src[3*q:], 1024),
 		)(func(bt sluice.Batch[int64]) bool {
 			for _, v := range bt.Items {
 				acc += v

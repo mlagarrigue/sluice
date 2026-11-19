@@ -165,13 +165,13 @@ for b := range s {
 > it. It is the one rule that surprises, and it is the reason Sluice.go
 > costs almost nothing per element.
 
-### Rule 2 — `Of` shares your slice, and `Map` writes into it
+### Rule 2 — `Map` writes into the batch it receives
 
-`Of` does not copy your slice: the batches point at your data. And `Map`
-modifies elements *in place*, in the batch it receives. So after
-`Map(Of(orders, n), f)`, the `orders` slice itself holds the transformed
-values. That is deliberate — it is what allows zero allocations — but it
-can surprise.
+`Map` modifies elements *in place*, in the batch it receives: that is what
+allows zero allocations. `Of` hands you batches of its own, copied from
+your slice one batch at a time, so after `Map(Of(orders, n), f)` the
+`orders` slice is as it was; the transformed values are in what comes out
+of the pipeline.
 
 To transform into **another type** (an `Order` into a `Line`), use
 `Convert`: it writes into its own buffer and leaves the input alone.
