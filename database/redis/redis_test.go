@@ -120,7 +120,7 @@ func TestPipelineCancelledWithoutADeadlineBreaksTheConnection(t *testing.T) {
 			t.Fatalf("err %v, want ErrConnBroken and the cancellation", err)
 		}
 	case <-time.After(5 * time.Second):
-		_ = c.nc.Close() // release the call: Close waits for the lock the call holds
+		_ = c.Close() // release the call: Close closes the socket under it
 		<-done
 		t.Fatal("a call cancelled without a deadline still waited for the server 5s later")
 	}
