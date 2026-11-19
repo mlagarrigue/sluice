@@ -75,7 +75,8 @@ against the design, not work around it.
 |---|---|
 | an operator that retains nothing beyond one batch between two batches | the root package |
 | an operator that retains one side, time, goroutines, keys | `join/`, `window/`, `parallel/`, `distinct/` |
-| a connector to an external system | `database/<system>`, `net/<protocol>` |
+| a connector to an external system | `database/<system>` (a database: PostgreSQL, Redis), `messaging/<system>` (a message queue: NATS), `encoding/<format>` (a file format: CSV, JSON Lines), `net/<protocol>` |
+| a unit of work that outlives the process | `phase/`, its stores beside the connector they write to (`postgres.PhaseStore`) |
 | shared machinery with no value to a caller | `internal/` |
 | a cross-cutting extension (diagnostics, instrumentation) | a root-level package, beside `diagnostics` |
 

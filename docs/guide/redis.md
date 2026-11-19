@@ -22,7 +22,7 @@ accepts on a new connection, over the standard library alone.
 
 `redis.Connect` takes a recipe for the transport — `redis.DialTCP`, or
 `redis.DialTLS` with your own `tls.Config` — and gives one connection; there
-is no pool, as with PostgreSQL. AUTH, SELECT and a PING leave in one round
+is no pool, unlike `postgres.Pool`. AUTH, SELECT and a PING leave in one round
 trip, and a refusal comes back from `redis.Connect` itself: a wrong
 password, or a server in protected mode answering `-DENIED`.
 

@@ -77,9 +77,11 @@ library (`net`, `crypto/tls`, `io`, `iter`), never replaces it.
 
 **What it covers today**: serving HTTP (over `net/http`, and natively in
 HTTP/1.1, /2 and /3), reading and writing PostgreSQL (by speaking its
-protocol directly, with COPY — its bulk transfer command — for bulk loads), grouping simultaneous calls
-into one query, and transforming, joining, windowing and deduplicating
-streams for ETL — with the same operators everywhere.
+protocol directly, with COPY — its bulk transfer command — for bulk loads), Redis,
+NATS JetStream's queues, CSV and JSON Lines files, grouping simultaneous calls
+into one query, transforming, joining, windowing and deduplicating
+streams for ETL, and resuming a job of several hours where its process
+died — with the same operators everywhere.
 
 **Where it wants to go.** The intent is that an ordinary web application or
 ETL pipeline finds here everything from the socket to the database: the
@@ -89,8 +91,9 @@ is missing; every addition follows the same rule: a package on top of the
 core, never inside it.
 
 **Modular.** The core knows none of its extensions. The web, HTTP/1.1, /2,
-/3, QUIC and PostgreSQL are packages built on top; other connectors will
-follow the same model without touching the core.
+/3, QUIC, PostgreSQL, Redis, NATS and the file formats are packages built
+on top; other connectors will follow the same model without touching the
+core.
 
 ## How it works
 
@@ -155,7 +158,7 @@ group's, which are experimental.
 | `sluice/encoding/csvstream` | CSV in batches of records, over `encoding/csv`, each record bounded |
 | `sluice/encoding/jsonl` | JSON Lines in batches of values, over `encoding/json`, each line bounded |
 
-#### Talking to PostgreSQL and to HTTP clients
+#### Talking to servers and to HTTP clients
 
 | Package | Role |
 |---|---|
@@ -311,16 +314,18 @@ apparatus that would produce one is in `comparison/`.
   under the compatibility promise — and fuzzed in CI without
   a public corpus; it has neither run in production nor had an outside
   security review.**
-- **PostgreSQL only** for now; SCRAM-SHA-256 (password authentication that
-  never sends the password), cleartext and trust
-  authentication; codecs for the common types (no
-  ranges, composites).
+- **Three servers and two file formats**: PostgreSQL — SCRAM-SHA-256
+  (password authentication that never sends the password), cleartext and
+  trust authentication; codecs for the common types (no ranges,
+  composites) — Redis or Valkey over RESP2, NATS JetStream; CSV and JSON
+  Lines. Other systems have no connector yet.
 - **QUIC is experimental**: crossed every Sunday with the other
   implementations of the QUIC Interop Runner, each case judged against a
   written record ([the detail](docs/reference/protocol-positions.md#the-interop-runner-in-detail)),
   with no external cryptographic review; HTTP/3 runs over it.
-- **No resumption of a long job** after the process dies
-  ([architecture](docs/design/architecture.md#a-stage-is-not-a-phase)).
+- **A long job resumes by phase, not by element**: `phase` restarts it at
+  the first phase not finished; a phase cut in its middle starts again
+  from its beginning ([long jobs](docs/guide/long-jobs.md)).
 
 The detail: [limits](docs/guide/limits.md).
 

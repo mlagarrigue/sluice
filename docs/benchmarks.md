@@ -1660,8 +1660,8 @@ and settled at 285-298 µs across five runs of 1s.
 
 ### Connector, against pgx / lib/pq / database/sql
 
-One connection each, since this connector has no pool and a comparison that
-ignores that measures pooling.
+One connection each, `postgres.Pool` aside: the comparison measures the
+protocol and the codecs, and one across pools would measure pooling.
 
 **Re-measured on 2026-10-19, outside the session above.** The conditions
 differ from the "Conditions" table: Go 1.26.9, kernel

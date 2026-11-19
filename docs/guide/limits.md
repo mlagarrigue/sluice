@@ -11,8 +11,8 @@ Three reasons come up, and the difference matters:
 
 **In short.** Nothing has run in production yet, and the API changes before
 version 1 ([the project](#the-project-as-a-whole)). One process, and no
-sort or buffer stage ([the core](#the-core)). PostgreSQL, Redis and NATS
-JetStream, without a pool; PostgreSQL read in binary
+sort or buffer stage ([the core](#the-core)). PostgreSQL with a fixed pool,
+Redis and NATS JetStream on one connection each; PostgreSQL read in binary
 ([PostgreSQL](#postgresql), [Redis and NATS](#redis-and-nats)). No router, no
 compression, no CONNECT tunnel ([web and gateway](#web-and-gateway)). QUIC
 is experimental, under [written conditions](#experimental-the-exit-conditions).
@@ -36,12 +36,14 @@ The figures are a laptop's ([measurements](#measurements-what-is-missing)).
   JetStream consumer. A long job resumes on another machine when its state
   is in PostgreSQL (`postgres.PhaseStore`). The decision is
   [ADR 0028](../design/adr/0028-distribution.md).
-- **No resumption of a long job.** A pipeline that runs for eight hours and
-  whose process dies starts over. The architecture names what is missing —
-  a "phase runner", a unit of resumption that outlives the process — and
-  [ADR 0027](../design/adr/0027-phase-runner.md) gives it a shape: the
-  package `phase`, whose state lives in a store you choose, never in the
-  library: a directory, or a table of your own PostgreSQL schema.
+- **Resumption by phase, not by element.** A job cut into phases by the
+  package `phase` restarts, after its process died, at the first phase not
+  finished ([long jobs](long-jobs.md)); its state lives in a store you
+  choose, never in the library: a directory, or a table of your own
+  PostgreSQL schema ([ADR 0027](../design/adr/0027-phase-runner.md)). A
+  phase cut in its middle starts again from its beginning, so it must be
+  able to run twice; resuming inside a phase, from the last element done,
+  is not provided.
 - **Dependencies are decided case by case.** Today, the standard library
   plus `golang.org/x/crypto` and `golang.org/x/text`, and nothing enters
   without a written decision
@@ -189,7 +191,7 @@ The figures are a laptop's ([measurements](#measurements-what-is-missing)).
 
 ## Redis and NATS
 
-- **One connection, no pool**, as with PostgreSQL; Redis is spoken in
+- **One connection, no pool**, unlike PostgreSQL's `Pool`; Redis is spoken in
   RESP2. The guides have the rest: [Redis](redis.md), [NATS](nats.md).
 - **Every reply is bounded**: `MaxReplyBytes` (Redis, 64 MiB by default)
   and `MaxPayloadBytes` (NATS, 8 MiB by default); past it the connection is

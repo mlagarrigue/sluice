@@ -119,11 +119,15 @@ and its packages, or pkg.go.dev.
 A **connector** links Sluice.go to an external system (a database, a
 queue, a file format, a protocol). It is a **provider** when it produces
 batches (a `Source`), a **consumer** when it receives them (a function that
-takes batches, like the PostgreSQL connector's `COPY`), or both. Two exist
-today: PostgreSQL (`database/postgres`, [guide](guide/postgres.md)), both a
-provider and a consumer, and HTTP (`net/httpstream`, over `net/quic` for
-HTTP/3), whose requests arrive as batches. A new one goes under
-`database/<system>` or `net/<protocol>`. What is missing is in
+takes batches, like the PostgreSQL connector's `COPY`), or both. Those that
+exist today: PostgreSQL (`database/postgres`, [guide](guide/postgres.md))
+and Redis (`database/redis`, [guide](guide/redis.md)), both providers and
+consumers; NATS JetStream (`messaging/nats`, [guide](guide/nats.md)), a
+provider whose messages the consumer acknowledges; CSV and JSON Lines
+(`encoding/csvstream`, `encoding/jsonl`, [guide](guide/files.md)), read and
+written; and HTTP (`net/httpstream`, over `net/quic` for HTTP/3), whose
+requests arrive as batches. A new one goes under `database/<system>`,
+`messaging/<system>`, `encoding/<format>` or `net/<protocol>`. What is missing is in
 [Limits](guide/limits.md).
 
 What the batch model asks of a connector:

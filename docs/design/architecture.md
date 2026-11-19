@@ -1173,7 +1173,7 @@ whatever N is, hence **a single prepared plan**.
 > would apply the rule itself.
 
 The same shape on other backends, none of which this module supports (the
-limits guide: PostgreSQL only):
+limits guide: of the SQL databases, PostgreSQL only):
 
 | Backend | Strategy |
 |---|---|
@@ -1758,10 +1758,10 @@ nested calls, so a chain would break exactly where a pipeline does its work.
 | # | Guarantee | Verification |
 |---|---|---|
 | S1 | No unbounded allocation: a zero is a safe default or a refusal, never the absence of a bound ([ADR 0018](adr/0018-zero-values-and-mandatory-bounds.md)); two named exceptions, below. | Overflow → error, not OOM: `TestJoinLimitCeilingIsNamed`, `TestCopyRequiresRowsPerTx`, `TestDiagnosticsZeroValue`, `TestADR0018ListsMatchConfig`; an HTTP/1.1 connection's read-ahead stays within its request bound: `TestReadAheadStaysWithinTheConnectionBound` |
-| S2 | No `panic` crosses a public boundary while data flows, other than the sentinels `Try` converts ([ADR 0006](adr/0006-sentinel-panics-and-try.md)). | Fuzzed parsers, where a panic fails the fuzz (`FuzzParseRequest`, `FuzzH2Connection`, `FuzzParseLongHeader`, `FuzzReaderNext`, `FuzzPathJSONPointerRoundTrip`); `TestTryKnowsEverySentinel` |
+| S2 | No `panic` crosses a public boundary while data flows, other than the sentinels `Try` converts ([ADR 0006](adr/0006-sentinel-panics-and-try.md)). | Fuzzed parsers, where a panic fails the fuzz (`FuzzParseRequest`, `FuzzH2Connection`, `FuzzParseLongHeader`, `FuzzReaderNext`, `FuzzPathJSONPointerRoundTrip`); `TestTryKnowsEverySentinel`; a server's index outside the batch refused rather than indexed: `TestAPublishReplyOutsideTheBatchIsRefused` (NATS) |
 | S3 | Restrictive default limits. | The values are fixed in the code, each beside its field; that zero takes them is tested: `TestADR0018ListsMatchConfig`, `TestServeBoundsHeaderReadsAndIdleConnectionsByDefault`, and that zero takes the value each field's comment names: `TestZeroConfigResolvesToTheDefaultsItsCommentsName` |
 | S4 | `unsafe` forbidden except under a named audit. One exception: `net/quic/udp/configure_windows.go`, for the input buffer of `syscall.WSAIoctl`. | `scripts/check-hygiene.sh` fails on any import of `unsafe` outside the audited list |
-| S5 | Mandatory timeouts on all network I/O the library waits on alone; the connectors' (PostgreSQL, Redis, NATS) are bounded by the caller's context (ADR 0022). | Silent connection → released: `TestSilentConnectionHasReadTimeoutToSpeak` (httpstream), `TestIdleTimeoutEndsASilentConnection` (QUIC) |
+| S5 | Mandatory timeouts on all network I/O the library waits on alone; the connectors' (PostgreSQL, Redis, NATS) are bounded by the caller's context (ADR 0022). | Silent connection → released: `TestSilentConnectionHasReadTimeoutToSpeak` (httpstream), `TestIdleTimeoutEndsASilentConnection` (QUIC); a connector against a silent server ends with its context: `TestACallToASilentServerEndsWithItsContext` (NATS) |
 | S6 | No goroutine leak. | A `synctest` bubble that fails while a goroutine is still blocked: `TestParallelLeavesNoGoroutines`, `TestConnectionsLeaveNoGoroutines` (QUIC); for `httpstream`, whose connections run on real sockets, no goroutine of the package left once they close, checked by name: `TestH2ConnectionsLeaveNoGoroutines` |
 | S7 | Internal errors do not leak to the client. | **Guaranteed by structure**: `cause` unexported ([The model adopted](#the-model-adopted)); exercised by `TestDiagnosticCauseIsWrappedNotExported`, `TestAuthenticateDoesNotLeakWhyItFailed` |
 | S8 | Every network input is bounded before allocation. | Fuzzing: `FuzzParseRequest`, `FuzzParseFrame`, `FuzzHPACKDecode`, `FuzzQPACKDecode`, `FuzzParseLongHeader`, `FuzzReaderNext` |
@@ -1770,7 +1770,7 @@ nested calls, so a chain would break exactly where a pipeline does its work.
 | S11 | No unbounded buffer between two operators. | Pressure test: `TestParallelBoundsReadAhead`, `TestSplitBounds`; a `Split` branch that would overwrite an undrained slot stalls instead: `TestSplitStalls` |
 | **S12** | **Diagnostics ceiling per element and per batch.** `web/stream`'s `Exchange.Diagnostics` has no ceiling of its own: it holds what the pipeline's stages report for the element, a number set by the stages the program built, not by the input. | Pathological batch → counted truncation: `TestDiagnosticsCeiling` |
 | **S13** | **No value travels through SQL text.** | `TestSetLocalNeverPutsTheValueIntoSQL`, `TestSavepointRejectsHostileNames` |
-| **S14** | **An operator that retains a batch beyond the call that received it copies it first.** | `-race` composition test with a buffer-reusing upstream (`Convert \|> X`), per goroutine-crossing operator: `TestParallelCopiesInputBatch`, `TestAsyncCopiesInputBatch`, `TestParallelUnorderedCopiesInputBatch`, `TestParallelInitCopiesInputBatch`; the reuse contract itself: `TestBufferReuseContract` |
+| **S14** | **An operator that retains a batch beyond the call that received it copies it first.** | `-race` composition test with a buffer-reusing upstream (`Convert \|> X`), per goroutine-crossing operator: `TestParallelCopiesInputBatch`, `TestAsyncCopiesInputBatch`, `TestParallelUnorderedCopiesInputBatch`, `TestParallelInitCopiesInputBatch`, and for a batch pending between two pulls `TestSplitKeepsAPendingBatchOfABufferReusingUpstream`; the reuse contract itself: `TestBufferReuseContract` |
 
 **S1** — a zero stands for a safe default named in the field's comment
 (`httpstream.Config`), or is refused at construction where no default suits
