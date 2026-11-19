@@ -48,9 +48,11 @@ func terminate(t *testing.T, admin *postgres.Conn, pid int32) {
 	t.Fatalf("backend %d still running", pid)
 }
 
-// Against a real server: the pool's idle connection is terminated, the call
-// that finds it fails, and the next is served by a new process — where a
-// connection kept by hand fails every call after.
+// Against a real server: the pool's idle connection is terminated — an
+// administrator, a failover, an idle-session timeout — and the next call is
+// served anyway, by a new process: the pool sees the end when it lends the
+// connection, not the caller when it uses it. A connection kept by hand
+// fails every call after.
 func TestIntegrationPoolReplacesATerminatedConnection(t *testing.T) {
 	addr, cfg := pgTarget(t)
 	p := postgres.NewPool(1, func(ctx context.Context) (*postgres.Conn, error) {
@@ -62,8 +64,8 @@ func TestIntegrationPoolReplacesATerminatedConnection(t *testing.T) {
 
 	first := backendPID(t, p.Query(t.Context(), pidQuery, nil, postgres.QueryConfig{}))
 	terminate(t, admin, first)
-	if _, err := p.ExecParams(t.Context(), "SELECT 1", nil); err == nil {
-		t.Fatal("a call on a terminated connection succeeded: the probe did not reach it")
+	if _, err := p.ExecParams(t.Context(), "SELECT 1", nil); err != nil {
+		t.Fatalf("the call after the idle connection was terminated: %v, want it served by a new one", err)
 	}
 	if second := backendPID(t, p.Query(t.Context(), pidQuery, nil, postgres.QueryConfig{})); second == first {
 		t.Errorf("served by backend %d again, want a new process", second)

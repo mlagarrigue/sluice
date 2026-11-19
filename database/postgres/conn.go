@@ -6,7 +6,8 @@
 //	scram.go         SCRAM-SHA-256; saslprep*.go the password's SASLprep
 //	conn.go          Conn: queries, RowBlock, batches asked for ahead
 //	arg.go           ParamOf, ArrayParamOf: a parameter from a codec
-//	pool.go          Pool: a fixed number of connections, a broken one replaced
+//	pool.go          Pool: a fixed number of connections, a broken one replaced;
+//	                 idle_peek.go, idle_other.go look at an idle one before a lend
 //	messages.go      backend messages parsed, the server's Error
 //	scan.go          Scan*: a batch's column into Go values
 //	prepare.go       the statement cache

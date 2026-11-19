@@ -280,6 +280,10 @@ func (rd *Reader) nextWindowed() (Message, error) {
 	return Message{Type: typ, Body: rd.win[start:rd.lo:rd.lo]}, nil
 }
 
+// Pending reports whether the reader holds something not yet read as a
+// message: bytes in its window, or a read's error kept for the next fill.
+func (rd *Reader) Pending() bool { return rd.hi > rd.lo || rd.err != nil }
+
 // fill reads until the window holds n unread bytes, n at most its size.
 //
 // The unread tail moves to the front before every read, not only when n

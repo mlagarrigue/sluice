@@ -37,6 +37,7 @@ figure that differs, to the character, from the median of its row.
 - [A QUIC socket in a burst](#a-quic-socket-in-a-burst)
 - [Stream deadlines that mature one by one](#stream-deadlines-that-mature-one-by-one)
 - [Credit a byte at a time](#credit-a-byte-at-a-time)
+- [A pool lend, looking at the idle connection](#a-pool-lend-looking-at-the-idle-connection)
 - [Redis, a batch against one command at a time](#redis-a-batch-against-one-command-at-a-time)
 - [Joins and hydration, in isolation](#joins-and-hydration-in-isolation)
 - [Measured in one session](#measured-in-one-session)
@@ -1560,6 +1561,18 @@ a STOP_SENDING on any stream woke them all for the one writer it ended
 and 143 ns after). The queue costs a few nanoseconds per frame here: paired
 A/B, twelve rounds, 288 → 297, 306 → 317 and 303 → 325 ns at 1, 64 and
 1024, rounds won 5, 4 and 4 of 12.
+
+## A pool lend, looking at the idle connection
+
+`postgres.Pool` looks at an idle connection's socket before it lends it, so
+that one the server ended while it waited is replaced rather than handed to
+a caller (ADR 0022). `BenchmarkPoolLendIdle` (`database/postgres`) lends and
+gives back one idle connection over a loopback socket nobody writes to:
+62 ns before the look, 560 ns with it, ×9.1 at the median of fifteen rounds
+paired by `internal/bench/scripts/ab.sh` (8.96 to 9.37, `CORE=6`,
+`GOMAXPROCS=1`, 2026-11-19). The look is one `recv` with
+`MSG_PEEK|MSG_DONTWAIT`. A read with a deadline 10 µs ahead, tried first,
+read 547 µs per lend: the timer's wake-up, not the read.
 
 ## Redis, a batch against one command at a time
 

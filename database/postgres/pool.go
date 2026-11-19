@@ -23,7 +23,11 @@ var ErrPoolClosed = errors.New("postgres: the pool is closed")
 // [Pool.Query] for as long as its stream is read. A connection that broke
 // ([Conn.Err] not nil, [ErrConnBroken] among others) is closed when it comes
 // back, and the next call opens a new one; a connection the server closed
-// while it sat idle fails the call that finds it, and is replaced after.
+// while it sat idle — a restart, a failover, an idle-session timeout — is
+// seen when it is lent, closed, and another lent in its place: the call does
+// not pay for it. The look is at the socket, without reading or waiting, on
+// Linux, macOS and the BSDs; elsewhere the call that finds it fails, and it
+// is replaced after.
 // A pool carries no transaction: a call that leaves one open — a BEGIN sent
 // as a statement — or aborted has its connection closed when it comes back,
 // which rolls the block back on the server, rather than lent to a caller
@@ -31,9 +35,10 @@ var ErrPoolClosed = errors.New("postgres: the pool is closed")
 // connection of its own.
 // When all are lent, a call waits for one, as long as its context allows.
 //
-// There is no idle timeout, lifetime or health check: they are a
+// There is no idle timeout, lifetime or setting of any kind: they are a
 // deployment's tuning, and a pool that needs them is a module of its own
-// (ADR 0022). The zero Pool is not usable; build one with [NewPool] and
+// (ADR 0022). The look before a lend is not one: it has nothing to tune, and
+// it spares every caller a retry of its own. The zero Pool is not usable; build one with [NewPool] and
 // release it with [Pool.Close].
 type Pool struct {
 	connect func(context.Context) (*Conn, error)
@@ -124,13 +129,23 @@ func (p *Pool) lend(ctx context.Context) (*Conn, error) {
 		return nil, ErrPoolClosed
 	}
 	p.lent.Add(1)
-	var c *Conn
-	if n := len(p.idle); n > 0 {
-		c, p.idle = p.idle[n-1], p.idle[:n-1]
-	}
-	p.mu.Unlock()
-	if c != nil {
-		return c, nil
+	for {
+		var c *Conn
+		if n := len(p.idle); n > 0 {
+			c, p.idle = p.idle[n-1], p.idle[:n-1]
+		}
+		p.mu.Unlock()
+		if c == nil {
+			break
+		}
+		if c.idleSound() {
+			return c, nil
+		}
+		// The server ended it while it waited — a restart, a failover, an
+		// idle-session timeout: closed here, and the next idle one or a new
+		// one lent instead, so the caller does not pay for it.
+		_ = c.Close()
+		p.mu.Lock()
 	}
 	c, err := p.connect(ctx)
 	if err != nil {
@@ -140,6 +155,30 @@ func (p *Pool) lend(ctx context.Context) (*Conn, error) {
 	}
 	return c, nil
 }
+
+// idleSound reports whether a connection that sat idle can be lent: nothing
+// arrived while it waited, and a look at its socket ([peekIdle]) finds it
+// quiet. Bytes that arrived — the FATAL 57P01 a terminated backend sends, a
+// notice, a parameter the server re-announced — or the socket's end say it
+// cannot: an idle connection's protocol position has nothing to read, so
+// what came is either its end or something no caller asked for, and a new
+// connection is cheaper to reason about than either. A transport the look
+// cannot reach is lent as it is.
+func (c *Conn) idleSound() bool {
+	if c.broken != nil || c.r.Pending() {
+		return false
+	}
+	quiet, looked := peekIdle(c.rw)
+	if !looked || quiet {
+		return true
+	}
+	c.broken = errIdleEnded
+	return false
+}
+
+// errIdleEnded breaks a connection whose socket the server closed or wrote
+// to while it sat idle, so that its Close sends no Terminate after it.
+var errIdleEnded = errors.New("postgres: the server ended or wrote to an idle connection")
 
 // give takes a connection back: kept if it is sound, out of any
 // transaction block, and the pool open; closed otherwise. A block the call

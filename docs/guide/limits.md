@@ -85,9 +85,9 @@ The figures are a laptop's ([measurements](#measurements-what-is-missing)).
   demand, by what the batch model brings to each, and by whether they can
   be written without a dependency.
 - **A fixed pool, without settings** — on purpose. `postgres.Pool` holds
-  at most N connections and replaces a broken one; there is no idle
-  timeout, lifetime or health check, which are a deployment's tuning
-  (ADR 0022). Batching still does with one connection what a pool does
+  at most N connections, replaces a broken one and looks at an idle one
+  before lending it; there is no idle timeout or lifetime, which are a
+  deployment's tuning (ADR 0022). Batching still does with one connection what a pool does
   with many for reads by key.
 
 ### Authentication, types and certificates
