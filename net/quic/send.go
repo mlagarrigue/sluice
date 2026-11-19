@@ -2399,6 +2399,19 @@ func (c *Conn) writeLocked(pc net.PacketConn, b []byte, to net.Addr, ecn uint8) 
 		c.keepClosingDatagramLocked(pc, b, to) // the CONNECTION_CLOSE, for the closing state
 	}
 	if c.sending {
+		if c.closeWriting {
+			// The CONNECTION_CLOSE leaves now, beside the sender rather than
+			// behind it: whoever closes the connection may close its socket
+			// the moment Close returns — a Listener does — and a close still
+			// queued then never left, the peer waiting out its idle timeout.
+			// Its own scratch: the sender owns oobScratch.
+			if ecn != ecnNotECT {
+				_, err := writeMarked(pc, b, to, ecn, nil)
+				return c.wroteLocked(err)
+			}
+			_, err := pc.WriteTo(b, to)
+			return c.wroteLocked(err)
+		}
 		c.sendQ = append(c.sendQ, queuedWrite{
 			b: append([]byte(nil), b...), seg: len(b), n: 1, pc: pc, to: to, ecn: ecn,
 		})

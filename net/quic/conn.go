@@ -281,6 +281,9 @@ type Conn struct {
 	batchHint   int
 	sendWaiters int
 	sendCond    sync.Cond
+	// closeWriting is set while sendCloseLocked writes the
+	// CONNECTION_CLOSE, which never queues behind a sender (writeLocked).
+	closeWriting bool
 	// parseScratch and batchScratch are the receive path's two per-packet
 	// frame slices, reusable because one receive goroutine processes one
 	// packet at a time and no consumer keeps either slice (see frames).

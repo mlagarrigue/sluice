@@ -418,8 +418,10 @@ func (c *Conn) sendCloseLocked(code uint64, app bool) {
 	batching := c.batching
 	c.batching = false
 	c.closing.capturing = c.holdsClosingLocked()
+	c.closeWriting = true
 	defer func() {
 		c.closing.capturing = false
+		c.closeWriting = false
 		c.batching = batching
 	}()
 	now := time.Now()

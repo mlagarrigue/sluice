@@ -54,3 +54,28 @@ func TestSendFreeTrimmedWhenIdle(t *testing.T) {
 		t.Errorf("idle: %d free buffers left, want the 60000-byte one alone", len(c.sendFree))
 	}
 }
+
+// A CONNECTION_CLOSE written while another goroutine sends the queue with
+// mu released leaves at once rather than behind it: a Listener closes its
+// socket as soon as its connections' Close returns, and a close still in
+// the queue then never left — the peer waited out its idle timeout
+// (TestListenerCloseUnblocksAcceptAndEndsAcceptedConnections, about one run
+// in three hundred).
+func TestCloseDoesNotQueueBehindASender(t *testing.T) {
+	pc := &recordingPC{addr: fakeFuzzAddr("close:self")}
+	peerPC := &recordingPC{addr: fakeFuzzAddr("close:peer")}
+	c, _ := newKeyedConnOn(t, pc, peerPC)
+	c.mu.Lock()
+	before := len(pc.recorded())
+	c.sending = true // a sender is writing the queue outside mu
+	c.sendCloseLocked(0, false)
+	queued := len(c.sendQ)
+	c.sending = false
+	c.mu.Unlock()
+	if after := len(pc.recorded()); after == before {
+		t.Error("the CONNECTION_CLOSE did not leave while a sender held the queue")
+	}
+	if queued != 0 {
+		t.Errorf("%d datagrams queued behind the sender, want the close written at once", queued)
+	}
+}
