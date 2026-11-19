@@ -47,10 +47,11 @@ import (
 // list is a slice of that array between two offsets. Nothing is parsed
 // beyond the key the path or the body carries.
 //
-// When the request asks for gzip or deflate, a 200 is compressed on the fly
-// at level 1, the level the study compares at (§2.3 bis), by an encoder
-// reused from a pool: 89 µs for a list page of 53 KB on a developer's
-// machine (×6 smaller), against ~250 µs the generator spends decoding and
+// When the request asks for gzip, deflate, br or zstd, a 200 is compressed on
+// the fly by an encoder reused from a pool — gzip and deflate at level 1, the
+// level the study compares at (§2.3 bis), br at quality 4 and zstd at its
+// library's default: gzip takes 89 µs for a list page of 53 KB on a
+// developer's machine (×6 smaller), against ~250 µs the generator spends decoding and
 // checking it, in a process of its own. A page cannot be compressed once
 // at startup: every list starts at another key. Fragments compressed once
 // and spliced together would cost a quarter of that, and checksums to
@@ -102,8 +103,8 @@ func staticDoc() []byte {
 	return b
 }
 
-// bufPool holds the response buffers: a list is ~100 KB, everything else
-// under a kilobyte.
+// bufPool holds the response buffers: a list of listLimit rows is ~53 KB,
+// everything else under a kilobyte.
 var bufPool = sync.Pool{New: func() any { b := make([]byte, 0, 128<<10); return &b }}
 
 func (t *trivial) ServeHTTP(w http.ResponseWriter, r *http.Request) {

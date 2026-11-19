@@ -43,7 +43,7 @@ type report struct {
 	TLSResume  bool   `json:"tls_resume"` // a client session cache was kept
 
 	Held  bool   `json:"held"`  // the SLO held and the stage is a measurement
-	Cause string `json:"cause"` // why not, by precedence: key, connect, queue, slo
+	Cause string `json:"cause"` // why not, by precedence: key, tester, queue, slo
 
 	Sent     int     `json:"sent"`
 	OK       int     `json:"ok"`
