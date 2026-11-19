@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"fmt"
 	"slices"
 	"time"
@@ -196,7 +197,9 @@ func ScanBool(dst []bool, rows *RowBlock, col int) ([]bool, error) {
 // SELECT 'a'), xml and refcursor columns — the built-ins
 // whose binary form is the string's own bytes — and, like every scanner, a
 // column of a type the database created, such as an enum, whose binary form
-// is its label.
+// is its label. A created type whose binary form is not a string — a
+// composite, an array of an enum — is refused at its first value: it starts
+// with a 4-byte count, so it holds a NUL byte, which no PostgreSQL text can.
 //
 // Each string is a copy: a string is immutable in Go and the batch's buffer is
 // not, so a borrowed one would change under its holder at the next batch.
@@ -207,10 +210,16 @@ func ScanText(dst []string, rows *RowBlock, col int) ([]string, error) {
 		pgtype.OIDXML, pgtype.OIDRefcursor); err != nil {
 		return dst, err
 	}
+	// The OID of a created type says nothing of its shape; its values do.
+	created := col >= 0 && col < len(rows.desc) && rows.desc[col].TypeOID >= firstNormalObjectID
 	for i := range rows.Len() {
 		b, isNull := rows.Value(i, col)
 		if isNull {
 			return dst, fmt.Errorf("%w: row %d, column %d", ErrNullValue, i, col)
+		}
+		if created && bytes.IndexByte(b, 0) >= 0 {
+			return dst, fmt.Errorf("%w: row %d, column %d (%q) holds a NUL byte, which no text can: its type is not a label, such as a composite or an array — decode it with its codec",
+				pgtype.ErrCodec, i, col, rows.desc[col].Name)
 		}
 		dst = append(dst, string(b))
 	}
