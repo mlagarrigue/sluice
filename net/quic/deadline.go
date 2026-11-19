@@ -16,8 +16,8 @@ type deadlineEntry struct {
 // deadlineHeap orders the armed stream deadlines, earliest first, so that the
 // timer loop reaches the ones that matured without walking every stream.
 //
-// It replaced a pass over the whole stream table per matured deadline. The
-// HTTP/3 server sets a fresh write deadline before each write
+// A pass over the whole stream table per matured deadline would be
+// quadratic. The HTTP/3 server sets a fresh write deadline before each write
 // (writeBound.write), so n streams a peer starves of credit carry n
 // deadlines that mature one after another: n passes of n stream locks, under
 // mu, with n up to 65,536. BenchmarkStreamDeadlinesMature measured 1.6 µs,

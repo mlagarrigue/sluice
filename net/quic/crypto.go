@@ -594,8 +594,8 @@ func (o *packetOpener) openPhased(packet []byte, pnOffset int, largestPN uint64)
 	// payload keep referencing this buffer after the call. Measured before
 	// anyone redesigns that ownership: the copy is ~12% of the receive path
 	// (BenchmarkConnReceivePacket, 2026-10-05: 570ms of the 4.9s under
-	// receive, once the peer's seal was moved out of the timed loop; the
-	// earlier ~4% was diluted by that seal), still less than the AEAD open
+	// receive, the peer's seal kept out of the timed loop, where it would
+	// dilute the share), still less than the AEAD open
 	// itself (750ms).
 	buf := append([]byte(nil), packet...)
 

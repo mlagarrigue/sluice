@@ -96,8 +96,8 @@ func (s *h2Conn) answer(got *h2Applied) {
 		// not match what it was given. Neither is the peer's doing and
 		// neither is a reason to lose the other streams on this connection:
 		// each request of the batch is answered 500 and the connection
-		// carries on. This was a GOAWAY before the write side was split off,
-		// so one handler bug cost every request in flight.
+		// carries on, where a GOAWAY would make every request in flight pay
+		// for one handler's bug.
 		res = make([]Response, len(b.reqs))
 		for i := range res {
 			res[i] = transportError(500)

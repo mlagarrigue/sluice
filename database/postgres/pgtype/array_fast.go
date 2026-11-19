@@ -26,7 +26,7 @@ import (
 // are the general path's. An encoding loop writes the runs of values
 // between two NULLs, AppendArray writing each NULL. The two- and eight-byte ones write each
 // element's length and value in one append rather than two: the int8 loop
-// of two appends read as noise against the named function it replaced on
+// of two appends read as noise against a named per-element function on
 // one machine and 34% slower on the CI's, and one append is 29 to 43%
 // faster than two for int2, int8 and float8 (paired A/B, 2026-11-12). Not
 // for the four-byte ones, which one append made 9 to 14% slower; and

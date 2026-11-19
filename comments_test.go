@@ -271,8 +271,10 @@ var processMarkerInAudit = regexp.MustCompile(`(?i)\b(the brief|brief's|backlog|
 // history and in the regression test. "Is used to", "never used to" and
 // ", used to" are the verb's other sense. A measurement that justifies a
 // choice compares it with the alternative it names, not with "the previous
-// shape".
-var historyMarker = regexp.MustCompile(`(?i)\bused to\b|\bformerly\b|\bbefore removal\b|\bprevious shape\b|\btried and reverted\b|\buntil this existed\b|\bturned out not to\b|\bbecame the (zero|default)\b`)
+// shape", "what it replaced" or "the earlier" figure. The forms are narrow
+// on purpose: "replaced" and "earlier" alone are the present tense of many
+// rules ("a broken one is replaced", "the earlier frames").
+var historyMarker = regexp.MustCompile(`(?i)\bused to\b|\bformerly\b|\bbefore removal\b|\bprevious shape\b|\btried and reverted\b|\buntil this existed\b|\bturned out not to\b|\bbecame the (zero|default)\b|\bit replaced (a|an|the|on|in)\b|\bthis was an? \w+ before\b|\bearlier ~?\d`)
 
 // datedHistory is a production comment that dates what the code did, or
 // when a choice was made: "until 2026-10-21 the term was zero", "decided
