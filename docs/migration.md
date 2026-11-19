@@ -64,6 +64,13 @@ behavior that keep the signatures — a value now refused — come last.
   `LqueryCodec`, `LtxtqueryCodec`, `VectorCodec`, `RangeCodec` and `MultirangeCodec` take it where they
   took `oid, arrayOID`. Write `oids, err := conn.LookupType(ctx, "hstore")` then
   `pgtype.HstoreCodec(oids)`; OIDs known otherwise go in `pgtype.TypeOIDs{OID: …, ArrayOID: …}`.
+- **`pgtype.Codec`'s `Append` and `Decode` are methods, and `pgtype.NewCodec` builds a Codec**
+  (fix(postgres)!: a Codec's functions are set once, by NewCodec): a copy of `Int4Codec()` whose
+  `Decode` was replaced kept int4's own array loop, and the new function was never called for an
+  array element. Calls such as `c.Decode(b)` and `c.Append(dst, v)` are unchanged. Replace a literal
+  `pgtype.Codec[T]{OID: o, ArrayOID: a, Append: f, Decode: g}` with
+  `pgtype.NewCodec(pgtype.TypeOIDs{OID: o, ArrayOID: a}, f, g)`; to change how a built-in type
+  reads, wrap its methods: `pgtype.NewCodec(oids, int4.Append, func(b []byte) (int32, error) { … int4.Decode(b) … })`.
 - **`pgtype.TimeTZ.OffsetSeconds` becomes `SecondsWest`** (`8ef447d`):
   the value and its sign are unchanged — seconds west of UTC, the wire's convention, so UTC+2 is
   -7200. Rename the field; a value filled as Go states offsets (+7200 for UTC+2) was four hours out,

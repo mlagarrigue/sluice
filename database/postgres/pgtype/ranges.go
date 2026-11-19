@@ -49,8 +49,8 @@ func RangeCodec[T any](elem Codec[T], oids TypeOIDs) Codec[Range[T]] {
 	return Codec[Range[T]]{
 		OID:      oids.OID,
 		ArrayOID: oids.ArrayOID,
-		Append:   func(dst []byte, r Range[T]) []byte { return AppendRange(dst, r, elem) },
-		Decode:   func(b []byte) (Range[T], error) { return DecodeRange(b, elem) },
+		appendFn: func(dst []byte, r Range[T]) []byte { return AppendRange(dst, r, elem) },
+		decodeFn: func(b []byte) (Range[T], error) { return DecodeRange(b, elem) },
 	}
 }
 
@@ -61,8 +61,8 @@ func MultirangeCodec[T any](elem Codec[T], oids TypeOIDs) Codec[Multirange[T]] {
 	return Codec[Multirange[T]]{
 		OID:      oids.OID,
 		ArrayOID: oids.ArrayOID,
-		Append:   func(dst []byte, m Multirange[T]) []byte { return AppendMultirange(dst, m, elem) },
-		Decode:   func(b []byte) (Multirange[T], error) { return DecodeMultirange(nil, b, elem) },
+		appendFn: func(dst []byte, m Multirange[T]) []byte { return AppendMultirange(dst, m, elem) },
+		decodeFn: func(b []byte) (Multirange[T], error) { return DecodeMultirange(nil, b, elem) },
 	}
 }
 

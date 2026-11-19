@@ -24,8 +24,8 @@ import (
 //
 // A Codec is also how a type this package does not know is plugged in — an
 // extension's type, whose OID is looked up at run time, or a composite read
-// field by field: fill the four fields and the containers take it as they
-// take the built-in ones.
+// field by field: [NewCodec] makes its Codec, and the containers take it as
+// they take the built-in ones.
 //
 // # What Decode may return
 //
@@ -42,21 +42,40 @@ type Codec[T any] struct {
 	// ArrayOID is the OID of the type's array, what a Param carries for an
 	// [Array] of it. Zero when the type has none.
 	ArrayOID uint32
-	// Append writes one value, without its length: the container writes the
-	// length around it.
-	Append func(dst []byte, v T) []byte
-	// Decode reads one value from exactly the bytes it was sent as.
-	Decode func(b []byte) (T, error)
+
+	appendFn func(dst []byte, v T) []byte
+	decodeFn func(b []byte) (T, error)
 
 	// decodeElems and appendElems are the element loops of an array of
 	// the type (array_fast.go), set by this package's codecs of the common
-	// types alone: a Codec built elsewhere keeps its own Decode and Append
+	// types alone: a Codec from [NewCodec] goes through its own functions
 	// for every element. decodeElems reads, of n elements, those it expects
 	// and returns what follows them; appendElems writes an array with no
-	// NULL.
+	// NULL. The functions are unexported so that no Codec holds a loop that
+	// reads otherwise than its Decode.
 	decodeElems func(dst []T, body []byte, n int) ([]T, []byte, error)
 	appendElems func(dst []byte, elems []T) []byte
 }
+
+// NewCodec returns the Codec of a type this package does not build: oids
+// says the type's OID and its array's, appendFn writes one value without its
+// length — the container writes the length around it — and decode reads one
+// value from exactly the bytes it was sent as. To change how a built-in type
+// reads or writes, wrap its Codec's methods:
+//
+//	int4 := pgtype.Int4Codec()
+//	checked := pgtype.NewCodec(pgtype.TypeOIDs{OID: int4.OID, ArrayOID: int4.ArrayOID}, int4.Append,
+//		func(b []byte) (int32, error) { /* validate */ return int4.Decode(b) })
+func NewCodec[T any](oids TypeOIDs, appendFn func(dst []byte, v T) []byte, decode func(b []byte) (T, error)) Codec[T] {
+	return Codec[T]{OID: oids.OID, ArrayOID: oids.ArrayOID, appendFn: appendFn, decodeFn: decode}
+}
+
+// Append writes one value, without its length: the container writes the
+// length around it.
+func (c Codec[T]) Append(dst []byte, v T) []byte { return c.appendFn(dst, v) }
+
+// Decode reads one value from exactly the bytes it was sent as.
+func (c Codec[T]) Decode(b []byte) (T, error) { return c.decodeFn(b) }
 
 // decodeTextValue is [DecodeText] in the shape of a Codec's Decode. A named
 // function rather than a closure built per call, which the compiler would
@@ -84,12 +103,12 @@ func copyJSONB(b []byte) ([]byte, error) {
 
 // BoolCodec returns the Codec of boolean.
 func BoolCodec() Codec[bool] {
-	return Codec[bool]{OID: OIDBool, ArrayOID: OIDBoolArray, Append: AppendBool, Decode: DecodeBool, decodeElems: decodeBoolElems, appendElems: appendBoolElems}
+	return Codec[bool]{OID: OIDBool, ArrayOID: OIDBoolArray, appendFn: AppendBool, decodeFn: DecodeBool, decodeElems: decodeBoolElems, appendElems: appendBoolElems}
 }
 
 // ByteaCodec returns the Codec of bytea. Its Decode copies.
 func ByteaCodec() Codec[[]byte] {
-	return Codec[[]byte]{OID: OIDBytea, ArrayOID: OIDByteaArray, Append: AppendBytea, Decode: cloneBytes, decodeElems: decodeByteaElems, appendElems: appendByteaElems}
+	return Codec[[]byte]{OID: OIDBytea, ArrayOID: OIDByteaArray, appendFn: AppendBytea, decodeFn: cloneBytes, decodeElems: decodeByteaElems, appendElems: appendByteaElems}
 }
 
 // cloneBytes is the decoder of a bytea element: a copy, never the wire
@@ -103,34 +122,34 @@ func cloneBytes(v []byte) ([]byte, error) {
 
 // CharCodec returns the Codec of "char", the one-byte type ([AppendChar]).
 func CharCodec() Codec[byte] {
-	return Codec[byte]{OID: OIDChar, ArrayOID: OIDCharArray, Append: AppendChar, Decode: DecodeChar}
+	return Codec[byte]{OID: OIDChar, ArrayOID: OIDCharArray, appendFn: AppendChar, decodeFn: DecodeChar}
 }
 
 // NameCodec returns the Codec of name.
 func NameCodec() Codec[string] {
-	return Codec[string]{OID: OIDName, ArrayOID: OIDNameArray, Append: AppendText, Decode: decodeTextValue}
+	return Codec[string]{OID: OIDName, ArrayOID: OIDNameArray, appendFn: AppendText, decodeFn: decodeTextValue}
 }
 
 // Int8Codec returns the Codec of bigint.
 func Int8Codec() Codec[int64] {
-	return Codec[int64]{OID: OIDInt8, ArrayOID: OIDInt8Array, Append: AppendInt8, Decode: DecodeInt8, decodeElems: decodeInt8Elems, appendElems: appendInt8Elems}
+	return Codec[int64]{OID: OIDInt8, ArrayOID: OIDInt8Array, appendFn: AppendInt8, decodeFn: DecodeInt8, decodeElems: decodeInt8Elems, appendElems: appendInt8Elems}
 }
 
 // Int2Codec returns the Codec of smallint.
 func Int2Codec() Codec[int16] {
-	return Codec[int16]{OID: OIDInt2, ArrayOID: OIDInt2Array, Append: AppendInt2, Decode: DecodeInt2, decodeElems: decodeInt2Elems, appendElems: appendInt2Elems}
+	return Codec[int16]{OID: OIDInt2, ArrayOID: OIDInt2Array, appendFn: AppendInt2, decodeFn: DecodeInt2, decodeElems: decodeInt2Elems, appendElems: appendInt2Elems}
 }
 
 // Int2VectorCodec returns the Codec of int2vector.
 func Int2VectorCodec() Codec[[]int16] {
-	return Codec[[]int16]{OID: OIDInt2Vector, ArrayOID: OIDInt2VectorArray, Append: AppendInt2Vector, Decode: func(b []byte) ([]int16, error) {
+	return Codec[[]int16]{OID: OIDInt2Vector, ArrayOID: OIDInt2VectorArray, appendFn: AppendInt2Vector, decodeFn: func(b []byte) ([]int16, error) {
 		return DecodeInt2Vector(nil, b)
 	}}
 }
 
 // Int4Codec returns the Codec of integer.
 func Int4Codec() Codec[int32] {
-	return Codec[int32]{OID: OIDInt4, ArrayOID: OIDInt4Array, Append: AppendInt4, Decode: DecodeInt4, decodeElems: decodeInt4Elems, appendElems: appendInt4Elems}
+	return Codec[int32]{OID: OIDInt4, ArrayOID: OIDInt4Array, appendFn: AppendInt4, decodeFn: DecodeInt4, decodeElems: decodeInt4Elems, appendElems: appendInt4Elems}
 }
 
 // RegprocCodec returns the Codec of regproc.
@@ -138,7 +157,7 @@ func RegprocCodec() Codec[uint32] { return oidAlias(OIDRegproc, OIDRegprocArray)
 
 // TextCodec returns the Codec of text.
 func TextCodec() Codec[string] {
-	return Codec[string]{OID: OIDText, ArrayOID: OIDTextArray, Append: AppendText, Decode: decodeTextValue, decodeElems: decodeTextElems, appendElems: appendTextElems}
+	return Codec[string]{OID: OIDText, ArrayOID: OIDTextArray, appendFn: AppendText, decodeFn: decodeTextValue, decodeElems: decodeTextElems, appendElems: appendTextElems}
 }
 
 // OIDCodec returns the Codec of oid.
@@ -146,169 +165,169 @@ func OIDCodec() Codec[uint32] { return oidAlias(OIDOID, OIDOIDArray) }
 
 // TIDCodec returns the Codec of tid.
 func TIDCodec() Codec[TID] {
-	return Codec[TID]{OID: OIDTID, ArrayOID: OIDTIDArray, Append: AppendTID, Decode: DecodeTID}
+	return Codec[TID]{OID: OIDTID, ArrayOID: OIDTIDArray, appendFn: AppendTID, decodeFn: DecodeTID}
 }
 
 // XIDCodec returns the Codec of xid.
 func XIDCodec() Codec[uint32] {
-	return Codec[uint32]{OID: OIDXID, ArrayOID: OIDXIDArray, Append: AppendXID, Decode: DecodeXID}
+	return Codec[uint32]{OID: OIDXID, ArrayOID: OIDXIDArray, appendFn: AppendXID, decodeFn: DecodeXID}
 }
 
 // CIDCodec returns the Codec of cid.
 func CIDCodec() Codec[uint32] {
-	return Codec[uint32]{OID: OIDCID, ArrayOID: OIDCIDArray, Append: AppendCID, Decode: DecodeCID}
+	return Codec[uint32]{OID: OIDCID, ArrayOID: OIDCIDArray, appendFn: AppendCID, decodeFn: DecodeCID}
 }
 
 // OIDVectorCodec returns the Codec of oidvector.
 func OIDVectorCodec() Codec[[]uint32] {
-	return Codec[[]uint32]{OID: OIDOIDVector, ArrayOID: OIDOIDVectorArray, Append: AppendOIDVector, Decode: func(b []byte) ([]uint32, error) {
+	return Codec[[]uint32]{OID: OIDOIDVector, ArrayOID: OIDOIDVectorArray, appendFn: AppendOIDVector, decodeFn: func(b []byte) ([]uint32, error) {
 		return DecodeOIDVector(nil, b)
 	}}
 }
 
 // JSONCodec returns the Codec of json. Its Decode copies.
 func JSONCodec() Codec[[]byte] {
-	return Codec[[]byte]{OID: OIDJSON, ArrayOID: OIDJSONArray, Append: AppendJSON, Decode: copyJSON}
+	return Codec[[]byte]{OID: OIDJSON, ArrayOID: OIDJSONArray, appendFn: AppendJSON, decodeFn: copyJSON}
 }
 
 // XMLCodec returns the Codec of xml, text in the client encoding.
 func XMLCodec() Codec[string] {
-	return Codec[string]{OID: OIDXML, ArrayOID: OIDXMLArray, Append: AppendText, Decode: decodeTextValue}
+	return Codec[string]{OID: OIDXML, ArrayOID: OIDXMLArray, appendFn: AppendText, decodeFn: decodeTextValue}
 }
 
 // PointCodec returns the Codec of point.
 func PointCodec() Codec[Point] {
-	return Codec[Point]{OID: OIDPoint, ArrayOID: OIDPointArray, Append: AppendPoint, Decode: DecodePoint}
+	return Codec[Point]{OID: OIDPoint, ArrayOID: OIDPointArray, appendFn: AppendPoint, decodeFn: DecodePoint}
 }
 
 // LSegCodec returns the Codec of lseg.
 func LSegCodec() Codec[LSeg] {
-	return Codec[LSeg]{OID: OIDLSeg, ArrayOID: OIDLSegArray, Append: AppendLSeg, Decode: DecodeLSeg}
+	return Codec[LSeg]{OID: OIDLSeg, ArrayOID: OIDLSegArray, appendFn: AppendLSeg, decodeFn: DecodeLSeg}
 }
 
 // PathCodec returns the Codec of path.
 func PathCodec() Codec[Path] {
-	return Codec[Path]{OID: OIDPath, ArrayOID: OIDPathArray, Append: AppendPath, Decode: func(b []byte) (Path, error) {
+	return Codec[Path]{OID: OIDPath, ArrayOID: OIDPathArray, appendFn: AppendPath, decodeFn: func(b []byte) (Path, error) {
 		return DecodePath(nil, b)
 	}}
 }
 
 // BoxCodec returns the Codec of box.
 func BoxCodec() Codec[Box] {
-	return Codec[Box]{OID: OIDBox, ArrayOID: OIDBoxArray, Append: AppendBox, Decode: DecodeBox}
+	return Codec[Box]{OID: OIDBox, ArrayOID: OIDBoxArray, appendFn: AppendBox, decodeFn: DecodeBox}
 }
 
 // PolygonCodec returns the Codec of polygon.
 func PolygonCodec() Codec[[]Point] {
-	return Codec[[]Point]{OID: OIDPolygon, ArrayOID: OIDPolygonArray, Append: AppendPolygon, Decode: func(b []byte) ([]Point, error) {
+	return Codec[[]Point]{OID: OIDPolygon, ArrayOID: OIDPolygonArray, appendFn: AppendPolygon, decodeFn: func(b []byte) ([]Point, error) {
 		return DecodePolygon(nil, b)
 	}}
 }
 
 // LineCodec returns the Codec of line.
 func LineCodec() Codec[Line] {
-	return Codec[Line]{OID: OIDLine, ArrayOID: OIDLineArray, Append: AppendLine, Decode: DecodeLine}
+	return Codec[Line]{OID: OIDLine, ArrayOID: OIDLineArray, appendFn: AppendLine, decodeFn: DecodeLine}
 }
 
 // CIDRCodec returns the Codec of cidr.
 func CIDRCodec() Codec[netip.Prefix] {
-	return Codec[netip.Prefix]{OID: OIDCIDR, ArrayOID: OIDCIDRArray, Append: AppendCIDR, Decode: DecodeInet}
+	return Codec[netip.Prefix]{OID: OIDCIDR, ArrayOID: OIDCIDRArray, appendFn: AppendCIDR, decodeFn: DecodeInet}
 }
 
 // Float4Codec returns the Codec of real.
 func Float4Codec() Codec[float32] {
-	return Codec[float32]{OID: OIDFloat4, ArrayOID: OIDFloat4Array, Append: AppendFloat4, Decode: DecodeFloat4, decodeElems: decodeFloat4Elems, appendElems: appendFloat4Elems}
+	return Codec[float32]{OID: OIDFloat4, ArrayOID: OIDFloat4Array, appendFn: AppendFloat4, decodeFn: DecodeFloat4, decodeElems: decodeFloat4Elems, appendElems: appendFloat4Elems}
 }
 
 // Float8Codec returns the Codec of double precision.
 func Float8Codec() Codec[float64] {
-	return Codec[float64]{OID: OIDFloat8, ArrayOID: OIDFloat8Array, Append: AppendFloat8, Decode: DecodeFloat8, decodeElems: decodeFloat8Elems, appendElems: appendFloat8Elems}
+	return Codec[float64]{OID: OIDFloat8, ArrayOID: OIDFloat8Array, appendFn: AppendFloat8, decodeFn: DecodeFloat8, decodeElems: decodeFloat8Elems, appendElems: appendFloat8Elems}
 }
 
 // CircleCodec returns the Codec of circle.
 func CircleCodec() Codec[Circle] {
-	return Codec[Circle]{OID: OIDCircle, ArrayOID: OIDCircleArray, Append: AppendCircle, Decode: DecodeCircle}
+	return Codec[Circle]{OID: OIDCircle, ArrayOID: OIDCircleArray, appendFn: AppendCircle, decodeFn: DecodeCircle}
 }
 
 // Macaddr8Codec returns the Codec of macaddr8.
 func Macaddr8Codec() Codec[[8]byte] {
-	return Codec[[8]byte]{OID: OIDMacaddr8, ArrayOID: OIDMacaddr8Array, Append: AppendMacaddr8, Decode: DecodeMacaddr8}
+	return Codec[[8]byte]{OID: OIDMacaddr8, ArrayOID: OIDMacaddr8Array, appendFn: AppendMacaddr8, decodeFn: DecodeMacaddr8}
 }
 
 // MoneyCodec returns the Codec of money, in the currency's smallest unit
 // ([AppendMoney]).
 func MoneyCodec() Codec[int64] {
-	return Codec[int64]{OID: OIDMoney, ArrayOID: OIDMoneyArray, Append: AppendMoney, Decode: DecodeMoney}
+	return Codec[int64]{OID: OIDMoney, ArrayOID: OIDMoneyArray, appendFn: AppendMoney, decodeFn: DecodeMoney}
 }
 
 // MacaddrCodec returns the Codec of macaddr.
 func MacaddrCodec() Codec[[6]byte] {
-	return Codec[[6]byte]{OID: OIDMacaddr, ArrayOID: OIDMacaddrArray, Append: AppendMacaddr, Decode: DecodeMacaddr}
+	return Codec[[6]byte]{OID: OIDMacaddr, ArrayOID: OIDMacaddrArray, appendFn: AppendMacaddr, decodeFn: DecodeMacaddr}
 }
 
 // InetCodec returns the Codec of inet.
 func InetCodec() Codec[netip.Prefix] {
-	return Codec[netip.Prefix]{OID: OIDInet, ArrayOID: OIDInetArray, Append: AppendInet, Decode: DecodeInet}
+	return Codec[netip.Prefix]{OID: OIDInet, ArrayOID: OIDInetArray, appendFn: AppendInet, decodeFn: DecodeInet}
 }
 
 // BPCharCodec returns the Codec of char(n), with its padding.
 func BPCharCodec() Codec[string] {
-	return Codec[string]{OID: OIDBPChar, ArrayOID: OIDBPCharArray, Append: AppendText, Decode: decodeTextValue}
+	return Codec[string]{OID: OIDBPChar, ArrayOID: OIDBPCharArray, appendFn: AppendText, decodeFn: decodeTextValue}
 }
 
 // VarcharCodec returns the Codec of varchar.
 func VarcharCodec() Codec[string] {
-	return Codec[string]{OID: OIDVarchar, ArrayOID: OIDVarcharArray, Append: AppendText, Decode: decodeTextValue}
+	return Codec[string]{OID: OIDVarchar, ArrayOID: OIDVarcharArray, appendFn: AppendText, decodeFn: decodeTextValue}
 }
 
 // DateCodec returns the Codec of date.
 func DateCodec() Codec[time.Time] {
-	return Codec[time.Time]{OID: OIDDate, ArrayOID: OIDDateArray, Append: AppendDate, Decode: DecodeDate, decodeElems: decodeDateElems, appendElems: appendDateElems}
+	return Codec[time.Time]{OID: OIDDate, ArrayOID: OIDDateArray, appendFn: AppendDate, decodeFn: DecodeDate, decodeElems: decodeDateElems, appendElems: appendDateElems}
 }
 
 // TimeCodec returns the Codec of time without time zone.
 func TimeCodec() Codec[TimeOfDay] {
-	return Codec[TimeOfDay]{OID: OIDTime, ArrayOID: OIDTimeArray, Append: AppendTime, Decode: DecodeTime}
+	return Codec[TimeOfDay]{OID: OIDTime, ArrayOID: OIDTimeArray, appendFn: AppendTime, decodeFn: DecodeTime}
 }
 
 // TimestampCodec returns the Codec of timestamp without time zone.
 func TimestampCodec() Codec[time.Time] {
-	return Codec[time.Time]{OID: OIDTimestamp, ArrayOID: OIDTimestampArray, Append: AppendTimestamp, Decode: DecodeTimestamp, decodeElems: decodeTimestampElems, appendElems: appendTimestampElems}
+	return Codec[time.Time]{OID: OIDTimestamp, ArrayOID: OIDTimestampArray, appendFn: AppendTimestamp, decodeFn: DecodeTimestamp, decodeElems: decodeTimestampElems, appendElems: appendTimestampElems}
 }
 
 // TimestampTZCodec returns the Codec of timestamptz.
 func TimestampTZCodec() Codec[time.Time] {
-	return Codec[time.Time]{OID: OIDTimestampTZ, ArrayOID: OIDTimestampTZArray, Append: AppendTimestampTZ, Decode: DecodeTimestampTZ, decodeElems: decodeTimestampTZElems, appendElems: appendTimestampTZElems}
+	return Codec[time.Time]{OID: OIDTimestampTZ, ArrayOID: OIDTimestampTZArray, appendFn: AppendTimestampTZ, decodeFn: DecodeTimestampTZ, decodeElems: decodeTimestampTZElems, appendElems: appendTimestampTZElems}
 }
 
 // IntervalCodec returns the Codec of interval.
 func IntervalCodec() Codec[Interval] {
-	return Codec[Interval]{OID: OIDInterval, ArrayOID: OIDIntervalArray, Append: AppendInterval, Decode: DecodeInterval}
+	return Codec[Interval]{OID: OIDInterval, ArrayOID: OIDIntervalArray, appendFn: AppendInterval, decodeFn: DecodeInterval}
 }
 
 // TimeTZCodec returns the Codec of time with time zone.
 func TimeTZCodec() Codec[TimeTZ] {
-	return Codec[TimeTZ]{OID: OIDTimeTZ, ArrayOID: OIDTimeTZArray, Append: AppendTimeTZ, Decode: DecodeTimeTZ}
+	return Codec[TimeTZ]{OID: OIDTimeTZ, ArrayOID: OIDTimeTZArray, appendFn: AppendTimeTZ, decodeFn: DecodeTimeTZ}
 }
 
 // BitCodec returns the Codec of bit(n).
 func BitCodec() Codec[Bits] {
-	return Codec[Bits]{OID: OIDBit, ArrayOID: OIDBitArray, Append: AppendBits, Decode: DecodeBits}
+	return Codec[Bits]{OID: OIDBit, ArrayOID: OIDBitArray, appendFn: AppendBits, decodeFn: DecodeBits}
 }
 
 // VarbitCodec returns the Codec of bit varying.
 func VarbitCodec() Codec[Bits] {
-	return Codec[Bits]{OID: OIDVarbit, ArrayOID: OIDVarbitArray, Append: AppendBits, Decode: DecodeBits}
+	return Codec[Bits]{OID: OIDVarbit, ArrayOID: OIDVarbitArray, appendFn: AppendBits, decodeFn: DecodeBits}
 }
 
 // NumericCodec returns the Codec of numeric.
 func NumericCodec() Codec[Numeric] {
-	return Codec[Numeric]{OID: OIDNumeric, ArrayOID: OIDNumericArray, Append: AppendNumeric, Decode: DecodeNumeric, decodeElems: decodeNumericElems, appendElems: appendNumericElems}
+	return Codec[Numeric]{OID: OIDNumeric, ArrayOID: OIDNumericArray, appendFn: AppendNumeric, decodeFn: DecodeNumeric, decodeElems: decodeNumericElems, appendElems: appendNumericElems}
 }
 
 // RefcursorCodec returns the Codec of refcursor, a cursor's name.
 func RefcursorCodec() Codec[string] {
-	return Codec[string]{OID: OIDRefcursor, ArrayOID: OIDRefcursorArray, Append: AppendText, Decode: decodeTextValue}
+	return Codec[string]{OID: OIDRefcursor, ArrayOID: OIDRefcursorArray, appendFn: AppendText, decodeFn: decodeTextValue}
 }
 
 // RegprocedureCodec returns the Codec of regprocedure.
@@ -328,29 +347,29 @@ func RegtypeCodec() Codec[uint32] { return oidAlias(OIDRegtype, OIDRegtypeArray)
 
 // UUIDCodec returns the Codec of uuid.
 func UUIDCodec() Codec[[16]byte] {
-	return Codec[[16]byte]{OID: OIDUUID, ArrayOID: OIDUUIDArray, Append: AppendUUID, Decode: DecodeUUID, decodeElems: decodeUUIDElems, appendElems: appendUUIDElems}
+	return Codec[[16]byte]{OID: OIDUUID, ArrayOID: OIDUUIDArray, appendFn: AppendUUID, decodeFn: DecodeUUID, decodeElems: decodeUUIDElems, appendElems: appendUUIDElems}
 }
 
 // TxidSnapshotCodec returns the Codec of txid_snapshot.
 func TxidSnapshotCodec() Codec[Snapshot] {
-	return Codec[Snapshot]{OID: OIDTxidSnapshot, ArrayOID: OIDTxidSnapshotArray, Append: AppendSnapshot, Decode: DecodeSnapshot}
+	return Codec[Snapshot]{OID: OIDTxidSnapshot, ArrayOID: OIDTxidSnapshotArray, appendFn: AppendSnapshot, decodeFn: DecodeSnapshot}
 }
 
 // PGLSNCodec returns the Codec of pg_lsn.
 func PGLSNCodec() Codec[uint64] {
-	return Codec[uint64]{OID: OIDPGLSN, ArrayOID: OIDPGLSNArray, Append: AppendPGLSN, Decode: DecodePGLSN}
+	return Codec[uint64]{OID: OIDPGLSN, ArrayOID: OIDPGLSNArray, appendFn: AppendPGLSN, decodeFn: DecodePGLSN}
 }
 
 // TSVectorCodec returns the Codec of tsvector.
 func TSVectorCodec() Codec[[]Lexeme] {
-	return Codec[[]Lexeme]{OID: OIDTSVector, ArrayOID: OIDTSVectorArray, Append: AppendTSVector, Decode: func(b []byte) ([]Lexeme, error) {
+	return Codec[[]Lexeme]{OID: OIDTSVector, ArrayOID: OIDTSVectorArray, appendFn: AppendTSVector, decodeFn: func(b []byte) ([]Lexeme, error) {
 		return DecodeTSVector(nil, b)
 	}}
 }
 
 // TSQueryCodec returns the Codec of tsquery.
 func TSQueryCodec() Codec[[]TSQueryItem] {
-	return Codec[[]TSQueryItem]{OID: OIDTSQuery, ArrayOID: OIDTSQueryArray, Append: AppendTSQuery, Decode: func(b []byte) ([]TSQueryItem, error) {
+	return Codec[[]TSQueryItem]{OID: OIDTSQuery, ArrayOID: OIDTSQueryArray, appendFn: AppendTSQuery, decodeFn: func(b []byte) ([]TSQueryItem, error) {
 		return DecodeTSQuery(nil, b)
 	}}
 }
@@ -363,12 +382,12 @@ func RegdictionaryCodec() Codec[uint32] { return oidAlias(OIDRegdictionary, OIDR
 
 // JSONBCodec returns the Codec of jsonb. Its Decode copies.
 func JSONBCodec() Codec[[]byte] {
-	return Codec[[]byte]{OID: OIDJSONB, ArrayOID: OIDJSONBArray, Append: AppendJSONB, Decode: copyJSONB}
+	return Codec[[]byte]{OID: OIDJSONB, ArrayOID: OIDJSONBArray, appendFn: AppendJSONB, decodeFn: copyJSONB}
 }
 
 // JSONPathCodec returns the Codec of jsonpath.
 func JSONPathCodec() Codec[string] {
-	return Codec[string]{OID: OIDJSONPath, ArrayOID: OIDJSONPathArray, Append: AppendJSONPath, Decode: DecodeJSONPath}
+	return Codec[string]{OID: OIDJSONPath, ArrayOID: OIDJSONPathArray, appendFn: AppendJSONPath, decodeFn: DecodeJSONPath}
 }
 
 // RegnamespaceCodec returns the Codec of regnamespace.
@@ -382,17 +401,17 @@ func RegcollationCodec() Codec[uint32] { return oidAlias(OIDRegcollation, OIDReg
 
 // PGSnapshotCodec returns the Codec of pg_snapshot.
 func PGSnapshotCodec() Codec[Snapshot] {
-	return Codec[Snapshot]{OID: OIDPGSnapshot, ArrayOID: OIDPGSnapshotArray, Append: AppendSnapshot, Decode: DecodeSnapshot}
+	return Codec[Snapshot]{OID: OIDPGSnapshot, ArrayOID: OIDPGSnapshotArray, appendFn: AppendSnapshot, decodeFn: DecodeSnapshot}
 }
 
 // XID8Codec returns the Codec of xid8.
 func XID8Codec() Codec[uint64] {
-	return Codec[uint64]{OID: OIDXID8, ArrayOID: OIDXID8Array, Append: AppendXID8, Decode: DecodeXID8}
+	return Codec[uint64]{OID: OIDXID8, ArrayOID: OIDXID8Array, appendFn: AppendXID8, decodeFn: DecodeXID8}
 }
 
 // OID8Codec returns the Codec of oid8 (PostgreSQL 19).
 func OID8Codec() Codec[uint64] {
-	return Codec[uint64]{OID: OIDOID8, ArrayOID: OIDOID8Array, Append: AppendOID8, Decode: DecodeOID8}
+	return Codec[uint64]{OID: OIDOID8, ArrayOID: OIDOID8Array, appendFn: AppendOID8, decodeFn: DecodeOID8}
 }
 
 // RegdatabaseCodec returns the Codec of regdatabase (PostgreSQL 19).
@@ -401,5 +420,5 @@ func RegdatabaseCodec() Codec[uint32] { return oidAlias(OIDRegdatabase, OIDRegda
 // oidAlias is the Codec of oid under another OID: every reg* type is an oid
 // on the wire.
 func oidAlias(oid, array uint32) Codec[uint32] {
-	return Codec[uint32]{OID: oid, ArrayOID: array, Append: AppendOID, Decode: DecodeOID}
+	return Codec[uint32]{OID: oid, ArrayOID: array, appendFn: AppendOID, decodeFn: DecodeOID}
 }

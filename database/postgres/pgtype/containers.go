@@ -83,8 +83,9 @@ func AppendArray[T any](dst []byte, a Array[T], c Codec[T]) []byte {
 		dst = binary.BigEndian.AppendUint32(dst, uint32(d.Len))   //nolint:gosec // G115: the protocol field is int32
 		dst = binary.BigEndian.AppendUint32(dst, uint32(d.Lower)) //nolint:gosec // G115: the protocol field is int32
 	}
+	appendElems := c.appendElems
 	switch {
-	case slices.Contains(a.Nulls, true) && c.appendElems != nil:
+	case slices.Contains(a.Nulls, true) && appendElems != nil:
 		// The type's loop writes each run of values between two NULLs: one
 		// NULL in ten left to the general path cost int4 three times the
 		// array without (BenchmarkArrayAppendInt41000Nulls).
@@ -94,7 +95,7 @@ func AppendArray[T any](dst []byte, a Array[T], c Codec[T]) []byte {
 			for j < len(a.Elems) && (j >= len(a.Nulls) || !a.Nulls[j]) {
 				j++
 			}
-			dst = c.appendElems(dst, a.Elems[i:j])
+			dst = appendElems(dst, a.Elems[i:j])
 			if j < len(a.Elems) {
 				dst = binary.BigEndian.AppendUint32(dst, nullElement)
 				j++
@@ -108,13 +109,13 @@ func AppendArray[T any](dst []byte, a Array[T], c Codec[T]) []byte {
 				dst = binary.BigEndian.AppendUint32(dst, nullElement)
 				continue
 			}
-			dst = appendValue(dst, v, c.Append)
+			dst = appendValue(dst, v, c.appendFn)
 		}
-	case c.appendElems != nil:
-		dst = c.appendElems(dst, a.Elems)
+	case appendElems != nil:
+		dst = appendElems(dst, a.Elems)
 	default:
 		for _, v := range a.Elems {
-			dst = appendValue(dst, v, c.Append)
+			dst = appendValue(dst, v, c.appendFn)
 		}
 	}
 	return dst
@@ -189,7 +190,7 @@ func DecodeArray[T any](dst Array[T], b []byte, c Codec[T]) (Array[T], error) {
 		dst.Dims = append(dst.Dims, d)
 	}
 	var err error
-	if c.decodeElems != nil {
+	if decodeElems := c.decodeElems; decodeElems != nil {
 		// The type's loop reads what it expects; the general path takes the
 		// one element it stops at — a NULL, an unexpected length — and the
 		// loop resumes after it. Handing the general path everything from
@@ -197,7 +198,7 @@ func DecodeArray[T any](dst Array[T], b []byte, c Codec[T]) (Array[T], error) {
 		// NULL in ten (BenchmarkArrayDecodeInt41000Nulls).
 		for len(dst.Elems) < n {
 			start := len(dst.Elems)
-			if dst.Elems, body, err = c.decodeElems(dst.Elems, body, n-start); err != nil {
+			if dst.Elems, body, err = decodeElems(dst.Elems, body, n-start); err != nil {
 				return dst.reset(), err
 			}
 			if m, k := len(dst.Nulls), len(dst.Elems)-start; m > 0 && k > 0 {
@@ -218,12 +219,12 @@ func DecodeArray[T any](dst Array[T], b []byte, c Codec[T]) (Array[T], error) {
 				body = body[4:]
 				continue
 			}
-			if dst, body, err = otherElements(dst, body, len(dst.Elems), len(dst.Elems)+1, c.Decode); err != nil {
+			if dst, body, err = otherElements(dst, body, len(dst.Elems), len(dst.Elems)+1, c.decodeFn); err != nil {
 				return dst.reset(), err
 			}
 		}
 	}
-	if dst, body, err = otherElements(dst, body, len(dst.Elems), n, c.Decode); err != nil {
+	if dst, body, err = otherElements(dst, body, len(dst.Elems), n, c.decodeFn); err != nil {
 		return dst.reset(), err
 	}
 	if err := trailing(body); err != nil {
@@ -313,10 +314,10 @@ func AppendRange[T any](dst []byte, r Range[T], c Codec[T]) []byte {
 	}
 	dst = append(dst, flags)
 	if !r.Lower.Unbounded {
-		dst = appendValue(dst, r.Lower.Value, c.Append)
+		dst = appendValue(dst, r.Lower.Value, c.appendFn)
 	}
 	if !r.Upper.Unbounded {
-		dst = appendValue(dst, r.Upper.Value, c.Append)
+		dst = appendValue(dst, r.Upper.Value, c.appendFn)
 	}
 	return dst
 }
@@ -352,12 +353,12 @@ func DecodeRange[T any](b []byte, c Codec[T]) (Range[T], error) {
 	body := b[1:]
 	var err error
 	if !r.Lower.Unbounded {
-		if r.Lower.Value, body, err = rangeBound(body, "lower", c.Decode); err != nil {
+		if r.Lower.Value, body, err = rangeBound(body, "lower", c.decodeFn); err != nil {
 			return Range[T]{}, err
 		}
 	}
 	if !r.Upper.Unbounded {
-		if r.Upper.Value, body, err = rangeBound(body, "upper", c.Decode); err != nil {
+		if r.Upper.Value, body, err = rangeBound(body, "upper", c.decodeFn); err != nil {
 			return Range[T]{}, err
 		}
 	}

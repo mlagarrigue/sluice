@@ -143,15 +143,14 @@ func TestIntegrationContainersMatchTheServer(t *testing.T) {
 	codecMatchesServer(t, conn, `'{[2024-03-01,2024-03-05), [2024-03-03,2024-03-07)}'::datemultirange`, pgtype.DateMultirangeCodec(),
 		pgtype.Multirange[time.Time]{closedOpen(day(1), day(7))}) // merged by the server
 	codecMatchesServer(t, conn, `ARRAY['[1,6)', NULL, 'empty']::int4range[]`,
-		pgtype.Codec[pgtype.Array[pgtype.Range[int32]]]{
-			OID: pgtype.OIDInt4RangeArray,
-			Append: func(dst []byte, a pgtype.Array[pgtype.Range[int32]]) []byte {
+		pgtype.NewCodec(pgtype.TypeOIDs{OID: pgtype.OIDInt4RangeArray},
+			func(dst []byte, a pgtype.Array[pgtype.Range[int32]]) []byte {
 				return pgtype.AppendArray(dst, a, pgtype.Int4RangeCodec())
 			},
-			Decode: func(b []byte) (pgtype.Array[pgtype.Range[int32]], error) {
+			func(b []byte) (pgtype.Array[pgtype.Range[int32]], error) {
 				return pgtype.DecodeArray(pgtype.Array[pgtype.Range[int32]]{}, b, pgtype.Int4RangeCodec())
 			},
-		},
+		),
 		pgtype.Array[pgtype.Range[int32]]{Elems: []pgtype.Range[int32]{
 			{Lower: pgtype.RangeBound[int32]{Value: 1, Inclusive: true}, Upper: pgtype.RangeBound[int32]{Value: 6}},
 			{},

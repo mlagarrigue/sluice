@@ -78,15 +78,14 @@ func TestIntegrationExtensionTypesMatchTheServer(t *testing.T) {
 	// An array of an extension's type names the type's looked-up OID as its
 	// element, which array_recv checks against the parameter's.
 	codecMatchesServer(t, conn, `ARRAY['a.b', NULL]::ltree[]`,
-		pgtype.Codec[pgtype.Array[string]]{
-			OID: ltree.ArrayOID,
-			Append: func(dst []byte, a pgtype.Array[string]) []byte {
+		pgtype.NewCodec(pgtype.TypeOIDs{OID: ltree.ArrayOID},
+			func(dst []byte, a pgtype.Array[string]) []byte {
 				return pgtype.AppendArray(dst, a, ltree)
 			},
-			Decode: func(b []byte) (pgtype.Array[string], error) {
+			func(b []byte) (pgtype.Array[string], error) {
 				return pgtype.DecodeArray(pgtype.Array[string]{}, b, ltree)
 			},
-		},
+		),
 		pgtype.Array[string]{Elems: []string{"a.b", ""}, Nulls: []bool{false, true}})
 }
 

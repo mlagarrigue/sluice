@@ -34,7 +34,7 @@ type TypeOIDs struct {
 // citext extension: text on the wire, compared without case by the server
 // only.
 func CitextCodec(oids TypeOIDs) Codec[string] {
-	return Codec[string]{OID: oids.OID, ArrayOID: oids.ArrayOID, Append: AppendText, Decode: decodeTextValue}
+	return Codec[string]{OID: oids.OID, ArrayOID: oids.ArrayOID, appendFn: AppendText, decodeFn: decodeTextValue}
 }
 
 // Hstore is a value of the hstore extension's type: keys, each with a value
@@ -43,7 +43,7 @@ type Hstore map[string]Null[string]
 
 // HstoreCodec returns the Codec of hstore.
 func HstoreCodec(oids TypeOIDs) Codec[Hstore] {
-	return Codec[Hstore]{OID: oids.OID, ArrayOID: oids.ArrayOID, Append: AppendHstore, Decode: DecodeHstore}
+	return Codec[Hstore]{OID: oids.OID, ArrayOID: oids.ArrayOID, appendFn: AppendHstore, decodeFn: DecodeHstore}
 }
 
 // AppendHstore appends an hstore: the pair count, then each key and value,
@@ -120,19 +120,19 @@ const ltreeVersion = 1
 
 // LtreeCodec returns the Codec of ltree, a label path such as `top.science`.
 func LtreeCodec(oids TypeOIDs) Codec[string] {
-	return Codec[string]{OID: oids.OID, ArrayOID: oids.ArrayOID, Append: AppendLtree, Decode: DecodeLtree}
+	return Codec[string]{OID: oids.OID, ArrayOID: oids.ArrayOID, appendFn: AppendLtree, decodeFn: DecodeLtree}
 }
 
 // LqueryCodec returns the Codec of lquery, ltree's pattern type
 // (`*.science.*`), which travels in the same form as ltree.
 func LqueryCodec(oids TypeOIDs) Codec[string] {
-	return Codec[string]{OID: oids.OID, ArrayOID: oids.ArrayOID, Append: AppendLtree, Decode: DecodeLtree}
+	return Codec[string]{OID: oids.OID, ArrayOID: oids.ArrayOID, appendFn: AppendLtree, decodeFn: DecodeLtree}
 }
 
 // LtxtqueryCodec returns the Codec of ltxtquery, ltree's full-text pattern
 // type (`science & !physics`), which travels in the same form as ltree.
 func LtxtqueryCodec(oids TypeOIDs) Codec[string] {
-	return Codec[string]{OID: oids.OID, ArrayOID: oids.ArrayOID, Append: AppendLtree, Decode: DecodeLtree}
+	return Codec[string]{OID: oids.OID, ArrayOID: oids.ArrayOID, appendFn: AppendLtree, decodeFn: DecodeLtree}
 }
 
 // AppendLtree appends an ltree, an lquery or an ltxtquery: a version byte,
@@ -159,7 +159,7 @@ const vectorMaxDim = 16000
 
 // VectorCodec returns the Codec of pgvector's vector.
 func VectorCodec(oids TypeOIDs) Codec[[]float32] {
-	return Codec[[]float32]{OID: oids.OID, ArrayOID: oids.ArrayOID, Append: AppendVector, Decode: func(b []byte) ([]float32, error) {
+	return Codec[[]float32]{OID: oids.OID, ArrayOID: oids.ArrayOID, appendFn: AppendVector, decodeFn: func(b []byte) ([]float32, error) {
 		return DecodeVector(nil, b)
 	}}
 }
