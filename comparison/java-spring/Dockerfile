@@ -54,7 +54,7 @@ ENTRYPOINT ["java", "-cp", "application.jar", "dataloader.Application"]
 
 # The JRE of the optimised image: the modules the jar uses, without debug
 # symbols, man pages or header files.
-FROM eclipse-temurin:25-jdk@sha256:b8705e936964c228dfce359e63dbf08f6c69cb380ed1d576b1f6b1064f15567d AS jre
+FROM eclipse-temurin:25-jdk@sha256:ce2ef9d2d67a68de5e196d4de9d743327c44a10b57fe02ec39f572c652cacfd3 AS jre
 RUN jlink --add-modules java.base,java.desktop,java.instrument,java.logging,java.management,java.naming,java.net.http,java.security.jgss,java.sql,java.xml,jdk.jfr,jdk.management,jdk.unsupported \
       --strip-debug --no-man-pages --no-header-files --output /opt/jre
 COPY --from=builder /builder/extracted/dependencies/ /application/
