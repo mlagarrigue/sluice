@@ -71,7 +71,7 @@ WORKDIR /application
 RUN STUDY_TLS_CERT=/cert/cert.pem STUDY_TLS_KEY=/cert/key.pem \
     /opt/jre/bin/java -XX:+UseZGC -XX:AOTCacheOutput=/application/application.aot -Dspring.context.exit=onRefresh -jar application.jar
 
-FROM gcr.io/distroless/cc-debian13:nonroot@sha256:cb87acc574abe719b6e5c547384defa2f7b1f24af9605d3f618cf852495d8be2 AS optimised-opt
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:532c7a94f9e96ba9db75eb9388f4227751131c7cb0a411d1a8521af4096135de AS optimised-opt
 COPY --from=jre /opt/jre /opt/jre
 COPY --from=jre /application /application
 COPY --from=cert /cert /cert
@@ -98,7 +98,7 @@ COPY comparison/java-spring/src src
 RUN STUDY_TLS_CERT=/cert/cert.pem STUDY_TLS_KEY=/cert/key.pem \
     /usr/share/maven/bin/mvn -B -ntp -Pnative -DskipTests native:compile
 
-FROM gcr.io/distroless/cc-debian13:nonroot@sha256:cb87acc574abe719b6e5c547384defa2f7b1f24af9605d3f618cf852495d8be2 AS native
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:532c7a94f9e96ba9db75eb9388f4227751131c7cb0a411d1a8521af4096135de AS native
 COPY --from=native-build /build/target/java-spring /application/java-spring
 COPY --from=cert /cert /cert
 ENV STUDY_LISTEN=0.0.0.0:8443 STUDY_TLS_CERT=/cert/cert.pem STUDY_TLS_KEY=/cert/key.pem
