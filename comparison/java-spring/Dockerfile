@@ -30,12 +30,12 @@ RUN mvn -q -B dependency:go-offline
 COPY comparison/java-spring/src src
 RUN mvn -q -B -o package -DskipTests && mv target/java-spring-*.jar application.jar
 
-FROM bellsoft/liberica-openjre-debian:25-cds@sha256:bc35e6ed0cda3f4670900de782b0a7d3ad38bc8c5738f208110a8d57fcb4192a AS builder
+FROM bellsoft/liberica-openjre-debian:25-cds@sha256:7f804889b01744fb5b517e098f915de021df0fe4f4ad82beeacc1ccd891f1eaf AS builder
 WORKDIR /builder
 COPY --from=jar /build/application.jar application.jar
 RUN java -Djarmode=tools -jar application.jar extract --layers --destination extracted
 
-FROM bellsoft/liberica-openjre-debian:25-cds@sha256:bc35e6ed0cda3f4670900de782b0a7d3ad38bc8c5738f208110a8d57fcb4192a AS standard-doc
+FROM bellsoft/liberica-openjre-debian:25-cds@sha256:7f804889b01744fb5b517e098f915de021df0fe4f4ad82beeacc1ccd891f1eaf AS standard-doc
 WORKDIR /application
 COPY --from=builder /builder/extracted/dependencies/ ./
 COPY --from=builder /builder/extracted/spring-boot-loader/ ./
